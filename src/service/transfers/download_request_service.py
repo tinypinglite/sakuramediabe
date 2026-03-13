@@ -5,7 +5,12 @@ from src.schema.transfers.downloads import (
     DownloadRequestCreateResponse,
     DownloadTaskResource,
 )
-from src.service.transfers.common import map_remote_path, require_client, validate_non_empty
+from src.service.transfers.common import (
+    map_remote_path,
+    require_client,
+    require_indexer,
+    validate_non_empty,
+)
 from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
 
 
@@ -14,7 +19,7 @@ class DownloadRequestService:
         self.qbittorrent_client_cls = qbittorrent_client_cls
 
     def create_request(self, payload: DownloadRequestCreateRequest) -> DownloadRequestCreateResponse:
-        client = require_client(payload.client_id)
+        client = self._resolve_client(payload)
         movie_number = validate_non_empty(
             payload.movie_number,
             "invalid_download_request_movie_number",
@@ -71,3 +76,18 @@ class DownloadRequestService:
             task=DownloadTaskResource.from_model(task),
             created=created,
         )
+
+    def _resolve_client(self, payload: DownloadRequestCreateRequest):
+        if payload.client_id is not None:
+            return require_client(payload.client_id)
+
+        indexer = require_indexer(payload.candidate.indexer_name)
+        client = indexer.download_client
+        if client is None:
+            raise ApiError(
+                422,
+                "download_request_client_resolution_failed",
+                "Indexer download client resolution failed",
+                {"indexer_name": indexer.name},
+            )
+        return client

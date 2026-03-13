@@ -11,7 +11,7 @@ from .collections import (
 from .discovery import ImageSearchSession
 from .playback import Media, MediaLibrary, MediaPoint, MediaProgress, MediaThumbnail
 from .system import User, UserRefreshToken
-from .transfers import DownloadClient, DownloadTask, ImportJob
+from .transfers import DownloadClient, DownloadTask, ImportJob, Indexer
 
 __all__ = [
     "Actor",
@@ -20,6 +20,7 @@ __all__ = [
     "DownloadTask",
     "Image",
     "ImageSearchSession",
+    "Indexer",
     "ImportJob",
     "Media",
     "MediaLibrary",

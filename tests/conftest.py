@@ -13,6 +13,7 @@ from src.model import (
     DownloadTask,
     Image,
     ImageSearchSession,
+    Indexer,
     ImportJob,
     Media,
     MediaLibrary,
@@ -55,6 +56,7 @@ TEST_MODELS = [
     MediaPoint,
     ImageSearchSession,
     DownloadClient,
+    Indexer,
     DownloadTask,
     ImportJob,
 ]

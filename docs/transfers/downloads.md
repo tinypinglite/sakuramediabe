@@ -71,6 +71,8 @@
   "source": "jackett",
   "indexer_name": "mteam",
   "indexer_kind": "pt",
+  "resolved_client_id": 1,
+  "resolved_client_name": "client-a",
   "movie_number": "ABC-001",
   "title": "ABC-001 4K 中文字幕",
   "size_bytes": 12884901888,
@@ -337,6 +339,8 @@
     "source": "jackett",
     "indexer_name": "mteam",
     "indexer_kind": "pt",
+    "resolved_client_id": 1,
+    "resolved_client_name": "client-a",
     "movie_number": "ABC-001",
     "title": "ABC-001 4K 中文字幕",
     "size_bytes": 12884901888,
@@ -360,7 +364,7 @@
 
 ### Purpose
 
-向指定下载客户端提交一个候选资源。
+提交一个候选资源；若未显式指定 `client_id`，服务端会按 `candidate.indexer_name` 自动解析目标下载器。
 
 ### Auth
 
@@ -370,7 +374,6 @@
 
 ```json
 {
-  "client_id": 1,
   "movie_number": "ABC-001",
   "candidate": {
     "source": "jackett",
@@ -388,7 +391,8 @@
 
 ### Behavior
 
-- 根据 `client_id` 读取目标 `DownloadClient`
+- 若请求体包含 `client_id`，优先使用显式指定的目标 `DownloadClient`
+- 若未传 `client_id`，根据 `candidate.indexer_name` 查找数据库中的 `Indexer`，并使用其绑定的 `DownloadClient`
 - 按候选资源优先使用 `magnet_url`，否则使用 `torrent_url`
 - 添加种子时，应显式将 `DownloadClient.client_save_path` 传给 qBittorrent 作为保存路径
 - 提交成功后，立即按 `(client_id, info_hash)` 幂等写入或更新本地 `DownloadTask`
@@ -430,8 +434,8 @@
 ### Error Responses
 
 - `401 Unauthorized`: 未认证
-- `404 Not Found`: `client_id` 不存在
-- `422 Unprocessable Entity`: 请求体非法，或候选资源既无 `magnet_url` 也无 `torrent_url`
+- `404 Not Found`: 显式传入的 `client_id` 不存在
+- `422 Unprocessable Entity`: 请求体非法，候选资源既无 `magnet_url` 也无 `torrent_url`，或 `candidate.indexer_name` 未配置
 - `502 Bad Gateway`: qBittorrent 或下载源请求失败
 
 ### Endpoint

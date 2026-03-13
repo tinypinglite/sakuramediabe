@@ -1,6 +1,6 @@
 from typing import List
 
-from src.model import DownloadClient, DownloadTask
+from src.model import DownloadClient, DownloadTask, Indexer
 from src.schema.transfers.downloads import (
     DownloadClientCreateRequest,
     DownloadClientResource,
@@ -140,6 +140,13 @@ class DownloadClientService:
                 409,
                 "download_client_in_use",
                 "Download client is still referenced by download tasks",
+                {"client_id": client.id},
+            )
+        if Indexer.select().where(Indexer.download_client == client.id).exists():
+            raise ApiError(
+                409,
+                "download_client_in_use_by_indexers",
+                "Download client is still referenced by indexers",
                 {"client_id": client.id},
             )
         client.delete_instance()

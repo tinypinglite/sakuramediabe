@@ -1,7 +1,7 @@
 import pytest
 from peewee import IntegrityError
 
-from src.model import DownloadClient, DownloadTask, Image, ImportJob, Media, MediaLibrary, Movie
+from src.model import DownloadClient, DownloadTask, Image, ImportJob, Indexer, Media, MediaLibrary, Movie
 
 
 @pytest.fixture()
@@ -11,6 +11,7 @@ def media_transfer_tables(test_db):
         Movie,
         MediaLibrary,
         DownloadClient,
+        Indexer,
         DownloadTask,
         ImportJob,
         Media,
@@ -108,6 +109,34 @@ def test_import_job_can_link_download_task_and_store_failed_files(media_transfer
 
     assert job.download_task_id == task.id
     assert "parse failed" in job.failed_files
+
+
+def test_indexer_name_must_be_unique_and_belongs_to_download_client(media_transfer_tables):
+    library = MediaLibrary.create(name="A", root_path="/library/a")
+    client = DownloadClient.create(
+        name="client-a",
+        base_url="https://qb-a.example.com:8080",
+        username="alice",
+        password="secret",
+        client_save_path="/downloads/a",
+        local_root_path="/mnt/downloads/a",
+        media_library=library,
+    )
+
+    Indexer.create(
+        name="mteam",
+        url="http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
+        kind="pt",
+        download_client=client,
+    )
+
+    with pytest.raises(IntegrityError):
+        Indexer.create(
+            name="mteam",
+            url="https://example.com/api/v2.0/indexers/other/results/torznab/",
+            kind="bt",
+            download_client=client,
+        )
 
 
 def test_media_keeps_absolute_path_and_library(media_transfer_tables):

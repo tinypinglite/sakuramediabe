@@ -8,7 +8,7 @@ import pathlib
 import secrets
 from enum import Enum
 from pathlib import Path
-from typing import Any, List, Literal, Tuple, Type
+from typing import Any, Literal, Tuple, Type
 from loguru import logger
 import toml
 from pydantic import BaseModel, Field
@@ -137,16 +137,9 @@ class Logging(BaseModel):
     level: str = "INFO"
 
 
-class IndexerItem(BaseModel):
-    name: str
-    url: str
-    kind: IndexerKind
-
-
 class IndexerSettings(BaseModel):
     type: IndexerType = IndexerType.JACKETT
     api_key: str = "change-me"
-    indexers: List[IndexerItem] = Field(default_factory=list)
 
 
 class ImageSearch(BaseModel):

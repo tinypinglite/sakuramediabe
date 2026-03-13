@@ -3,15 +3,16 @@ from urllib.parse import urlparse
 
 from src.api.exception.errors import ApiError
 from src.config.config import (
-    IndexerItem,
     IndexerKind,
     IndexerType,
     Settings,
     settings,
     update_settings as persist_settings,
 )
+from src.model import DownloadClient, Indexer
 from src.schema.system.indexer_settings import (
     IndexerItemUpdatePayload,
+    IndexerItemResource,
     IndexerSettingsResource,
     IndexerSettingsUpdateRequest,
 )
@@ -20,7 +21,25 @@ from src.schema.system.indexer_settings import (
 class IndexerSettingsService:
     @staticmethod
     def get_settings() -> IndexerSettingsResource:
-        return IndexerSettingsResource.from_settings(settings.indexer_settings)
+        return IndexerSettingsResource(
+            type=settings.indexer_settings.type,
+            api_key=settings.indexer_settings.api_key,
+            indexers=[
+                IndexerItemResource(
+                    id=indexer.id,
+                    name=indexer.name,
+                    url=indexer.url,
+                    kind=IndexerKind(indexer.kind),
+                    download_client_id=indexer.download_client_id,
+                    download_client_name=indexer.download_client.name,
+                )
+                for indexer in (
+                    Indexer.select(Indexer, DownloadClient)
+                    .join(DownloadClient)
+                    .order_by(Indexer.id.asc())
+                )
+            ],
+        )
 
     @classmethod
     def update_settings(
@@ -45,7 +64,7 @@ class IndexerSettingsService:
             indexer_settings.api_key = cls._validate_api_key(payload.api_key)
 
         if "indexers" in update_data:
-            indexer_settings.indexers = cls._validate_indexers(payload.indexers)
+            cls._replace_indexers(payload.indexers)
 
         current_settings.indexer_settings = indexer_settings
         persist_settings(current_settings)
@@ -149,7 +168,7 @@ class IndexerSettingsService:
     def _validate_indexers(
         cls,
         items: Optional[List[IndexerItemUpdatePayload]],
-    ) -> List[IndexerItem]:
+    ) -> List[dict]:
         if items is None:
             raise ApiError(
                 422,
@@ -157,24 +176,53 @@ class IndexerSettingsService:
                 "Indexers must be a list",
             )
         normalized_names: Set[str] = set()
-        indexers: List[IndexerItem] = []
+        indexers: List[dict] = []
 
         for item in items:
             name = cls._validate_name(item.name)
-            if name in normalized_names:
+            normalized_name = name.casefold()
+            if normalized_name in normalized_names:
                 raise ApiError(
                     422,
                     "duplicate_indexer_settings_name",
                     "Indexer name must be unique",
                     {"name": name},
                 )
-            normalized_names.add(name)
+            normalized_names.add(normalized_name)
             indexers.append(
-                IndexerItem(
-                    name=name,
-                    url=cls._validate_url(item.url),
-                    kind=cls._validate_kind(item.kind),
-                )
+                {
+                    "name": name,
+                    "url": cls._validate_url(item.url),
+                    "kind": cls._validate_kind(item.kind).value,
+                    "download_client_id": cls._validate_download_client_id(item.download_client_id),
+                }
             )
 
         return indexers
+
+    @staticmethod
+    def _validate_download_client_id(value: int) -> int:
+        if value <= 0:
+            raise ApiError(
+                422,
+                "invalid_indexer_settings_download_client_id",
+                "download_client_id must be a positive integer",
+                {"download_client_id": value},
+            )
+        client = DownloadClient.get_or_none(DownloadClient.id == value)
+        if client is None:
+            raise ApiError(
+                404,
+                "indexer_settings_download_client_not_found",
+                "Download client not found",
+                {"download_client_id": value},
+            )
+        return client.id
+
+    @classmethod
+    def _replace_indexers(cls, items: Optional[List[IndexerItemUpdatePayload]]) -> None:
+        validated_items = cls._validate_indexers(items)
+        with Indexer._meta.database.atomic():
+            Indexer.delete().execute()
+            if validated_items:
+                Indexer.insert_many(validated_items).execute()

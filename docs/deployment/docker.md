@@ -187,6 +187,8 @@ services:
 - `auth.password`
 - `auth.secret_key`
 - `metadata.proxy`
+- `indexer_settings.type`
+- `indexer_settings.api_key`
 
 默认 SQLite 配置已经指向容器内数据库路径：
 
@@ -205,6 +207,8 @@ enable_docs = true
 ```
 
 文档页面启动后可访问 `/docs`。
+
+
 
 ## 4. 启动服务
 
@@ -254,7 +258,19 @@ username = "account"
 password = "account"
 ```
 
-## 7. JoyTag 与 Intel GPU
+## 7. 首次完成下载配置
+
+完成登录后，建议按下面顺序配置下载链路：
+
+1. 先在 App 中创建媒体库，确认目标 `root_path`、下载目录挂载和硬链接策略已经准备好。
+2. 再创建一个或多个 `DownloadClient`，填写正确的 `local_root_path` 与 `client_save_path`。
+3. 然后到 App 或 `/indexer-settings` 配置 Jackett `indexer`。
+4. 为每个 `indexer` 指定对应的 `download_client`。
+5. 完成后再去搜索候选资源；此时系统会按 `candidate.indexer_name` 自动解析目标下载器。
+
+如果先配置 `indexer`，但还没有创建 `DownloadClient`，后续下载提交流程无法完成自动路由。
+
+## 8. JoyTag 与 Intel GPU
 
 如果你要启用以图搜图：
 

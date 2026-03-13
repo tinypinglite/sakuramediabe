@@ -7,8 +7,6 @@ from src.config.config import (
     Database,
     DatabaseEngine,
     ImageSearch,
-    IndexerItem,
-    IndexerKind,
     IndexerSettings,
     IndexerType,
     LanceDb,
@@ -110,13 +108,6 @@ def test_settings_loads_indexer_settings_from_config_file(tmp_path, monkeypatch)
                 "indexer_settings": {
                     "type": "jackett",
                     "api_key": "secret-key",
-                    "indexers": [
-                        {
-                            "name": "mteam",
-                            "url": "http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
-                            "kind": "pt",
-                        }
-                    ],
                 }
             }
         ),
@@ -128,8 +119,6 @@ def test_settings_loads_indexer_settings_from_config_file(tmp_path, monkeypatch)
 
     assert settings.indexer_settings.type is IndexerType.JACKETT
     assert settings.indexer_settings.api_key == "secret-key"
-    assert settings.indexer_settings.indexers[0].name == "mteam"
-    assert settings.indexer_settings.indexers[0].kind is IndexerKind.PT
 
 
 def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatch):
@@ -227,13 +216,6 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
     new_settings.indexer_settings = IndexerSettings(
         type=IndexerType.JACKETT,
         api_key="updated-secret-key",
-        indexers=[
-            IndexerItem(
-                name="mteam",
-                url="http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
-                kind=IndexerKind.PT,
-            )
-        ],
     )
 
     try:
@@ -286,13 +268,6 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
         persisted = toml.loads(config_path.read_text(encoding="utf-8"))
         assert persisted["indexer_settings"]["type"] == "jackett"
         assert persisted["indexer_settings"]["api_key"] == "updated-secret-key"
-        assert persisted["indexer_settings"]["indexers"] == [
-            {
-                "name": "mteam",
-                "url": "http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
-                "kind": "pt",
-            }
-        ]
         assert "file_signature_secret" not in persisted["auth"]
         assert persisted["scheduler"] == {
             "enabled": True,
@@ -341,7 +316,6 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             "import_metadata_max_workers": 3,
         }
         assert config_module.settings.indexer_settings.api_key == "updated-secret-key"
-        assert config_module.settings.indexer_settings.indexers[0].name == "mteam"
         assert config_module.settings.scheduler.actor_subscription_sync_cron == "0 2 * * *"
         assert config_module.settings.scheduler.download_task_sync_cron == "*/15 * * * *"
         assert config_module.settings.scheduler.download_task_auto_import_cron == "*/10 * * * *"

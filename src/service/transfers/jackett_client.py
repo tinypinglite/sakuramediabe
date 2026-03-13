@@ -4,7 +4,8 @@ import httpx
 import xmltodict
 from loguru import logger
 
-from src.config.config import IndexerKind, settings
+from src.config.config import settings
+from src.model import DownloadClient, Indexer
 from src.schema.transfers.downloads import DownloadCandidateResource
 from src.service.transfers.tag_rules import detect_candidate_tags
 
@@ -26,8 +27,12 @@ class JackettClient:
     def search(self, movie_number: str, indexer_kind: Optional[str] = None) -> List[DownloadCandidateResource]:
         candidates: List[DownloadCandidateResource] = []
         normalized_kind = (indexer_kind or "").strip().lower() or None
-        for indexer in settings.indexer_settings.indexers:
-            if normalized_kind and indexer.kind.value != normalized_kind:
+        for indexer in (
+            Indexer.select(Indexer, DownloadClient)
+            .join(DownloadClient)
+            .order_by(Indexer.id.asc())
+        ):
+            if normalized_kind and indexer.kind != normalized_kind:
                 continue
             try:
                 response = self.client.get(
@@ -55,7 +60,7 @@ class JackettClient:
                 items = [items]
             for item in items:
                 candidates.append(
-                    self._build_candidate(movie_number, indexer.name, indexer.kind, item)
+                    self._build_candidate(movie_number, indexer, item)
                 )
 
         candidates.sort(key=lambda item: (item.seeders, item.size_bytes), reverse=True)
@@ -64,8 +69,7 @@ class JackettClient:
     def _build_candidate(
         self,
         movie_number: str,
-        indexer_name: str,
-        indexer_kind: IndexerKind,
+        indexer: Indexer,
         item: dict,
     ) -> DownloadCandidateResource:
         attrs = item.get("torznab:attr") or []
@@ -81,8 +85,10 @@ class JackettClient:
         return DownloadCandidateResource(
             source="jackett",
             indexer_name=(item.get("jackettindexer") or item.get("indexer") or "").strip()
-            or indexer_name,
-            indexer_kind=indexer_kind.value,
+            or indexer.name,
+            indexer_kind=indexer.kind,
+            resolved_client_id=indexer.download_client_id,
+            resolved_client_name=indexer.download_client.name,
             movie_number=movie_number.upper(),
             title=full_title or title,
             size_bytes=size_bytes,

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.api.exception.errors import ApiError
-from src.model import DownloadClient, DownloadTask, Image, ImportJob, MediaLibrary
+from src.model import DownloadClient, DownloadTask, Image, ImportJob, Indexer, MediaLibrary
 from src.schema.transfers.downloads import (
     DownloadClientCreateRequest,
     DownloadClientUpdateRequest,
@@ -19,7 +19,7 @@ from src.service.transfers.jackett_client import JackettClient
 
 @pytest.fixture()
 def download_tables(test_db):
-    models = [Image, MediaLibrary, DownloadClient, DownloadTask, ImportJob]
+    models = [Image, MediaLibrary, DownloadClient, Indexer, DownloadTask, ImportJob]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
@@ -192,9 +192,13 @@ def test_jackett_client_parses_and_sorts_candidates(monkeypatch):
         def get(self, url, params):
             return FakeResponse()
 
-    monkeypatch.setattr(
-        "src.service.transfers.jackett_client.settings.indexer_settings.indexers",
-        [type("Indexer", (), {"name": "mteam", "url": "http://jackett/api", "kind": type("Kind", (), {"value": "pt"})()})()],
+    library = _create_library()
+    download_client = _create_client(library)
+    Indexer.create(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=download_client,
     )
     client = JackettClient(api_key="secret", client=FakeHttpClient())
     results = client.search("ABC-001")
@@ -202,6 +206,8 @@ def test_jackett_client_parses_and_sorts_candidates(monkeypatch):
     assert len(results) == 2
     assert results[0].seeders == 18
     assert results[0].tags == ["中字", "4K"]
+    assert results[0].resolved_client_id == download_client.id
+    assert results[0].resolved_client_name == download_client.name
 
 
 def test_download_search_service_rejects_invalid_indexer_kind(download_tables):
@@ -259,6 +265,86 @@ def test_download_request_service_adds_task_and_passes_client_save_path(download
     assert stored.save_path == "/mnt/downloads/a/ABC-001"
     assert stored.info_hash == "abcdef123456"
     assert stored.movie == "ABC-001"
+
+
+def test_download_request_service_resolves_client_from_indexer_when_client_id_missing(download_tables):
+    library = _create_library()
+    client = _create_client(library)
+    Indexer.create(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=client,
+    )
+    called = {}
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            called["client_id"] = download_client.id
+            return cls()
+
+        def add_candidate(self, **kwargs):
+            called.update(kwargs)
+            return {
+                "info_hash": "abcdef123456",
+                "name": "ABC-001",
+                "progress": 0.0,
+                "state": "queuedDL",
+                "save_path": "/downloads/a/ABC-001",
+            }
+
+    service = DownloadRequestService(qbittorrent_client_cls=FakeQBittorrentClient)
+    result = service.create_request(
+        DownloadRequestCreateRequest.model_validate(
+            {
+                "movie_number": "ABC-001",
+                "candidate": {
+                    "source": "jackett",
+                    "indexer_name": "mteam",
+                    "indexer_kind": "pt",
+                    "title": "ABC-001",
+                    "size_bytes": 123,
+                    "seeders": 5,
+                    "magnet_url": "magnet:?xt=urn:btih:ABCDEF123456",
+                    "torrent_url": "",
+                    "tags": [],
+                },
+            }
+        )
+    )
+
+    assert result.task.client_id == client.id
+    assert called["client_id"] == client.id
+
+
+def test_download_request_service_rejects_unknown_indexer_when_client_id_missing(download_tables):
+    library = _create_library()
+    _create_client(library)
+
+    service = DownloadRequestService(qbittorrent_client_cls=object)
+
+    with pytest.raises(ApiError) as exc_info:
+        service.create_request(
+            DownloadRequestCreateRequest.model_validate(
+                {
+                    "movie_number": "ABC-001",
+                    "candidate": {
+                        "source": "jackett",
+                        "indexer_name": "missing",
+                        "indexer_kind": "pt",
+                        "title": "ABC-001",
+                        "size_bytes": 123,
+                        "seeders": 5,
+                        "magnet_url": "magnet:?xt=urn:btih:ABCDEF123456",
+                        "torrent_url": "",
+                        "tags": [],
+                    },
+                }
+            )
+        )
+
+    assert exc_info.value.code == "download_request_indexer_not_found"
 
 
 def test_download_request_service_is_idempotent_per_client(download_tables):
@@ -390,6 +476,22 @@ def test_download_sync_service_sync_all_clients_continues_when_one_client_fails(
     assert summary["failed_client_ids"] == [failing_client.id]
     assert summary["created_count"] == 1
     assert created_task.movie == "ABC-002"
+
+
+def test_download_client_delete_rejects_when_indexer_exists(download_tables):
+    library = _create_library()
+    client = _create_client(library)
+    Indexer.create(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=client,
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        DownloadClientService.delete_client(client.id)
+
+    assert exc_info.value.code == "download_client_in_use_by_indexers"
 
 
 def test_download_sync_service_enqueues_auto_imports(download_tables, monkeypatch, tmp_path):

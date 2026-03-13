@@ -23,6 +23,21 @@ class DownloadClient(TimestampedMixin, BaseModel):
         table_name = "download_client"
 
 
+class Indexer(TimestampedMixin, BaseModel):
+    name = peewee.CharField(max_length=255, unique=True, index=True)
+    url = peewee.CharField(max_length=1024)
+    kind = peewee.CharField(max_length=32)
+    download_client = peewee.ForeignKeyField(
+        DownloadClient,
+        backref="indexers",
+        on_delete="CASCADE",
+        column_name="download_client_id",
+    )
+
+    class Meta:
+        table_name = "indexer"
+
+
 class DownloadTask(TimestampedMixin, BaseModel):
     client = peewee.ForeignKeyField(
         DownloadClient,

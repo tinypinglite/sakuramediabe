@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 from peewee import fn
 
 from src.api.exception.errors import ApiError
-from src.model import DownloadClient, DownloadTask, MediaLibrary
+from src.model import DownloadClient, DownloadTask, Indexer, MediaLibrary
 
 ALLOWED_DOWNLOAD_STATES = {
     "downloading",
@@ -57,6 +57,26 @@ def require_media_library(library_id: int) -> MediaLibrary:
             {"library_id": library_id},
         )
     return library
+
+
+def require_indexer(indexer_name: str) -> Indexer:
+    normalized = indexer_name.strip()
+    if not normalized:
+        raise ApiError(
+            422,
+            "download_request_indexer_not_found",
+            "Indexer not found",
+            {"indexer_name": indexer_name},
+        )
+    indexer = Indexer.get_or_none(Indexer.name == normalized)
+    if indexer is None:
+        raise ApiError(
+            422,
+            "download_request_indexer_not_found",
+            "Indexer not found",
+            {"indexer_name": normalized},
+        )
+    return indexer
 
 
 def require_task(task_id: int) -> DownloadTask:

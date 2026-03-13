@@ -107,6 +107,68 @@ class MediaThumbnailService:
         return None
 
     @classmethod
+    def _duration_seconds_for_threshold(cls, media: Media) -> int:
+        if media.duration_seconds > 0:
+            return media.duration_seconds
+        if media.movie.duration_minutes > 0:
+            return media.movie.duration_minutes * 60
+        return 0
+
+    @staticmethod
+    def _expected_thumbnail_count(duration_seconds: int) -> int:
+        if duration_seconds <= 0:
+            return 0
+        return max(1, duration_seconds // 10)
+
+    @staticmethod
+    def _minimum_acceptable_thumbnail_count(expected_count: int) -> int:
+        if expected_count <= 0:
+            return 0
+        return max(1, int(expected_count * 0.85))
+
+    @classmethod
+    def _collect_parseable_webp_files(cls, webp_dir: Path) -> tuple[list[Path], int]:
+        webp_files = sorted(webp_dir.glob("*.webp"))
+        parseable_files: list[Path] = []
+        for webp_file in webp_files:
+            if cls._parse_offset_seconds(webp_file) is not None:
+                parseable_files.append(webp_file)
+        return parseable_files, len(webp_files)
+
+    @staticmethod
+    def _build_subprocess_cause(
+        mtn_error: Exception | None,
+        mogrify_error: Exception | None,
+    ) -> str | None:
+        causes: list[str] = []
+        if mtn_error is not None:
+            causes.append(f"mtn={mtn_error}")
+        if mogrify_error is not None:
+            causes.append(f"mogrify={mogrify_error}")
+        if not causes:
+            return None
+        return "; ".join(causes)
+
+    @classmethod
+    def _build_insufficient_count_error(
+        cls,
+        *,
+        expected_count: int,
+        minimum_count: int,
+        actual_count: int,
+        mtn_error: Exception | None,
+        mogrify_error: Exception | None,
+    ) -> str:
+        message = (
+            f"thumbnail_generation_insufficient_count expected={expected_count} "
+            f"minimum={minimum_count} actual={actual_count}"
+        )
+        cause = cls._build_subprocess_cause(mtn_error, mogrify_error)
+        if cause is not None:
+            message = f"{message} cause={cause}"
+        return message
+
+    @classmethod
     def _persist_generated_files(cls, media: Media, webp_files: list[Path]) -> int:
         created_count = 0
         image_root = cls._image_root_path()
@@ -200,13 +262,93 @@ class MediaThumbnailService:
             with TemporaryDirectory(prefix=f"mtn-{media.id}-") as temp_dir:
                 png_dir = Path(temp_dir) / "png"
                 png_dir.mkdir(parents=True, exist_ok=True)
-                cls._run_mtn(video_path, png_dir)
                 webp_dir = cls._thumbnail_directory(media)
-                cls._run_mogrify_batch(png_dir, webp_dir)
-                webp_files = sorted(webp_dir.glob("*.webp"))
-                if not webp_files:
+                mtn_error: Exception | None = None
+                mogrify_error: Exception | None = None
+
+                try:
+                    cls._run_mtn(video_path, png_dir)
+                except Exception as exc:
+                    mtn_error = exc
+                    logger.warning(
+                        "mtn failed but will inspect generated thumbnails media_id={} detail={}",
+                        media.id,
+                        exc,
+                    )
+
+                try:
+                    cls._run_mogrify_batch(png_dir, webp_dir)
+                except Exception as exc:
+                    mogrify_error = exc
+                    logger.warning(
+                        "mogrify failed but will inspect generated thumbnails media_id={} detail={}",
+                        media.id,
+                        exc,
+                    )
+
+                parseable_webp_files, total_webp_count = cls._collect_parseable_webp_files(webp_dir)
+                parseable_count = len(parseable_webp_files)
+                duration_seconds = cls._duration_seconds_for_threshold(media)
+                expected_count = cls._expected_thumbnail_count(duration_seconds)
+                minimum_count = cls._minimum_acceptable_thumbnail_count(expected_count)
+
+                if expected_count > 0 and parseable_count >= minimum_count:
+                    generated_count = cls._persist_generated_files(media, parseable_webp_files)
+                    if generated_count == 0:
+                        raise RuntimeError("thumbnail_generation_unparseable_filenames")
+                    cls._mark_success(media)
+                    elapsed_ms = int((time.time() - started_at) * 1000)
+                    if mtn_error is not None or mogrify_error is not None:
+                        logger.info(
+                            "Generated media thumbnails with tolerant success media_id={} generated_thumbnails={} expected_count={} minimum_count={} actual_parseable_count={} total_webp_count={} mtn_error={} mogrify_error={} elapsed_ms={}",
+                            media.id,
+                            generated_count,
+                            expected_count,
+                            minimum_count,
+                            parseable_count,
+                            total_webp_count,
+                            mtn_error is not None,
+                            mogrify_error is not None,
+                            elapsed_ms,
+                        )
+                    else:
+                        logger.info(
+                            "Generated media thumbnails media_id={} generated_thumbnails={} elapsed_ms={}",
+                            media.id,
+                            generated_count,
+                            elapsed_ms,
+                        )
+                    return {"successful_media": 1, "generated_thumbnails": generated_count}
+
+                if expected_count > 0:
+                    logger.warning(
+                        "Generated thumbnail count below threshold media_id={} expected_count={} minimum_count={} actual_parseable_count={} total_webp_count={}",
+                        media.id,
+                        expected_count,
+                        minimum_count,
+                        parseable_count,
+                        total_webp_count,
+                    )
+                    raise RuntimeError(
+                        cls._build_insufficient_count_error(
+                            expected_count=expected_count,
+                            minimum_count=minimum_count,
+                            actual_count=parseable_count,
+                            mtn_error=mtn_error,
+                            mogrify_error=mogrify_error,
+                        )
+                    )
+
+                if mtn_error is not None:
+                    raise mtn_error
+                if mogrify_error is not None:
+                    raise mogrify_error
+                if total_webp_count == 0:
                     raise RuntimeError("thumbnail_generation_empty")
-                generated_count = cls._persist_generated_files(media, webp_files)
+                if parseable_count == 0:
+                    raise RuntimeError("thumbnail_generation_unparseable_filenames")
+
+                generated_count = cls._persist_generated_files(media, parseable_webp_files)
                 if generated_count == 0:
                     raise RuntimeError("thumbnail_generation_unparseable_filenames")
             cls._mark_success(media)

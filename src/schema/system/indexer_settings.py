@@ -5,9 +5,12 @@ from src.schema.common.base import SchemaModel
 
 
 class IndexerItemResource(SchemaModel):
+    id: int
     name: str
     url: str
     kind: IndexerKind
+    download_client_id: int
+    download_client_name: str
 
 
 class IndexerSettingsResource(SchemaModel):
@@ -15,15 +18,12 @@ class IndexerSettingsResource(SchemaModel):
     api_key: str
     indexers: List[IndexerItemResource]
 
-    @classmethod
-    def from_settings(cls, indexer_settings) -> "IndexerSettingsResource":
-        return cls.model_validate(indexer_settings.model_dump())
-
 
 class IndexerItemUpdatePayload(SchemaModel):
     name: str
     url: str
     kind: str
+    download_client_id: int
 
 
 class IndexerSettingsUpdateRequest(SchemaModel):

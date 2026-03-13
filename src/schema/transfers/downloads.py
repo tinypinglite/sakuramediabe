@@ -62,6 +62,8 @@ class DownloadCandidateResource(SchemaModel):
     source: str
     indexer_name: str
     indexer_kind: str
+    resolved_client_id: int
+    resolved_client_name: str
     movie_number: str
     title: str
     size_bytes: int
@@ -89,7 +91,7 @@ class DownloadCandidateCreatePayload(SchemaModel):
 
 
 class DownloadRequestCreateRequest(SchemaModel):
-    client_id: int
+    client_id: Optional[int] = None
     movie_number: str
     candidate: DownloadCandidateCreatePayload
 
