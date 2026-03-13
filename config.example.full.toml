@@ -1,0 +1,170 @@
+# !!!! 注意配置文件中所有涉及到路径的配置项都应该是用容器内的实际路径，不是宿主机的路径 !!!!
+# !!!! 注意配置文件中所有涉及到路径的配置项都应该是用容器内的实际路径，不是宿主机的路径 !!!!
+# !!!! 注意配置文件中所有涉及到路径的配置项都应该是用容器内的实际路径，不是宿主机的路径 !!!!
+
+# 是否启 Swagger / ReDoc 文档页面。
+enable_docs = true
+
+[database]
+# 数据库类型，可选值：sqlite、mysql、postgres。
+engine = "sqlite"
+# SQLite 数据库文件路径；仅当 engine=sqlite 时生效。除非你知道再做什么，否则不需要修改
+path = "/data/db/sakuramedia.db"
+# MySQL 连接字符集；仅当 engine=mysql 时生效。
+charset = "utf8mb4"
+# MySQL / Postgres 连接串；仅当 engine=mysql 或 postgres 时生效。
+# 示例：
+# mysql://user:password@127.0.0.1:3306/sakuramedia
+# postgresql://user:password@127.0.0.1:5432/sakuramedia
+url = ""
+
+[auth]
+# 默认登录用户名。
+username = "account"
+# 默认登录密码。
+password = "account"
+# JWT 签名密钥，必须改成你自己的随机字符串。
+secret_key = "replace-with-a-random-secret-key"
+# JWT 签名算法。
+algorithm = "HS256"
+# Access Token 过期时间，单位：分钟。
+access_token_expire_minutes = 43200
+# Refresh Token 过期时间，单位：分钟。
+refresh_token_expire_minutes = 10080
+# 资源文件签名链接有效期，单位：秒。
+file_signature_expire_seconds = 900
+
+[media]
+# mtn 命令路径
+thumbnail_mtn_path = "/usr/bin/mtn"
+# 合集影片的“番号特征”的关键词列表，比如说 OFJE等。
+others_number_features = ["OFJE", "CJOB", "DVAJ", "REBD"]
+# 识别为“内嵌字幕”的标签关键词。
+inner_sub_tags = ["中字", "-C", "-UC", "字幕组", "中文"]
+# 识别为“蓝光 / 高清版本”的标签关键词。
+blueray_tags = ["4K", "4k", "蓝光"]
+# 识别为“无码资源”的标签关键词。
+uncensored_tags = [
+    "無修正",
+    "UC",
+    "-UC",
+    "UNCENSORED",
+    "-U",
+    "流出",
+    "uncensored",
+    "无码",
+    "無码",
+    "破解",
+]
+# 识别为“无码资源”的番号前缀。
+uncensored_prefix = [
+    "CWDV",
+    "MK3D2DBD",
+    "RHJ",
+    "CWP",
+    "MMDV",
+    "LAF",
+    "SMD",
+    "SMBD",
+    "MKD",
+    "MCB3DBD",
+    "MKBD",
+    "CWBD",
+    "S2M",
+    "CW3D2DBD",
+    "MXBD",
+    "SM3D2DBD",
+    "PT-",
+    "BT",
+    "SKYHD",
+    "SKY-",
+    "MCBD",
+]
+# 允许导入的视频最小文件大小，单位：字节；设为 0 表示不限制。建议设置为1GB即1024*1024*1024。
+allowed_min_video_file_size = 1073741824
+# 导入时缓存图片的目录，女优图片、封面图、剧照图、剧情图都会放在这个目录。
+# 建议放到ssd上
+import_image_root_path = "/data/cache/assets"
+
+[metadata]
+# JavDB API域名，不带协议头。
+javdb_host = "jdforrepam.com"
+# 访问 JavDB / GFriends 使用的代理地址；不需要代理时留空。
+proxy = ""
+# GFriends 文件树索引地址。如果这个地址不可用，可以尝试更换可用的镜像地址
+gfriends_filetree_url = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
+# GFriends CDN 根地址，用于拼接演员图片资源链接。
+gfriends_cdn_base_url = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
+# GFriends 文件树本地缓存路径.
+gfriends_filetree_cache_path = "/data/cache/gfriends/gfriends-filetree.json"
+# GFriends 文件树缓存有效期，单位：小时。
+gfriends_filetree_cache_ttl_hours = 168
+# 导入本地影片时，按番号抓取 JavDB 元数据的并发线程数。
+import_metadata_max_workers = 3
+
+[scheduler]
+# 是否启用定时任务。
+enabled = true
+# 定时任务使用的时区。
+timezone = "Asia/Shanghai"
+# 定时任务日志目录。
+log_dir = "/data/logs"
+# 订阅女优影片同步任务 cron 表达式。
+actor_subscription_sync_cron = "0 1 * * *"
+# 下载任务状态同步 cron 表达式。
+download_task_sync_cron = "*/15 * * * *"
+# 已完成下载自动导入 cron 表达式。
+download_task_auto_import_cron = "*/10 * * * *"
+# 影片热度重算 cron 表达式。
+movie_heat_cron = "15 0 * * *"
+# 标记合集影片
+movie_collection_sync_cron = "0 3 * * *"
+# 生成媒体资源缩略图
+media_thumbnail_cron = "*/10 * * * *"
+# 生成以图搜图缩略图向量
+image_search_index_cron = "*/10 * * * *"
+
+[image_search]
+# JoyTag 模型目录，目录内需要包含 model_vit_768.onnx。
+# Docker 部署时建议把宿主机模型目录挂载到 /data/lib/joytag。
+joytag_model_dir = "/data/lib/joytag"
+# 优先使用 Intel 核显进行推理，失败时回退 CPU
+prefer_gpu = true
+# CPU 推理线程数；留空表示按程序默认值自动选择
+cpu_threads = 4
+# 搜索会话有效期，单位：秒
+session_ttl_seconds = 600
+# 默认每页结果数
+default_page_size = 20
+# 最大每页结果数
+max_page_size = 100
+# 为凑满一页结果时，每次向量库扫描的批大小
+search_scan_batch_size = 100
+
+[lancedb]
+# LanceDB 本地目录
+uri = "/data/indexes/image-search"
+# LanceDB 表名
+table_name = "media_thumbnail_vectors"
+
+[logging]
+# 全局日志等级。可选值：DEBUG、INFO、WARNING、ERROR、CRITICAL。
+level = "INFO"
+
+[indexer_settings]
+# 索引器类型，目前仅支持 jackett。这里的配置可以在 app 修改，修改后会覆盖掉 config.toml 中的配置。
+type = "jackett"
+# Jackett API Key。
+api_key = "change-me"
+
+[[indexer_settings.indexers]]
+# 索引器显示名称，需保持唯一。
+name = "mteam"
+# Jackett Torznab 接口地址。
+url = "http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/"
+# 索引器资源类型，可选值：pt、bt。
+kind = "pt"
+
+[database.pragmas]
+# SQLite 外键约束开关；仅当 engine=sqlite 时生效。
+foreign_keys = 1

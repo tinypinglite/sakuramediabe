@@ -1,0 +1,37 @@
+# 是否启 Swagger / ReDoc 文档页面，建议不要开启
+enable_docs = false
+
+[database]
+# 数据库类型，可选值：sqlite、mysql、postgres。
+engine = "sqlite"
+
+# MySQL / Postgres 连接串；仅当 engine=mysql 或 postgres 时生效。
+# 示例：
+# mysql://user:password@127.0.0.1:3306/sakuramedia
+# postgresql://user:password@127.0.0.1:5432/sakuramedia
+url = ""
+
+[auth]
+
+# 建议之后用 app 修改这个配置项，修改后会覆盖掉 config.toml 中的配置
+# 默认登录用户名。
+username = "account"
+# 默认登录密码。
+password = "account"
+
+
+# JWT 签名密钥，必须改成你自己的随机字符串！！！建议长度不少于32个字符，否则可能存在安全风险。
+secret_key = "replace-with-a-random-secret-key"
+
+
+[media]
+# 允许导入的视频最小文件大小，单位：字节；设为 0 表示不限制。建议设置为1GB即1024*1024*1024。
+allowed_min_video_file_size = 1073741824
+
+[metadata]
+# 访问 JavDB / GFriends 使用的代理地址；不需要代理时留空。
+# 仅支持 http 代理：例如 http://192.168.1.1:7890
+proxy = ""
+
+
+

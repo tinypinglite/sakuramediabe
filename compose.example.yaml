@@ -1,0 +1,28 @@
+services:
+  sakuramedia:
+    build: .
+    image: sakuramedia:local
+    container_name: sakuramedia
+    restart: unless-stopped
+    ports:
+      - "38000:8000"
+      - "39001:9001"
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      TZ: "Asia/Shanghai"
+    volumes:
+      - ./docker-data/config:/data/config
+      - ./docker-data/db:/data/db
+      - ./docker-data/cache/assets:/data/cache/assets
+      - ./docker-data/cache/gfriends:/data/cache/gfriends
+      - ./docker-data/image-search-index:/data/indexes
+      - ./docker-data/logs:/data/logs
+      - ./docker-data/joytag:/data/lib/joytag
+
+      # 按实际情况 挂载由sakuramedia 管理的媒体目录、qb 实际下载目录已经需要导入的媒体目录.
+      # 具体看文档说明
+
+    # 可开启 Intel iGPU 支持（如果宿主机有 Intel 集成显卡且需要使用硬件加速来加速 joytag 推理）：
+    # devices:
+    #   - /dev/dri:/dev/dri

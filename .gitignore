@@ -1,0 +1,16 @@
+*.pyc
+config.toml
+.DS_Store
+server/lib
+*.db
+storage
+*.lock
+server/docs/plans
+docs/plans
+test_media_source_dir
+.pytest_cache
+lib/joytag
+logs
+AGENTS.md
+docker-data
+compose.yaml
