@@ -29,9 +29,9 @@ class Media(TimestampedMixin, BaseModel):
     file_size_bytes = peewee.BigIntegerField(default=0)
     duration_seconds = peewee.IntegerField(default=0)
     special_tags = peewee.CharField(max_length=255, default="普通")
-    need_mtn = peewee.BooleanField(default=True, index=True)
-    mtn_retry_count = peewee.IntegerField(default=0)
-    mtn_last_error = peewee.TextField(null=True)
+    need_thumbnail_generation = peewee.BooleanField(default=True, index=True)
+    thumbnail_retry_count = peewee.IntegerField(default=0)
+    thumbnail_last_error = peewee.TextField(null=True)
     valid = peewee.BooleanField(default=True)
 
     class Meta:

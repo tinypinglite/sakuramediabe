@@ -54,16 +54,16 @@ def test_list_media_thumbnails_returns_expected_payload(client, account_user):
     movie = _create_movie("ABC-008", "MovieA8", title="Movie 8")
     media = Media.create(movie=movie, path="/library/main/abc-008.mp4", valid=True)
     second_image = Image.create(
-        origin="movies/ABC-008/media/fingerprint-1/thumbnails/00_00_20.webp",
-        small="movies/ABC-008/media/fingerprint-1/thumbnails/00_00_20.webp",
-        medium="movies/ABC-008/media/fingerprint-1/thumbnails/00_00_20.webp",
-        large="movies/ABC-008/media/fingerprint-1/thumbnails/00_00_20.webp",
+        origin="movies/ABC-008/media/fingerprint-1/thumbnails/20.webp",
+        small="movies/ABC-008/media/fingerprint-1/thumbnails/20.webp",
+        medium="movies/ABC-008/media/fingerprint-1/thumbnails/20.webp",
+        large="movies/ABC-008/media/fingerprint-1/thumbnails/20.webp",
     )
     first_image = Image.create(
-        origin="movies/ABC-008/media/fingerprint-1/thumbnails/00_00_10.webp",
-        small="movies/ABC-008/media/fingerprint-1/thumbnails/00_00_10.webp",
-        medium="movies/ABC-008/media/fingerprint-1/thumbnails/00_00_10.webp",
-        large="movies/ABC-008/media/fingerprint-1/thumbnails/00_00_10.webp",
+        origin="movies/ABC-008/media/fingerprint-1/thumbnails/10.webp",
+        small="movies/ABC-008/media/fingerprint-1/thumbnails/10.webp",
+        medium="movies/ABC-008/media/fingerprint-1/thumbnails/10.webp",
+        large="movies/ABC-008/media/fingerprint-1/thumbnails/10.webp",
     )
     second_thumbnail = MediaThumbnail.create(media=media, image=second_image, offset=20)
     first_thumbnail = MediaThumbnail.create(media=media, image=first_image, offset=10)

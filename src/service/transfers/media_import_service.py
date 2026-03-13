@@ -820,9 +820,9 @@ class MediaImportService:
                 content_fingerprint=content_fingerprint,
                 file_size_bytes=file_size,
                 special_tags=special_tags,
-                need_mtn=True,
-                mtn_retry_count=0,
-                mtn_last_error=None,
+                need_thumbnail_generation=True,
+                thumbnail_retry_count=0,
+                thumbnail_last_error=None,
                 valid=True,
             )
             return
@@ -834,9 +834,9 @@ class MediaImportService:
         invalid_media.content_fingerprint = content_fingerprint
         invalid_media.file_size_bytes = file_size
         invalid_media.special_tags = special_tags
-        invalid_media.need_mtn = True
-        invalid_media.mtn_retry_count = 0
-        invalid_media.mtn_last_error = None
+        invalid_media.need_thumbnail_generation = True
+        invalid_media.thumbnail_retry_count = 0
+        invalid_media.thumbnail_last_error = None
         invalid_media.valid = True
         invalid_media.updated_at = datetime.utcnow()
         invalid_media.save()

@@ -54,7 +54,9 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
     assert settings.metadata.gfriends_cdn_base_url == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
     assert settings.metadata.gfriends_filetree_cache_path == "/data/cache/gfriends/gfriends-filetree.json"
     assert settings.metadata.gfriends_filetree_cache_ttl_hours == 168
-    assert settings.media.max_mtn_process_count == max(1, math.ceil(((config_module.os.cpu_count() or 1) / 2)))
+    assert settings.media.max_thumbnail_process_count == max(
+        1, math.ceil(((config_module.os.cpu_count() or 1) / 2))
+    )
     assert settings.scheduler.media_thumbnail_cron == "*/5 * * * *"
     assert settings.scheduler.image_search_index_cron == "*/10 * * * *"
     assert settings.scheduler.image_search_optimize_cron == "0 */6 * * *"
@@ -140,8 +142,7 @@ def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatc
                     "image_search_optimize_cron": "30 */4 * * *",
                 },
                 "media": {
-                    "thumbnail_mtn_path": "/usr/local/bin/mtn",
-                    "max_mtn_process_count": 9,
+                    "max_thumbnail_process_count": 9,
                 },
                 "image_search": {
                     "joytag_model_dir": "./models/joytag",
@@ -181,8 +182,7 @@ def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatc
     assert settings.scheduler.media_thumbnail_cron == "*/7 * * * *"
     assert settings.scheduler.image_search_index_cron == "*/8 * * * *"
     assert settings.scheduler.image_search_optimize_cron == "30 */4 * * *"
-    assert settings.media.thumbnail_mtn_path == "/usr/local/bin/mtn"
-    assert settings.media.max_mtn_process_count == 9
+    assert settings.media.max_thumbnail_process_count == 9
     assert settings.image_search.joytag_model_dir == "./models/joytag"
     assert settings.image_search.prefer_gpu is False
     assert settings.image_search.cpu_threads == 6
@@ -233,8 +233,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             image_search_index_cron="*/10 * * * *",
             image_search_optimize_cron="0 */6 * * *",
         )
-        new_settings.media.thumbnail_mtn_path = "/usr/bin/mtn"
-        new_settings.media.max_mtn_process_count = 6
+        new_settings.media.max_thumbnail_process_count = 6
         new_settings.logging = Logging(level="DEBUG")
         new_settings.image_search = ImageSearch(
             joytag_model_dir="/models/joytag",
@@ -282,8 +281,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             "image_search_index_cron": "*/10 * * * *",
             "image_search_optimize_cron": "0 */6 * * *",
         }
-        assert persisted["media"]["thumbnail_mtn_path"] == "/usr/bin/mtn"
-        assert persisted["media"]["max_mtn_process_count"] == 6
+        assert persisted["media"]["max_thumbnail_process_count"] == 6
         assert persisted["image_search"] == {
             "joytag_model_dir": "/models/joytag",
             "prefer_gpu": True,

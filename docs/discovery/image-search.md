@@ -37,10 +37,10 @@
       "score": 0.91,
       "image": {
         "id": 10,
-        "origin": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/00_02_00.webp?expires=1700000900&signature=...",
-        "small": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/00_02_00.webp?expires=1700000900&signature=...",
-        "medium": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/00_02_00.webp?expires=1700000900&signature=...",
-        "large": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/00_02_00.webp?expires=1700000900&signature=..."
+        "origin": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=...",
+        "small": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=...",
+        "medium": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=...",
+        "large": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=..."
       }
     }
   ]

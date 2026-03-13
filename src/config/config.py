@@ -103,8 +103,7 @@ class Media(BaseModel):
     )
     allowed_min_video_file_size: int = 1024 * 1024 * 1024
     import_image_root_path: str = "/data/cache/assets"
-    thumbnail_mtn_path: str = "/usr/bin/mtn"
-    max_mtn_process_count: int = Field(
+    max_thumbnail_process_count: int = Field(
         default_factory=lambda: max(1, math.ceil((os.cpu_count() or 1) / 2))
     )
 

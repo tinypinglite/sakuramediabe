@@ -28,6 +28,7 @@ torrent-parser = "^0.4.1"
 pydantic-settings = "^2.2.1"
 opencv-python-headless = "4.10.0.84"
 apscheduler = "^3.10.4"
+av = "^15.0.0"
 pydantic = "^2.7.4"
 pillow = "10.4.0"
 toml = "^0.10.2"
@@ -44,4 +45,3 @@ numpy = "<2"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-

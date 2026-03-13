@@ -9,7 +9,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update && apt-get install -y \
     vim \
-    imagemagick \
     supervisor \
     ffmpeg \
     ca-certificates \
@@ -23,14 +22,12 @@ RUN apt-get update && apt-get install -y \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-COPY lib/mtn /usr/bin/mtn
 COPY requirements.txt /app/requirements.txt
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN pip3 install --no-cache-dir -r /app/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 RUN chmod +x /docker-entrypoint.sh \
     && groupadd --system app \
-    && useradd --create-home --shell /bin/bash --gid app app \
-    && chmod +x /usr/bin/mtn
+    && useradd --create-home --shell /bin/bash --gid app app
 
 COPY src /app/src
 COPY supervisord.conf /etc/supervisor/supervisord.conf

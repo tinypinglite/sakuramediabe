@@ -45,10 +45,10 @@
   "offset_seconds": 20,
   "image": {
     "id": 88,
-    "origin": "/files/images/movies/ABC-001/media/fingerprint-1/thumbnails/00_00_20.webp?expires=1700000900&signature=<signature>",
-    "small": "/files/images/movies/ABC-001/media/fingerprint-1/thumbnails/00_00_20.webp?expires=1700000900&signature=<signature>",
-    "medium": "/files/images/movies/ABC-001/media/fingerprint-1/thumbnails/00_00_20.webp?expires=1700000900&signature=<signature>",
-    "large": "/files/images/movies/ABC-001/media/fingerprint-1/thumbnails/00_00_20.webp?expires=1700000900&signature=<signature>"
+    "origin": "/files/images/movies/ABC-001/media/fingerprint-1/thumbnails/20.webp?expires=1700000900&signature=<signature>",
+    "small": "/files/images/movies/ABC-001/media/fingerprint-1/thumbnails/20.webp?expires=1700000900&signature=<signature>",
+    "medium": "/files/images/movies/ABC-001/media/fingerprint-1/thumbnails/20.webp?expires=1700000900&signature=<signature>",
+    "large": "/files/images/movies/ABC-001/media/fingerprint-1/thumbnails/20.webp?expires=1700000900&signature=<signature>"
   }
 }
 ```
@@ -321,10 +321,10 @@ Authorization: Bearer <token>
     "offset_seconds": 10,
     "image": {
       "id": 88,
-      "origin": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/00_00_10.webp?expires=1700000900&signature=<signature>",
-      "small": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/00_00_10.webp?expires=1700000900&signature=<signature>",
-      "medium": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/00_00_10.webp?expires=1700000900&signature=<signature>",
-      "large": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/00_00_10.webp?expires=1700000900&signature=<signature>"
+      "origin": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/10.webp?expires=1700000900&signature=<signature>",
+      "small": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/10.webp?expires=1700000900&signature=<signature>",
+      "medium": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/10.webp?expires=1700000900&signature=<signature>",
+      "large": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/10.webp?expires=1700000900&signature=<signature>"
     }
   }
 ]

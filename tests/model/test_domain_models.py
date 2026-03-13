@@ -62,9 +62,9 @@ def test_media_model_tracks_library_and_storage_mode():
     assert "library" in Media._meta.fields
     assert "storage_mode" in Media._meta.fields
     assert "special_tags" in Media._meta.fields
-    assert "need_mtn" in Media._meta.fields
-    assert "mtn_retry_count" in Media._meta.fields
-    assert "mtn_last_error" in Media._meta.fields
+    assert "need_thumbnail_generation" in Media._meta.fields
+    assert "thumbnail_retry_count" in Media._meta.fields
+    assert "thumbnail_last_error" in Media._meta.fields
     assert "relative_path" not in Media._meta.fields
 
 
@@ -76,9 +76,9 @@ def test_media_model_defaults_thumbnail_generation_state(test_db):
     movie = Movie.create(javdb_id="javdb-001", movie_number="ABC-001", title="Movie 1")
     media = Media.create(movie=movie, path="/library/main/abc-001.mp4")
 
-    assert media.need_mtn is True
-    assert media.mtn_retry_count == 0
-    assert media.mtn_last_error is None
+    assert media.need_thumbnail_generation is True
+    assert media.thumbnail_retry_count == 0
+    assert media.thumbnail_last_error is None
 
 
 def test_media_thumbnail_model_tracks_offset_and_joytag_status(test_db):

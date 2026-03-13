@@ -542,9 +542,9 @@ def test_content_fingerprint_is_saved_on_media_record(import_tables, tmp_path, m
     media = Media.get()
     assert media.content_fingerprint
     assert ":" not in media.content_fingerprint
-    assert media.need_mtn is True
-    assert media.mtn_retry_count == 0
-    assert media.mtn_last_error is None
+    assert media.need_thumbnail_generation is True
+    assert media.thumbnail_retry_count == 0
+    assert media.thumbnail_last_error is None
 
 
 def test_content_fingerprint_changes_when_movie_number_changes(import_tables, tmp_path):
@@ -665,9 +665,9 @@ def test_import_media_revives_invalid_media_and_preserves_thumbnail(
     assert revived_media.content_fingerprint == expected_fingerprint
     assert revived_media.file_size_bytes == 10
     assert revived_media.special_tags == "普通"
-    assert revived_media.need_mtn is True
-    assert revived_media.mtn_retry_count == 0
-    assert revived_media.mtn_last_error is None
+    assert revived_media.need_thumbnail_generation is True
+    assert revived_media.thumbnail_retry_count == 0
+    assert revived_media.thumbnail_last_error is None
     assert MediaThumbnail.get_by_id(thumbnail.id).media_id == revived_media.id
 
 

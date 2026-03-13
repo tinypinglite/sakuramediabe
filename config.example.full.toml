@@ -35,8 +35,6 @@ refresh_token_expire_minutes = 10080
 file_signature_expire_seconds = 900
 
 [media]
-# mtn 命令路径
-thumbnail_mtn_path = "/usr/bin/mtn"
 # 合集影片的“番号特征”的关键词列表，比如说 OFJE等。
 others_number_features = ["OFJE", "CJOB", "DVAJ", "REBD"]
 # 识别为“内嵌字幕”的标签关键词。
@@ -85,6 +83,8 @@ allowed_min_video_file_size = 1073741824
 # 导入时缓存图片的目录，女优图片、封面图、剧照图、剧情图都会放在这个目录。
 # 建议放到ssd上
 import_image_root_path = "/data/cache/assets"
+# 媒体缩略图生成任务的最大并发数。
+max_thumbnail_process_count = 4
 
 [metadata]
 # JavDB API域名，不带协议头。

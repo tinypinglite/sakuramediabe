@@ -1,11 +1,14 @@
-import shlex
-import subprocess
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from loguru import logger
+
+try:
+    import av
+except ImportError:  # pragma: no cover - exercised by runtime environment, not tests
+    av = None
 
 from src.config.config import settings
 from src.model import Image, Media, MediaThumbnail, get_database
@@ -14,7 +17,7 @@ from src.schema.playback.media import MediaThumbnailResource
 
 
 class MediaThumbnailService:
-    MTN_MAX_RETRIES = 2
+    THUMBNAIL_MAX_RETRIES = 2
 
     @staticmethod
     def _ensure_worker_database_ready() -> None:
@@ -28,7 +31,7 @@ class MediaThumbnailService:
             Media.select(Media.id)
             .where(
                 Media.valid == True,
-                Media.need_mtn == True,
+                Media.need_thumbnail_generation == True,
             )
             .order_by(Media.id)
         )
@@ -53,58 +56,20 @@ class MediaThumbnailService:
         )
 
     @staticmethod
-    def _run_mtn(video_path: Path, png_dir: Path) -> None:
-        command = [
-            settings.media.thumbnail_mtn_path,
-            "-I",
-            "oi",
-            "-i",
-            "-s",
-            "10",
-            "-o",
-            ".png",
-            "-z",
-            "-q",
-            "-t",
-            "-O",
-            str(png_dir),
-            str(video_path),
-        ]
-        subprocess.run(command, check=True)
-
-    @staticmethod
-    def _run_mogrify_batch(png_dir: Path, webp_dir: Path) -> None:
-        webp_dir.mkdir(parents=True, exist_ok=True)
-        for existing_file in webp_dir.glob("*.webp"):
-            existing_file.unlink()
-        command = (
-            f"mogrify -path {shlex.quote(str(webp_dir))} -format webp "
-            f"{shlex.quote(str(png_dir))}/*"
-        )
-        subprocess.run(command, shell=True, check=True)
+    def _lower_process_priority() -> None:
+        try:
+            os.nice(19)
+        except (AttributeError, OSError):
+            return
 
     @staticmethod
     def _parse_offset_seconds(file_path: Path) -> int | None:
-        parts = file_path.stem.split("_")
-        if len(parts) < 3:
+        if not file_path.stem.isdigit():
             return None
-
-        candidate_parts: list[list[str]] = []
-        if len(parts) >= 4 and parts[-1].isdigit():
-            candidate_parts.append(parts[-4:-1])
-        candidate_parts.append(parts[-3:])
-
-        for candidate in candidate_parts:
-            try:
-                hour, minute, second = [int(part) for part in candidate]
-            except ValueError:
-                continue
-            if hour < 0 or minute < 0 or second < 0:
-                continue
-            if minute >= 60 or second >= 60:
-                continue
-            return hour * 3600 + minute * 60 + second
-        return None
+        offset = int(file_path.stem)
+        if offset < 0:
+            return None
+        return offset
 
     @classmethod
     def _duration_seconds_for_threshold(cls, media: Media) -> int:
@@ -128,26 +93,20 @@ class MediaThumbnailService:
 
     @classmethod
     def _collect_parseable_webp_files(cls, webp_dir: Path) -> tuple[list[Path], int]:
-        webp_files = sorted(webp_dir.glob("*.webp"))
-        parseable_files: list[Path] = []
+        webp_files = list(webp_dir.glob("*.webp"))
+        parseable_files: list[tuple[int, Path]] = []
         for webp_file in webp_files:
-            if cls._parse_offset_seconds(webp_file) is not None:
-                parseable_files.append(webp_file)
-        return parseable_files, len(webp_files)
+            offset = cls._parse_offset_seconds(webp_file)
+            if offset is not None:
+                parseable_files.append((offset, webp_file))
+        parseable_files.sort(key=lambda item: (item[0], item[1].name))
+        return [item[1] for item in parseable_files], len(webp_files)
 
     @staticmethod
-    def _build_subprocess_cause(
-        mtn_error: Exception | None,
-        mogrify_error: Exception | None,
-    ) -> str | None:
-        causes: list[str] = []
-        if mtn_error is not None:
-            causes.append(f"mtn={mtn_error}")
-        if mogrify_error is not None:
-            causes.append(f"mogrify={mogrify_error}")
-        if not causes:
+    def _build_generation_cause(pyav_error: Exception | None) -> str | None:
+        if pyav_error is None:
             return None
-        return "; ".join(causes)
+        return f"pyav={pyav_error}"
 
     @classmethod
     def _build_insufficient_count_error(
@@ -156,17 +115,105 @@ class MediaThumbnailService:
         expected_count: int,
         minimum_count: int,
         actual_count: int,
-        mtn_error: Exception | None,
-        mogrify_error: Exception | None,
+        pyav_error: Exception | None,
     ) -> str:
         message = (
             f"thumbnail_generation_insufficient_count expected={expected_count} "
             f"minimum={minimum_count} actual={actual_count}"
         )
-        cause = cls._build_subprocess_cause(mtn_error, mogrify_error)
+        cause = cls._build_generation_cause(pyav_error)
         if cause is not None:
             message = f"{message} cause={cause}"
         return message
+
+    @staticmethod
+    def _clear_webp_directory(webp_dir: Path) -> None:
+        webp_dir.mkdir(parents=True, exist_ok=True)
+        for existing_file in webp_dir.glob("*.webp"):
+            existing_file.unlink()
+
+    @staticmethod
+    def _resolve_generation_duration_seconds(container, stream) -> int:
+        stream_duration = getattr(stream, "duration", None)
+        stream_time_base = getattr(stream, "time_base", None)
+        if stream_duration is not None and stream_time_base:
+            duration_seconds = float(stream_duration * stream_time_base)
+            if duration_seconds > 0:
+                return int(duration_seconds)
+
+        container_duration = getattr(container, "duration", None)
+        if container_duration is not None and getattr(av, "time_base", None):
+            duration_seconds = float(container_duration / av.time_base)
+            if duration_seconds > 0:
+                return int(duration_seconds)
+
+        return 0
+
+    @classmethod
+    def _generate_webp_with_pyav(
+        cls,
+        video_path: Path,
+        webp_dir: Path,
+        *,
+        interval_seconds: int = 10,
+    ) -> Exception | None:
+        if av is None:
+            return RuntimeError("pyav_not_installed")
+
+        cls._lower_process_priority()
+        container = None
+        first_error: Exception | None = None
+        try:
+            container = av.open(str(video_path))
+            if not container.streams.video:
+                return RuntimeError("video_stream_missing")
+
+            stream = container.streams.video[0]
+            duration_seconds = cls._resolve_generation_duration_seconds(container, stream)
+            if duration_seconds <= 0:
+                return first_error
+
+            for offset_seconds in range(0, duration_seconds + 1, interval_seconds):
+                try:
+                    timestamp = int(offset_seconds / float(stream.time_base))
+                    container.seek(
+                        timestamp,
+                        stream=stream,
+                        backward=True,
+                        any_frame=False,
+                    )
+                    frame = next(container.decode(stream))
+                    image_path = webp_dir / f"{offset_seconds}.webp"
+                    frame.to_image().save(image_path, format="WEBP", quality=80)
+                except StopIteration:
+                    if first_error is None:
+                        first_error = RuntimeError(
+                            f"decode_frame_missing offset_seconds={offset_seconds}"
+                        )
+                    logger.warning(
+                        "PyAV frame missing media_path={} offset_seconds={}",
+                        video_path,
+                        offset_seconds,
+                    )
+                except Exception as exc:
+                    if first_error is None:
+                        first_error = exc
+                    logger.warning(
+                        "PyAV thumbnail generation skipped offset media_path={} offset_seconds={} detail={}",
+                        video_path,
+                        offset_seconds,
+                        exc,
+                    )
+        except Exception as exc:
+            if first_error is None:
+                first_error = exc
+        finally:
+            if container is not None:
+                try:
+                    container.close()
+                except Exception as exc:
+                    first_error = exc
+        return first_error
 
     @classmethod
     def _persist_generated_files(cls, media: Media, webp_files: list[Path]) -> int:
@@ -195,20 +242,20 @@ class MediaThumbnailService:
 
     @staticmethod
     def _mark_success(media: Media) -> None:
-        media.need_mtn = False
-        media.mtn_retry_count = 0
-        media.mtn_last_error = None
+        media.need_thumbnail_generation = False
+        media.thumbnail_retry_count = 0
+        media.thumbnail_last_error = None
         media.save()
 
     @classmethod
     def _mark_failure(cls, media: Media, error: str, *, terminal: bool = False) -> str:
-        media.mtn_retry_count += 1
-        media.mtn_last_error = error
-        if terminal or media.mtn_retry_count >= cls.MTN_MAX_RETRIES:
-            media.need_mtn = False
+        media.thumbnail_retry_count += 1
+        media.thumbnail_last_error = error
+        if terminal or media.thumbnail_retry_count >= cls.THUMBNAIL_MAX_RETRIES:
+            media.need_thumbnail_generation = False
             result_key = "terminal_failed_media"
         else:
-            media.need_mtn = True
+            media.need_thumbnail_generation = True
             result_key = "retryable_failed_media"
         media.save()
         return result_key
@@ -224,14 +271,14 @@ class MediaThumbnailService:
             media.id,
             reason,
             cls._failure_type(result_key),
-            media.mtn_retry_count,
+            media.thumbnail_retry_count,
         )
 
     @classmethod
     def _process_media(cls, media_id: int) -> dict[str, int]:
         cls._ensure_worker_database_ready()
         media = Media.get_or_none(Media.id == media_id)
-        if media is None or not media.valid or not media.need_mtn:
+        if media is None or not media.valid or not media.need_thumbnail_generation:
             return {}
         if MediaThumbnail.select().where(MediaThumbnail.media == media).exists():
             cls._mark_success(media)
@@ -259,98 +306,79 @@ class MediaThumbnailService:
         )
         started_at = time.time()
         try:
-            with TemporaryDirectory(prefix=f"mtn-{media.id}-") as temp_dir:
-                png_dir = Path(temp_dir) / "png"
-                png_dir.mkdir(parents=True, exist_ok=True)
-                webp_dir = cls._thumbnail_directory(media)
-                mtn_error: Exception | None = None
-                mogrify_error: Exception | None = None
+            webp_dir = cls._thumbnail_directory(media)
+            cls._clear_webp_directory(webp_dir)
+            pyav_error = cls._generate_webp_with_pyav(video_path, webp_dir)
 
-                try:
-                    cls._run_mtn(video_path, png_dir)
-                except Exception as exc:
-                    mtn_error = exc
-                    logger.warning(
-                        "mtn failed but will inspect generated thumbnails media_id={} detail={}",
+            if pyav_error is not None:
+                logger.warning(
+                    "PyAV thumbnail generation reported error media_id={} detail={}",
+                    media.id,
+                    pyav_error,
+                )
+
+            parseable_webp_files, total_webp_count = cls._collect_parseable_webp_files(webp_dir)
+            parseable_count = len(parseable_webp_files)
+            duration_seconds = cls._duration_seconds_for_threshold(media)
+            expected_count = cls._expected_thumbnail_count(duration_seconds)
+            minimum_count = cls._minimum_acceptable_thumbnail_count(expected_count)
+
+            if expected_count > 0 and parseable_count >= minimum_count:
+                generated_count = cls._persist_generated_files(media, parseable_webp_files)
+                if generated_count == 0:
+                    raise RuntimeError("thumbnail_generation_unparseable_filenames")
+                cls._mark_success(media)
+                elapsed_ms = int((time.time() - started_at) * 1000)
+                if pyav_error is not None:
+                    logger.info(
+                        "Generated media thumbnails with tolerant success media_id={} generated_thumbnails={} expected_count={} minimum_count={} actual_parseable_count={} total_webp_count={} pyav_error={} elapsed_ms={}",
                         media.id,
-                        exc,
-                    )
-
-                try:
-                    cls._run_mogrify_batch(png_dir, webp_dir)
-                except Exception as exc:
-                    mogrify_error = exc
-                    logger.warning(
-                        "mogrify failed but will inspect generated thumbnails media_id={} detail={}",
-                        media.id,
-                        exc,
-                    )
-
-                parseable_webp_files, total_webp_count = cls._collect_parseable_webp_files(webp_dir)
-                parseable_count = len(parseable_webp_files)
-                duration_seconds = cls._duration_seconds_for_threshold(media)
-                expected_count = cls._expected_thumbnail_count(duration_seconds)
-                minimum_count = cls._minimum_acceptable_thumbnail_count(expected_count)
-
-                if expected_count > 0 and parseable_count >= minimum_count:
-                    generated_count = cls._persist_generated_files(media, parseable_webp_files)
-                    if generated_count == 0:
-                        raise RuntimeError("thumbnail_generation_unparseable_filenames")
-                    cls._mark_success(media)
-                    elapsed_ms = int((time.time() - started_at) * 1000)
-                    if mtn_error is not None or mogrify_error is not None:
-                        logger.info(
-                            "Generated media thumbnails with tolerant success media_id={} generated_thumbnails={} expected_count={} minimum_count={} actual_parseable_count={} total_webp_count={} mtn_error={} mogrify_error={} elapsed_ms={}",
-                            media.id,
-                            generated_count,
-                            expected_count,
-                            minimum_count,
-                            parseable_count,
-                            total_webp_count,
-                            mtn_error is not None,
-                            mogrify_error is not None,
-                            elapsed_ms,
-                        )
-                    else:
-                        logger.info(
-                            "Generated media thumbnails media_id={} generated_thumbnails={} elapsed_ms={}",
-                            media.id,
-                            generated_count,
-                            elapsed_ms,
-                        )
-                    return {"successful_media": 1, "generated_thumbnails": generated_count}
-
-                if expected_count > 0:
-                    logger.warning(
-                        "Generated thumbnail count below threshold media_id={} expected_count={} minimum_count={} actual_parseable_count={} total_webp_count={}",
-                        media.id,
+                        generated_count,
                         expected_count,
                         minimum_count,
                         parseable_count,
                         total_webp_count,
+                        True,
+                        elapsed_ms,
                     )
-                    raise RuntimeError(
-                        cls._build_insufficient_count_error(
-                            expected_count=expected_count,
-                            minimum_count=minimum_count,
-                            actual_count=parseable_count,
-                            mtn_error=mtn_error,
-                            mogrify_error=mogrify_error,
-                        )
+                else:
+                    logger.info(
+                        "Generated media thumbnails media_id={} generated_thumbnails={} elapsed_ms={}",
+                        media.id,
+                        generated_count,
+                        elapsed_ms,
                     )
+                return {"successful_media": 1, "generated_thumbnails": generated_count}
 
-                if mtn_error is not None:
-                    raise mtn_error
-                if mogrify_error is not None:
-                    raise mogrify_error
-                if total_webp_count == 0:
-                    raise RuntimeError("thumbnail_generation_empty")
-                if parseable_count == 0:
-                    raise RuntimeError("thumbnail_generation_unparseable_filenames")
+            if expected_count > 0:
+                logger.warning(
+                    "Generated thumbnail count below threshold media_id={} expected_count={} minimum_count={} actual_parseable_count={} total_webp_count={}",
+                    media.id,
+                    expected_count,
+                    minimum_count,
+                    parseable_count,
+                    total_webp_count,
+                )
+                raise RuntimeError(
+                    cls._build_insufficient_count_error(
+                        expected_count=expected_count,
+                        minimum_count=minimum_count,
+                        actual_count=parseable_count,
+                        pyav_error=pyav_error,
+                    )
+                )
 
-                generated_count = cls._persist_generated_files(media, parseable_webp_files)
-                if generated_count == 0:
-                    raise RuntimeError("thumbnail_generation_unparseable_filenames")
+            if pyav_error is not None:
+                raise pyav_error
+            if total_webp_count == 0:
+                raise RuntimeError("thumbnail_generation_empty")
+            if parseable_count == 0:
+                raise RuntimeError("thumbnail_generation_unparseable_filenames")
+
+            generated_count = cls._persist_generated_files(media, parseable_webp_files)
+            if generated_count == 0:
+                raise RuntimeError("thumbnail_generation_unparseable_filenames")
+
             cls._mark_success(media)
             elapsed_ms = int((time.time() - started_at) * 1000)
             logger.info(
@@ -367,7 +395,7 @@ class MediaThumbnailService:
                 media.id,
                 exc,
                 cls._failure_type(error_key),
-                media.mtn_retry_count,
+                media.thumbnail_retry_count,
             )
             return {error_key: 1}
 
@@ -389,10 +417,10 @@ class MediaThumbnailService:
         logger.info(
             "Starting media thumbnail generation pending_media={} max_workers={}",
             len(media_ids),
-            settings.media.max_mtn_process_count,
+            settings.media.max_thumbnail_process_count,
         )
         with ThreadPoolExecutor(
-            max_workers=settings.media.max_mtn_process_count,
+            max_workers=settings.media.max_thumbnail_process_count,
             thread_name_prefix="media-thumbnail",
         ) as executor:
             futures = [executor.submit(cls._process_media, media_id) for media_id in media_ids]
