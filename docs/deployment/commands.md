@@ -12,10 +12,16 @@
 docker compose ps
 ```
 
-查看服务日志：
+查看 supervisor 启动日志：
 
 ```bash
 docker compose logs -f sakuramedia
+```
+
+查看 API 持久化日志：
+
+```bash
+tail -f ./docker-data/logs/api.log
 ```
 ## 媒体库与导入
 

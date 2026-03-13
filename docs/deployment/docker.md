@@ -220,7 +220,7 @@ docker compose up --build -d
 docker compose ps
 ```
 
-查看日志：
+查看 supervisor 启动日志：
 
 ```bash
 docker compose logs -f sakuramedia
@@ -284,7 +284,19 @@ devices:
 常见日志查看方式：
 
 ```bash
-docker compose logs -f sakuramedia
+tail -f ./docker-data/logs/api.stdout.log
 ```
 
-或者直接查看持久化日志目录中的文件。
+常见日志文件包括：
+
+- `./docker-data/logs/supervisord.log`
+- `./docker-data/logs/api.stdout.log`
+- `./docker-data/logs/api.stderr.log`
+- `./docker-data/logs/aps.stdout.log`
+- `./docker-data/logs/aps.stderr.log`
+
+如果需要查看 supervisor 本身的启动日志，仍然可以使用：
+
+```bash
+docker compose logs -f sakuramedia
+```
