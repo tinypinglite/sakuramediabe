@@ -113,7 +113,7 @@ def test_ensure_table_creates_missing_table(monkeypatch):
     store.ensure_table(vector_size=3)
 
     assert db.created
-    assert store._table is not None
+    assert db.table is not None
 
 
 def test_ensure_table_rejects_vector_size_mismatch(monkeypatch):
@@ -168,6 +168,32 @@ def test_search_applies_offset_and_filters(monkeypatch):
     assert [hit.thumbnail_id for hit in hits] == [2, 3]
     assert table.search_query.where_expr == ("movie_id IN (101, 102) AND movie_id NOT IN (999)", True)
     assert table.search_query.limit_value == 3
+
+
+def test_search_reopens_table_to_see_external_updates(monkeypatch):
+    old_table = _FakeTable(
+        rows=[
+            {"thumbnail_id": 1, "media_id": 11, "movie_id": 101, "offset_seconds": 10, "_distance": 0.1},
+        ]
+    )
+    new_table = _FakeTable(
+        rows=[
+            {"thumbnail_id": 2, "media_id": 12, "movie_id": 102, "offset_seconds": 20, "_distance": 0.2},
+        ]
+    )
+    db = _FakeDb(table=old_table)
+    db.table_name = "thumbs"
+    store = LanceDbThumbnailStore(uri="/tmp/lancedb", table_name="thumbs", db=db)
+    monkeypatch.setattr(LanceDbThumbnailStore, "_ensure_dependency", staticmethod(lambda: None))
+
+    first_hits = store.search(query_vector=[0.1, 0.2, 0.3], limit=1)
+
+    db.table = new_table
+
+    second_hits = store.search(query_vector=[0.1, 0.2, 0.3], limit=1)
+
+    assert [hit.thumbnail_id for hit in first_hits] == [1]
+    assert [hit.thumbnail_id for hit in second_hits] == [2]
 
 
 def test_upsert_and_delete_use_expected_expressions(monkeypatch):

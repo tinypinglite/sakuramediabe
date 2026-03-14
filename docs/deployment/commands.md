@@ -28,7 +28,7 @@ tail -f ./docker-data/logs/api.log
 创建媒体库：
 
 ```bash
-docker exec --user -w /app sakuramedia python -m src.start.commands add-media-library --name <name> --root-path <container_abs_path>
+docker exec --user app -w /app sakuramedia python -m src.start.commands add-media-library --name <name> --root-path <container_abs_path>
 ```
 
 说明：
@@ -39,7 +39,7 @@ docker exec --user -w /app sakuramedia python -m src.start.commands add-media-li
 导入已有媒体到指定媒体库：
 
 ```bash
-docker exec --user -w /app sakuramedia python -m src.start.commands import-media --library-id <id> --source-path <container_abs_path>
+docker exec --user app -w /app sakuramedia python -m src.start.commands import-media --library-id <id> --source-path <container_abs_path>
 ```
 
 说明：
@@ -52,29 +52,29 @@ docker exec --user -w /app sakuramedia python -m src.start.commands import-media
 单次执行订阅演员影片同步：
 
 ```bash
-docker exec --user -w /app sakuramedia python -m src.start.commands aps sync-subscribed-actor-movies
+docker exec --user app -w /app sakuramedia python -m src.start.commands aps sync-subscribed-actor-movies
 ```
 
 单次执行影片热度重算：
 
 ```bash
-docker exec --user -w /app sakuramedia python -m src.start.commands aps update-movie-heat
+docker exec --user app -w /app sakuramedia python -m src.start.commands aps update-movie-heat
 ```
 
 单次执行合集影片同步：
 
 ```bash
-docker exec --user -w /app sakuramedia python -m src.start.commands aps sync-movie-collections
+docker exec --user app -w /app sakuramedia python -m src.start.commands aps sync-movie-collections
 ```
 
 单次执行媒体缩略图生成：
 
 ```bash
-docker exec --user -w /app sakuramedia python -m src.start.commands aps generate-media-thumbnails
+docker exec --user app -w /app sakuramedia python -m src.start.commands aps generate-media-thumbnails
 ```
 
 单次执行以图搜图索引：
 
 ```bash
-docker exec --user -w /app sakuramedia python -m src.start.commands aps index-image-search-thumbnails
+docker exec --user app -w /app sakuramedia python -m src.start.commands aps index-image-search-thumbnails
 ```

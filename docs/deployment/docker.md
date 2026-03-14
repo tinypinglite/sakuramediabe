@@ -115,7 +115,7 @@ services:
 假设你在 App 中创建好的目标媒体库 ID 是 `1`，那么可以执行：
 
 ```bash
-docker exec --user -w /app sakuramedia python -m src.start.commands import-media --library-id 1 --source-path /mnt/source
+docker exec --user app -w /app sakuramedia python -m src.start.commands import-media --library-id 1 --source-path /mnt/source
 ```
 
 说明：
