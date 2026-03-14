@@ -4,7 +4,7 @@
 >
 > 本项目基本属于由 vibing code 快速堆叠出来的实验性产物，整体实现没有经过完善测试，也没有针对真实生产环境做充分验证。它可能存在数据损坏、配置误用、任务异常、误删媒体文件或其他资源的风险。请务必在理解风险的前提下谨慎使用，优先在隔离环境、测试数据或完整备份条件下运行，不建议直接用于重要数据或不可恢复的媒体库。
 
-SakuraMediaBE 是 SakuraMedia 的服务端项目，负责提供媒体库管理、影片元数据、下载任务、视频缩略图生成、精彩时刻标记、以图搜图、播放访问等后端能力。
+SakuraMediaBE 是 SakuraMedia 的服务端项目，负责提供媒体库管理、影片元数据、下载任务、视频缩略图生成、精彩时刻标记、以图搜图、播放访问等后端能力。 前端项目仓库在 [text](https://github.com/tinypinglite/sakuramedia)
 
 项目当前基于 Python 3.10、FastAPI、Peewee、Pydantic 2 和 APScheduler 构建，代码结构按 `api -> service -> model` 分层组织，面向单账号场景运行。
 
