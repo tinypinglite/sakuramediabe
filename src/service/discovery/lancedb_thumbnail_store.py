@@ -49,7 +49,6 @@ class LanceDbThumbnailStore:
         self.table_name = table_name or settings.lancedb.table_name
         self.distance_metric = settings.lancedb.distance_metric
         self._db = db
-        self._table = None
 
     @staticmethod
     def _ensure_dependency() -> None:
@@ -76,11 +75,8 @@ class LanceDbThumbnailStore:
             return False
 
     def _get_table(self):
-        if self._table is not None:
-            return self._table
         db = self._get_db()
-        self._table = db.open_table(self.table_name)
-        return self._table
+        return db.open_table(self.table_name)
 
     @staticmethod
     def _supports_argument(callable_obj: Any, argument_name: str) -> bool:
@@ -106,12 +102,11 @@ class LanceDbThumbnailStore:
             raise ValueError("vector_size must be positive")
         db = self._get_db()
         if self._table_exists():
-            self._table = db.open_table(self.table_name)
             self._validate_vector_size(vector_size)
             return
 
         if pa is None:
-            self._table = db.create_table(self.table_name, data=[])
+            db.create_table(self.table_name, data=[])
             return
 
         schema = pa.schema(
@@ -124,7 +119,7 @@ class LanceDbThumbnailStore:
             ]
         )
         empty_table = pa.Table.from_pylist([], schema=schema)
-        self._table = db.create_table(self.table_name, data=empty_table)
+        db.create_table(self.table_name, data=empty_table)
 
     def _validate_vector_size(self, expected_size: int) -> None:
         actual_size = self._get_vector_size(self._get_table())
