@@ -1,4 +1,10 @@
-from .media import MediaPointListItemResource, MediaProgressResource, MediaProgressUpdateRequest
+from .media import (
+    MediaPointCreateRequest,
+    MediaPointListItemResource,
+    MediaPointResource,
+    MediaProgressResource,
+    MediaProgressUpdateRequest,
+)
 from .media_libraries import (
     MediaLibraryCreateRequest,
     MediaLibraryResource,
@@ -8,6 +14,8 @@ from .media_libraries import (
 __all__ = [
     "MediaProgressResource",
     "MediaProgressUpdateRequest",
+    "MediaPointCreateRequest",
+    "MediaPointResource",
     "MediaLibraryCreateRequest",
     "MediaLibraryResource",
     "MediaLibraryUpdateRequest",

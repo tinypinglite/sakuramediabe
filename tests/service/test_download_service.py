@@ -161,7 +161,7 @@ def test_download_task_list_and_delete(download_tables):
     assert DownloadTask.get_or_none(DownloadTask.id == first.id) is None
 
 
-def test_jackett_client_parses_and_sorts_candidates(monkeypatch):
+def test_jackett_client_parses_and_sorts_candidates(download_tables):
     class FakeResponse:
         text = """
         <rss>
@@ -208,6 +208,130 @@ def test_jackett_client_parses_and_sorts_candidates(monkeypatch):
     assert results[0].tags == ["中字", "4K"]
     assert results[0].resolved_client_id == download_client.id
     assert results[0].resolved_client_name == download_client.name
+    assert results[0].indexer_name == "mteam"
+
+
+def test_jackett_client_keeps_local_indexer_name_when_jackettindexer_is_dict(download_tables):
+    class FakeResponse:
+        text = """
+        <rss>
+          <channel>
+            <title>M-Team Display</title>
+            <item>
+              <title>ABC-001 4K</title>
+              <description>中字</description>
+              <size>12884901888</size>
+              <link>https://indexer.example/download/1</link>
+              <jackettindexer id="mteam">M-Team Display</jackettindexer>
+              <torznab:attr name="seeders" value="18"/>
+              <torznab:attr name="magneturl" value="magnet:?xt=urn:btih:HASHA"/>
+            </item>
+          </channel>
+        </rss>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    class FakeHttpClient:
+        def get(self, url, params):
+            return FakeResponse()
+
+    library = _create_library()
+    download_client = _create_client(library)
+    Indexer.create(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=download_client,
+    )
+
+    results = JackettClient(api_key="secret", client=FakeHttpClient()).search("ABC-001")
+
+    assert len(results) == 1
+    assert results[0].indexer_name == "mteam"
+    assert results[0].seeders == 18
+
+
+def test_jackett_client_keeps_local_indexer_name_when_indexer_is_dict(download_tables):
+    class FakeResponse:
+        text = """
+        <rss>
+          <channel>
+            <title>M-Team Display</title>
+            <item>
+              <title>ABC-001 normal</title>
+              <description></description>
+              <size>3221225472</size>
+              <link>https://indexer.example/download/2</link>
+              <indexer id="mteam">M-Team Display</indexer>
+              <torznab:attr name="seeders" value="3"/>
+            </item>
+          </channel>
+        </rss>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    class FakeHttpClient:
+        def get(self, url, params):
+            return FakeResponse()
+
+    library = _create_library()
+    download_client = _create_client(library)
+    Indexer.create(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=download_client,
+    )
+
+    results = JackettClient(api_key="secret", client=FakeHttpClient()).search("ABC-001")
+
+    assert len(results) == 1
+    assert results[0].indexer_name == "mteam"
+    assert results[0].torrent_url == "https://indexer.example/download/2"
+
+
+def test_jackett_client_handles_missing_item_indexer_fields_with_channel_title_fallback(download_tables):
+    class FakeResponse:
+        text = """
+        <rss>
+          <channel>
+            <title>M-Team Display</title>
+            <item>
+              <title>ABC-001 normal</title>
+              <description>无码</description>
+              <size>3221225472</size>
+              <link>https://indexer.example/download/2</link>
+              <torznab:attr name="seeders" value="3"/>
+            </item>
+          </channel>
+        </rss>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    class FakeHttpClient:
+        def get(self, url, params):
+            return FakeResponse()
+
+    library = _create_library()
+    download_client = _create_client(library)
+    Indexer.create(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=download_client,
+    )
+
+    results = JackettClient(api_key="secret", client=FakeHttpClient()).search("ABC-001")
+
+    assert len(results) == 1
+    assert results[0].indexer_name == "mteam"
+    assert results[0].title == "ABC-001 normal 无码"
 
 
 def test_download_search_service_rejects_invalid_indexer_kind(download_tables):

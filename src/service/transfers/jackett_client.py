@@ -55,12 +55,11 @@ class JackettClient:
                 )
                 raise JackettClientError(str(exc)) from exc
 
-            items = payload.get("rss", {}).get("channel", {}).get("item") or []
-            if isinstance(items, dict):
-                items = [items]
-            for item in items:
+            channel = self._coerce_mapping((payload.get("rss") or {}).get("channel"))
+            channel_title = self._coerce_text(channel.get("title"))
+            for item in self._coerce_items(channel.get("item")):
                 candidates.append(
-                    self._build_candidate(movie_number, indexer, item)
+                    self._build_candidate(movie_number, indexer, item, channel_title=channel_title)
                 )
 
         candidates.sort(key=lambda item: (item.seeders, item.size_bytes), reverse=True)
@@ -71,21 +70,20 @@ class JackettClient:
         movie_number: str,
         indexer: Indexer,
         item: dict,
+        *,
+        channel_title: str = "",
     ) -> DownloadCandidateResource:
-        attrs = item.get("torznab:attr") or []
-        if isinstance(attrs, dict):
-            attrs = [attrs]
-        attr_map = {attr.get("@name"): attr.get("@value") for attr in attrs if isinstance(attr, dict)}
-        size_bytes = int(item.get("size") or 0)
-        magnet_url = attr_map.get("magneturl") or ""
-        seeders = int(attr_map.get("seeders") or 0)
-        title = (item.get("title") or "").strip()
-        description = (item.get("description") or "").strip()
-        full_title = f"{title} {description}".strip()
+        attr_map = self._coerce_attr_map(item.get("torznab:attr"))
+        remote_indexer = self._extract_indexer_metadata(item, channel_title)
+        size_bytes = self._coerce_int(item.get("size"))
+        magnet_url = self._coerce_text(attr_map.get("magneturl"))
+        seeders = self._coerce_int(attr_map.get("seeders"))
+        title = self._coerce_text(item.get("title"))
+        description = self._coerce_text(item.get("description"))
+        full_title = " ".join(part for part in [title, description] if part)
         return DownloadCandidateResource(
             source="jackett",
-            indexer_name=(item.get("jackettindexer") or item.get("indexer") or "").strip()
-            or indexer.name,
+            indexer_name=indexer.name or remote_indexer["id"] or remote_indexer["name"],
             indexer_kind=indexer.kind,
             resolved_client_id=indexer.download_client_id,
             resolved_client_name=indexer.download_client.name,
@@ -94,6 +92,65 @@ class JackettClient:
             size_bytes=size_bytes,
             seeders=seeders,
             magnet_url=magnet_url,
-            torrent_url=(item.get("link") or "").strip(),
+            torrent_url=self._coerce_text(item.get("link") or item.get("guid")),
             tags=detect_candidate_tags(full_title or title, movie_number, size_bytes),
         )
+
+    @staticmethod
+    def _coerce_mapping(value) -> dict:
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def _coerce_items(cls, value) -> list[dict]:
+        if value is None:
+            return []
+        items = [value] if isinstance(value, dict) else value
+        if not isinstance(items, list):
+            return []
+        return [item for item in items if isinstance(item, dict)]
+
+    @classmethod
+    def _coerce_attr_map(cls, value) -> dict[str, str]:
+        attrs = cls._coerce_items(value)
+        attr_map: dict[str, str] = {}
+        for attr in attrs:
+            name = cls._coerce_text(attr.get("@name"))
+            if not name:
+                continue
+            attr_map[name] = cls._coerce_text(attr.get("@value"))
+        return attr_map
+
+    @classmethod
+    def _extract_indexer_metadata(cls, item: dict, channel_title: str) -> dict[str, str]:
+        jackett_indexer = cls._coerce_mapping(item.get("jackettindexer"))
+        plain_indexer = cls._coerce_mapping(item.get("indexer"))
+        return {
+            "id": cls._coerce_text(jackett_indexer.get("@id") or plain_indexer.get("@id")),
+            "name": (
+                cls._coerce_text(jackett_indexer.get("#text"))
+                or cls._coerce_text(plain_indexer.get("#text"))
+                or cls._coerce_text(item.get("jackettindexer"))
+                or cls._coerce_text(item.get("indexer"))
+                or channel_title
+            ),
+        }
+
+    @staticmethod
+    def _coerce_text(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, dict):
+            text_value = value.get("#text")
+            if isinstance(text_value, str):
+                return text_value.strip()
+            return ""
+        return str(value).strip()
+
+    @staticmethod
+    def _coerce_int(value) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0

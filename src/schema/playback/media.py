@@ -23,6 +23,24 @@ class MediaProgressResource(SchemaModel):
     last_watched_at: datetime
 
 
+class MediaPointCreateRequest(SchemaModel):
+    offset_seconds: int = Field(ge=0)
+
+    @field_validator("offset_seconds")
+    @classmethod
+    def validate_offset_seconds(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("offset_seconds cannot be negative")
+        return value
+
+
+class MediaPointResource(SchemaModel):
+    point_id: int
+    media_id: int
+    offset_seconds: int
+    created_at: datetime
+
+
 class MediaPointListItemResource(SchemaModel):
     point_id: int
     media_id: int

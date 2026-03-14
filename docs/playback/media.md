@@ -6,6 +6,8 @@
 
 - 视频流访问
 - 播放进度上报
+- 媒体书签按媒体查询
+- 媒体书签添加与删除
 - 缩略图列表查询
 - 全局媒体书签分页查询
 - 媒体软删除
@@ -21,6 +23,17 @@
   "media_id": 100,
   "last_position_seconds": 600,
   "last_watched_at": "2026-03-12T10:20:00"
+}
+```
+
+媒体书签资源：
+
+```json
+{
+  "point_id": 10,
+  "media_id": 100,
+  "offset_seconds": 600,
+  "created_at": "2026-03-12T10:20:00"
 }
 ```
 
@@ -58,6 +71,9 @@
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/media-points` | 分页获取全局媒体书签列表 |
+| `GET` | `/media/{media_id}/points` | 获取指定媒体的书签列表 |
+| `POST` | `/media/{media_id}/points` | 为指定媒体添加书签；重复秒数幂等返回已有书签 |
+| `DELETE` | `/media/{media_id}/points/{point_id}` | 删除指定媒体下的单个书签 |
 | `GET` | `/media/{media_id}/stream` | 获取媒体播放流 |
 | `PUT` | `/media/{media_id}/progress` | 更新播放进度并维护最近播放 |
 | `GET` | `/media/{media_id}/thumbnails` | 获取媒体缩略图列表 |
@@ -138,6 +154,191 @@ Authorization: Bearer <token>
   "page_size": 20,
   "total": 2
 }
+```
+
+### Endpoint
+
+`GET /media/{media_id}/points`
+
+### Purpose
+
+返回指定媒体下的全部 `MediaPoint`。
+
+### Auth
+
+需要 Bearer Token。
+
+### Path Params
+
+- `media_id`: 媒体 ID
+
+### Query Params
+
+无。
+
+### Request Body
+
+无。
+
+### Success Responses
+
+- `200 OK`: 返回书签数组；如果媒体存在但没有书签，则返回空数组
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `404 Not Found`: 媒体不存在
+
+### Behavior
+
+- 返回结果按 `point_id` 升序排列，与影片详情 `media_items[*].points` 的顺序一致
+- 仅返回当前 `media_id` 下的书签，不会混入其他媒体的点位
+
+### Example Request
+
+```http
+GET /media/100/points
+Authorization: Bearer <token>
+```
+
+### Example Response
+
+```json
+[
+  {
+    "point_id": 10,
+    "media_id": 100,
+    "offset_seconds": 120,
+    "created_at": "2026-03-12T10:00:00"
+  },
+  {
+    "point_id": 12,
+    "media_id": 100,
+    "offset_seconds": 360,
+    "created_at": "2026-03-12T10:30:00"
+  }
+]
+```
+
+### Endpoint
+
+`POST /media/{media_id}/points`
+
+### Purpose
+
+为指定媒体创建书签；若同一媒体下已存在相同 `offset_seconds`，则按幂等规则返回已有书签。
+
+### Auth
+
+需要 Bearer Token。
+
+### Path Params
+
+- `media_id`: 媒体 ID
+
+### Query Params
+
+无。
+
+### Request Body
+
+```json
+{
+  "offset_seconds": 600
+}
+```
+
+约束：
+
+- `offset_seconds` 必须大于等于 `0`
+
+### Success Responses
+
+- `201 Created`: 首次创建成功，返回新建书签资源
+- `200 OK`: 该媒体下已存在相同 `offset_seconds` 的书签，返回已有资源
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `404 Not Found`: 媒体不存在
+- `422 Unprocessable Entity`: 请求体验证失败
+
+### Behavior
+
+- 幂等维度是 `media_id + offset_seconds`
+- 重复创建不会新增第二条记录
+- 当前实现不会自动维护 `MediaProgress`
+- 当前实现不会刷新 `recently_played`
+- 当前实现不会自动绑定 `thumbnail`
+
+### Example Request
+
+```http
+POST /media/100/points
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "offset_seconds": 600
+}
+```
+
+### Example Response
+
+```json
+{
+  "point_id": 20,
+  "media_id": 100,
+  "offset_seconds": 600,
+  "created_at": "2026-03-12T14:00:00"
+}
+```
+
+### Endpoint
+
+`DELETE /media/{media_id}/points/{point_id}`
+
+### Purpose
+
+删除指定媒体下的单个书签。
+
+### Auth
+
+需要 Bearer Token。
+
+### Path Params
+
+- `media_id`: 媒体 ID
+- `point_id`: 书签 ID
+
+### Query Params
+
+无。
+
+### Request Body
+
+无。
+
+### Success Responses
+
+- `204 No Content`: 删除成功
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `404 Not Found`: 媒体不存在，或书签不存在，或书签不属于当前媒体
+
+### Behavior
+
+- 删除只影响单条 `MediaPoint`
+- 不会影响 `MediaProgress`
+- 不会影响 `recently_played`
+
+### Example Request
+
+```http
+DELETE /media/100/points/20
+Authorization: Bearer <token>
 ```
 
 ### Endpoint
@@ -388,7 +589,6 @@ Authorization: Bearer <token>
 ## 当前边界说明
 
 - 当前没有单独的 `GET /media/{media_id}` 接口
-- 当前没有 `GET /media/{media_id}/points`、`POST /media/{media_id}/points`、`DELETE /media/{media_id}/points/{point_id}` 接口
 - 需要媒体详情、播放地址、进度、书签明细时，应通过影片详情接口读取 `media_items`
 
 ## 与“最近播放”列表的联动规则
@@ -404,4 +604,6 @@ Authorization: Bearer <token>
 
 - 当前系统是单账号架构，播放进度与书签都不区分多账号
 - `GET /media-points` 返回的是全局书签分页视图
+- `GET /media/{media_id}/points` 返回的是单媒体书签视图，不支持额外过滤和排序参数
+- `POST /media/{media_id}/points` 对相同 `media_id + offset_seconds` 采用幂等返回已有资源的策略
 - 媒体缩略图删除策略与媒体文件删除策略解耦，删除媒体后仍可保留预览资产

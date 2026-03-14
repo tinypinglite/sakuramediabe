@@ -9,7 +9,9 @@ from src.model import Media, MediaPoint, MediaProgress, Movie
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
+    MediaPointCreateRequest,
     MediaPointListItemResource,
+    MediaPointResource,
     MediaProgressResource,
     MediaProgressUpdateRequest,
     MediaThumbnailResource,
@@ -40,6 +42,27 @@ class MediaService:
                 {"media_id": media_id},
             )
         return media
+
+    @staticmethod
+    def _require_media_point_for_media(media_id: int, point_id: int) -> MediaPoint:
+        point = MediaPoint.get_or_none(MediaPoint.id == point_id, MediaPoint.media == media_id)
+        if point is None:
+            raise ApiError(
+                404,
+                "media_point_not_found",
+                "Media point not found",
+                {"media_id": media_id, "point_id": point_id},
+            )
+        return point
+
+    @staticmethod
+    def _to_media_point_resource(point: MediaPoint) -> MediaPointResource:
+        return MediaPointResource(
+            point_id=point.id,
+            media_id=point.media_id,
+            offset_seconds=point.offset_seconds,
+            created_at=point.created_at,
+        )
 
     @classmethod
     def _resolve_media_point_sort(cls, value: str | None) -> Sequence:
@@ -118,6 +141,48 @@ class MediaService:
             page_size=page_size,
             total=total,
         )
+
+    @classmethod
+    def list_points(cls, media_id: int) -> list[MediaPointResource]:
+        cls._require_media(media_id)
+        points = (
+            MediaPoint.select()
+            .where(MediaPoint.media == media_id)
+            .order_by(MediaPoint.id)
+        )
+        return [cls._to_media_point_resource(point) for point in points]
+
+    @classmethod
+    def create_point(
+        cls,
+        media_id: int,
+        payload: MediaPointCreateRequest,
+    ) -> tuple[MediaPointResource, bool]:
+        media = cls._require_media(media_id)
+        with get_database().atomic():
+            point = (
+                MediaPoint.select()
+                .where(
+                    MediaPoint.media == media,
+                    MediaPoint.offset_seconds == payload.offset_seconds,
+                )
+                .order_by(MediaPoint.id)
+                .first()
+            )
+            if point is not None:
+                return cls._to_media_point_resource(point), False
+
+            point = MediaPoint.create(
+                media=media,
+                offset_seconds=payload.offset_seconds,
+            )
+        return cls._to_media_point_resource(point), True
+
+    @classmethod
+    def delete_point(cls, media_id: int, point_id: int) -> None:
+        cls._require_media(media_id)
+        point = cls._require_media_point_for_media(media_id, point_id)
+        point.delete_instance()
 
     @classmethod
     def update_progress(

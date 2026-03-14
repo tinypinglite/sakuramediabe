@@ -37,6 +37,9 @@ def test_update_media_progress_requires_authentication(client):
     response = client.put("/media/1/progress", json={"position_seconds": 600})
     thumbnails_response = client.get("/media/1/thumbnails")
     media_points_response = client.get("/media-points")
+    media_point_list_response = client.get("/media/1/points")
+    media_point_create_response = client.post("/media/1/points", json={"offset_seconds": 120})
+    media_point_delete_response = client.delete("/media/1/points/1")
     delete_response = client.delete("/media/1")
 
     assert response.status_code == 401
@@ -45,6 +48,12 @@ def test_update_media_progress_requires_authentication(client):
     assert thumbnails_response.json()["error"]["code"] == "unauthorized"
     assert media_points_response.status_code == 401
     assert media_points_response.json()["error"]["code"] == "unauthorized"
+    assert media_point_list_response.status_code == 401
+    assert media_point_list_response.json()["error"]["code"] == "unauthorized"
+    assert media_point_create_response.status_code == 401
+    assert media_point_create_response.json()["error"]["code"] == "unauthorized"
+    assert media_point_delete_response.status_code == 401
+    assert media_point_delete_response.json()["error"]["code"] == "unauthorized"
     assert delete_response.status_code == 401
     assert delete_response.json()["error"]["code"] == "unauthorized"
 
@@ -361,6 +370,196 @@ def test_list_media_points_rejects_invalid_sort(client, account_user):
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_media_point_filter"
+
+
+def test_list_media_points_for_media_returns_points_sorted_by_point_id(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-010", "MovieA10", title="Movie 10")
+    media = Media.create(movie=movie, path="/library/main/abc-010.mp4", valid=True)
+    backup_media = Media.create(movie=movie, path="/library/main/abc-010-backup.mp4", valid=True)
+    first_point = MediaPoint.create(media=media, offset_seconds=360)
+    second_point = MediaPoint.create(media=media, offset_seconds=120)
+    MediaPoint.create(media=backup_media, offset_seconds=90)
+
+    response = client.get(
+        f"/media/{media.id}/points",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "point_id": first_point.id,
+            "media_id": media.id,
+            "offset_seconds": 360,
+            "created_at": first_point.created_at.isoformat(),
+        },
+        {
+            "point_id": second_point.id,
+            "media_id": media.id,
+            "offset_seconds": 120,
+            "created_at": second_point.created_at.isoformat(),
+        },
+    ]
+
+
+def test_list_media_points_for_media_returns_empty_list_when_no_points(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-011", "MovieA11", title="Movie 11")
+    media = Media.create(movie=movie, path="/library/main/abc-011.mp4", valid=True)
+
+    response = client.get(
+        f"/media/{media.id}/points",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_create_media_point_returns_created_resource(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-012", "MovieA12", title="Movie 12")
+    media = Media.create(movie=movie, path="/library/main/abc-012.mp4", valid=True)
+
+    response = client.post(
+        f"/media/{media.id}/points",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"offset_seconds": 120},
+    )
+
+    point = MediaPoint.get(MediaPoint.media == media, MediaPoint.offset_seconds == 120)
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "point_id": point.id,
+        "media_id": media.id,
+        "offset_seconds": 120,
+        "created_at": point.created_at.isoformat(),
+    }
+
+
+def test_create_media_point_returns_existing_resource_for_duplicate_offset(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-013", "MovieA13", title="Movie 13")
+    media = Media.create(movie=movie, path="/library/main/abc-013.mp4", valid=True)
+    existing_point = MediaPoint.create(media=media, offset_seconds=300)
+
+    response = client.post(
+        f"/media/{media.id}/points",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"offset_seconds": 300},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "point_id": existing_point.id,
+        "media_id": media.id,
+        "offset_seconds": 300,
+        "created_at": existing_point.created_at.isoformat(),
+    }
+    assert (
+        MediaPoint.select()
+        .where(MediaPoint.media == media, MediaPoint.offset_seconds == 300)
+        .count()
+        == 1
+    )
+
+
+def test_create_media_point_returns_expected_errors(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    missing_response = client.post(
+        "/media/999/points",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"offset_seconds": 120},
+    )
+    invalid_response = client.post(
+        "/media/999/points",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"offset_seconds": -1},
+    )
+
+    assert missing_response.status_code == 404
+    assert missing_response.json()["error"]["code"] == "media_not_found"
+    assert invalid_response.status_code == 422
+    assert invalid_response.json()["error"]["code"] == "validation_error"
+
+
+def test_delete_media_point_removes_single_point(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-014", "MovieA14", title="Movie 14")
+    media = Media.create(movie=movie, path="/library/main/abc-014.mp4", valid=True)
+    point = MediaPoint.create(media=media, offset_seconds=180)
+
+    response = client.delete(
+        f"/media/{media.id}/points/{point.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 204
+    assert MediaPoint.get_or_none(MediaPoint.id == point.id) is None
+
+
+def test_delete_media_point_returns_not_found_for_missing_or_mismatched_point(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-015", "MovieA15", title="Movie 15")
+    media = Media.create(movie=movie, path="/library/main/abc-015.mp4", valid=True)
+    backup_media = Media.create(movie=movie, path="/library/main/abc-015-backup.mp4", valid=True)
+    point = MediaPoint.create(media=backup_media, offset_seconds=240)
+
+    missing_response = client.delete(
+        f"/media/{media.id}/points/999",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    mismatched_response = client.delete(
+        f"/media/{media.id}/points/{point.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert missing_response.status_code == 404
+    assert missing_response.json()["error"]["code"] == "media_point_not_found"
+    assert mismatched_response.status_code == 404
+    assert mismatched_response.json()["error"]["code"] == "media_point_not_found"
+    assert MediaPoint.get_by_id(point.id).media_id == backup_media.id
+
+
+def test_media_point_endpoints_update_movie_detail_points(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-016", "MovieA16", title="Movie 16")
+    media = Media.create(movie=movie, path="/library/main/abc-016.mp4", valid=True)
+
+    create_response = client.post(
+        f"/media/{media.id}/points",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"offset_seconds": 480},
+    )
+
+    created_point_id = create_response.json()["point_id"]
+    detail_after_create = client.get(
+        f"/movies/{movie.movie_number}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    delete_response = client.delete(
+        f"/media/{media.id}/points/{created_point_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    detail_after_delete = client.get(
+        f"/movies/{movie.movie_number}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert create_response.status_code == 201
+    assert detail_after_create.status_code == 200
+    assert detail_after_create.json()["media_items"][0]["points"] == [
+        {
+            "point_id": created_point_id,
+            "offset_seconds": 480,
+        }
+    ]
+    assert delete_response.status_code == 204
+    assert detail_after_delete.status_code == 200
+    assert detail_after_delete.json()["media_items"][0]["points"] == []
 
 
 def test_delete_media_soft_deletes_media_and_cleans_related_records(client, account_user, tmp_path, monkeypatch):

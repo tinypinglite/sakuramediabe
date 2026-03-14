@@ -3,12 +3,14 @@ import os
 from typing import BinaryIO
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
 from src.common import resolve_media_file_path, verify_media_signature
 from src.schema.playback.media import (
+    MediaPointCreateRequest,
+    MediaPointResource,
     MediaProgressResource,
     MediaProgressUpdateRequest,
     MediaThumbnailResource,
@@ -79,6 +81,37 @@ def _range_requests_response(request: Request, file_path: str, content_type: str
         headers=headers,
         status_code=status_code,
     )
+
+
+@router.get("/{media_id}/points", response_model=list[MediaPointResource])
+def list_media_points_for_media(
+    media_id: int,
+    current_user=Depends(get_current_user),
+):
+    return MediaService.list_points(media_id)
+
+
+@router.post("/{media_id}/points", response_model=MediaPointResource)
+def create_media_point(
+    media_id: int,
+    payload: MediaPointCreateRequest,
+    current_user=Depends(get_current_user),
+):
+    resource, created = MediaService.create_point(media_id, payload)
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        content=resource.model_dump(mode="json"),
+    )
+
+
+@router.delete("/{media_id}/points/{point_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_media_point(
+    media_id: int,
+    point_id: int,
+    current_user=Depends(get_current_user),
+):
+    MediaService.delete_point(media_id, point_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{media_id}/stream")
