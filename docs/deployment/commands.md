@@ -31,10 +31,17 @@ tail -f ./docker-data/logs/api.log
 docker exec --user app -w /app sakuramedia python -m src.start.commands add-media-library --name <name> --root-path <container_abs_path>
 ```
 
+单硬盘推荐方案示例：
+
+```bash
+docker exec --user app -w /app sakuramedia python -m src.start.commands add-media-library --name 主媒体库 --root-path /volume1/sakuramedia
+```
+
 说明：
 
 - `--root-path` 必须填写 SakuraMedia 容器内的绝对路径
 - 首次作为媒体库使用的目录应为空目录
+- 如果你按 Docker 文档中的单硬盘推荐方案部署，应使用 `/volume1/...` 这套路径
 
 导入已有媒体到指定媒体库：
 
@@ -42,10 +49,17 @@ docker exec --user app -w /app sakuramedia python -m src.start.commands add-medi
 docker exec --user app -w /app sakuramedia python -m src.start.commands import-media --library-id <id> --source-path <container_abs_path>
 ```
 
+单硬盘推荐方案示例：
+
+```bash
+docker exec --user app -w /app sakuramedia python -m src.start.commands import-media --library-id 1 --source-path /volume1/old-media
+```
+
 说明：
 
 - `--library-id` 是目标媒体库 ID
 - `--source-path` 是导入源目录在 SakuraMedia 容器内的绝对路径
+- 上面的 `/volume1/old-media` 是 SakuraMedia 容器内路径，不是宿主机路径 `/mnt/volume1/old-media`
 
 ## 单次执行任务
 

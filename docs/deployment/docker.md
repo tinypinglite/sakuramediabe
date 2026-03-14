@@ -63,120 +63,114 @@ services:
 
 ### 2.2 媒体文件挂载
 
-这一部分主要涉及两类目录：
+这里以单硬盘举例直接把整块硬盘根目录(或者是已有媒体路径、qb下载路径的共同父目录，这一步是为了确保硬链接能成功)挂载到 SakuraMedia 容器，而不是分别挂很多个子目录。例如：
+
+```yaml
+services:
+  sakuramedia:
+    volumes:
+      - /mnt/volume1:/volume1
+```
+
+这一部分主要涉及三类路径：
 
 - 媒体库目录：给 SakuraMedia 管理和扫描本地媒体文件使用
-- 导入源/下载目录：给 SakuraMedia 导入已有文件，或给 SakuraMedia 和 qBittorrent 共同访问下载中的影片文件使用
+- 下载目录：给 SakuraMedia 和 qBittorrent 共同访问下载中的影片文件使用
+- 已有媒体目录：给 SakuraMedia 导入历史文件使用
 
-先说明媒体库的概念：
+媒体库不是自动扫描宿主机所有目录，而是你在 SakuraMedia App 中手动创建的目录配置。每个媒体库只管理一个指定目录，创建媒体库时填写的 `root_path` 必须是 SakuraMedia 容器内绝对路径，不是宿主机路径。首次作为媒体库使用的目录应是一个新的专用目录，不要直接把历史媒体目录当成媒体库根目录。
 
-- 媒体库不是自动扫描宿主机所有目录，而是你在 SakuraMedia App 中手动创建的目录配置
-- 每个媒体库只管理一个指定目录
-- 创建媒体库时填写的 `root_path` 必须是 SakuraMedia 容器内路径，不是宿主机路径
-- 如果你有多块硬盘，可以把每块硬盘上的媒体目录分别挂载到 SakuraMedia 容器中，然后在 App 里创建多个媒体库，一一对应
-- 首次挂载给 SakuraMedia 作为媒体库的目录，必须是空目录
+下面用一个完整的单硬盘示例说明。
 
-媒体库目录是系统接管后的目标落库目录。当前导入实现会在媒体库目录下按影片编号和版本创建目录结构，因此不要把一批已有的杂乱媒体文件直接挂成媒体库目录，不要误以为系统会自动接管这些旧文件。已有文件应通过后面的显式导入流程进入媒体库。
+假设：
 
-例如，你有两块硬盘，并且都准备了空目录给 SakuraMedia 管理：
+| 项目 | 宿主机路径 | 容器内路径 |
+| --- | --- | --- |
+| 硬盘根目录 | `/mnt/volume1` | SakuraMedia 容器内 `/volume1` |
+| qB 下载目录 | `/mnt/volume1/qb-downloads` | 挂载到qBittorrent 容器内对应的 `/downloads` |
+| qB 下载目录在 SakuraMedia 中的对应路径 | `/mnt/volume1/qb-downloads` | SakuraMedia 容器内 `/volume1/qb-downloads` |
+| 已有媒体目录 | `/mnt/volume1/old-media` | SakuraMedia 容器内 `/volume1/old-media` |
+| SakuraMedia 管理的媒体库目录 | `/mnt/volume1/sakuramedia` | SakuraMedia 容器内 `/volume1/sakuramedia` |
 
-```yaml
-services:
-  sakuramedia:
-    volumes:
-      - /volume1/media:/media/library/volume1
-      - /volume2/media:/media/library/volume2
-```
-
-那么在 App 中创建媒体库时可以这样填写：
-
-- 上面两个宿主机目录都应事先准备为空目录
-- `A片库` 的 `root_path` 填 `/media/library/volume1`
-- `B片库` 的 `root_path` 填 `/media/library/volume2`
-
-也就是说，一个挂载目录通常对应一个媒体库。
-
-如果你已经有一批历史媒体文件，不要直接把这批已有文件所在目录当作媒体库目录。正确做法是：
-
-- 先给 SakuraMedia 挂载一个空媒体库目录，作为系统管理目录
-- 再额外挂载一个已有数据源目录，挂载到容器内任意位置都可以，例如 `/mnt/source`
-- 然后手动执行导入命令，把源目录中的文件导入到目标媒体库
-
-例如：
+对应的关键挂载示例可以这样写：
 
 ```yaml
 services:
   sakuramedia:
     volumes:
-      - /volume1/media-empty:/media/library/volume1
-      - /volume-old/media:/mnt/source
+      - /mnt/volume1:/volume1
 ```
 
-假设你在 App 中创建好的目标媒体库 ID 是 `1`，那么可以执行：
+这一套设计里，SakuraMedia 统一通过 `/volume1/...` 访问这块硬盘上的所有目录；qBittorrent 只需要把自己的下载目录挂载为 `/downloads`。下面按实际使用顺序说明。
+
+#### 1. 在 App 中创建媒体库
+
+建议在宿主机上先准备一个新的专用目录 `/mnt/volume1/sakuramedia`，然后在 App 中创建媒体库时填写：
+
+| App 字段 | 应填写的值 | 说明 |
+| --- | --- | --- |
+| 根路径   | `/volume1/sakuramedia` | SakuraMedia 容器内的绝对路径 |
+
+说明：
+
+- 根路径必须填 SakuraMedia 容器内路径，不是宿主机路径
+- 不要直接填 `/volume1`，因为根目录下还会包含下载目录、旧媒体目录和其他文件
+- 不要把 `/volume1/old-media` 直接当成媒体库目录，那是历史媒体导入源，不是系统接管后的目标目录
+- `/volume1/sakuramedia` 应是给 SakuraMedia 新建的专用目录
+
+#### 2. 在 App 中添加 qBittorrent 下载器
+
+下载目录不是只挂载给 SakuraMedia 就够了，对应的 qBittorrent 容器也必须能访问同一份宿主机目录。后续你在 App 中添加下载器时，会填写两个路径字段：
+
+- `client_save_path`：qBittorrent 容器内部看到的路径
+- `local_root_path`：SakuraMedia 容器内部看到的路径
+
+在这个示例中应填写：
+
+| App 字段 | 应填写的值 | 路径属于谁 |
+| --- | --- | --- |
+| qBittorrent 保存路径 | `/downloads` | qBittorrent 容器 |
+| 本地访问路径 | `/volume1/qb-downloads` | SakuraMedia 容器 |
+
+系统在提交种子到 qBittorrent 时，会把保存目录直接设置为 `qBittorrent 保存路径`。后续同步下载任务、识别实际文件以及导入媒体库时，SakuraMedia 会使用 `本地访问路径`去访问同一份文件。这里的关键点是：`qBittorrent 保存路径` 和 `本地访问路径` 指向的是同一份宿主机目录 `/mnt/volume1/qb-downloads`，只是两个容器看到的路径不同。如果路径映射填错，种子虽然可能可以正常提交，但后续同步状态和导入文件时会找不到实际文件。
+
+#### 3. 导入已有媒体
+
+如果你已经有一批历史媒体位于宿主机 `/mnt/volume1/old-media`，不要直接把它当成媒体库目录，而是作为单独的导入源目录使用。先在 App 中创建好目标媒体库，然后参考 [Docker 部署后的常用命令](./commands.md) 执行导入。
+
+假设你创建好的目标媒体库 ID 是 `1`，可以执行：
 
 ```bash
-docker exec --user app -w /app sakuramedia python -m src.start.commands import-media --library-id 1 --source-path /mnt/source
+docker exec --user app -w /app sakuramedia python -m src.start.commands import-media --library-id 1 --source-path /volume1/old-media
 ```
 
 说明：
 
 - `--library-id` 是目标媒体库 ID
-- `--source-path` 是导入源目录在 SakuraMedia 容器内的路径
-- 导入源目录不要求挂载到固定位置，只要 SakuraMedia 容器能访问即可
+- `--source-path` 必须填写 SakuraMedia 容器内的绝对路径
+- 这个例子里应填 `/volume1/old-media`，不是宿主机路径 `/mnt/volume1/old-media`
+- 导入后的目标媒体库则是前面创建好的 `/volume1/sakuramedia`
 
-当前导入实现会优先尝试硬链接；只有硬链接失败时才回退为复制。因此建议尽量让下载目录与目标媒体库目录位于同一块硬盘。如果你是从已有数据源目录导入，也尽量让源目录和目标媒体库目录位于同一块硬盘。这样通常可以直接建立硬链接，导入更快，也能减少额外 IO；跨盘时通常无法建立硬链接，系统会回退为复制，因此导入会更慢。
+当前导入实现会优先尝试硬链接；只有硬链接失败时才回退为复制。因此建议尽量让下载目录、导入源目录和目标媒体库目录位于同一块硬盘。这样通常可以直接建立硬链接，导入更快，也能减少额外 IO；跨盘时通常无法建立硬链接，系统会回退为复制，因此导入会更慢。
 
-然后是下载目录的路径映射。
+#### 为什么推荐这样挂载
 
-本项目支持订阅影片后自动从 PT 和 BT 发起下载，默认部署时通常会接入两个 qBittorrent 下载器。这里要注意，下载目录不是只挂载到 SakuraMedia 容器里就够了，对应的 qBittorrent 容器也必须能访问同一份宿主机目录。
-
-后续你在 App 中添加下载器时，会填写两个路径字段：
-
-- `local_root_path`：SakuraMedia 容器内部看到的路径
-- `client_save_path`：qBittorrent 容器内部看到的路径
-
-系统在提交种子到 qBittorrent 时，会把保存目录直接设置为 `client_save_path`。后续同步下载任务、识别实际文件以及导入媒体库时，SakuraMedia 会使用 `local_root_path` 去访问同一份文件。为了提高导入速度，建议下载目录和对应目标媒体库目录位于同一块硬盘。
-
-例如，你准备给两个 qBittorrent 下载器分别使用两个宿主机目录：
-
-- 下载器 1 使用宿主机 `/downloads/qb1`
-- 下载器 2 使用宿主机 `/downloads/qb2`
-
-那么 SakuraMedia 容器里至少要能看到这两个目录：
-
-```yaml
-services:
-  sakuramedia:
-    volumes:
-      - /downloads/qb1:/downloads/qb1
-      - /downloads/qb2:/downloads/qb2
-```
-
-如果：
-
-- `qb1` 容器里把宿主机 `/downloads/qb1` 挂载成 `/data/downloads`
-- `qb2` 容器里把宿主机 `/downloads/qb2` 挂载成 `/data/downloads`
-
-那么在 App 中添加下载器时应填写：
-
-- 下载器 1
-  - `local_root_path` 填 `/downloads/qb1`
-  - `client_save_path` 填 `/data/downloads`
-- 下载器 2
-  - `local_root_path` 填 `/downloads/qb2`
-  - `client_save_path` 填 `/data/downloads`
-
-这里的关键点是：`local_root_path` 和 `client_save_path` 指向的是同一份宿主机文件，只是 SakuraMedia 容器和 qBittorrent 容器看到的路径不同。如果路径映射填错，种子虽然可能可以正常提交，但后续同步状态和导入文件时会找不到实际文件。
+- 单硬盘用户只需要记住一套 SakuraMedia 容器内路径前缀 `/volume1`
+- SakuraMedia 可以同时访问媒体库、下载目录、已有媒体目录，不需要为每种用途单独设计一套挂载路径
+- qBittorrent 和 SakuraMedia 访问的是同一份宿主机文件，只是容器内路径不同
+- 下载目录、导入源和媒体库都在同一块硬盘时，更容易走硬链接，导入更快
+- 后续如果要新增目录，也只是在 `/volume1` 下继续组织
 
 填写时建议始终按下面的原则检查：
 
-- 创建媒体库时，`root_path` 填 SakuraMedia 容器内路径
-- 首次挂载为媒体库的目录应为空目录
-- 已有历史媒体文件应作为单独的导入源目录挂载，不要直接当媒体库目录
+- 创建媒体库时，`root_path` 填 SakuraMedia 容器内绝对路径
+- 首次作为媒体库使用的目录应是专用目录，不要直接用历史杂乱目录
 - 创建下载器时，`local_root_path` 填 SakuraMedia 容器内路径
 - 创建下载器时，`client_save_path` 填 qBittorrent 容器内路径
+- `local_root_path` 和 `client_save_path` 必须指向同一份宿主机目录
 - 所有路径都应填写绝对路径
-- 为了尽量走硬链接，提高导入速度，媒体库目录和下载目录最好位于同一块硬盘
+
+如果你有多块硬盘，可以按相同模式分别挂载为 `/volume1`、`/volume2`，并为每块盘创建独立媒体库。
 
 这一节只说明路径映射原则，不展开 qBittorrent 容器本身的完整部署方式。
 
