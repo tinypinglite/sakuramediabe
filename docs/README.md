@@ -10,6 +10,8 @@
 
 ## 文档导航
 
+- [faq.md](./faq.md): 常见行为说明、自动下载与后台任务说明
+
 ### System
 
 - [system/auth.md](./system/auth.md): 登录与访问令牌

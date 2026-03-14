@@ -18,6 +18,7 @@
 - 提交下载使用命令式接口 `POST /download-requests`
 - 下载任务同步使用命令式接口 `POST /download-clients/{client_id}/sync`
 - 下载完成后的媒体导入使用命令式接口 `POST /download-tasks/{task_id}/import`
+- 定时任务可自动搜索“已订阅但缺失媒体且没有下载记录”的影片，并自动提交下载
 
 ## 设计目标
 
@@ -27,6 +28,25 @@
 - 允许一个系统级 Jackett 配置服务多个 `DownloadClient`
 - 允许多个 `DownloadClient` 绑定不同媒体库
 - 支持后续增加定时同步与自动导入，而不破坏 API 边界
+- 支持后续增加自动搜索订阅影片资源，而不新增额外下载 API
+
+## 内部定时任务
+
+系统包含一个内部调度任务，用于自动搜索并提交“已订阅缺失影片”的下载请求。
+
+行为约定：
+
+- 仅处理 `is_subscribed = true` 的影片
+- 仅处理不存在有效 `Media` 且不存在任何 `DownloadTask` 记录的影片
+- 使用 Jackett 搜索 PT 与 BT 候选资源
+- 默认采用 `4K > PT > 中字 > seeders > size_bytes` 的优先级选种
+- 复用 `POST /download-requests` 对应的 service 提交下载，不新增 API
+
+依赖前提：
+
+- 已通过 `/indexer-settings` 配置可用的 `Indexer`
+- 每个 `Indexer` 必须绑定一个 `DownloadClient`
+- `DownloadClient` 必须绑定一个可用的 `MediaLibrary`
 
 ## 数据模型
 

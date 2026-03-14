@@ -167,9 +167,38 @@ def test_aps_optimize_image_search_index_command_runs_job(monkeypatch):
     assert "image search optimize finished: compacted=True" in result.output
 
 
+def test_aps_auto_download_subscribed_movies_command_invokes_job(monkeypatch):
+    called = {"job": 0}
+
+    def fake_run_job():
+        called["job"] += 1
+        return {
+            "candidate_movies": 3,
+            "searched_movies": 3,
+            "submitted_movies": 2,
+            "no_candidate_movies": 1,
+            "skipped_movies": 0,
+            "failed_movies": 0,
+        }
+
+    runner = CliRunner()
+    monkeypatch.setattr("src.start.aps.run_subscribed_movie_auto_download_job", fake_run_job)
+
+    result = runner.invoke(main, ["aps", "auto-download-subscribed-movies"])
+
+    assert result.exit_code == 0
+    assert called["job"] == 1
+    assert (
+        "auto download finished: candidate_movies=3 searched_movies=3 submitted_movies=2 "
+        "no_candidate_movies=1 skipped_movies=0 failed_movies=0"
+        in result.output
+    )
+
+
 def test_build_scheduler_registers_actor_subscription_sync_job(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.timezone", "Asia/Shanghai")
     monkeypatch.setattr("src.start.aps.settings.scheduler.actor_subscription_sync_cron", "0 2 * * *")
+    monkeypatch.setattr("src.start.aps.settings.scheduler.subscribed_movie_auto_download_cron", "30 2 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_heat_cron", "15 0 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_sync_cron", "*/15 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_auto_import_cron", "*/10 * * * *")
@@ -180,6 +209,7 @@ def test_build_scheduler_registers_actor_subscription_sync_job(monkeypatch):
 
     scheduler = build_scheduler()
     actor_job = scheduler.get_job("actor_subscription_sync")
+    auto_download_job = scheduler.get_job("subscribed_movie_auto_download")
     heat_job = scheduler.get_job("movie_heat_update")
     download_sync_job = scheduler.get_job("download_task_sync")
     auto_import_job = scheduler.get_job("download_task_auto_import")
@@ -189,6 +219,7 @@ def test_build_scheduler_registers_actor_subscription_sync_job(monkeypatch):
     image_search_optimize_job = scheduler.get_job("image_search_optimize")
 
     assert actor_job is not None
+    assert auto_download_job is not None
     assert heat_job is not None
     assert download_sync_job is not None
     assert auto_import_job is not None
@@ -197,6 +228,7 @@ def test_build_scheduler_registers_actor_subscription_sync_job(monkeypatch):
     assert image_search_index_job is not None
     assert image_search_optimize_job is not None
     assert str(actor_job.trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='0']"
+    assert str(auto_download_job.trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='30']"
     assert str(collection_job.trigger) == "cron[month='*', day='*', day_of_week='*', hour='1', minute='0']"
     assert str(heat_job.trigger) == "cron[month='*', day='*', day_of_week='*', hour='0', minute='15']"
     assert str(download_sync_job.trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/15']"
@@ -255,6 +287,38 @@ def test_run_download_task_sync_job_ensures_database_before_running(monkeypatch)
 
     assert result["total_clients"] == 1
     assert events == ["ready", "download-task-sync"]
+
+
+def test_run_subscribed_movie_auto_download_job_ensures_database_before_running(monkeypatch):
+    events = []
+
+    def fake_ensure_database_ready():
+        events.append("ready")
+
+    def fake_run_logged_task(task_name, func):
+        events.append(task_name)
+        return func()
+
+    monkeypatch.setattr("src.start.aps._ensure_database_ready", fake_ensure_database_ready)
+    monkeypatch.setattr("src.start.aps.run_logged_task", fake_run_logged_task)
+    monkeypatch.setattr(
+        "src.start.aps.SubscribedMovieAutoDownloadService.run",
+        lambda self: {
+            "candidate_movies": 2,
+            "searched_movies": 2,
+            "submitted_movies": 1,
+            "no_candidate_movies": 1,
+            "skipped_movies": 0,
+            "failed_movies": 0,
+        },
+    )
+
+    from src.start.aps import run_subscribed_movie_auto_download_job
+
+    result = run_subscribed_movie_auto_download_job()
+
+    assert result["candidate_movies"] == 2
+    assert events == ["ready", "subscribed-movie-auto-download"]
 
 
 def test_run_image_search_index_job_ensures_database_before_running(monkeypatch):

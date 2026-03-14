@@ -61,6 +61,12 @@ docker exec --user app -w /app sakuramedia python -m src.start.commands aps sync
 docker exec --user app -w /app sakuramedia python -m src.start.commands aps update-movie-heat
 ```
 
+单次执行已订阅缺失影片自动下载：
+
+```bash
+docker exec --user app -w /app sakuramedia python -m src.start.commands aps auto-download-subscribed-movies
+```
+
 单次执行合集影片同步：
 
 ```bash

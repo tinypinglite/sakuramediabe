@@ -123,6 +123,7 @@ class Scheduler(BaseModel):
     timezone: str = "Asia/Shanghai"
     log_dir: str = "/data/logs"
     actor_subscription_sync_cron: str = "0 2 * * *"
+    subscribed_movie_auto_download_cron: str = "30 2 * * *"
     download_task_sync_cron: str = "* * * * *"
     download_task_auto_import_cron: str = "*/3 * * * *"
     movie_collection_sync_cron: str = "0 1 * * *"

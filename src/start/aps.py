@@ -11,7 +11,7 @@ from src.scheduler import run_logged_task
 from src.service.catalog import MovieCollectionService, MovieHeatService, SubscribedActorMovieSyncService
 from src.service.discovery import ImageSearchIndexService
 from src.service.playback import MediaThumbnailService
-from src.service.transfers import DownloadSyncService
+from src.service.transfers import DownloadSyncService, SubscribedMovieAutoDownloadService
 
 
 def _ensure_database_ready():
@@ -40,6 +40,14 @@ def run_movie_heat_update_job():
     return run_logged_task(
         "movie-heat-update",
         lambda: MovieHeatService.update_movie_heat(),
+    )
+
+
+def run_subscribed_movie_auto_download_job():
+    _ensure_database_ready()
+    return run_logged_task(
+        "subscribed-movie-auto-download",
+        lambda: SubscribedMovieAutoDownloadService().run(),
     )
 
 
@@ -106,6 +114,15 @@ def build_scheduler() -> BlockingScheduler:
             timezone=timezone,
         ),
         id="actor_subscription_sync",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        run_subscribed_movie_auto_download_job,
+        trigger=CronTrigger.from_crontab(
+            settings.scheduler.subscribed_movie_auto_download_cron,
+            timezone=timezone,
+        ),
+        id="subscribed_movie_auto_download",
         replace_existing=True,
     )
 
@@ -188,9 +205,10 @@ def aps():
         return
     scheduler = build_scheduler()
     logger.info(
-        "Starting scheduler timezone={} actor_subscription_sync_cron={} movie_collection_sync_cron={} movie_heat_cron={} download_task_sync_cron={} download_task_auto_import_cron={} media_thumbnail_cron={} image_search_index_cron={} image_search_optimize_cron={}",
+        "Starting scheduler timezone={} actor_subscription_sync_cron={} subscribed_movie_auto_download_cron={} movie_collection_sync_cron={} movie_heat_cron={} download_task_sync_cron={} download_task_auto_import_cron={} media_thumbnail_cron={} image_search_index_cron={} image_search_optimize_cron={}",
         settings.scheduler.timezone,
         settings.scheduler.actor_subscription_sync_cron,
+        settings.scheduler.subscribed_movie_auto_download_cron,
         settings.scheduler.movie_collection_sync_cron,
         settings.scheduler.movie_heat_cron,
         settings.scheduler.download_task_sync_cron,

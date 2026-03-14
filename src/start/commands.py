@@ -87,6 +87,23 @@ def aps_update_movie_heat():
     )
 
 
+@aps.command(name="auto-download-subscribed-movies")
+def aps_auto_download_subscribed_movies():
+    """执行一次已订阅缺失影片自动下载"""
+    from src.start.aps import run_subscribed_movie_auto_download_job
+
+    stats = run_subscribed_movie_auto_download_job()
+    click.echo(
+        "auto download finished: "
+        f"candidate_movies={stats['candidate_movies']} "
+        f"searched_movies={stats['searched_movies']} "
+        f"submitted_movies={stats['submitted_movies']} "
+        f"no_candidate_movies={stats['no_candidate_movies']} "
+        f"skipped_movies={stats['skipped_movies']} "
+        f"failed_movies={stats['failed_movies']}"
+    )
+
+
 @aps.command(name="sync-movie-collections")
 def aps_sync_movie_collections():
     """执行一次合集影片标记同步"""

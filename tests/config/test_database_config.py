@@ -42,6 +42,7 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
     assert settings.scheduler.enabled is True
     assert settings.scheduler.timezone == "Asia/Shanghai"
     assert settings.scheduler.actor_subscription_sync_cron == "0 2 * * *"
+    assert settings.scheduler.subscribed_movie_auto_download_cron == "30 2 * * *"
     assert settings.scheduler.download_task_sync_cron == "*/15 * * * *"
     assert settings.scheduler.download_task_auto_import_cron == "*/10 * * * *"
     assert settings.scheduler.movie_collection_sync_cron == "0 1 * * *"
@@ -133,6 +134,7 @@ def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatc
                     "timezone": "UTC",
                     "log_dir": "./tmp/logs",
                     "actor_subscription_sync_cron": "15 3 * * *",
+                    "subscribed_movie_auto_download_cron": "45 3 * * *",
                     "download_task_sync_cron": "*/20 * * * *",
                     "download_task_auto_import_cron": "*/12 * * * *",
                     "movie_collection_sync_cron": "0 4 * * *",
@@ -175,6 +177,7 @@ def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatc
     assert settings.scheduler.timezone == "UTC"
     assert settings.scheduler.log_dir == "./tmp/logs"
     assert settings.scheduler.actor_subscription_sync_cron == "15 3 * * *"
+    assert settings.scheduler.subscribed_movie_auto_download_cron == "45 3 * * *"
     assert settings.scheduler.download_task_sync_cron == "*/20 * * * *"
     assert settings.scheduler.download_task_auto_import_cron == "*/12 * * * *"
     assert settings.scheduler.movie_collection_sync_cron == "0 4 * * *"
@@ -225,6 +228,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             timezone="Asia/Shanghai",
             log_dir="./logs/tasks",
             actor_subscription_sync_cron="0 2 * * *",
+            subscribed_movie_auto_download_cron="30 2 * * *",
             download_task_sync_cron="*/15 * * * *",
             download_task_auto_import_cron="*/10 * * * *",
             movie_collection_sync_cron="0 1 * * *",
@@ -273,6 +277,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             "timezone": "Asia/Shanghai",
             "log_dir": "./logs/tasks",
             "actor_subscription_sync_cron": "0 2 * * *",
+            "subscribed_movie_auto_download_cron": "30 2 * * *",
             "download_task_sync_cron": "*/15 * * * *",
             "download_task_auto_import_cron": "*/10 * * * *",
             "movie_collection_sync_cron": "0 1 * * *",
@@ -315,6 +320,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
         }
         assert config_module.settings.indexer_settings.api_key == "updated-secret-key"
         assert config_module.settings.scheduler.actor_subscription_sync_cron == "0 2 * * *"
+        assert config_module.settings.scheduler.subscribed_movie_auto_download_cron == "30 2 * * *"
         assert config_module.settings.scheduler.download_task_sync_cron == "*/15 * * * *"
         assert config_module.settings.scheduler.download_task_auto_import_cron == "*/10 * * * *"
         assert config_module.settings.scheduler.movie_collection_sync_cron == "0 1 * * *"

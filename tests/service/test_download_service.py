@@ -3,15 +3,21 @@ from pathlib import Path
 import pytest
 
 from src.api.exception.errors import ApiError
-from src.model import DownloadClient, DownloadTask, Image, ImportJob, Indexer, MediaLibrary
+from src.model import DownloadClient, DownloadTask, Image, ImportJob, Indexer, Media, MediaLibrary, Movie
 from src.schema.transfers.downloads import (
+    DownloadCandidateResource,
     DownloadClientCreateRequest,
     DownloadClientUpdateRequest,
+    DownloadRequestCreateResponse,
     DownloadRequestCreateRequest,
+    DownloadTaskResource,
 )
 from src.service.transfers.download_client_service import DownloadClientService
 from src.service.transfers.download_request_service import DownloadRequestService
 from src.service.transfers.download_search_service import DownloadSearchService
+from src.service.transfers.subscribed_movie_auto_download_service import (
+    SubscribedMovieAutoDownloadService,
+)
 from src.service.transfers.download_sync_service import DownloadSyncService
 from src.service.transfers.download_task_service import DownloadTaskService
 from src.service.transfers.jackett_client import JackettClient
@@ -19,7 +25,7 @@ from src.service.transfers.jackett_client import JackettClient
 
 @pytest.fixture()
 def download_tables(test_db):
-    models = [Image, MediaLibrary, DownloadClient, Indexer, DownloadTask, ImportJob]
+    models = [Image, Movie, MediaLibrary, Media, DownloadClient, Indexer, DownloadTask, ImportJob]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
@@ -44,6 +50,48 @@ def _create_client(
         client_save_path="/downloads/a",
         local_root_path="/mnt/downloads/a",
         media_library=library,
+    )
+
+
+def _create_movie(
+    movie_number: str,
+    *,
+    title: str | None = None,
+    is_subscribed: bool = True,
+) -> Movie:
+    return Movie.create(
+        javdb_id=f"javdb-{movie_number}",
+        movie_number=movie_number,
+        title=title or movie_number,
+        is_subscribed=is_subscribed,
+    )
+
+
+def _candidate(
+    movie_number: str,
+    *,
+    title: str,
+    indexer_kind: str = "bt",
+    seeders: int = 5,
+    size_bytes: int = 5 * 1024 * 1024 * 1024,
+    tags: list[str] | None = None,
+    magnet_url: str = "magnet:?xt=urn:btih:ABCDEF123456",
+    torrent_url: str = "",
+    indexer_name: str = "mteam",
+) -> DownloadCandidateResource:
+    return DownloadCandidateResource(
+        source="jackett",
+        indexer_name=indexer_name,
+        indexer_kind=indexer_kind,
+        resolved_client_id=1,
+        resolved_client_name="client-a",
+        movie_number=movie_number,
+        title=title,
+        size_bytes=size_bytes,
+        seeders=seeders,
+        magnet_url=magnet_url,
+        torrent_url=torrent_url,
+        tags=tags or [],
     )
 
 
@@ -838,6 +886,368 @@ def test_download_task_service_trigger_import_rejects_non_completed_or_duplicate
         DownloadTaskService.trigger_import(running_task.id)
 
     assert invalid_state.value.code == "invalid_download_task_import"
+
+
+def test_subscribed_movie_auto_download_selects_only_subscribed_movies_without_media_and_without_download_tasks(
+    download_tables,
+):
+    library = _create_library()
+    client = _create_client(library)
+    candidate_movie = _create_movie("ABC-001", title="candidate")
+    playable_movie = _create_movie("ABC-002", title="playable")
+    movie_with_task = _create_movie("ABC-003", title="with-task")
+    _create_movie("ABC-004", title="unsubscribed", is_subscribed=False)
+    Media.create(
+        movie=playable_movie,
+        library=library,
+        path="/library/main/ABC-002.mp4",
+        valid=True,
+    )
+    DownloadTask.create(
+        client=client,
+        movie=movie_with_task.movie_number,
+        name=movie_with_task.title,
+        info_hash="hash-existing",
+        save_path="/mnt/downloads/a/ABC-003",
+        progress=0.0,
+        download_state="failed",
+        import_status="failed",
+    )
+
+    service = SubscribedMovieAutoDownloadService()
+
+    candidate_movies = service._list_candidate_movies()
+
+    assert [movie.movie_number for movie in candidate_movies] == [candidate_movie.movie_number]
+
+
+def test_subscribed_movie_auto_download_prefers_4k_candidate_even_when_non_4k_has_more_seeders(
+    download_tables,
+):
+    _create_library()
+    movie = _create_movie("ABC-001")
+    submitted = {}
+
+    class FakeSearchService:
+        def search_candidates(self, *, movie_number, indexer_kind=None):
+            assert movie_number == movie.movie_number
+            assert indexer_kind is None
+            return [
+                _candidate(
+                    movie.movie_number,
+                    title="ABC-001 regular",
+                    seeders=20,
+                    tags=[],
+                ),
+                _candidate(
+                    movie.movie_number,
+                    title="ABC-001 4K",
+                    seeders=3,
+                    tags=["4K"],
+                ),
+            ]
+
+    class FakeRequestService:
+        def create_request(self, payload):
+            submitted["payload"] = payload
+            return DownloadRequestCreateResponse(
+                task=DownloadTaskResource(
+                    id=1,
+                    client_id=1,
+                    movie_number=payload.movie_number,
+                    name=payload.candidate.title,
+                    info_hash="hash-1",
+                    save_path="/downloads/ABC-001",
+                    progress=0.0,
+                    download_state="queued",
+                    import_status="pending",
+                    created_at=movie.created_at,
+                    updated_at=movie.updated_at,
+                ),
+                created=True,
+            )
+
+    summary = SubscribedMovieAutoDownloadService(
+        download_search_service=FakeSearchService(),
+        download_request_service=FakeRequestService(),
+    ).run()
+
+    assert submitted["payload"].candidate.title == "ABC-001 4K"
+    assert summary["submitted_movies"] == 1
+
+
+def test_subscribed_movie_auto_download_prefers_pt_within_same_4k_bucket(download_tables):
+    _create_library()
+    movie = _create_movie("ABC-001")
+    submitted = {}
+
+    class FakeSearchService:
+        def search_candidates(self, *, movie_number, indexer_kind=None):
+            return [
+                _candidate(movie_number, title="ABC-001 4K BT", indexer_kind="bt", tags=["4K"]),
+                _candidate(movie_number, title="ABC-001 4K PT", indexer_kind="pt", tags=["4K"]),
+            ]
+
+    class FakeRequestService:
+        def create_request(self, payload):
+            submitted["payload"] = payload
+            return DownloadRequestCreateResponse(
+                task=DownloadTaskResource(
+                    id=1,
+                    client_id=1,
+                    movie_number=movie.movie_number,
+                    name=payload.candidate.title,
+                    info_hash="hash-1",
+                    save_path="/downloads/ABC-001",
+                    progress=0.0,
+                    download_state="queued",
+                    import_status="pending",
+                    created_at=movie.created_at,
+                    updated_at=movie.updated_at,
+                ),
+                created=True,
+            )
+
+    SubscribedMovieAutoDownloadService(
+        download_search_service=FakeSearchService(),
+        download_request_service=FakeRequestService(),
+    ).run()
+
+    assert submitted["payload"].candidate.title == "ABC-001 4K PT"
+
+
+def test_subscribed_movie_auto_download_prefers_subtitle_within_same_priority_bucket(download_tables):
+    _create_library()
+    movie = _create_movie("ABC-001")
+    submitted = {}
+
+    class FakeSearchService:
+        def search_candidates(self, *, movie_number, indexer_kind=None):
+            return [
+                _candidate(movie_number, title="ABC-001 PT regular", indexer_kind="pt", tags=[]),
+                _candidate(movie_number, title="ABC-001 PT subtitle", indexer_kind="pt", tags=["中字"]),
+            ]
+
+    class FakeRequestService:
+        def create_request(self, payload):
+            submitted["payload"] = payload
+            return DownloadRequestCreateResponse(
+                task=DownloadTaskResource(
+                    id=1,
+                    client_id=1,
+                    movie_number=movie.movie_number,
+                    name=payload.candidate.title,
+                    info_hash="hash-1",
+                    save_path="/downloads/ABC-001",
+                    progress=0.0,
+                    download_state="queued",
+                    import_status="pending",
+                    created_at=movie.created_at,
+                    updated_at=movie.updated_at,
+                ),
+                created=True,
+            )
+
+    SubscribedMovieAutoDownloadService(
+        download_search_service=FakeSearchService(),
+        download_request_service=FakeRequestService(),
+    ).run()
+
+    assert submitted["payload"].candidate.title == "ABC-001 PT subtitle"
+
+
+def test_subscribed_movie_auto_download_filters_low_seeders_and_out_of_range_size(download_tables):
+    _create_library()
+    movie = _create_movie("ABC-001")
+    submitted = {}
+
+    class FakeSearchService:
+        def search_candidates(self, *, movie_number, indexer_kind=None):
+            return [
+                _candidate(movie_number, title="too small", seeders=10, size_bytes=500 * 1024 * 1024),
+                _candidate(movie_number, title="too large", seeders=10, size_bytes=50 * 1024 * 1024 * 1024),
+                _candidate(movie_number, title="too few seeders", seeders=2),
+                _candidate(movie_number, title="valid", seeders=3, size_bytes=4 * 1024 * 1024 * 1024),
+            ]
+
+    class FakeRequestService:
+        def create_request(self, payload):
+            submitted["payload"] = payload
+            return DownloadRequestCreateResponse(
+                task=DownloadTaskResource(
+                    id=1,
+                    client_id=1,
+                    movie_number=movie.movie_number,
+                    name=payload.candidate.title,
+                    info_hash="hash-1",
+                    save_path="/downloads/ABC-001",
+                    progress=0.0,
+                    download_state="queued",
+                    import_status="pending",
+                    created_at=movie.created_at,
+                    updated_at=movie.updated_at,
+                ),
+                created=True,
+            )
+
+    summary = SubscribedMovieAutoDownloadService(
+        download_search_service=FakeSearchService(),
+        download_request_service=FakeRequestService(),
+    ).run()
+
+    assert submitted["payload"].candidate.title == "valid"
+    assert summary["no_candidate_movies"] == 0
+
+
+def test_subscribed_movie_auto_download_counts_no_candidate_when_search_returns_empty_or_all_filtered(
+    download_tables,
+):
+    _create_library()
+    empty_movie = _create_movie("ABC-001")
+    filtered_movie = _create_movie("ABC-002")
+
+    class FakeSearchService:
+        def search_candidates(self, *, movie_number, indexer_kind=None):
+            if movie_number == empty_movie.movie_number:
+                return []
+            return [_candidate(movie_number, title="bad", seeders=1)]
+
+    class FakeRequestService:
+        def create_request(self, payload):
+            raise AssertionError("submit should not be called when no candidate is available")
+
+    summary = SubscribedMovieAutoDownloadService(
+        download_search_service=FakeSearchService(),
+        download_request_service=FakeRequestService(),
+    ).run()
+
+    assert summary["submitted_movies"] == 0
+    assert summary["no_candidate_movies"] == 2
+    assert summary["no_candidate_movie_numbers"] == [empty_movie.movie_number, filtered_movie.movie_number]
+
+
+def test_subscribed_movie_auto_download_continues_after_search_error(download_tables):
+    _create_library()
+    failing_movie = _create_movie("ABC-001")
+    success_movie = _create_movie("ABC-002")
+    submitted = []
+
+    class FakeSearchService:
+        def search_candidates(self, *, movie_number, indexer_kind=None):
+            if movie_number == failing_movie.movie_number:
+                raise ApiError(502, "download_candidate_search_failed", "search failed")
+            return [_candidate(movie_number, title=f"{movie_number} valid", tags=["4K"])]
+
+    class FakeRequestService:
+        def create_request(self, payload):
+            submitted.append(payload.movie_number)
+            return DownloadRequestCreateResponse(
+                task=DownloadTaskResource(
+                    id=1,
+                    client_id=1,
+                    movie_number=payload.movie_number,
+                    name=payload.candidate.title,
+                    info_hash="hash-1",
+                    save_path="/downloads/ABC-001",
+                    progress=0.0,
+                    download_state="queued",
+                    import_status="pending",
+                    created_at=success_movie.created_at,
+                    updated_at=success_movie.updated_at,
+                ),
+                created=True,
+            )
+
+    summary = SubscribedMovieAutoDownloadService(
+        download_search_service=FakeSearchService(),
+        download_request_service=FakeRequestService(),
+    ).run()
+
+    assert submitted == [success_movie.movie_number]
+    assert summary["failed_movies"] == 1
+    assert summary["submitted_movies"] == 1
+    assert summary["failed_items"][0]["movie_number"] == failing_movie.movie_number
+    assert summary["failed_items"][0]["stage"] == "search"
+
+
+def test_subscribed_movie_auto_download_continues_after_submit_error(download_tables):
+    _create_library()
+    failing_movie = _create_movie("ABC-001")
+    success_movie = _create_movie("ABC-002")
+    submitted = []
+
+    class FakeSearchService:
+        def search_candidates(self, *, movie_number, indexer_kind=None):
+            return [_candidate(movie_number, title=f"{movie_number} valid", tags=["4K"])]
+
+    class FakeRequestService:
+        def create_request(self, payload):
+            if payload.movie_number == failing_movie.movie_number:
+                raise ApiError(502, "download_request_failed", "submit failed")
+            submitted.append(payload.movie_number)
+            return DownloadRequestCreateResponse(
+                task=DownloadTaskResource(
+                    id=1,
+                    client_id=1,
+                    movie_number=payload.movie_number,
+                    name=payload.candidate.title,
+                    info_hash="hash-1",
+                    save_path="/downloads/ABC-001",
+                    progress=0.0,
+                    download_state="queued",
+                    import_status="pending",
+                    created_at=success_movie.created_at,
+                    updated_at=success_movie.updated_at,
+                ),
+                created=True,
+            )
+
+    summary = SubscribedMovieAutoDownloadService(
+        download_search_service=FakeSearchService(),
+        download_request_service=FakeRequestService(),
+    ).run()
+
+    assert submitted == [success_movie.movie_number]
+    assert summary["failed_movies"] == 1
+    assert summary["submitted_movies"] == 1
+    assert summary["failed_items"][0]["movie_number"] == failing_movie.movie_number
+    assert summary["failed_items"][0]["stage"] == "submit"
+
+
+def test_subscribed_movie_auto_download_treats_non_created_request_as_skipped(download_tables):
+    _create_library()
+    movie = _create_movie("ABC-001")
+
+    class FakeSearchService:
+        def search_candidates(self, *, movie_number, indexer_kind=None):
+            return [_candidate(movie_number, title="ABC-001 4K", tags=["4K"])]
+
+    class FakeRequestService:
+        def create_request(self, payload):
+            return DownloadRequestCreateResponse(
+                task=DownloadTaskResource(
+                    id=1,
+                    client_id=1,
+                    movie_number=movie.movie_number,
+                    name=payload.candidate.title,
+                    info_hash="hash-1",
+                    save_path="/downloads/ABC-001",
+                    progress=0.0,
+                    download_state="queued",
+                    import_status="pending",
+                    created_at=movie.created_at,
+                    updated_at=movie.updated_at,
+                ),
+                created=False,
+            )
+
+    summary = SubscribedMovieAutoDownloadService(
+        download_search_service=FakeSearchService(),
+        download_request_service=FakeRequestService(),
+    ).run()
+
+    assert summary["submitted_movies"] == 0
+    assert summary["skipped_movies"] == 1
     assert conflict.value.code == "download_task_import_conflict"
 
 

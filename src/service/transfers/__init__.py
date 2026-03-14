@@ -5,6 +5,7 @@ from .download_service import DownloadService
 from .download_sync_service import DownloadSyncService
 from .download_task_service import DownloadTaskService
 from .media_import_service import MediaImportService
+from .subscribed_movie_auto_download_service import SubscribedMovieAutoDownloadService
 
 __all__ = [
     "DownloadClientService",
@@ -14,4 +15,5 @@ __all__ = [
     "DownloadSyncService",
     "DownloadTaskService",
     "MediaImportService",
+    "SubscribedMovieAutoDownloadService",
 ]
