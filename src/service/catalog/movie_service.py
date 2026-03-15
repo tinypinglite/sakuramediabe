@@ -169,6 +169,32 @@ class MovieService:
             .order_by(latest_media_created_at.desc(), Movie.id.desc())
         )
 
+    @classmethod
+    def _subscribed_actor_latest_movies_query(cls):
+        """列出至少关联一位已订阅演员的影片，按上映日期倒序。"""
+        can_play_expression = cls._playable_exists_expression().alias("can_play")
+        return (
+            Movie.select(Movie, Image, can_play_expression)
+            .join(MovieActor, JOIN.INNER, on=(MovieActor.movie == Movie.id))
+            .join(Actor, JOIN.INNER, on=(MovieActor.actor == Actor.id))
+            .switch(Movie)
+            .join(Image, JOIN.LEFT_OUTER, on=(Movie.cover_image == Image.id))
+            .where(Actor.is_subscribed == True)
+            .group_by(Movie.id, Image.id)
+            .order_by(Movie.release_date.is_null(), Movie.release_date.desc(), Movie.id.desc())
+        )
+
+    @staticmethod
+    def _subscribed_actor_movies_query():
+        """查询至少关联一位已订阅演员的去重影片。"""
+        return (
+            Movie.select(Movie.id)
+            .join(MovieActor, JOIN.INNER, on=(MovieActor.movie == Movie.id))
+            .join(Actor, JOIN.INNER, on=(MovieActor.actor == Actor.id))
+            .where(Actor.is_subscribed == True)
+            .distinct()
+        )
+
     @staticmethod
     def _normalized_movie_number_expression():
         """把库内编号归一化成和搜索输入一致的比较格式。"""
@@ -380,6 +406,23 @@ class MovieService:
         start = max(page - 1, 0) * page_size
         total = Movie.select(Movie.id).join(Media).group_by(Movie.id).count()
         movies = list(MovieService._latest_movies_query().offset(start).limit(page_size))
+        return PageResponse[MovieListItemResource](
+            items=MovieListItemResource.from_items(movies),
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    @staticmethod
+    def list_subscribed_actor_latest_movies(
+        page: int = 1,
+        page_size: int = 20,
+    ) -> PageResponse[MovieListItemResource]:
+        start = max(page - 1, 0) * page_size
+        total = MovieService._subscribed_actor_movies_query().count()
+        movies = list(
+            MovieService._subscribed_actor_latest_movies_query().offset(start).limit(page_size)
+        )
         return PageResponse[MovieListItemResource](
             items=MovieListItemResource.from_items(movies),
             page=page,

@@ -256,6 +256,146 @@ def test_movie_service_list_latest_movies_supports_pagination(app):
     }
 
 
+def test_movie_service_list_subscribed_actor_latest_movies_filters_deduplicates_and_orders(app):
+    subscribed_actor_a = _create_actor("三上悠亚", "ActorA1", is_subscribed=True)
+    subscribed_actor_b = _create_actor("河北彩花", "ActorA2", is_subscribed=True)
+    unsubscribed_actor = _create_actor("鬼头桃菜", "ActorA3", is_subscribed=False)
+
+    latest_movie = _create_movie(
+        "ABC-001",
+        "MovieA1",
+        title="Movie 1",
+        release_date=datetime(2026, 3, 10, 9, 0, 0),
+    )
+    older_movie = _create_movie(
+        "ABC-002",
+        "MovieA2",
+        title="Movie 2",
+        release_date=datetime(2026, 3, 8, 9, 0, 0),
+    )
+    no_release_date_movie = _create_movie("ABC-003", "MovieA3", title="Movie 3", release_date=None)
+    unsubscribed_actor_movie = _create_movie(
+        "ABC-004",
+        "MovieA4",
+        title="Movie 4",
+        release_date=datetime(2026, 3, 11, 9, 0, 0),
+    )
+
+    MovieActor.create(movie=latest_movie, actor=subscribed_actor_a)
+    MovieActor.create(movie=latest_movie, actor=subscribed_actor_b)
+    MovieActor.create(movie=older_movie, actor=subscribed_actor_a)
+    MovieActor.create(movie=no_release_date_movie, actor=subscribed_actor_b)
+    MovieActor.create(movie=unsubscribed_actor_movie, actor=unsubscribed_actor)
+    Media.create(movie=older_movie, path="/library/main/abc-002.mp4", valid=True)
+
+    response = MovieService.list_subscribed_actor_latest_movies(page=1, page_size=10)
+
+    assert response.model_dump() == {
+        "items": [
+            {
+                "javdb_id": "MovieA1",
+                "movie_number": "ABC-001",
+                "title": "Movie 1",
+                "series_name": None,
+                "cover_image": None,
+                "release_date": "2026-03-10",
+                "duration_minutes": 0,
+                "score": 0.0,
+                "watched_count": 0,
+                "want_watch_count": 0,
+                "comment_count": 0,
+                "score_number": 0,
+                "is_collection": False,
+                "is_subscribed": False,
+                "can_play": False,
+            },
+            {
+                "javdb_id": "MovieA2",
+                "movie_number": "ABC-002",
+                "title": "Movie 2",
+                "series_name": None,
+                "cover_image": None,
+                "release_date": "2026-03-08",
+                "duration_minutes": 0,
+                "score": 0.0,
+                "watched_count": 0,
+                "want_watch_count": 0,
+                "comment_count": 0,
+                "score_number": 0,
+                "is_collection": False,
+                "is_subscribed": False,
+                "can_play": True,
+            },
+            {
+                "javdb_id": "MovieA3",
+                "movie_number": "ABC-003",
+                "title": "Movie 3",
+                "series_name": None,
+                "cover_image": None,
+                "release_date": None,
+                "duration_minutes": 0,
+                "score": 0.0,
+                "watched_count": 0,
+                "want_watch_count": 0,
+                "comment_count": 0,
+                "score_number": 0,
+                "is_collection": False,
+                "is_subscribed": False,
+                "can_play": False,
+            },
+        ],
+        "page": 1,
+        "page_size": 10,
+        "total": 3,
+    }
+    assert [item.movie_number for item in response.items] == ["ABC-001", "ABC-002", "ABC-003"]
+
+
+def test_movie_service_list_subscribed_actor_latest_movies_supports_pagination(app):
+    subscribed_actor = _create_actor("三上悠亚", "ActorA1", is_subscribed=True)
+    first_movie = _create_movie(
+        "ABC-001",
+        "MovieA1",
+        title="Movie 1",
+        release_date=datetime(2026, 3, 10, 9, 0, 0),
+    )
+    second_movie = _create_movie(
+        "ABC-002",
+        "MovieA2",
+        title="Movie 2",
+        release_date=datetime(2026, 3, 8, 9, 0, 0),
+    )
+    MovieActor.create(movie=first_movie, actor=subscribed_actor)
+    MovieActor.create(movie=second_movie, actor=subscribed_actor)
+
+    response = MovieService.list_subscribed_actor_latest_movies(page=2, page_size=1)
+
+    assert response.model_dump() == {
+        "items": [
+            {
+                "javdb_id": "MovieA2",
+                "movie_number": "ABC-002",
+                "title": "Movie 2",
+                "series_name": None,
+                "cover_image": None,
+                "release_date": "2026-03-08",
+                "duration_minutes": 0,
+                "score": 0.0,
+                "watched_count": 0,
+                "want_watch_count": 0,
+                "comment_count": 0,
+                "score_number": 0,
+                "is_collection": False,
+                "is_subscribed": False,
+                "can_play": False,
+            }
+        ],
+        "page": 2,
+        "page_size": 1,
+        "total": 2,
+    }
+
+
 def test_movie_service_get_movie_detail_eager_loads_cover_and_tags(
     app,
     test_db,

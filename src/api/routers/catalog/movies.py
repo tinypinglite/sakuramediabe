@@ -52,6 +52,11 @@ def list_latest_movies(page: int = 1, page_size: int = 20):
     return MovieService.list_latest_movies(page=page, page_size=page_size)
 
 
+@router.get("/subscribed-actors/latest", response_model=PageResponse[MovieListItemResource])
+def list_subscribed_actor_latest_movies(page: int = 1, page_size: int = 20):
+    return MovieService.list_subscribed_actor_latest_movies(page=page, page_size=page_size)
+
+
 @router.post("/search/parse-number", response_model=MovieNumberParseResponse)
 def parse_movie_number(payload: MovieNumberParseRequest):
     return MovieService.parse_movie_number_query(payload.query)

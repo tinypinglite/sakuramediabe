@@ -9,6 +9,7 @@
 - `POST /movies/search/javdb/stream`：JavDB 按番号搜索并流式入库
 - `GET /movies`：分页查询影片列表
 - `GET /movies/latest`：分页查询最新入库影片
+- `GET /movies/subscribed-actors/latest`：分页查询已订阅演员的最新影片
 - `GET /movies/{movie_number}`：查询影片详情
 
 关键点：
@@ -118,6 +119,7 @@
 | `POST` | `/movies/search/javdb/stream` | JavDB 按番号搜索并流式入库（SSE） |
 | `GET` | `/movies` | 分页查询影片 |
 | `GET` | `/movies/latest` | 分页查询最新入库影片 |
+| `GET` | `/movies/subscribed-actors/latest` | 分页查询已订阅演员的最新影片 |
 | `PUT` | `/movies/{movie_number}/subscription` | 订阅影片（单条） |
 | `DELETE` | `/movies/{movie_number}/subscription` | 取消订阅影片（支持强制删除媒体） |
 | `GET` | `/movies/{movie_number}` | 查询影片详情 |
@@ -363,6 +365,73 @@ Authorization: Bearer <token>
       "series_name": null,
       "cover_image": null,
       "release_date": null,
+      "duration_minutes": 0,
+      "score": 0.0,
+      "watched_count": 0,
+      "want_watch_count": 0,
+      "comment_count": 0,
+      "score_number": 0,
+      "is_collection": false,
+      "is_subscribed": false,
+      "can_play": true
+    },
+    {
+      "javdb_id": "MovieA1",
+      "movie_number": "ABC-001",
+      "title": "Movie 1",
+      "series_name": null,
+      "cover_image": null,
+      "release_date": null,
+      "duration_minutes": 0,
+      "score": 0.0,
+      "watched_count": 0,
+      "want_watch_count": 0,
+      "comment_count": 0,
+      "score_number": 0,
+      "is_collection": false,
+      "is_subscribed": false,
+      "can_play": false
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 2
+}
+```
+
+### `GET /movies/subscribed-actors/latest`
+
+- 鉴权：需要 Bearer Token
+- Query：
+  - `page`：默认 `1`
+  - `page_size`：默认 `20`
+- 行为：
+  - 仅返回至少关联一位已订阅演员（`actor.is_subscribed=true`）的影片
+  - 同一影片关联多位已订阅演员时只返回一条（去重）
+  - 按 `movie.release_date` 降序排序；`release_date=null` 的影片排在最后
+  - `release_date` 相同时，按 `movie.id` 降序稳定排序
+  - `total` 为过滤后的去重影片总数
+  - 与 `/movies/latest` 不同：本接口按上映日期排序，不要求影片存在本地媒体
+
+示例请求：
+
+```http
+GET /movies/subscribed-actors/latest?page=1&page_size=20
+Authorization: Bearer <token>
+```
+
+示例响应：
+
+```json
+{
+  "items": [
+    {
+      "javdb_id": "MovieA2",
+      "movie_number": "ABC-002",
+      "title": "Movie 2",
+      "series_name": null,
+      "cover_image": null,
+      "release_date": "2026-03-10",
       "duration_minutes": 0,
       "score": 0.0,
       "watched_count": 0,

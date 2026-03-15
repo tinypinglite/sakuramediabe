@@ -568,6 +568,165 @@ def test_list_latest_movies_supports_pagination(client, account_user):
     }
 
 
+def test_list_subscribed_actor_latest_movies_requires_auth(client):
+    response = client.get("/movies/subscribed-actors/latest")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_list_subscribed_actor_latest_movies_returns_filtered_sorted_and_deduplicated_movies(
+    client,
+    account_user,
+):
+    token = _login(client, username=account_user.username)
+    subscribed_actor_a = Actor.create(name="三上悠亚", javdb_id="ActorA1", alias_name="", is_subscribed=True)
+    subscribed_actor_b = Actor.create(name="河北彩花", javdb_id="ActorA2", alias_name="", is_subscribed=True)
+    unsubscribed_actor = Actor.create(name="鬼头桃菜", javdb_id="ActorA3", alias_name="", is_subscribed=False)
+
+    latest_movie = _create_movie(
+        "ABP-130",
+        "MovieA1",
+        title="Movie 1",
+        release_date=datetime(2026, 3, 10, 9, 0, 0),
+    )
+    older_movie = _create_movie(
+        "ABP-131",
+        "MovieA2",
+        title="Movie 2",
+        release_date=datetime(2026, 3, 8, 9, 0, 0),
+    )
+    no_release_date_movie = _create_movie("ABP-132", "MovieA3", title="Movie 3", release_date=None)
+    unsubscribed_actor_movie = _create_movie(
+        "ABP-133",
+        "MovieA4",
+        title="Movie 4",
+        release_date=datetime(2026, 3, 11, 9, 0, 0),
+    )
+
+    MovieActor.create(movie=latest_movie, actor=subscribed_actor_a)
+    MovieActor.create(movie=latest_movie, actor=subscribed_actor_b)
+    MovieActor.create(movie=older_movie, actor=subscribed_actor_a)
+    MovieActor.create(movie=no_release_date_movie, actor=subscribed_actor_b)
+    MovieActor.create(movie=unsubscribed_actor_movie, actor=unsubscribed_actor)
+    Media.create(movie=older_movie, path="/library/main/abp-131.mp4", valid=True)
+
+    response = client.get(
+        "/movies/subscribed-actors/latest?page=1&page_size=10",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "javdb_id": "MovieA1",
+                "movie_number": "ABP-130",
+                "title": "Movie 1",
+                "series_name": None,
+                "cover_image": None,
+                "release_date": "2026-03-10",
+                "duration_minutes": 0,
+                "score": 0.0,
+                "watched_count": 0,
+                "want_watch_count": 0,
+                "comment_count": 0,
+                "score_number": 0,
+                "is_collection": False,
+                "is_subscribed": False,
+                "can_play": False,
+            },
+            {
+                "javdb_id": "MovieA2",
+                "movie_number": "ABP-131",
+                "title": "Movie 2",
+                "series_name": None,
+                "cover_image": None,
+                "release_date": "2026-03-08",
+                "duration_minutes": 0,
+                "score": 0.0,
+                "watched_count": 0,
+                "want_watch_count": 0,
+                "comment_count": 0,
+                "score_number": 0,
+                "is_collection": False,
+                "is_subscribed": False,
+                "can_play": True,
+            },
+            {
+                "javdb_id": "MovieA3",
+                "movie_number": "ABP-132",
+                "title": "Movie 3",
+                "series_name": None,
+                "cover_image": None,
+                "release_date": None,
+                "duration_minutes": 0,
+                "score": 0.0,
+                "watched_count": 0,
+                "want_watch_count": 0,
+                "comment_count": 0,
+                "score_number": 0,
+                "is_collection": False,
+                "is_subscribed": False,
+                "can_play": False,
+            },
+        ],
+        "page": 1,
+        "page_size": 10,
+        "total": 3,
+    }
+
+
+def test_list_subscribed_actor_latest_movies_supports_pagination(client, account_user):
+    token = _login(client, username=account_user.username)
+    subscribed_actor = Actor.create(name="三上悠亚", javdb_id="ActorA1", alias_name="", is_subscribed=True)
+    first_movie = _create_movie(
+        "ABP-130",
+        "MovieA1",
+        title="Movie 1",
+        release_date=datetime(2026, 3, 10, 9, 0, 0),
+    )
+    second_movie = _create_movie(
+        "ABP-131",
+        "MovieA2",
+        title="Movie 2",
+        release_date=datetime(2026, 3, 8, 9, 0, 0),
+    )
+    MovieActor.create(movie=first_movie, actor=subscribed_actor)
+    MovieActor.create(movie=second_movie, actor=subscribed_actor)
+
+    response = client.get(
+        "/movies/subscribed-actors/latest?page=2&page_size=1",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "items": [
+            {
+                "javdb_id": "MovieA2",
+                "movie_number": "ABP-131",
+                "title": "Movie 2",
+                "series_name": None,
+                "cover_image": None,
+                "release_date": "2026-03-08",
+                "duration_minutes": 0,
+                "score": 0.0,
+                "watched_count": 0,
+                "want_watch_count": 0,
+                "comment_count": 0,
+                "score_number": 0,
+                "is_collection": False,
+                "is_subscribed": False,
+                "can_play": False,
+            }
+        ],
+        "page": 2,
+        "page_size": 1,
+        "total": 2,
+    }
+
+
 def test_movie_subscribe_requires_auth(client):
     response = client.put("/movies/ABP-123/subscription")
 
