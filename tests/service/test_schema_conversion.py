@@ -173,6 +173,8 @@ def test_actor_service_list_actors_returns_page_schema(app, build_signed_image_u
             "large": build_signed_image_url("large.jpg"),
         },
         "is_subscribed": True,
+        "subscribed_at": None,
+        "movie_count": 0,
     }
 
 
@@ -197,6 +199,8 @@ def test_actor_service_list_actors_returns_page_schema_with_filters(app):
                 "alias_name": "",
                 "profile_image": None,
                 "is_subscribed": True,
+                "subscribed_at": None,
+                "movie_count": 0,
             }
         ],
         "page": 1,

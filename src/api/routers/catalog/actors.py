@@ -32,12 +32,14 @@ def _to_sse_event(event: str, payload: dict) -> str:
 def list_actors(
     gender: ActorListGender = ActorListGender.ALL,
     subscription_status: ActorListSubscriptionStatus = ActorListSubscriptionStatus.ALL,
+    sort: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ):
     return ActorService.list_actors(
         gender=gender,
         subscription_status=subscription_status,
+        sort=sort,
         page=page,
         page_size=page_size,
     )

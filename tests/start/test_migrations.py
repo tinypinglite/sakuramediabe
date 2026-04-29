@@ -65,6 +65,40 @@ def _insert_legacy_movie(test_db, movie_number: str, javdb_id: str, series_name:
     )
 
 
+def _create_actor_table_missing_subscribed_at(test_db):
+    test_db.execute_sql(
+        """
+        CREATE TABLE actor (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            javdb_id VARCHAR(64) NOT NULL UNIQUE,
+            name VARCHAR(255) NOT NULL,
+            alias_name TEXT NOT NULL DEFAULT '',
+            profile_image_id INTEGER NULL,
+            javdb_type INTEGER NOT NULL DEFAULT 0,
+            gender INTEGER NOT NULL DEFAULT 0,
+            is_subscribed INTEGER NOT NULL DEFAULT 0,
+            subscribed_movies_synced_at DATETIME NULL,
+            subscribed_movies_full_synced_at DATETIME NULL
+        )
+        """
+    )
+
+
+def _insert_legacy_actor(test_db, *, javdb_id: str, name: str, created_at: str, is_subscribed: bool):
+    test_db.execute_sql(
+        """
+        INSERT INTO actor (
+            created_at, updated_at, javdb_id, name, is_subscribed
+        ) VALUES (
+            ?, ?, ?, ?, ?
+        )
+        """,
+        (created_at, created_at, javdb_id, name, is_subscribed),
+    )
+
+
 def _schema_migration_names(test_db):
     # 迁移断言要显式绑定当前测试数据库，避免读取到别的用例遗留连接。
     with test_db.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
@@ -127,8 +161,8 @@ def test_run_pending_migrations_extracts_movie_series_from_supported_legacy_sche
         ("ABP-004", None),
     ]
     assert summary.applied_count == 2
-    # system_notification 表在该 legacy schema 下不存在，对应迁移会主动跳过。
-    assert summary.skipped_count == 1
+    # system_notification 和 actor 表在该 legacy schema 下不存在，对应迁移会主动跳过。
+    assert summary.skipped_count == 2
     assert _schema_migration_names(test_db) == [
         "20260421_01_add_movie_title_zh",
         "20260424_01_extract_movie_series",
@@ -142,9 +176,9 @@ def test_run_pending_migrations_is_idempotent(test_db):
     second_summary = run_pending_migrations(test_db)
 
     assert first_summary.applied_count == 2
-    assert first_summary.skipped_count == 1
+    assert first_summary.skipped_count == 2
     assert second_summary.applied_count == 0
-    assert second_summary.skipped_count == 3
+    assert second_summary.skipped_count == 4
     assert _schema_migration_names(test_db) == [
         "20260421_01_add_movie_title_zh",
         "20260424_01_extract_movie_series",
@@ -155,7 +189,7 @@ def test_run_pending_migrations_skips_when_target_table_is_missing(test_db):
     summary = run_pending_migrations(test_db)
 
     assert summary.applied_count == 0
-    assert summary.skipped_count == 3
+    assert summary.skipped_count == 4
     assert _schema_migration_names(test_db) == []
 
 
@@ -184,6 +218,7 @@ def test_migrate_command_runs_pending_migrations_without_initdb(monkeypatch):
                         name="20260426_01_merge_notification_category_level",
                         applied=True,
                     ),
+                    MigrationExecution(name="20260429_01_add_actor_subscribed_at", applied=True),
                 ]
             )
         return MigrationRunSummary(
@@ -194,6 +229,7 @@ def test_migrate_command_runs_pending_migrations_without_initdb(monkeypatch):
                     name="20260426_01_merge_notification_category_level",
                     applied=False,
                 ),
+                MigrationExecution(name="20260429_01_add_actor_subscribed_at", applied=False),
             ]
         )
 
@@ -218,7 +254,8 @@ def test_migrate_command_runs_pending_migrations_without_initdb(monkeypatch):
     assert "applied: 20260421_01_add_movie_title_zh" in result.output
     assert "applied: 20260424_01_extract_movie_series" in result.output
     assert "applied: 20260426_01_merge_notification_category_level" in result.output
-    assert "migrate finished: applied=3 skipped=0 total=3" in result.output
+    assert "applied: 20260429_01_add_actor_subscribed_at" in result.output
+    assert "migrate finished: applied=4 skipped=0 total=4" in result.output
     assert events == ["db.connect", ("run", legacy_database), "db.ready", ("run", ready_database)]
 
 
@@ -287,21 +324,54 @@ def test_run_pending_migrations_merges_notification_category_and_level(test_db):
     ]
 
 
+def test_run_pending_migrations_adds_actor_subscribed_at_and_backfills_created_at(test_db):
+    _create_actor_table_missing_subscribed_at(test_db)
+    _insert_legacy_actor(
+        test_db,
+        javdb_id="ActorA1",
+        name="三上悠亚",
+        created_at="2026-03-08 09:00:00",
+        is_subscribed=True,
+    )
+    _insert_legacy_actor(
+        test_db,
+        javdb_id="ActorA2",
+        name="河北彩花",
+        created_at="2026-03-10 09:00:00",
+        is_subscribed=False,
+    )
+
+    run_pending_migrations(test_db)
+
+    columns = {column.name for column in test_db.get_columns("actor")}
+    indexed_columns = [column for index in test_db.get_indexes("actor") for column in index.columns]
+    rows = test_db.execute_sql(
+        "SELECT javdb_id, subscribed_at FROM actor ORDER BY javdb_id"
+    ).fetchall()
+
+    assert "subscribed_at" in columns
+    assert "subscribed_at" in indexed_columns
+    assert rows == [("ActorA1", "2026-03-08 09:00:00"), ("ActorA2", None)]
+
+
 def test_run_pending_migrations_supports_empty_database_after_create_tables(test_db):
     test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(TEST_MODELS)
 
     summary = run_pending_migrations(test_db)
     movie_columns = {column.name for column in test_db.get_columns("movie")}
+    actor_columns = {column.name for column in test_db.get_columns("actor")}
 
     # 空库先按当前模型建表后，迁移执行结果至少要保持最终 schema 正确。
     assert "title_zh" in movie_columns
     assert "series_id" in movie_columns
     assert "series_name" not in movie_columns
     assert test_db.table_exists("movie_series")
-    assert summary.applied_count == 3
+    assert "subscribed_at" in actor_columns
+    assert summary.applied_count == 4
     assert [item.name for item in summary.executed] == [
         "20260421_01_add_movie_title_zh",
         "20260424_01_extract_movie_series",
         "20260426_01_merge_notification_category_level",
+        "20260429_01_add_actor_subscribed_at",
     ]

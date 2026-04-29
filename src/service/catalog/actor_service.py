@@ -4,10 +4,10 @@
 阅读入口建议从 ``list_actors``、``get_actor_movies``、``stream_search_and_upsert_actor_from_javdb`` 开始。
 """
 
-from typing import Iterator, List, Set
+from typing import Iterator, List, Sequence, Set
 
 from loguru import logger
-from peewee import JOIN, fn
+from peewee import JOIN, Ordering, fn
 
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import (
@@ -16,12 +16,14 @@ from src.common.service_helpers import (
     require_record,
     with_movie_card_relations,
 )
+from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from sakuramedia_metadata_providers.providers.javdb import JavdbProvider
 from src.metadata.provider import MetadataNotFoundError
 from src.model import Actor, Image, Media, Movie, MovieActor, MovieTag, Tag
 from src.model.expressions import year_expression
 from src.schema.catalog.actors import (
+    ACTOR_LIST_SORT_FIELDS,
     ActorDetailResource,
     ActorListGender,
     ActorListSubscriptionStatus,
@@ -39,14 +41,75 @@ class ActorService:
 
     FEMALE_GENDER = 1
     MALE_GENDER = 2
+    ACTOR_LIST_NULLABLE_SORT_FIELDS = {"subscribed_at"}
+
+    @staticmethod
+    def _movie_count_expression():
+        """按 movie_actor 关联实时计算演员影片数量。"""
+        return (
+            MovieActor.select(fn.COUNT(MovieActor.id))
+            .where(MovieActor.actor == Actor.id)
+        )
+
+    @classmethod
+    def _actor_list_sort_field_map(cls):
+        return {
+            "subscribed_at": Actor.subscribed_at,
+            "name": Actor.name,
+            "movie_count": cls._movie_count_expression(),
+        }
+
+    @classmethod
+    def _build_actor_list_sort(cls, sort: str | None) -> Sequence:
+        """解析演员列表排序表达式，并补充稳定的 id 次级排序。"""
+        if sort is None:
+            return [Actor.id.asc()]
+
+        normalized = sort.strip().lower()
+        if not normalized:
+            raise ApiError(
+                422,
+                "invalid_actor_filter",
+                "Invalid sort expression",
+                {"sort": sort},
+            )
+
+        try:
+            field_name, direction = normalized.split(":", 1)
+        except ValueError as exc:
+            raise ApiError(
+                422,
+                "invalid_actor_filter",
+                "Invalid sort expression",
+                {"sort": sort},
+            ) from exc
+
+        if field_name not in ACTOR_LIST_SORT_FIELDS or direction not in ("asc", "desc"):
+            raise ApiError(
+                422,
+                "invalid_actor_filter",
+                "Invalid sort expression",
+                {"sort": sort},
+            )
+
+        sort_field = cls._actor_list_sort_field_map()[field_name]
+        if field_name == "movie_count":
+            ordered_field = Ordering(sort_field, direction.upper())
+        else:
+            ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
+        tie_breaker = Actor.id.asc() if direction == "asc" else Actor.id.desc()
+        if field_name in cls.ACTOR_LIST_NULLABLE_SORT_FIELDS:
+            # 允许空值的订阅时间固定排到最后，规避数据库默认空值排序差异。
+            return [sort_field.is_null(), ordered_field, tie_breaker]
+        return [ordered_field, tie_breaker]
 
     @staticmethod
     def _actor_query():
         """演员基础查询统一补齐头像，避免调用方重复 join。"""
+        movie_count_expression = ActorService._movie_count_expression().alias("movie_count")
         return (
-            Actor.select(Actor, Image)
+            Actor.select(Actor, Image, movie_count_expression)
             .join(Image, JOIN.LEFT_OUTER, on=(Actor.profile_image == Image.id))
-            .order_by(Actor.id)
         )
 
     @classmethod
@@ -150,6 +213,7 @@ class ActorService:
         cls,
         gender: ActorListGender = ActorListGender.ALL,
         subscription_status: ActorListSubscriptionStatus = ActorListSubscriptionStatus.ALL,
+        sort: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> PageResponse[ActorResource]:
@@ -157,6 +221,7 @@ class ActorService:
         total = cls._filtered_actors(gender=gender, subscription_status=subscription_status).count()
         actors = list(
             cls._filtered_actors(gender=gender, subscription_status=subscription_status)
+            .order_by(*cls._build_actor_list_sort(sort))
             .offset(start)
             .limit(page_size)
         )
@@ -177,6 +242,7 @@ class ActorService:
                 (fn.LOWER(Actor.name).contains(normalized))
                 | (fn.LOWER(Actor.alias_name).contains(normalized))
             )
+            .order_by(Actor.id)
         )
         return ActorResource.from_items(actors)
 
@@ -324,13 +390,18 @@ class ActorService:
 
     @classmethod
     def set_subscription(cls, actor_id: int, subscribed: bool) -> None:
-        updated = (
-            Actor.update(is_subscribed=subscribed)
-            .where(Actor.id == actor_id)
-            .execute()
-        )
-        if updated == 0:
+        actor = Actor.get_or_none(Actor.id == actor_id)
+        if actor is None:
             raise ApiError(404, "actor_not_found", "演员不存在", {"actor_id": actor_id})
+
+        if subscribed:
+            actor.is_subscribed = True
+            if actor.subscribed_at is None:
+                actor.subscribed_at = utc_now_for_db()
+        else:
+            actor.is_subscribed = False
+            actor.subscribed_at = None
+        actor.save(only=[Actor.is_subscribed, Actor.subscribed_at])
 
     @classmethod
     def get_actor_movie_ids(cls, actor_id: int) -> list[int]:

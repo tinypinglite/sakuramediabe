@@ -1,3 +1,4 @@
+from datetime import datetime
 from enum import Enum
 
 from pydantic import Field, field_validator
@@ -16,6 +17,13 @@ class ActorListSubscriptionStatus(str, Enum):
     ALL = "all"
     SUBSCRIBED = "subscribed"
     UNSUBSCRIBED = "unsubscribed"
+
+
+ACTOR_LIST_SORT_FIELDS = (
+    "subscribed_at",
+    "name",
+    "movie_count",
+)
 
 
 class ImageResource(SchemaModel):
@@ -46,6 +54,8 @@ class ActorResource(SchemaModel):
     alias_name: str
     profile_image: ImageResource | None = None
     is_subscribed: bool
+    subscribed_at: datetime | None = None
+    movie_count: int = 0
 
 
 class ActorDetailResource(ActorResource):

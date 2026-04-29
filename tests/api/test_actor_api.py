@@ -1,4 +1,5 @@
 import json
+from datetime import datetime
 
 from src.config.config import settings
 from src.metadata.provider import MetadataNotFoundError
@@ -100,6 +101,8 @@ def test_get_actors_returns_entity_items(client, account_user, build_signed_imag
                     "large": build_signed_image_url("large.jpg"),
                 },
                 "is_subscribed": True,
+                "subscribed_at": None,
+                "movie_count": 0,
             },
             {
                 "id": first.id + 1,
@@ -108,6 +111,8 @@ def test_get_actors_returns_entity_items(client, account_user, build_signed_imag
                 "alias_name": "三上悠亚 / 鬼头桃菜",
                 "profile_image": None,
                 "is_subscribed": False,
+                "subscribed_at": None,
+                "movie_count": 0,
             },
             {
                 "id": first.id + 2,
@@ -116,6 +121,8 @@ def test_get_actors_returns_entity_items(client, account_user, build_signed_imag
                 "alias_name": "",
                 "profile_image": None,
                 "is_subscribed": False,
+                "subscribed_at": None,
+                "movie_count": 0,
             },
         ],
         "page": 1,
@@ -154,6 +161,8 @@ def test_get_actor_detail_returns_single_actor(client, account_user, build_signe
             "large": build_signed_image_url("large.jpg"),
         },
         "is_subscribed": True,
+        "subscribed_at": None,
+        "movie_count": 0,
     }
 
 
@@ -211,6 +220,8 @@ def test_get_actors_supports_gender_filters(
                     "large": build_signed_image_url("large.jpg"),
                 },
                 "is_subscribed": True,
+                "subscribed_at": None,
+                "movie_count": 0,
             }
         ],
         "page": 1,
@@ -226,6 +237,8 @@ def test_get_actors_supports_gender_filters(
             "alias_name": "",
             "profile_image": None,
             "is_subscribed": False,
+            "subscribed_at": None,
+            "movie_count": 0,
         }
     ]
 
@@ -270,6 +283,8 @@ def test_get_actors_supports_subscription_status_filters(
                 "large": build_signed_image_url("large.jpg"),
             },
             "is_subscribed": True,
+            "subscribed_at": None,
+            "movie_count": 0,
         }
     ]
     assert unsubscribed_response.status_code == 200
@@ -281,6 +296,8 @@ def test_get_actors_supports_subscription_status_filters(
             "alias_name": "",
             "profile_image": None,
             "is_subscribed": False,
+            "subscribed_at": None,
+            "movie_count": 0,
         }
     ]
 
@@ -306,12 +323,94 @@ def test_get_actors_supports_combined_filters(client, account_user):
                 "alias_name": "",
                 "profile_image": None,
                 "is_subscribed": True,
+                "subscribed_at": None,
+                "movie_count": 0,
             }
         ],
         "page": 1,
         "page_size": 20,
         "total": 1,
     }
+
+
+def test_get_actors_supports_subscription_time_sort(client, account_user):
+    token = _login(client, username=account_user.username)
+    old_actor = _create_actor(
+        "三上悠亚",
+        "ActorA1",
+        is_subscribed=True,
+        subscribed_at=datetime(2026, 3, 8, 9, 0, 0),
+    )
+    new_actor = _create_actor(
+        "河北彩花",
+        "ActorA2",
+        is_subscribed=True,
+        subscribed_at=datetime(2026, 3, 10, 9, 0, 0),
+    )
+    unsubscribed_actor = _create_actor("鬼头桃菜", "ActorA3", is_subscribed=False, subscribed_at=None)
+
+    desc_response = client.get(
+        "/actors?sort=subscribed_at:desc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    asc_response = client.get(
+        "/actors?sort=subscribed_at:asc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert desc_response.status_code == 200
+    assert [item["id"] for item in desc_response.json()["items"]] == [
+        new_actor.id,
+        old_actor.id,
+        unsubscribed_actor.id,
+    ]
+    assert desc_response.json()["items"][0]["subscribed_at"] is not None
+    assert asc_response.status_code == 200
+    assert [item["id"] for item in asc_response.json()["items"]] == [
+        old_actor.id,
+        new_actor.id,
+        unsubscribed_actor.id,
+    ]
+
+
+def test_get_actors_supports_name_sort(client, account_user):
+    token = _login(client, username=account_user.username)
+    actor_a = _create_actor("A Actor", "ActorA1")
+    actor_b = _create_actor("B Actor", "ActorA2")
+    actor_c = _create_actor("C Actor", "ActorA3")
+
+    response = client.get(
+        "/actors?sort=name:desc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [actor_c.id, actor_b.id, actor_a.id]
+
+
+def test_get_actors_supports_movie_count_sort(client, account_user):
+    token = _login(client, username=account_user.username)
+    actor_without_movie = _create_actor("A Actor", "ActorA1")
+    actor_with_two_movies = _create_actor("B Actor", "ActorA2")
+    actor_with_one_movie = _create_actor("C Actor", "ActorA3")
+    movie_a = _create_movie("ABC-001", "MovieA1")
+    movie_b = _create_movie("ABC-002", "MovieA2")
+    movie_c = _create_movie("ABC-003", "MovieA3")
+    MovieActor.create(movie=movie_a, actor=actor_with_two_movies)
+    MovieActor.create(movie=movie_b, actor=actor_with_two_movies)
+    MovieActor.create(movie=movie_c, actor=actor_with_one_movie)
+
+    response = client.get(
+        "/actors?sort=movie_count:desc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert [(item["id"], item["movie_count"]) for item in response.json()["items"]] == [
+        (actor_with_two_movies.id, 2),
+        (actor_with_one_movie.id, 1),
+        (actor_without_movie.id, 0),
+    ]
 
 
 def test_get_actors_rejects_invalid_filters(client, account_user):
@@ -322,9 +421,18 @@ def test_get_actors_rejects_invalid_filters(client, account_user):
         "/actors?subscription_status=unknown",
         headers={"Authorization": f"Bearer {token}"},
     )
+    invalid_sort_field = client.get("/actors?sort=id:desc", headers={"Authorization": f"Bearer {token}"})
+    invalid_sort_direction = client.get("/actors?sort=name:new", headers={"Authorization": f"Bearer {token}"})
+    blank_sort = client.get("/actors?sort=+", headers={"Authorization": f"Bearer {token}"})
 
     assert invalid_gender.status_code == 422
     assert invalid_subscription.status_code == 422
+    assert invalid_sort_field.status_code == 422
+    assert invalid_sort_field.json()["error"]["code"] == "invalid_actor_filter"
+    assert invalid_sort_direction.status_code == 422
+    assert invalid_sort_direction.json()["error"]["code"] == "invalid_actor_filter"
+    assert blank_sort.status_code == 422
+    assert blank_sort.json()["error"]["code"] == "invalid_actor_filter"
 
 
 def test_get_actor_subscriptions_route_is_removed(client, account_user):
@@ -350,7 +458,9 @@ def test_subscribing_actor_updates_only_target_record(client, account_user):
 
     assert response.status_code == 204
     assert Actor.get_by_id(actor.id).is_subscribed is True
+    assert Actor.get_by_id(actor.id).subscribed_at is not None
     assert Actor.get_by_id(other_actor.id).is_subscribed is False
+    assert Actor.get_by_id(other_actor.id).subscribed_at is None
 
 
 def test_get_actor_movies_returns_movies_for_single_actor(client, account_user, build_signed_image_url):
