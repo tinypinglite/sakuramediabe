@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -30,6 +31,7 @@ class FakeLicenseClient:
     activate_error = None
     renew_error = None
     status_error = None
+    written_state_paths = []
 
     def __init__(self, *, version: str, state_path: str, proxy: str | None = None):
         self.version = version
@@ -46,6 +48,20 @@ class FakeLicenseClient:
 
     def activate(self, activation_code: str):
         self.activated_codes.append(activation_code)
+        state_path = Path(self.state_path)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            json.dumps(
+                {
+                    "instance_id": "inst_test",
+                    "lease_token": "fake-lease-token",
+                    "renew_after_seconds": 21600,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        self.__class__.written_state_paths.append(str(state_path))
         if self.__class__.activate_error:
             raise self.__class__.activate_error
         return LicenseStatus(
@@ -84,11 +100,21 @@ def fake_license_client(monkeypatch):
     FakeLicenseClient.activate_error = None
     FakeLicenseClient.renew_error = None
     FakeLicenseClient.status_error = None
+    FakeLicenseClient.written_state_paths = []
     monkeypatch.setattr(
         "src.service.system.metadata_provider_license_service.LicenseClient",
         FakeLicenseClient,
     )
     return FakeLicenseClient
+
+
+def _use_temp_provider_license_state(monkeypatch, tmp_path):
+    state_path = tmp_path / "provider-license-state.json"
+    monkeypatch.setattr(
+        "src.metadata.license_runtime.METADATA_LICENSE_STATE_PATH",
+        str(state_path),
+    )
+    return state_path
 
 
 @pytest.fixture()
@@ -202,7 +228,10 @@ def test_metadata_provider_license_activate_uses_code_without_persisting_config(
     account_user,
     fake_license_client,
     isolated_metadata_settings,
+    monkeypatch,
+    tmp_path,
 ):
+    _use_temp_provider_license_state(monkeypatch, tmp_path)
     token = _login(client, username=account_user.username)
     secret_code = "SMB-SUPER-SECRET"
 
@@ -217,6 +246,69 @@ def test_metadata_provider_license_activate_uses_code_without_persisting_config(
     assert response.json()["license_valid_until"] == 1780000000
     assert fake_license_client.instances[-1].activated_codes == [secret_code]
     assert secret_code not in isolated_metadata_settings.read_text(encoding="utf-8")
+
+
+def test_metadata_provider_license_activate_replaces_state_after_success(
+    client,
+    account_user,
+    fake_license_client,
+    isolated_metadata_settings,
+    monkeypatch,
+    tmp_path,
+):
+    state_path = _use_temp_provider_license_state(monkeypatch, tmp_path)
+    state_path.write_text('{"lease_token":"old-token"}', encoding="utf-8")
+    token = _login(client, username=account_user.username)
+    secret_code = "SMB-SUPER-SECRET"
+
+    response = client.post(
+        "/metadata-provider-license/activate",
+        json={"activation_code": secret_code},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {
+        "instance_id": "inst_test",
+        "lease_token": "fake-lease-token",
+        "renew_after_seconds": 21600,
+    }
+    assert fake_license_client.instances[-1].state_path != str(state_path)
+    assert fake_license_client.written_state_paths == [fake_license_client.instances[-1].state_path]
+    assert not list(state_path.parent.glob(f".{state_path.name}.activate-*.tmp"))
+    assert secret_code not in isolated_metadata_settings.read_text(encoding="utf-8")
+
+
+def test_metadata_provider_license_activate_keeps_state_after_failure(
+    client,
+    account_user,
+    fake_license_client,
+    isolated_metadata_settings,
+    monkeypatch,
+    tmp_path,
+):
+    state_path = _use_temp_provider_license_state(monkeypatch, tmp_path)
+    old_state = b'{"lease_token":"old-token"}'
+    state_path.write_bytes(old_state)
+    fake_license_client.activate_error = MetadataLicenseError(
+        "activation_code_invalid",
+        "Activation code is invalid",
+    )
+    token = _login(client, username=account_user.username)
+
+    response = client.post(
+        "/metadata-provider-license/activate",
+        json={"activation_code": "SMB-BAD-CODE"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "activation_code_invalid"
+    assert state_path.read_bytes() == old_state
+    assert fake_license_client.instances[-1].state_path != str(state_path)
+    assert fake_license_client.written_state_paths == [fake_license_client.instances[-1].state_path]
+    assert not list(state_path.parent.glob(f".{state_path.name}.activate-*.tmp"))
+    assert "SMB-BAD-CODE" not in isolated_metadata_settings.read_text(encoding="utf-8")
 
 
 def test_metadata_provider_license_renew_returns_updated_status(
@@ -384,7 +476,10 @@ def test_metadata_provider_license_activate_maps_license_errors_without_sensitiv
     isolated_metadata_settings,
     license_error,
     expected_status,
+    monkeypatch,
+    tmp_path,
 ):
+    _use_temp_provider_license_state(monkeypatch, tmp_path)
     secret_code = "SMB-SUPER-SECRET"
     fake_license_client.activate_error = license_error
     token = _login(client, username=account_user.username)
@@ -408,7 +503,10 @@ def test_metadata_provider_license_activate_maps_http_errors_to_unavailable(
     account_user,
     fake_license_client,
     isolated_metadata_settings,
+    monkeypatch,
+    tmp_path,
 ):
+    _use_temp_provider_license_state(monkeypatch, tmp_path)
     secret_code = "SMB-SUPER-SECRET"
     fake_license_client.activate_error = httpx.TimeoutException("timeout")
     token = _login(client, username=account_user.username)
