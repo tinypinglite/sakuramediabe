@@ -1,6 +1,10 @@
 """闭源 metadata provider 授权 service。"""
 
+import os
+import threading
 import time
+import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -21,6 +25,7 @@ from src.schema.system.metadata_provider_license import (
 class MetadataProviderLicenseService:
     LICENSE_CENTER_URL = "https://sakuramedia-license-worker.tinyping.workers.dev/"
     CONNECTIVITY_TEST_TIMEOUT_SECONDS = 10.0
+    _activation_lock = threading.RLock()
 
     BAD_REQUEST_CODES = frozenset({
         "invalid_json",
@@ -111,8 +116,22 @@ class MetadataProviderLicenseService:
                 "activation_code is required",
                 {"field": "activation_code"},
             )
+        runtime = resolve_metadata_provider_license_runtime()
+        state_path = cls._resolve_state_path(runtime.state_path)
+        temp_state_path = state_path.with_name(
+            f".{state_path.name}.activate-{uuid.uuid4().hex}.tmp"
+        )
         try:
-            status = cls._build_client().activate(activation_code)
+            with cls._activation_lock:
+                status = LicenseClient(
+                    version=runtime.version,
+                    state_path=str(temp_state_path),
+                    proxy=runtime.license_proxy,
+                ).activate(activation_code)
+                if not temp_state_path.exists():
+                    raise RuntimeError("Temporary provider license state was not written")
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(temp_state_path, state_path)
         except MetadataLicenseError as exc:
             raise cls._api_error_from_license_error(exc) from exc
         except httpx.HTTPError as exc:
@@ -129,6 +148,8 @@ class MetadataProviderLicenseService:
                 "license_unavailable",
                 "License service is unavailable",
             ) from exc
+        finally:
+            temp_state_path.unlink(missing_ok=True)
         return cls._status_to_resource(status)
 
     @classmethod
@@ -162,6 +183,13 @@ class MetadataProviderLicenseService:
             state_path=runtime.state_path,
             proxy=runtime.license_proxy,
         )
+
+    @staticmethod
+    def _resolve_state_path(state_path: str) -> Path:
+        path = Path(state_path).expanduser()
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        return path
 
     @staticmethod
     def _elapsed_ms(start_at: float) -> int:
