@@ -1,0 +1,15 @@
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y python3 python3-pip && rm -rf /var/lib/apt/lists/*
+COPY docker/joytag-infer/requirements.cuda.txt /tmp/requirements.cuda.txt
+COPY docker/joytag-infer/requirements.base.txt /tmp/requirements.base.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.cuda.txt
+
+COPY docker/joytag-infer/app /app
+
+ENV PYTHONPATH=/app
+EXPOSE 8001
+
+CMD ["python3", "-m", "joytag_infer"]

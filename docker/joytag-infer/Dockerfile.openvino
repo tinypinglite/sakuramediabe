@@ -1,0 +1,23 @@
+FROM python:3.10-slim-bookworm
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ocl-icd-libopencl1 \
+    intel-opencl-icd \
+    libze1 \
+    libdrm2 \
+    libglib2.0-0 \
+    libtbb12 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/joytag-infer/requirements.openvino.txt /tmp/requirements.openvino.txt
+COPY docker/joytag-infer/requirements.base.txt /tmp/requirements.base.txt
+RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.openvino.txt
+
+COPY docker/joytag-infer/app /app
+
+ENV PYTHONPATH=/app
+EXPOSE 8001
+
+CMD ["python3", "-m", "joytag_infer"]

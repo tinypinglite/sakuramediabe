@@ -1,0 +1,216 @@
+# !!!! 注意配置文件中所有涉及到路径的配置项都应该是用容器内的实际路径，不是宿主机的路径 !!!!
+# !!!! 注意配置文件中所有涉及到路径的配置项都应该是用容器内的实际路径，不是宿主机的路径 !!!!
+# !!!! 注意配置文件中所有涉及到路径的配置项都应该是用容器内的实际路径，不是宿主机的路径 !!!!
+
+# 是否启 Swagger / ReDoc 文档页面。
+enable_docs = true
+
+[database]
+# 数据库类型，可选值：sqlite、mysql、postgres。
+engine = "sqlite"
+# SQLite 数据库文件路径；仅当 engine=sqlite 时生效。除非你知道再做什么，否则不需要修改
+path = "/data/db/sakuramedia.db"
+# MySQL 连接字符集；仅当 engine=mysql 时生效。
+charset = "utf8mb4"
+# MySQL / Postgres 连接串；仅当 engine=mysql 或 postgres 时生效。
+# 示例：
+# mysql://user:password@127.0.0.1:3306/sakuramedia
+# postgresql://user:password@127.0.0.1:5432/sakuramedia
+url = ""
+
+[auth]
+# 默认登录用户名。
+username = "account"
+# 默认登录密码。
+password = "account"
+# JWT 签名密钥，必须改成你自己的随机字符串。
+secret_key = "replace-with-a-random-secret-key"
+# JWT 签名算法。
+algorithm = "HS256"
+# Access Token 过期时间，单位：分钟。
+access_token_expire_minutes = 43200
+# Refresh Token 过期时间，单位：分钟。
+refresh_token_expire_minutes = 10080
+
+[media]
+# 合集影片的“番号特征”的关键词列表，比如说 OFJE等。
+others_number_features = ["OFJE", "CJOB", "DVAJ", "REBD"]
+# 合集影片时长阈值，单位：分钟；仅当影片时长严格大于该值时，才会按时长规则判定为合集。
+collection_duration_threshold_minutes = 300
+# 识别为“内嵌字幕”的标签关键词。
+inner_sub_tags = ["中字", "-C", "-UC", "字幕组", "中文"]
+# 识别为“蓝光 / 高清版本”的标签关键词。
+blueray_tags = ["4K", "4k", "蓝光"]
+# 识别为“无码资源”的标签关键词。
+uncensored_tags = [
+    "無修正",
+    "UC",
+    "-UC",
+    "UNCENSORED",
+    "-U",
+    "流出",
+    "uncensored",
+    "无码",
+    "無码",
+    "破解",
+]
+# 识别为“无码资源”的番号前缀。
+uncensored_prefix = [
+    "CWDV",
+    "MK3D2DBD",
+    "RHJ",
+    "CWP",
+    "MMDV",
+    "LAF",
+    "SMD",
+    "SMBD",
+    "MKD",
+    "MCB3DBD",
+    "MKBD",
+    "CWBD",
+    "S2M",
+    "CW3D2DBD",
+    "MXBD",
+    "SM3D2DBD",
+    "PT-",
+    "BT",
+    "SKYHD",
+    "SKY-",
+    "MCBD",
+]
+# 允许导入的视频最小文件大小，单位：字节；设为 0 表示不限制。建议设置为1GB即1024*1024*1024。
+allowed_min_video_file_size = 1073741824
+# 导入时缓存图片的目录，女优图片、封面图、剧照图、剧情图都会放在这个目录。
+# 建议放到ssd上
+import_image_root_path = "/data/cache/assets"
+# 字幕文件存储目录（抓取任务写入位置）。
+subtitle_root_path = "/data/cache/subtitles"
+# 媒体缩略图生成任务的最大并发数。
+max_thumbnail_process_count = 4
+
+[metadata]
+# JavDB API域名，不带协议头。
+javdb_host = "jdforrepam.com"
+# DMM 与 GFriends 共用的代理地址；JavDB 默认直连。不需要代理时留空。
+# 示例：http://192.168.1.1:7890 仅支持 http 代理；DMM 通常需要可访问日本站点的代理。
+proxy = ""
+# SakuraMedia 授权中心专用 HTTP 代理；不影响 DMM/JavDB/GFriends 站点请求。
+license_proxy = ""
+# GFriends 文件树索引地址。如果这个地址不可用，可以尝试更换可用的镜像地址
+gfriends_filetree_url = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
+# GFriends CDN 根地址，用于拼接演员图片资源链接。
+gfriends_cdn_base_url = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
+# GFriends 文件树本地缓存路径.
+gfriends_filetree_cache_path = "/data/cache/gfriends/gfriends-filetree.json"
+# GFriends 文件树缓存有效期，单位：小时。
+gfriends_filetree_cache_ttl_hours = 168
+# 导入本地影片时，按番号抓取 JavDB 元数据的并发线程数。
+import_metadata_max_workers = 3
+
+[scheduler]
+# 是否启用定时任务。
+enabled = true
+# 定时任务日志目录。
+log_dir = "/data/logs"
+# 订阅女优影片同步任务 cron 表达式。
+actor_subscription_sync_cron = "0 1 * * *"
+# 下载任务状态同步 cron 表达式。
+download_task_sync_cron = "*/15 * * * *"
+# 已完成下载自动导入 cron 表达式。
+download_task_auto_import_cron = "*/10 * * * *"
+# 影片热度重算 cron 表达式。
+movie_heat_cron = "15 0 * * *"
+# 影片互动数同步 cron 表达式。
+movie_interaction_sync_cron = "0 * * * *"
+# 榜单同步 cron 表达式。
+ranking_sync_cron = "45 1 * * *"
+# JavDB 热评同步 cron 表达式。
+hot_review_sync_cron = "20 1 * * *"
+# 标记合集影片
+movie_collection_sync_cron = "0 3 * * *"
+# 巡检 media 记录对应文件并补视频信息
+media_file_scan_cron = "0 */6 * * *"
+# 回填历史影片 DMM 描述
+movie_desc_sync_cron = "0 4 * * *"
+# 翻译影片简介为中文
+movie_desc_translation_cron = "15 4 * * *"
+# 翻译影片标题为中文
+movie_title_translation_cron = "20 4 * * *"
+# 影片相似度重算 cron 表达式。
+movie_similarity_recompute_cron = "30 3 * * *"
+# 生成媒体资源缩略图
+media_thumbnail_cron = "*/10 * * * *"
+# 生成以图搜图缩略图向量
+image_search_index_cron = "*/10 * * * *"
+
+[movie_info_translation]
+# 是否启用影片信息翻译任务（简介翻译、标题翻译共用）。
+enabled = false
+# OpenAI 兼容服务地址。
+base_url = "http://localhost:8000"
+# OpenAI 兼容服务 API Key；未启用时可留空。
+api_key = ""
+# 翻译使用的模型名称。
+model = "gpt-4o-mini"
+# 翻译请求总超时秒数。
+timeout_seconds = 120
+# 翻译请求建连超时秒数。
+connect_timeout_seconds = 3
+
+[image_search]
+# JoyTag 独立推理服务地址。
+inference_base_url = "http://joytag-infer:8001"
+# 推理服务总超时秒数。
+inference_timeout_seconds = 30
+# 推理服务建连超时秒数。
+inference_connect_timeout_seconds = 3
+# 推理服务 Bearer Token；未启用时留空。
+inference_api_key = ""
+# 索引任务调用远端推理时的批大小。
+inference_batch_size = 16
+# 搜索会话有效期，单位：秒
+session_ttl_seconds = 600
+# 默认每页结果数
+default_page_size = 20
+# 最大每页结果数
+max_page_size = 100
+# 为凑满一页结果时，每次向量库扫描的批大小
+search_scan_batch_size = 100
+# JoyTag 索引任务每次批量写入 LanceDB 的条数
+index_upsert_batch_size = 100
+# JoyTag 索引任务每处理多少条成功记录后触发一次分段 optimize
+optimize_every_records = 5000
+# JoyTag 索引任务距离上次 optimize 超过多少秒后触发一次分段 optimize
+optimize_every_seconds = 1800
+# JoyTag 索引任务结束后是否再执行一次兜底 optimize
+optimize_on_job_end = true
+
+[lancedb]
+# LanceDB 本地目录
+uri = "/data/indexes/image-search"
+# LanceDB 表名
+table_name = "media_thumbnail_vectors"
+# 标量索引字段列表（当前仅按 movie_id 过滤时建议只保留 movie_id）
+scalar_index_columns = ["movie_id"]
+
+[logging]
+# 全局日志等级。可选值：DEBUG、INFO、WARNING、ERROR、CRITICAL。
+level = "INFO"
+
+[indexer_settings]
+# 索引器类型，目前仅支持 jackett。这里的配置可以在 app 修改，修改后会覆盖掉 config.toml 中的配置。
+type = "jackett"
+# Jackett API Key。
+api_key = "change-me"
+
+[[indexer_settings.indexers]]
+# 索引器显示名称，需保持唯一。
+name = "mteam"
+# Jackett Torznab 接口地址。
+url = "http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/"
+# 索引器资源类型，可选值：pt、bt。
+kind = "pt"
+
+[database.pragmas]
+# SQLite 外键约束开关；仅当 engine=sqlite 时生效。
+foreign_keys = 1

@@ -1,0 +1,67 @@
+services:
+  sakuramedia:
+    image: tinyping/sakuramediabe:latest
+    container_name: sakuramedia
+    restart: unless-stopped
+    ports:
+      # HTTP API端口
+      - "38000:8000"
+      # supervisor管理端口，无认证，不要对公网开放 !!!
+      - "39001:9001"
+    environment:
+      PUID: "${PUID:-1000}"
+      PGID: "${PGID:-1000}"
+      TZ: "Asia/Shanghai"
+    volumes:
+      - ./docker-data/config:/data/config
+      # 如果使用sqlite数据库，尽量把这个目录放到ssd上
+      - ./docker-data/db:/data/db
+      - ./docker-data/cache/assets:/data/cache/assets
+      - ./docker-data/cache/gfriends:/data/cache/gfriends
+      # 存储lancedb数据库文件，建议放在ssd
+      - ./docker-data/image-search-index:/data/indexes
+      - ./docker-data/logs:/data/logs
+
+      # 按实际情况 挂载由sakuramedia 管理的媒体目录、qb 实际下载目录已经需要导入的媒体目录.
+      # 具体看文档说明
+
+  joytag-infer:
+    image: tinyping/joytag-infer:cpu
+    container_name: joytag-infer
+    restart: unless-stopped
+    environment:
+      # 默认先用 CPU 版，Intel / AMD CPU 都可以直接跑。
+      JOYTAG_INFER_BACKEND: "cpu"
+      JOYTAG_INFER_MODEL_PATH: "/data/lib/joytag/model_vit_768.onnx"
+      JOYTAG_INFER_API_KEY: ""
+      # OpenVINO 后端专用。只在 image 切到 tinyping/joytag-infer:openvino 后再启用。
+      # 只允许 "CPU" 或 "GPU"，默认是 "GPU"。
+      # JOYTAG_INFER_OPENVINO_DEVICE_TYPE: "GPU"
+    volumes:
+      # JoyTag 模型目录只挂载到独立推理服务。
+      - ./docker-data/joytag:/data/lib/joytag
+
+    # 切换到 OpenVINO:
+    # 1. 把 image 改成 tinyping/joytag-infer:openvino
+    # 2. 把 JOYTAG_INFER_BACKEND 改成 "openvino"
+    # 3. 如果只想跑 Intel CPU，可把 JOYTAG_INFER_OPENVINO_DEVICE_TYPE 设为 "CPU"，不需要额外挂设备
+    # 4. 如果要跑 Intel 核显，请设为 "GPU"，并打开下面的 /dev/dri 映射；启动时会真实推理校验，不会静默退回 CPU
+    # devices:
+    #   - /dev/dri:/dev/dri
+
+    # 切换到 CUDA:
+    # 1. 把 image 改成 tinyping/joytag-infer:cuda
+    # 2. 把 JOYTAG_INFER_BACKEND 改成 "cuda"
+    # 3. 宿主机需要先安装 NVIDIA Container Toolkit
+    # 4. 取消下面这一行注释，把 GPU 暴露给容器
+    # gpus: all
+
+  sakuramedia-web:
+    image: tinyping/sakuramedia-web:latest
+    container_name: sakuramedia-web
+    restart: unless-stopped
+    depends_on:
+      - sakuramedia
+    ports:
+      # Web 前端端口
+      - "38080:80"

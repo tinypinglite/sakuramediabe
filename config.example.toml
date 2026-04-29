@@ -1,0 +1,74 @@
+# 是否启 Swagger / ReDoc 文档页面，建议不要开启
+enable_docs = false
+
+[database]
+# 数据库类型，可选值：sqlite、mysql、postgres。
+engine = "sqlite"
+
+# MySQL / Postgres 连接串；仅当 engine=mysql 或 postgres 时生效。
+# 示例：
+# mysql://user:password@127.0.0.1:3306/sakuramedia
+# postgresql://user:password@127.0.0.1:5432/sakuramedia
+url = ""
+
+[auth]
+
+# 建议之后用 app 修改这个配置项，修改后会覆盖掉 config.toml 中的配置
+# 默认登录用户名。
+username = "account"
+# 默认登录密码。
+password = "account"
+
+
+# JWT 签名密钥，必须改成你自己的随机字符串！！！建议长度不少于32个字符，否则可能存在安全风险。
+secret_key = "replace-with-a-random-secret-key"
+
+
+[media]
+# 合集影片时长阈值，单位：分钟；仅当影片时长严格大于该值时，才会按时长规则判定为合集。
+collection_duration_threshold_minutes = 300
+# 允许导入的视频最小文件大小，单位：字节；设为 0 表示不限制。建议设置为1GB即1024*1024*1024。
+allowed_min_video_file_size = 1073741824
+# 字幕文件存储目录（历史抓取字幕与本地字幕索引解析都会使用）。
+subtitle_root_path = "/data/cache/subtitles"
+
+[scheduler]
+# 影片互动数同步 cron 表达式。
+movie_interaction_sync_cron = "0 * * * *"
+# 影片描述回填 cron 表达式。
+movie_desc_sync_cron = "0 4 * * *"
+# 影片简介翻译 cron 表达式。
+movie_desc_translation_cron = "15 4 * * *"
+# 影片相似度重算 cron 表达式。
+movie_similarity_recompute_cron = "30 3 * * *"
+
+[movie_info_translation]
+# 是否启用影片信息翻译任务（简介翻译、标题翻译共用）。
+enabled = false
+# OpenAI 兼容服务地址。
+base_url = "http://localhost:8000"
+# OpenAI 兼容服务 API Key；未启用时可留空。
+api_key = ""
+# 翻译使用的模型名称。
+model = "gpt-4o-mini"
+# 翻译请求总超时秒数。
+timeout_seconds = 120
+# 翻译请求建连超时秒数。
+connect_timeout_seconds = 3
+
+[metadata]
+# DMM 与 GFriends 共用的代理地址；JavDB 默认直连。不需要代理时留空。
+# 仅支持 http 代理：例如 http://192.168.1.1:7890
+proxy = ""
+# SakuraMedia 授权中心专用 HTTP 代理；不影响 DMM/JavDB/GFriends 站点请求。
+license_proxy = ""
+
+[image_search]
+# JoyTag 独立推理服务地址。
+inference_base_url = "http://joytag-infer:8001"
+# 请求超时秒数。
+inference_timeout_seconds = 30
+# 建连超时秒数。
+inference_connect_timeout_seconds = 3
+# 推理服务鉴权 token；未启用时留空。
+inference_api_key = ""
