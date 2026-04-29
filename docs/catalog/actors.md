@@ -83,9 +83,12 @@
     - `all`：全部演员
     - `subscribed`：仅 `is_subscribed = true`
     - `unsubscribed`：仅 `is_subscribed = false`
+  - `sort`：排序表达式（可选，格式 `field:direction`）
+    - 支持字段：`subscribed_at`、`name`、`movie_count`
+    - 支持方向：`asc`、`desc`
   - `page`：默认 `1`
   - `page_size`：默认 `20`
-- 排序：按 `actor.id` 升序
+- 排序：未传 `sort` 时按 `actor.id` 升序；传入 `sort` 时按指定字段和方向排序，并按 `actor.id` 同方向稳定排序；`subscribed_at = null` 固定排在最后
 
 示例请求：
 
@@ -104,7 +107,9 @@ GET /actors?gender=female&subscription_status=subscribed&page=1&page_size=20
       "name": "三上悠亚",
       "alias_name": "三上悠亚 / 鬼头桃菜",
       "profile_image": null,
-      "is_subscribed": true
+      "is_subscribed": true,
+      "subscribed_at": "2026-03-08T17:00:00",
+      "movie_count": 12
     }
   ],
   "page": 1,

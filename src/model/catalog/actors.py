@@ -19,6 +19,7 @@ class Actor(TimestampedMixin, BaseModel):
     javdb_type = peewee.IntegerField(default=0, verbose_name="JavDB 类型")
     gender = peewee.IntegerField(default=0, verbose_name="性别")
     is_subscribed = peewee.BooleanField(default=False, index=True)
+    subscribed_at = peewee.DateTimeField(null=True, index=True)
     subscribed_movies_synced_at = peewee.DateTimeField(null=True, index=True)
     subscribed_movies_full_synced_at = peewee.DateTimeField(null=True, index=True)
 

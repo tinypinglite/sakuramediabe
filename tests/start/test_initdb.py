@@ -21,6 +21,7 @@ from src.model import (
     UserRefreshToken,
 )
 from src.start.initdb import create_tables, init_system_playlists, init_user, initdb
+from tests.conftest import TEST_MODELS
 
 
 def _create_movie_table_missing_title_zh(test_db):
@@ -84,10 +85,16 @@ def test_create_tables_creates_system_tables(test_db, monkeypatch):
 def test_create_tables_creates_current_schema_columns(test_db, monkeypatch):
     monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
     monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
+    # 组合运行时其他测试可能重绑 Peewee 模型；这里显式绑定当前库再验证实际建表结果。
+    test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
 
-    create_tables()
+    database = create_tables()
+    if database.is_closed():
+        database.connect()
 
     assert Actor.table_exists()
+    actor_columns = {row[1] for row in database.execute_sql("PRAGMA table_info(actor)").fetchall()}
+    assert "subscribed_at" in actor_columns
     assert BackgroundTaskRun.table_exists()
     assert ResourceTaskState.table_exists()
 

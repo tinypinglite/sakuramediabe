@@ -87,6 +87,8 @@ def test_actor_service_list_actors_uses_database_pagination(
                 "alias_name": "三上悠亚 / 鬼头桃菜",
                 "profile_image": None,
                 "is_subscribed": True,
+                "subscribed_at": None,
+                "movie_count": 0,
             }
         ],
         "page": 2,
@@ -115,6 +117,74 @@ def test_actor_service_list_actors_all_gender_includes_unknown_gender(app):
         male_actor.id,
     ]
     assert response.total == 3
+
+
+def test_actor_service_list_actors_supports_subscription_time_sort_and_filters(app):
+    older_time = datetime(2026, 3, 8, 9, 0, 0)
+    newer_time = datetime(2026, 3, 10, 9, 0, 0)
+    old_actor = _create_actor("三上悠亚", "ActorA1", gender=1, is_subscribed=True, subscribed_at=older_time)
+    new_actor = _create_actor("河北彩花", "ActorA2", gender=1, is_subscribed=True, subscribed_at=newer_time)
+    _create_actor("鬼头桃菜", "ActorA3", gender=1, is_subscribed=False, subscribed_at=None)
+
+    response = ActorService.list_actors(
+        gender=ActorListGender.FEMALE,
+        subscription_status=ActorListSubscriptionStatus.SUBSCRIBED,
+        sort="subscribed_at:desc",
+        page=1,
+        page_size=1,
+    )
+
+    assert [item.id for item in response.items] == [new_actor.id]
+    assert response.items[0].subscribed_at == newer_time
+    assert response.total == 2
+    assert ActorService.list_actors(sort="subscribed_at:asc").items[:2][0].id == old_actor.id
+
+
+def test_actor_service_list_actors_supports_name_and_movie_count_sort(app):
+    first_actor = _create_actor("A Actor", "ActorA1")
+    second_actor = _create_actor("B Actor", "ActorA2")
+    third_actor = _create_actor("C Actor", "ActorA3")
+    movie_a = _create_movie("ABC-001", "MovieA1")
+    movie_b = _create_movie("ABC-002", "MovieA2")
+    movie_c = _create_movie("ABC-003", "MovieA3")
+    MovieActor.create(movie=movie_a, actor=second_actor)
+    MovieActor.create(movie=movie_b, actor=second_actor)
+    MovieActor.create(movie=movie_c, actor=third_actor)
+
+    by_name_desc = ActorService.list_actors(sort="name:desc")
+    by_count_desc = ActorService.list_actors(sort="movie_count:desc")
+    by_count_asc = ActorService.list_actors(sort="movie_count:asc")
+
+    assert [item.id for item in by_name_desc.items] == [third_actor.id, second_actor.id, first_actor.id]
+    assert [(item.id, item.movie_count) for item in by_count_desc.items] == [
+        (second_actor.id, 2),
+        (third_actor.id, 1),
+        (first_actor.id, 0),
+    ]
+    assert [(item.id, item.movie_count) for item in by_count_asc.items] == [
+        (first_actor.id, 0),
+        (third_actor.id, 1),
+        (second_actor.id, 2),
+    ]
+
+
+def test_actor_service_subscription_updates_subscribed_at(app):
+    actor = _create_actor("三上悠亚", "ActorA1", is_subscribed=False, subscribed_at=None)
+
+    ActorService.set_subscription(actor.id, True)
+    subscribed_actor = Actor.get_by_id(actor.id)
+    first_subscribed_at = subscribed_actor.subscribed_at
+
+    assert subscribed_actor.is_subscribed is True
+    assert first_subscribed_at is not None
+
+    ActorService.set_subscription(actor.id, True)
+    assert Actor.get_by_id(actor.id).subscribed_at == first_subscribed_at
+
+    ActorService.set_subscription(actor.id, False)
+    unsubscribed_actor = Actor.get_by_id(actor.id)
+    assert unsubscribed_actor.is_subscribed is False
+    assert unsubscribed_actor.subscribed_at is None
 
 
 def test_actor_service_get_actor_tags_uses_tag_query_without_loading_movie_ids(app, test_db):

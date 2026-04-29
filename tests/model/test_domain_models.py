@@ -127,6 +127,7 @@ def test_background_task_run_model_tracks_mutex_key():
 def test_catalog_models_inline_subscription_flags():
     assert "is_subscribed" in Movie._meta.fields
     assert "is_subscribed" in Actor._meta.fields
+    assert "subscribed_at" in Actor._meta.fields
     assert "javdb_id" in Movie._meta.fields
     assert "javdb_id" in Actor._meta.fields
     assert "extra" in Movie._meta.fields
