@@ -1,0 +1,126 @@
+name: JoyTag Docker Publish
+run-name: JoyTag ${{ inputs.backend }} ${{ inputs.version_tag || 'channel' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend:
+        description: JoyTag inference backend
+        required: true
+        type: choice
+        options:
+          - cpu
+          - openvino
+          - cuda
+      version_tag:
+        description: Optional version tag prefix, for example v1.2.3
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: joytag-docker-publish-${{ inputs.backend }}-${{ inputs.version_tag || 'channel' }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: joytag-infer
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate publish request
+        env:
+          BACKEND: ${{ inputs.backend }}
+          VERSION_TAG: ${{ inputs.version_tag }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+
+          # backend 仅允许走仓库内已维护的三套 Dockerfile，避免手动输入错误。
+          case "$BACKEND" in
+            cpu|openvino|cuda)
+              ;;
+            *)
+              echo "::error::Unsupported backend: $BACKEND"
+              exit 1
+              ;;
+          esac
+
+          # Docker Hub 用户名缺失时直接失败，避免后续拼出的镜像名不可用。
+          if [ -z "$DOCKERHUB_USERNAME" ]; then
+            echo "::error::DOCKERHUB_USERNAME is required"
+            exit 1
+          fi
+
+          # 版本标签禁止包含空白字符，避免生成无法识别的 Docker tag。
+          if printf '%s' "$VERSION_TAG" | grep -Eq '[[:space:]]'; then
+            echo "::error::version_tag must not contain whitespace"
+            exit 1
+          fi
+
+          # 非空版本标签额外校验 Docker tag 常用字符集，减少推送阶段才失败的情况。
+          if [ -n "$VERSION_TAG" ] && ! printf '%s' "$VERSION_TAG" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
+            echo "::error::version_tag contains unsupported Docker tag characters"
+            exit 1
+          fi
+
+      - name: Resolve Dockerfile and tags
+        id: prepare
+        env:
+          BACKEND: ${{ inputs.backend }}
+          VERSION_TAG: ${{ inputs.version_tag }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+
+          case "$BACKEND" in
+            cpu)
+              dockerfile="docker/joytag-infer/Dockerfile.cpu"
+              ;;
+            openvino)
+              dockerfile="docker/joytag-infer/Dockerfile.openvino"
+              ;;
+            cuda)
+              dockerfile="docker/joytag-infer/Dockerfile.cuda"
+              ;;
+          esac
+
+          image="${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
+
+          {
+            echo "dockerfile=$dockerfile"
+            echo "tags<<EOF"
+            echo "${image}:${BACKEND}"
+            if [ -n "$VERSION_TAG" ]; then
+              echo "${image}:${VERSION_TAG}-${BACKEND}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push JoyTag image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./${{ steps.prepare.outputs.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.prepare.outputs.tags }}
+          cache-from: type=gha,scope=joytag-${{ inputs.backend }}
+          cache-to: type=gha,mode=max,scope=joytag-${{ inputs.backend }}

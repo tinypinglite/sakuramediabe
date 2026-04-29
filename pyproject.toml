@@ -1,0 +1,53 @@
+[tool.poetry]
+name = "sakuramediabe"
+version = "0.1.0"
+description = ""
+authors = ["tinypinglite <tinyping@proton.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "0.110.1"
+uvicorn = "^0.22.0"
+loguru = "^0.7.0"
+python-jose = "^3.3.0"
+passlib = "^1.7.4"
+peewee = "^3.16.2"
+tqdm = "^4.65.0"
+qbittorrent-api = "^2023.6.49"
+xmltodict = "^0.13.0"
+libtorrent = "^2.0.9"
+ffmpy = "^0.3.0"
+python-multipart = "^0.0.6"
+bcrypt = "^4.0.1"
+pydantic-settings = "^2.2.1"
+apscheduler = "^3.10.4"
+av = "^15.0.0"
+pydantic = "^2.7.4"
+pillow = "10.4.0"
+opencv-python-headless = "4.10.0.84"
+toml = "^0.10.2"
+# Python 3.10 下 pydantic-settings 读取 TOML 需要 tomli，避免 Docker 运行时缺依赖。
+tomli = {version = "^2.0.1", python = "<3.11"}
+psycopg2-binary = "^2.9.10"
+httpx = "^0.28.1"
+lancedb = "0.21.2"
+pymysql = "^1.1.2"
+numpy = "<2"
+pyarrow = "16.1.0"
+curl-cffi = "^0.15.0"
+sakuramedia-metadata-providers = [
+    {path = "lib/metadata-provider/sakuramedia_metadata_providers-0.1.2-cp310-cp310-linux_x86_64.whl", markers = "sys_platform == 'linux' and platform_machine == 'x86_64'"},
+    {path = "lib/metadata-provider/sakuramedia_metadata_providers-0.1.2-cp310-cp310-macosx_10_15_x86_64.whl", markers = "sys_platform == 'darwin' and platform_machine == 'x86_64'"},
+    {path = "lib/metadata-provider/sakuramedia_metadata_providers-0.1.2-cp310-cp310-macosx_11_0_arm64.whl", markers = "sys_platform == 'darwin' and platform_machine == 'arm64'"},
+    {path = "lib/metadata-provider/sakuramedia_metadata_providers-0.1.2-cp310-cp310-win_amd64.whl", markers = "sys_platform == 'win32' and platform_machine == 'AMD64'"},
+]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pylint = "^3.3.7"
+poetry-plugin-export = "^1.10.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

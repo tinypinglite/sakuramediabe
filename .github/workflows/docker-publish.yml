@@ -1,0 +1,109 @@
+name: Docker Publish
+run-name: Release ${{ github.event.release.tag_name }}
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docker-publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: sakuramediabe
+  DEFAULT_BRANCH: main
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate release request
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          DEFAULT_BRANCH: ${{ env.DEFAULT_BRANCH }}
+        run: |
+          set -euo pipefail
+
+          # 预发布版本不参与 Docker 正式发版，避免测试版本污染正式镜像。
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            echo "::error::Pre-release does not trigger Docker publish"
+            exit 1
+          fi
+
+          # 版本号保持 v 开头约定，避免 Docker 镜像标签和 Release 命名混乱。
+          if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9].*'; then
+            echo "::error::Version must match ^v[0-9].*"
+            exit 1
+          fi
+
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag points to main
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+          DEFAULT_BRANCH: ${{ env.DEFAULT_BRANCH }}
+        run: |
+          set -euo pipefail
+
+          # 拉取默认分支和标签信息，确保后续校验基于远端最新状态。
+          git fetch --force origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git fetch --force --tags origin
+
+          # Release 事件里必须已经存在同名 tag，否则说明发布对象异常。
+          if ! git rev-parse --verify "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag $VERSION does not exist locally after fetch"
+            exit 1
+          fi
+
+          TAG_COMMIT="$(git rev-list -n 1 "$VERSION")"
+
+          # 正式发版要求 tag 指向 main 上的提交，避免从临时分支直接发正式版。
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" "origin/$DEFAULT_BRANCH"; then
+            echo "::error::Release tag $VERSION is not on origin/$DEFAULT_BRANCH"
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ github.event.release.tag_name }}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          # 正式发布镜像必须走 PyArmor 混淆 target，避免把原始 src 源码发布到 Docker Hub。
+          target: obfuscated
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.version=${{ github.event.release.tag_name }}
+          build-args: |
+            SAKURAMEDIA_BACKEND_VERSION=${{ github.event.release.tag_name }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
