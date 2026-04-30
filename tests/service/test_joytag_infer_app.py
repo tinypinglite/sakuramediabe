@@ -8,7 +8,7 @@ class _FakeRuntime:
     backend = "cpu"
     model_name = "joytag-onnxruntime"
     execution_provider = "CPUExecutionProvider"
-    device = "CPU"
+    device = "cpu"
     image_size = 448
     vector_size = 768
 
@@ -44,6 +44,7 @@ def test_runtime_endpoint_returns_runtime_payload():
     payload = response.json()
     assert payload["backend"] == "cpu"
     assert payload["execution_provider"] == "CPUExecutionProvider"
+    assert payload["device"] == "cpu"
     assert payload["vector_size"] == 768
 
 

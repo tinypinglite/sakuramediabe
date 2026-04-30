@@ -14,7 +14,7 @@ class _FakeJoyTagClient:
             endpoint = "http://joytag-infer:8001"
             backend = "cpu"
             execution_provider = "CPUExecutionProvider"
-            device = "CPU"
+            device = "cpu"
             device_full_name = None
             model_path = "/data/lib/joytag/model_vit_768.onnx"
             model_name = "joytag-onnxruntime"
@@ -105,7 +105,7 @@ def test_get_image_search_status_returns_success_and_indexing_counts(app, monkey
 
     assert status.healthy is True
     assert status.joytag.healthy is True
-    assert status.joytag.used_device == "CPU"
+    assert status.joytag.used_device == "cpu"
     assert status.joytag.backend == "cpu"
     assert status.lancedb.healthy is True
     assert status.lancedb.table_exists is True

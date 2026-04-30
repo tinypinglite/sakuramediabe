@@ -149,7 +149,7 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
                 endpoint = "http://joytag-infer:8001"
                 backend = "cpu"
                 execution_provider = "CPUExecutionProvider"
-                device = "CPU"
+                device = "cpu"
                 device_full_name = None
                 model_path = "/data/lib/joytag/model_vit_768.onnx"
                 model_name = "joytag-onnxruntime"
@@ -192,7 +192,7 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
     payload = response.json()
     assert payload["healthy"] is True
     assert payload["joytag"]["healthy"] is True
-    assert payload["joytag"]["used_device"] == "CPU"
+    assert payload["joytag"]["used_device"] == "cpu"
     assert payload["joytag"]["backend"] == "cpu"
     assert payload["joytag"]["error"] is None
     assert payload["lancedb"]["healthy"] is True
