@@ -45,14 +45,6 @@
 
 把通知标记为已读。
 
-### `PATCH /system/notifications/{notification_id}/archive`
-
-把通知归档。
-
-### `GET /system/notifications/unread-count`
-
-返回未归档且未读的通知数量。
-
 ## 说明
 
 - 后端任务成功完成后会生成一条 `info` 通知；若 `result_summary` 含 `failed`/`skipped` 等指标则升级为 `warning`

@@ -97,7 +97,6 @@ API 本身只负责“上传查询图 -> 检索已索引缩略图”。要让搜
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `POST` | `/image-search/sessions` | 创建搜索会话并返回第一页结果 |
-| `GET` | `/image-search/sessions/{session_id}` | 获取会话元信息 |
 | `GET` | `/image-search/sessions/{session_id}/results` | 按游标读取会话结果页 |
 
 ## POST /image-search/sessions
@@ -180,42 +179,6 @@ curl -X POST \
     }
   ]
 }
-```
-
-## GET /image-search/sessions/{session_id}
-
-### Purpose
-
-读取搜索会话元信息，不返回结果项。
-
-### Auth
-
-需要 Bearer Token。
-
-### Path Params
-
-- `session_id`: 搜索会话 ID
-
-### Success Responses
-
-- `200 OK`: 返回会话元信息
-
-### Error Responses
-
-- `401 Unauthorized`: 未认证
-- `404 Not Found`: 会话不存在或已过期
-
-### Behavior
-
-- 服务端在读取前会先清理已过期会话
-- `next_cursor` 表示该会话“最近一次结果分页后”保存下来的下一页游标
-- 如果客户端尚未翻页，`next_cursor` 通常等于创建会话时返回的下一页游标
-
-### Example Request
-
-```http
-GET /image-search/sessions/d0e808f39d6e460a856d1dbf0f3f6232
-Authorization: Bearer <token>
 ```
 
 ## GET /image-search/sessions/{session_id}/results
@@ -333,7 +296,6 @@ image_search_optimize_cron = "0 */6 * * *"
 
 - 当前公开接口只有：
   - `POST /image-search/sessions`
-  - `GET /image-search/sessions/{session_id}`
   - `GET /image-search/sessions/{session_id}/results`
 - 当前主服务只支持通过远端 `joytag-infer` 服务完成查询图向量化
 - 搜索会话状态当前没有细分生命周期，接口层只返回 `ready`

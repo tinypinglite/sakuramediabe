@@ -3,7 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, Query, UploadFile
 
 from src.api.routers.deps import db_deps, get_current_user
-from src.schema.discovery import ImageSearchSessionPageResource, ImageSearchSessionResource
+from src.schema.discovery import ImageSearchSessionPageResource
 from src.service.discovery import get_image_search_service
 
 router = APIRouter(
@@ -47,17 +47,6 @@ async def create_image_search_session(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@router.get("/sessions/{session_id}", response_model=ImageSearchSessionResource)
-def get_image_search_session(
-    session_id: Annotated[str, Path(min_length=1)],
-):
-    service = get_image_search_service()
-    try:
-        return service.get_session(session_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/sessions/{session_id}/results", response_model=ImageSearchSessionPageResource)

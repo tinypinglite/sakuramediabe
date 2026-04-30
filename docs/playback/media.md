@@ -91,7 +91,6 @@
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/media` | 分页获取媒体资源列表（默认含 valid/invalid） |
 | `GET` | `/media-points` | 分页获取全局媒体书签列表 |
 | `GET` | `/media/{media_id}/points` | 获取指定媒体的书签列表 |
 | `POST` | `/media/{media_id}/points` | 为指定媒体添加书签；重复缩略图幂等返回已有书签 |
@@ -102,80 +101,6 @@
 | `DELETE` | `/media/{media_id}` | 硬删除媒体并清理关联播放数据 |
 
 ## 详细接口定义
-
-### Endpoint
-
-`GET /media`
-
-### Purpose
-
-分页获取媒体资源列表，用于前端以表格方式展示资源路径、导入方式、大小、分辨率、时长、缩略图处理状态和有效性。
-
-### Auth
-
-需要 Bearer Token。
-
-### Path Params
-
-无。
-
-### Query Params
-
-- `page`: 页码，默认 `1`，必须大于 `0`
-- `page_size`: 每页数量，默认 `20`，取值范围 `1-100`
-- `sort`: 排序规则，默认 `created_at:desc`
-- `valid`: 可选；`true` 仅返回有效资源，`false` 仅返回无效资源，不传返回全部
-
-支持的 `sort`：
-
-- `created_at:desc`
-- `created_at:asc`
-
-### Success Responses
-
-- `200 OK`: 返回分页结果
-
-### Error Responses
-
-- `401 Unauthorized`: 未认证
-- `422 Unprocessable Entity`: `page`、`page_size` 或 `sort` 非法
-
-### Example Request
-
-```http
-GET /media?page=1&page_size=20&sort=created_at:desc
-Authorization: Bearer <token>
-```
-
-### Example Response
-
-```json
-{
-  "items": [
-    {
-      "media_id": 100,
-      "movie_number": "ABC-001",
-      "library_id": 1,
-      "path": "/media/library/ABC-001/1730000000000/ABC-001.mp4",
-      "storage_mode": "hardlink",
-      "file_size_bytes": 1073741824,
-      "resolution": "1920x1080",
-      "duration_seconds": 7200,
-      "special_tags": "普通",
-      "need_thumbnail_generation": false,
-      "thumbnail_retry_count": 0,
-      "thumbnail_last_error": null,
-      "thumbnail_generated_count": 720,
-      "valid": true,
-      "created_at": "2026-03-12T10:20:00",
-      "updated_at": "2026-03-12T10:40:00"
-    }
-  ],
-  "page": 1,
-  "page_size": 20,
-  "total": 1
-}
-```
 
 ### Endpoint
 
@@ -742,4 +667,3 @@ Authorization: Bearer <token>
 - `GET /media-points` 返回的是全局书签分页视图
 - `GET /media/{media_id}/points` 返回的是单媒体书签视图，不支持额外过滤和排序参数
 - `POST /media/{media_id}/points` 对相同 `media_id + thumbnail_id` 采用幂等返回已有资源的策略
-- `valid` 是媒体文件巡检维护的有效性状态，不等价于软删除

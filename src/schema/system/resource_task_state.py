@@ -23,7 +23,6 @@ class ResourceTaskDefinitionResource(SchemaModel):
     resource_type: str
     display_name: str
     default_sort: str
-    allow_reset: bool = True
     state_counts: TaskRecordStateCountsResource
 
 

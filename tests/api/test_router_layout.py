@@ -171,7 +171,6 @@ def test_create_app_registers_image_search_routes():
     paths = {getattr(route, "path", None) for route in app.routes}
 
     assert "/image-search/sessions" in paths
-    assert "/image-search/sessions/{session_id}" in paths
     assert "/image-search/sessions/{session_id}/results" in paths
     assert "/hot-reviews" in paths
     assert "/ranking-sources" in paths
@@ -199,6 +198,32 @@ def test_create_app_registers_image_search_routes():
     assert "/metadata-provider-license/connectivity-test" in paths
     assert "/metadata-provider-license/activate" in paths
     assert "/metadata-provider-license/renew" in paths
+
+
+def test_create_app_does_not_register_removed_api_endpoints():
+    app = create_app()
+    route_methods = {
+        (getattr(route, "path", None), method)
+        for route in app.routes
+        for method in getattr(route, "methods", set())
+    }
+
+    removed_routes = {
+        ("/actors/search/local", "GET"),
+        ("/media", "GET"),
+        ("/image-search/sessions/{session_id}", "GET"),
+        ("/system/notifications/unread-count", "GET"),
+        ("/system/task-runs/active", "GET"),
+        ("/actors/{actor_id}/movies", "GET"),
+        ("/system/notifications/{notification_id}/archive", "PATCH"),
+        ("/system/resource-task-states/{task_key}/{resource_id}/reset", "POST"),
+        ("/download-clients/{client_id}/sync", "POST"),
+        ("/download-tasks", "GET"),
+        ("/download-tasks/{task_id}/import", "POST"),
+        ("/download-tasks", "DELETE"),
+    }
+
+    assert route_methods.isdisjoint(removed_routes)
 
 
 def test_create_app_runs_runtime_startup_jobs(monkeypatch):

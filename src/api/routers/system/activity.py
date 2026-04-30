@@ -5,10 +5,8 @@ from src.api.routers.deps import db_deps, get_current_user
 from src.schema.common.pagination import PageResponse
 from src.schema.system.activity import (
     ActivityBootstrapResource,
-    NotificationArchiveResponse,
     NotificationReadResponse,
     NotificationResource,
-    NotificationUnreadCountResource,
     TaskRunResource,
 )
 from src.schema.system.resource_task_state import (
@@ -68,22 +66,6 @@ def mark_notification_read(notification_id: int):
     return ActivityService.mark_notification_read(notification_id)
 
 
-@router.patch(
-    "/system/notifications/{notification_id}/archive",
-    response_model=NotificationArchiveResponse,
-)
-def archive_notification(notification_id: int):
-    return ActivityService.archive_notification(notification_id)
-
-
-@router.get(
-    "/system/notifications/unread-count",
-    response_model=NotificationUnreadCountResource,
-)
-def get_notification_unread_count():
-    return ActivityService.get_unread_count()
-
-
 @router.get("/system/task-runs", response_model=PageResponse[TaskRunResource])
 def list_task_runs(
     page: int = Query(default=1),
@@ -101,11 +83,6 @@ def list_task_runs(
         trigger_type=trigger_type,
         sort=sort,
     )
-
-
-@router.get("/system/task-runs/active", response_model=list[TaskRunResource])
-def list_active_task_runs():
-    return ActivityService.list_active_task_runs()
 
 
 @router.get(
@@ -136,15 +113,6 @@ def list_resource_task_states(
         search=search,
         sort=sort,
     )
-
-
-@router.post(
-    "/system/resource-task-states/{task_key}/{resource_id}/reset",
-    response_model=ResourceTaskRecordResource,
-)
-def reset_resource_task_state(task_key: str, resource_id: int):
-    ResourceTaskStateService.reset_failed(task_key, resource_id)
-    return ResourceTaskStateService.get_record_resource(task_key, resource_id)
 
 
 @router.get("/system/events/stream")

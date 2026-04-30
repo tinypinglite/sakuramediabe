@@ -14,7 +14,6 @@ from src.model import (
 )
 from src.service.collections import PlaylistService
 from src.service.playback import MediaService
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
 
 
 def _login(client, username="account", password="password123"):
@@ -49,7 +48,6 @@ def _create_thumbnail(media: Media, offset_seconds: int, suffix: str | None = No
 
 def test_update_media_progress_requires_authentication(client):
     response = client.put("/media/1/progress", json={"position_seconds": 600})
-    media_list_response = client.get("/media")
     thumbnails_response = client.get("/media/1/thumbnails")
     media_points_response = client.get("/media-points")
     media_point_list_response = client.get("/media/1/points")
@@ -59,8 +57,6 @@ def test_update_media_progress_requires_authentication(client):
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
-    assert media_list_response.status_code == 401
-    assert media_list_response.json()["error"]["code"] == "unauthorized"
     assert thumbnails_response.status_code == 401
     assert thumbnails_response.json()["error"]["code"] == "unauthorized"
     assert media_points_response.status_code == 401
@@ -73,122 +69,6 @@ def test_update_media_progress_requires_authentication(client):
     assert media_point_delete_response.json()["error"]["code"] == "unauthorized"
     assert delete_response.status_code == 401
     assert delete_response.json()["error"]["code"] == "unauthorized"
-
-
-def test_list_media_returns_expected_payload(client, account_user):
-    token = _login(client, username=account_user.username)
-    movie_a = _create_movie("ABC-100", "Movie100")
-    movie_b = _create_movie("ABC-101", "Movie101")
-    first_video_info = {
-        "container": {"format_name": "mp4", "duration_seconds": 3600},
-        "video": {"codec_name": "h264", "profile": "Main"},
-        "audio": {"codec_name": "aac"},
-        "subtitles": [],
-    }
-    first_media = Media.create(
-        movie=movie_a,
-        path="/library/main/abc-100.mp4",
-        storage_mode="hardlink",
-        file_size_bytes=111,
-        resolution="1920x1080",
-        duration_seconds=3600,
-        video_info=first_video_info,
-        special_tags="中字",
-        valid=True,
-    )
-    second_media = Media.create(
-        movie=movie_b,
-        path="/library/main/abc-101.mp4",
-        storage_mode="copy",
-        file_size_bytes=222,
-        resolution=None,
-        duration_seconds=0,
-        special_tags="普通",
-        valid=False,
-    )
-    ResourceTaskState.create(
-        task_key=MediaThumbnailService.TASK_KEY,
-        resource_type="media",
-        resource_id=first_media.id,
-        state="succeeded",
-        attempt_count=0,
-    )
-    ResourceTaskState.create(
-        task_key=MediaThumbnailService.TASK_KEY,
-        resource_type="media",
-        resource_id=second_media.id,
-        state="failed",
-        attempt_count=1,
-        last_error="thumbnail_generation_empty",
-    )
-    _create_thumbnail(first_media, 10, suffix="a")
-    _create_thumbnail(first_media, 20, suffix="b")
-    _create_thumbnail(second_media, 30, suffix="c")
-
-    response = client.get(
-        "/media?page=1&page_size=20",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["total"] == 2
-    assert [item["media_id"] for item in payload["items"]] == [second_media.id, first_media.id]
-    assert payload["items"][0]["movie_number"] == "ABC-101"
-    assert payload["items"][0]["thumbnail_generated_count"] == 1
-    assert payload["items"][1]["movie_number"] == "ABC-100"
-    assert payload["items"][1]["thumbnail_generated_count"] == 2
-    assert payload["items"][1]["storage_mode"] == "hardlink"
-    assert payload["items"][1]["resolution"] == "1920x1080"
-    assert payload["items"][1]["duration_seconds"] == 3600
-    assert payload["items"][1]["video_info"] == first_video_info
-
-
-def test_list_media_supports_valid_filter(client, account_user):
-    token = _login(client, username=account_user.username)
-    movie = _create_movie("ABC-102", "Movie102")
-    valid_media = Media.create(movie=movie, path="/library/main/abc-102-a.mp4", valid=True)
-    invalid_media = Media.create(movie=movie, path="/library/main/abc-102-b.mp4", valid=False)
-
-    valid_response = client.get(
-        "/media?valid=true",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    invalid_response = client.get(
-        "/media?valid=false",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert valid_response.status_code == 200
-    assert [item["media_id"] for item in valid_response.json()["items"]] == [valid_media.id]
-    assert invalid_response.status_code == 200
-    assert [item["media_id"] for item in invalid_response.json()["items"]] == [invalid_media.id]
-
-
-def test_list_media_rejects_invalid_filters(client, account_user):
-    token = _login(client, username=account_user.username)
-    _create_movie("ABC-103", "Movie103")
-
-    invalid_page = client.get(
-        "/media?page=0",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    invalid_page_size = client.get(
-        "/media?page_size=101",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    invalid_sort = client.get(
-        "/media?sort=unknown:desc",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert invalid_page.status_code == 422
-    assert invalid_page.json()["error"]["code"] == "invalid_media_filter"
-    assert invalid_page_size.status_code == 422
-    assert invalid_page_size.json()["error"]["code"] == "invalid_media_filter"
-    assert invalid_sort.status_code == 422
-    assert invalid_sort.json()["error"]["code"] == "invalid_media_filter"
-
 
 def test_list_media_thumbnails_returns_expected_payload(client, account_user):
     token = _login(client, username=account_user.username)

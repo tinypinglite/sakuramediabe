@@ -31,7 +31,6 @@ class ResourceTaskDefinition:
     resource_type: str
     display_name: str
     default_sort: str
-    allow_reset: bool = True
     resource_resolver: ResourceTaskRecordResolver | None = None
 
 
@@ -71,7 +70,6 @@ class ResourceTaskStateService:
             resource_type="movie",
             display_name="影片描述回填",
             default_sort="last_attempted_at:desc",
-            allow_reset=True,
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
         ),
         "movie_interaction_sync": ResourceTaskDefinition(
@@ -79,7 +77,6 @@ class ResourceTaskStateService:
             resource_type="movie",
             display_name="影片互动数同步",
             default_sort="last_attempted_at:desc",
-            allow_reset=True,
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
         ),
         "movie_desc_translation": ResourceTaskDefinition(
@@ -87,7 +84,6 @@ class ResourceTaskStateService:
             resource_type="movie",
             display_name="影片简介翻译",
             default_sort="last_attempted_at:desc",
-            allow_reset=True,
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
         ),
         "movie_title_translation": ResourceTaskDefinition(
@@ -95,7 +91,6 @@ class ResourceTaskStateService:
             resource_type="movie",
             display_name="影片标题翻译",
             default_sort="last_attempted_at:desc",
-            allow_reset=True,
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
         ),
         "media_thumbnail_generation": ResourceTaskDefinition(
@@ -103,7 +98,6 @@ class ResourceTaskStateService:
             resource_type="media",
             display_name="媒体缩略图生成",
             default_sort="last_attempted_at:desc",
-            allow_reset=True,
             resource_resolver=MEDIA_TASK_RECORD_RESOLVER,
         ),
     }
@@ -177,18 +171,6 @@ class ResourceTaskStateService:
             )
         # 终态失败统一靠 terminal=true 标记识别；没有该标记的记录继续视为可重试。
         return (normalized_extra == "") | (~terminal_true_condition)
-
-    @staticmethod
-    def _reset_extra_for_task(task_key: str, existing_extra: object) -> dict | list | None:
-        if not isinstance(existing_extra, dict):
-            return existing_extra if isinstance(existing_extra, list) else None
-        if task_key not in {"media_thumbnail_generation", "movie_desc_sync"} or "terminal" not in existing_extra:
-            return existing_extra
-
-        # 手动重置后需要清掉 terminal 标记，保证自动调度能重新纳入候选。
-        next_extra = dict(existing_extra)
-        next_extra.pop("terminal", None)
-        return next_extra or None
 
     @staticmethod
     def _resolve_task_runtime_context(
@@ -405,55 +387,6 @@ class ResourceTaskStateService:
         return record
 
     @classmethod
-    def reset_failed(cls, task_key: str, resource_id: int) -> ResourceTaskState:
-        task_definition = cls._require_task_definition(task_key)
-        if not task_definition.allow_reset:
-            raise ApiError(
-                422,
-                "resource_task_state_reset_forbidden",
-                "当前任务不支持重置失败记录",
-                {"task_key": task_key, "resource_id": int(resource_id)},
-            )
-        record = cls.get_state(task_key, resource_id)
-        if record is None:
-            raise ApiError(
-                404,
-                "resource_task_state_not_found",
-                "资源任务记录不存在",
-                {"task_key": task_key, "resource_id": int(resource_id)},
-            )
-        if record.state != cls.STATE_FAILED:
-            raise ApiError(
-                422,
-                "resource_task_state_reset_forbidden",
-                "仅允许重置失败记录",
-                {"task_key": task_key, "resource_id": int(resource_id), "state": record.state},
-            )
-        now = utc_now_for_db()
-        record.state = cls.STATE_PENDING
-        record.attempt_count = 0
-        record.last_error = None
-        record.last_error_at = None
-        record.last_trigger_type = "manual"
-        record.last_task_run_id = None
-        record.updated_at = now
-        fields = [
-            ResourceTaskState.state,
-            ResourceTaskState.attempt_count,
-            ResourceTaskState.last_error,
-            ResourceTaskState.last_error_at,
-            ResourceTaskState.last_trigger_type,
-            ResourceTaskState.last_task_run_id,
-            ResourceTaskState.updated_at,
-        ]
-        reset_extra = cls._reset_extra_for_task(task_key, record.extra)
-        if reset_extra != record.extra:
-            record.extra = reset_extra
-            fields.append(ResourceTaskState.extra)
-        record.save(only=fields)
-        return record
-
-    @classmethod
     def reset_for_requeue(cls, task_key: str, resource_id: int) -> ResourceTaskState:
         record = cls._get_or_create_record(task_key, resource_id)
         now = utc_now_for_db()
@@ -510,7 +443,6 @@ class ResourceTaskStateService:
                 resource_type=definition.resource_type,
                 display_name=definition.display_name,
                 default_sort=definition.default_sort,
-                allow_reset=definition.allow_reset,
                 state_counts=counts_by_task_key[definition.task_key],
             )
             for definition in cls.list_definitions()

@@ -193,48 +193,6 @@ def test_download_client_service_reports_validation_errors(download_tables):
         )
     assert invalid_path.value.code == "invalid_download_client_client_save_path"
 
-
-def test_download_task_list_and_delete(download_tables):
-    library = _create_library()
-    client = _create_client(library)
-    first = DownloadTask.create(
-        client=client,
-        movie="ABC-001",
-        name="task-1",
-        info_hash="hash-1",
-        save_path="/mnt/downloads/a/ABC-001",
-        progress=0.5,
-        download_state="downloading",
-        import_status="pending",
-    )
-    DownloadTask.create(
-        client=client,
-        movie="ABC-001",
-        name="task-2",
-        info_hash="hash-2",
-        save_path="/mnt/downloads/a/ABC-001-file",
-        progress=1.0,
-        download_state="completed",
-        import_status="completed",
-    )
-
-    paged = DownloadTaskService.list_tasks(
-        page=1,
-        page_size=10,
-        client_id=client.id,
-        download_state="completed",
-        import_status="completed",
-        movie_number="abc-001",
-        query="hash-2",
-        sort="created_at:asc",
-    )
-    DownloadTaskService.delete_tasks(str(first.id))
-
-    assert paged.total == 1
-    assert paged.items[0].info_hash == "hash-2"
-    assert DownloadTask.get_or_none(DownloadTask.id == first.id) is None
-
-
 def test_jackett_client_parses_and_sorts_candidates(download_tables):
     class FakeResponse:
         text = """

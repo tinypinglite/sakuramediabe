@@ -2,7 +2,6 @@ from .hot_reviews import HotReviewListItemResource
 from .image_search import (
     ImageSearchResultItemResource,
     ImageSearchSessionPageResource,
-    ImageSearchSessionResource,
 )
 from .rankings import (
     RankedMovieListItemResource,
@@ -13,7 +12,6 @@ from .rankings import (
 __all__ = [
     "ImageSearchResultItemResource",
     "ImageSearchSessionPageResource",
-    "ImageSearchSessionResource",
     "HotReviewListItemResource",
     "RankedMovieListItemResource",
     "RankingBoardResource",

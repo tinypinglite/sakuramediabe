@@ -1,26 +1,23 @@
 """演员目录 service。
 
-负责演员列表、详情、关联影片/标签/年份查询，以及按演员名从 JavDB 搜索并导入。
-阅读入口建议从 ``list_actors``、``get_actor_movies``、``stream_search_and_upsert_actor_from_javdb`` 开始。
+负责演员列表、详情、关联影片标识/标签/年份查询，以及按演员名从 JavDB 搜索并导入。
+阅读入口建议从 ``list_actors``、``get_actor_movie_ids``、``stream_search_and_upsert_actor_from_javdb`` 开始。
 """
 
-from typing import Iterator, List, Sequence, Set
+from typing import Iterator, Sequence
 
 from loguru import logger
 from peewee import JOIN, Ordering, fn
 
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import (
-    media_special_tag_match_expression,
-    parse_special_tags_text,
     require_record,
-    with_movie_card_relations,
 )
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from sakuramedia_metadata_providers.providers.javdb import JavdbProvider
 from src.metadata.provider import MetadataNotFoundError
-from src.model import Actor, Image, Media, Movie, MovieActor, MovieTag, Tag
+from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag
 from src.model.expressions import year_expression
 from src.schema.catalog.actors import (
     ACTOR_LIST_SORT_FIELDS,
@@ -30,7 +27,7 @@ from src.schema.catalog.actors import (
     ActorResource,
     YearResource,
 )
-from src.schema.catalog.movies import ActorMovieResource, MovieSpecialTagFilter, TagResource
+from src.schema.catalog.movies import TagResource
 from src.schema.common.pagination import PageResponse
 from sakuramedia_metadata_providers.models import JavdbMovieActorResource
 from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
@@ -144,67 +141,6 @@ class ActorService:
         )
 
     @staticmethod
-    def _movie_query(actor_id: int):
-        """返回某个演员关联影片的基础查询，并补齐封面。"""
-        query, _thin_cover_alias = with_movie_card_relations(
-            Movie.select(Movie)
-        )
-        return (
-            query
-            .switch(Movie)
-            .join(MovieActor, JOIN.INNER, on=(MovieActor.movie == Movie.id))
-            .where(MovieActor.actor == actor_id)
-        )
-
-    _media_special_tag_match_expression = staticmethod(media_special_tag_match_expression)
-    _parse_special_tags_text = staticmethod(parse_special_tags_text)
-
-    @classmethod
-    def _filtered_actor_movies(
-        cls,
-        actor_id: int,
-        special_tag: MovieSpecialTagFilter | None = None,
-    ):
-        query = cls._movie_query(actor_id)
-        if special_tag is None:
-            return query
-        # 只让命中有效 media 特殊标签的影片进入演员作品列表。
-        matched_movie_numbers = (
-            Media.select(Media.movie)
-            .where(
-                Media.valid == True,
-                cls._media_special_tag_match_expression(special_tag.to_media_tag()),
-            )
-            .distinct()
-        )
-        return query.where(Movie.movie_number.in_(matched_movie_numbers))
-
-    @classmethod
-    def _attach_movie_flags(cls, movies: List[Movie]) -> None:
-        """批量补充影片是否可播放、是否 4K，避免逐条查 media。"""
-        movie_numbers = [movie.movie_number for movie in movies]
-        playable_movie_numbers: Set[str] = set()
-        is_4k_movie_numbers: Set[str] = set()
-        if not movie_numbers:
-            return
-        media_query = (
-            Media.select(Media.movie, Media.special_tags)
-            .where(
-                Media.valid == True,
-                Media.movie.in_(movie_numbers),
-            )
-            .tuples()
-        )
-        for movie_number, special_tags in media_query:
-            playable_movie_numbers.add(movie_number)
-            if "4K" in cls._parse_special_tags_text(special_tags):
-                is_4k_movie_numbers.add(movie_number)
-
-        for movie in movies:
-            movie.can_play = movie.movie_number in playable_movie_numbers
-            movie.is_4k = movie.movie_number in is_4k_movie_numbers
-
-    @staticmethod
     def _year_expression():
         return year_expression(Movie.release_date)
 
@@ -231,20 +167,6 @@ class ActorService:
             page_size=page_size,
             total=total,
         )
-
-    @classmethod
-    def search_local_actors(cls, query: str) -> list[ActorResource]:
-        normalized = query.strip().lower()
-        if not normalized:
-            return []
-        actors = list(
-            cls._actor_query().where(
-                (fn.LOWER(Actor.name).contains(normalized))
-                | (fn.LOWER(Actor.alias_name).contains(normalized))
-            )
-            .order_by(Actor.id)
-        )
-        return ActorResource.from_items(actors)
 
     @staticmethod
     def _build_javdb_provider() -> JavdbProvider:
@@ -413,31 +335,6 @@ class ActorService:
             .order_by(Movie.id)
         )
         return [movie.id for movie in query]
-
-    @classmethod
-    def get_actor_movies(
-        cls,
-        actor_id: int,
-        special_tag: MovieSpecialTagFilter | None = None,
-        page: int = 1,
-        page_size: int = 20,
-    ) -> PageResponse[ActorMovieResource]:
-        cls._require_actor(actor_id)
-        start = max(page - 1, 0) * page_size
-        total = cls._filtered_actor_movies(actor_id, special_tag=special_tag).count()
-        movies = list(
-            cls._filtered_actor_movies(actor_id, special_tag=special_tag)
-            .order_by(Movie.movie_number)
-            .offset(start)
-            .limit(page_size)
-        )
-        cls._attach_movie_flags(movies)
-        return PageResponse[ActorMovieResource](
-            items=ActorMovieResource.from_items(movies),
-            page=page,
-            page_size=page_size,
-            total=total,
-        )
 
     @classmethod
     def get_actor_tags(cls, actor_id: int) -> list[TagResource]:

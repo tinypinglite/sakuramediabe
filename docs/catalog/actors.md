@@ -59,12 +59,10 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/actors` | 分页查询演员列表 |
-| `GET` | `/actors/search/local` | 本地演员搜索（已废弃，仅保留兼容） |
 | `POST` | `/actors/search/javdb/stream` | JavDB 搜索并流式入库（SSE，唯一推荐搜索入口，需登录） |
 | `GET` | `/actors/{actor_id}` | 查询演员详情 |
 | `PUT` | `/actors/{actor_id}/subscription` | 订阅演员（单条） |
 | `DELETE` | `/actors/{actor_id}/subscription` | 取消订阅演员（单条） |
-| `GET` | `/actors/{actor_id}/movies` | 查询该演员关联影片（分页） |
 | `GET` | `/actors/{actor_id}/movie-ids` | 查询该演员关联影片 ID 列表 |
 | `GET` | `/actors/{actor_id}/tags` | 查询该演员关联标签 |
 | `GET` | `/actors/{actor_id}/years` | 查询该演员覆盖年份 |
@@ -116,44 +114,6 @@ GET /actors?gender=female&subscription_status=subscribed&page=1&page_size=20
   "page_size": 20,
   "total": 1
 }
-```
-
-### `GET /actors/search/local`
-
-已废弃：
-
-- 该接口仅保留兼容，不再作为前端推荐搜索入口
-- 当前推荐统一使用 `POST /actors/search/javdb/stream`
-
-- 鉴权：需要 Bearer Token
-- Query：
-  - `query`：关键词（必填，最小长度 1）
-- 匹配规则：
-  - 同时检索 `actor.name` 和 `actor.alias_name`
-  - 不区分大小写的包含匹配
-- 排序：按 `actor.id` 升序
-- 成功响应：`200 OK`，响应体为 `ActorResource[]`（非分页）
-
-示例请求：
-
-```http
-GET /actors/search/local?query=mikami
-Authorization: Bearer <token>
-```
-
-示例响应：
-
-```json
-[
-  {
-    "id": 1,
-    "javdb_id": "ActorA1",
-    "name": "Mikami Yua",
-    "alias_name": "三上悠亚 / 鬼头桃菜",
-    "profile_image": null,
-    "is_subscribed": false
-  }
-]
 ```
 
 ### `POST /actors/search/javdb/stream`
@@ -261,45 +221,6 @@ data: {"success":false,"reason":"actor_not_found","actors":[]}
 - 鉴权：需要 Bearer Token
 - 行为：仅将目标 `actor_id` 的 `is_subscribed` 置为 `false`
 - 成功响应：`204 No Content`
-
-错误：
-
-- `404 actor_not_found`：演员不存在
-
-### `GET /actors/{actor_id}/movies`
-
-- 鉴权：需要 Bearer Token
-- Query：
-  - `special_tag`：按特殊标签过滤（可选，`4k | uncensored | vr`）
-  - `page`：默认 `1`
-  - `page_size`：默认 `20`
-- 行为：
-  - 只返回该演员关联的影片
-  - `special_tag` 只统计有效本地媒体；例如 `special_tag=4k` 只返回存在有效 `4K` 媒体的影片
-  - 按 `movie.movie_number` 升序
-  - `total` 为过滤后的影片总数
-
-示例响应：
-
-```json
-{
-  "items": [
-    {
-      "javdb_id": "MovieA1",
-      "movie_number": "ABC-001",
-      "title": "Movie 1",
-      "title_zh": "电影 1",
-      "cover_image": null,
-      "thin_cover_image": null,
-      "can_play": true,
-      "is_4k": false
-    }
-  ],
-  "page": 1,
-  "page_size": 20,
-  "total": 1
-}
-```
 
 错误：
 

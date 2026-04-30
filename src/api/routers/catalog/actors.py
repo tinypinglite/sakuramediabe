@@ -1,7 +1,7 @@
 import json
 from typing import List
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import StreamingResponse
 
 from src.api.routers.deps import db_deps, get_current_user
@@ -13,7 +13,7 @@ from src.schema.catalog.actors import (
     ActorResource,
     YearResource,
 )
-from src.schema.catalog.movies import ActorMovieResource, MovieSpecialTagFilter, TagResource
+from src.schema.catalog.movies import TagResource
 from src.schema.common.pagination import PageResponse
 from src.service.catalog import ActorService
 
@@ -43,18 +43,6 @@ def list_actors(
         page=page,
         page_size=page_size,
     )
-
-
-@router.get(
-    "/search/local",
-    response_model=List[ActorResource],
-    response_model_by_alias=False,
-    deprecated=True,
-)
-def search_local_actors(
-    query: str = Query(..., min_length=1),
-):
-    return ActorService.search_local_actors(query=query)
 
 
 @router.post("/search/javdb/stream")
@@ -93,21 +81,6 @@ def subscribe_actor(actor_id: int):
 def unsubscribe_actor(actor_id: int):
     ActorService.set_subscription(actor_id, False)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.get("/{actor_id}/movies", response_model=PageResponse[ActorMovieResource], response_model_by_alias=False)
-def get_actor_movies(
-    actor_id: int,
-    special_tag: MovieSpecialTagFilter | None = None,
-    page: int = 1,
-    page_size: int = 20,
-):
-    return ActorService.get_actor_movies(
-        actor_id,
-        special_tag=special_tag,
-        page=page,
-        page_size=page_size,
-    )
 
 
 @router.get("/{actor_id}/movie-ids", response_model=List[int], response_model_by_alias=False)
