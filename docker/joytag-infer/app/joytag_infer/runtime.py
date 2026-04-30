@@ -58,6 +58,8 @@ class JoyTagOnnxRuntime:
             self._inspect_openvino_device()
 
         self.available_providers = [str(item) for item in list(ort.get_available_providers() or [])]
+        if self.backend == "cuda":
+            self._validate_cuda_provider_available()
         providers = self._build_providers()
         self.session = ort.InferenceSession(str(self.model_path), providers=providers)
         if (
@@ -75,10 +77,17 @@ class JoyTagOnnxRuntime:
                 "OpenVINO backend initialization failed: "
                 f"unexpected execution provider {self.execution_provider}"
             )
+        if self.backend == "cuda" and self.execution_provider != "CUDAExecutionProvider":
+            raise RuntimeError(
+                "CUDA backend initialization failed: "
+                f"unexpected execution provider {self.execution_provider}"
+            )
         self.device = self._resolve_device()
         self.vector_size = self._resolve_vector_size()
         if self.backend == "openvino" and self.settings.openvino_device_type == "GPU":
             self._validate_openvino_gpu_probe()
+        if self.backend == "cuda":
+            self._validate_cuda_probe()
 
     def _build_providers(self) -> list[str | tuple[str, dict[str, Any]]]:
         if self.backend == "cpu":
@@ -143,22 +152,68 @@ class JoyTagOnnxRuntime:
         except Exception as exc:
             raise RuntimeError(f"OpenVINO GPU validation probe failed: {exc}") from exc
 
+    def _validate_cuda_provider_available(self) -> None:
+        if "CUDAExecutionProvider" in self.available_providers:
+            return
+        visible_providers = ", ".join(self.available_providers) or "<none>"
+        raise RuntimeError(
+            "Requested CUDA execution provider is unavailable. "
+            f"Visible providers: {visible_providers}"
+        )
+
+    def _validate_cuda_probe(self) -> None:
+        try:
+            self._probe_vector()
+        except Exception as exc:
+            raise RuntimeError(f"CUDA validation probe failed: {exc}") from exc
+
+    @staticmethod
+    def _resolve_cuda_device_name() -> str | None:
+        try:
+            import pynvml
+        except ImportError:
+            return None
+
+        initialized = False
+        try:
+            pynvml.nvmlInit()
+            initialized = True
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            name = pynvml.nvmlDeviceGetName(handle)
+            if isinstance(name, bytes):
+                name = name.decode("utf-8", errors="ignore")
+            normalized_name = str(name).strip()
+            return normalized_name or None
+        except Exception:
+            return None
+        finally:
+            if initialized:
+                try:
+                    pynvml.nvmlShutdown()
+                except Exception:
+                    pass
+
     def _resolve_device(self) -> str:
         if self.execution_provider == "CUDAExecutionProvider":
-            return "CUDA"
+            # 显卡名称仅用于展示，获取失败不影响 CUDA 硬校验。
+            cuda_device_name = self._resolve_cuda_device_name()
+            if cuda_device_name:
+                self.device_full_name = cuda_device_name
+                return cuda_device_name
+            return "cuda"
         if self.execution_provider == "OpenVINOExecutionProvider":
             if self._openvino_selected_device_name and self._match_openvino_device_family(
                 self._openvino_selected_device_name,
                 "GPU",
             ):
-                return "GPU"
+                return self.device_full_name or "gpu"
             if self._openvino_selected_device_name and self._match_openvino_device_family(
                 self._openvino_selected_device_name,
                 "CPU",
             ):
-                return "CPU"
-            return self.settings.openvino_device_type
-        return "CPU"
+                return "cpu"
+            return str(self.settings.openvino_device_type).lower()
+        return "cpu"
 
     def _resolve_vector_size(self) -> int:
         output = self.session.get_outputs()[0]

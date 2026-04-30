@@ -77,7 +77,7 @@
     "endpoint": "http://joytag-infer:8001",
     "backend": "openvino",
     "execution_provider": "OpenVINOExecutionProvider",
-    "used_device": "GPU",
+    "used_device": "Intel UHD Graphics 630",
     "available_devices": ["OpenVINOExecutionProvider", "CPUExecutionProvider"],
     "device_full_name": null,
     "model_file": "/data/lib/joytag/model_vit_768.onnx",
@@ -113,9 +113,9 @@
 - `joytag.endpoint`: 当前主服务访问的远端推理服务地址
 - `joytag.backend`: 推理服务当前使用的部署后端，例如 `cpu`、`openvino`、`cuda`
 - `joytag.execution_provider`: ONNX Runtime 实际启用的 Execution Provider
-- `joytag.used_device`: 实际执行推理的设备标识，例如 `CPU`、`GPU`、`CUDA`；`openvino + GPU` 启动时会先做一次真实推理校验，不会仅按配置值回显
+- `joytag.used_device`: 面向用户展示的实际执行设备，CPU 返回 `cpu`，OpenVINO / CUDA GPU 优先返回具体设备名称，例如 `Intel UHD Graphics 630`、`NVIDIA GeForce RTX 3060`；名称探测失败时回退为 `gpu` 或 `cuda`
 - `joytag.available_devices`: 推理服务当前可见的 Provider 列表
-- `joytag.device_full_name`: 可选设备全名；当前默认可能为空
+- `joytag.device_full_name`: 可选设备全名；GPU 名称探测失败时可能为空，不影响服务健康
 - `joytag.probe_latency_ms`: 本次真实推理探测耗时（毫秒）
 - `joytag.error`: JoyTag 初始化或推理失败时的错误信息
 - `lancedb.table_exists`: 向量表是否存在；`false` 不视为异常
