@@ -21,10 +21,8 @@ from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
 from src.schema.system.activity import (
     ActivityBootstrapResource,
-    NotificationArchiveResponse,
     NotificationReadResponse,
     NotificationResource,
-    NotificationUnreadCountResource,
     SystemEventEnvelope,
     TaskRunResource,
 )
@@ -848,7 +846,7 @@ class ActivityService:
         return cls._page_notifications(query, page=page, page_size=page_size)
 
     @classmethod
-    def get_unread_count(cls) -> NotificationUnreadCountResource:
+    def get_unread_count(cls) -> int:
         unread_count = (
             SystemNotification.select()
             .where(
@@ -857,7 +855,7 @@ class ActivityService:
             )
             .count()
         )
-        return NotificationUnreadCountResource(unread_count=unread_count)
+        return unread_count
 
     @classmethod
     def mark_notification_read(cls, notification_id: int) -> NotificationReadResponse:
@@ -880,28 +878,6 @@ class ActivityService:
                 id=notification.id,
                 is_read=notification.is_read,
                 read_at=notification.read_at,
-            )
-
-    @classmethod
-    def archive_notification(cls, notification_id: int) -> NotificationArchiveResponse:
-        with get_database().atomic():
-            notification = SystemNotification.get_or_none(SystemNotification.id == notification_id)
-            if notification is None:
-                raise ApiError(404, "notification_not_found", "通知不存在", {"notification_id": notification_id})
-            if notification.archived_at is None:
-                notification.archived_at = _now()
-                notification.updated_at = _now()
-                notification.save()
-                SystemEventService.publish(
-                    event_type="notification_updated",
-                    payload=cls._notification_resource(notification).model_dump(mode="json"),
-                    resource_type="notification",
-                    resource_id=notification.id,
-                )
-            return NotificationArchiveResponse(
-                id=notification.id,
-                archived=notification.archived_at is not None,
-                archived_at=notification.archived_at,
             )
 
     @classmethod
@@ -958,7 +934,7 @@ class ActivityService:
                 page=1,
                 page_size=ACTIVITY_BOOTSTRAP_PAGE_SIZE,
             )
-            unread_count = cls.get_unread_count().unread_count
+            unread_count = cls.get_unread_count()
             active_task_runs = cls.list_active_task_runs()
             task_runs = cls._page_task_runs(
                 cls._build_task_run_query(

@@ -127,20 +127,6 @@ def test_list_results_skips_invalid_media_and_applies_score_threshold(image_sear
     assert [item.thumbnail_id for item in page.items] == [valid_thumbnail.id]
     assert page.next_cursor is None
 
-
-def test_get_session_rejects_expired_session(image_search_tables, monkeypatch):
-    monkeypatch.setattr(ImageSearchService, "_now", staticmethod(lambda: datetime(2026, 3, 13, 10, 0, 0)))
-    ImageSearchSession.create(
-        session_id="expired",
-        query_vector=[0.1],
-        expires_at=datetime(2026, 3, 13, 9, 59, 59),
-    )
-    service = ImageSearchService(store=_DummyStore({}), embedder=_DummyEmbedder())
-
-    with pytest.raises(LookupError):
-        service.get_session("expired")
-
-
 def test_build_item_applies_score_threshold_with_cosine_scaled_score(image_search_tables):
     thumbnail = _create_thumbnail("ABC-020", 20, valid=True)
 

@@ -16,7 +16,6 @@ from src.schema.catalog.actors import ImageResource
 from src.schema.discovery import (
     ImageSearchResultItemResource,
     ImageSearchSessionPageResource,
-    ImageSearchSessionResource,
 )
 from src.service.discovery.joytag_embedder_client import (
     JoyTagInferenceClientError,
@@ -94,19 +93,6 @@ class ImageSearchService:
         if session is None:
             raise LookupError("image search session not found or expired")
         return session
-
-    @staticmethod
-    def _session_resource(session: ImageSearchSession) -> ImageSearchSessionResource:
-        return ImageSearchSessionResource(
-            session_id=session.session_id,
-            status=session.status,
-            page_size=session.page_size,
-            next_cursor=session.next_cursor,
-            expires_at=session.expires_at,
-        )
-
-    def get_session(self, session_id: str) -> ImageSearchSessionResource:
-        return self._session_resource(self._get_session_model(session_id))
 
     def create_session_and_first_page(
         self,

@@ -2,15 +2,13 @@ import mimetypes
 import os
 from typing import BinaryIO
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
 from src.common import resolve_media_file_path, verify_media_signature
-from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
-    MediaListItemResource,
     MediaPointCreateRequest,
     MediaPointResource,
     MediaProgressResource,
@@ -82,22 +80,6 @@ def _range_requests_response(request: Request, file_path: str, content_type: str
         _send_bytes_range_requests(open(file_path, mode="rb"), start, end),
         headers=headers,
         status_code=status_code,
-    )
-
-
-@router.get("", response_model=PageResponse[MediaListItemResource])
-def list_media(
-    page: int = Query(default=1),
-    page_size: int = Query(default=20),
-    sort: str | None = Query(default=None),
-    valid: bool | None = Query(default=None),
-    current_user=Depends(get_current_user),
-):
-    return MediaService.list_media(
-        page=page,
-        page_size=page_size,
-        sort=sort,
-        valid=valid,
     )
 
 

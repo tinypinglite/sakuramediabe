@@ -1,6 +1,4 @@
 from datetime import datetime
-from typing import Any
-
 from pydantic import Field, field_validator
 
 from src.schema.catalog.actors import ImageResource
@@ -59,23 +57,3 @@ class MediaThumbnailResource(SchemaModel):
     media_id: int
     offset_seconds: int
     image: ImageResource
-
-
-class MediaListItemResource(SchemaModel):
-    media_id: int
-    movie_number: str
-    library_id: int | None = None
-    path: str
-    storage_mode: str | None = None
-    file_size_bytes: int = 0
-    resolution: str | None = None
-    duration_seconds: int = 0
-    video_info: dict[str, Any] | None = None
-    special_tags: str = "普通"
-    need_thumbnail_generation: bool = True
-    thumbnail_retry_count: int = 0
-    thumbnail_last_error: str | None = None
-    thumbnail_generated_count: int = 0
-    valid: bool = True
-    created_at: datetime
-    updated_at: datetime

@@ -178,27 +178,6 @@ def test_activity_service_clears_mutex_key_after_completion_and_failure(test_db)
     assert failed_task_run.state == "failed"
     assert failed_task_run.mutex_key is None
 
-
-def test_activity_service_supports_notification_read_archive_and_unread_count(test_db):
-    models = [BackgroundTaskRun, SystemNotification, SystemEvent]
-    test_db.bind(models, bind_refs=False, bind_backrefs=False)
-    test_db.create_tables(models)
-
-    created = ActivityService.create_notification(
-        category="reminder",
-        title="有新的影片可以播放了",
-        content="新增 2 部影片",
-    )
-    assert ActivityService.get_unread_count().unread_count == 1
-
-    read_response = ActivityService.mark_notification_read(created.id)
-    archive_response = ActivityService.archive_notification(created.id)
-
-    assert read_response.is_read is True
-    assert archive_response.archived is True
-    assert ActivityService.get_unread_count().unread_count == 0
-
-
 def test_activity_service_creates_deduplicated_media_reminder(test_db):
     models = [BackgroundTaskRun, SystemNotification, SystemEvent]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)

@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from src.api.exception.errors import ApiError
-from src.schema.discovery import ImageSearchSessionPageResource, ImageSearchSessionResource
+from src.schema.discovery import ImageSearchSessionPageResource
 
 
 def _login(client, username="account", password="password123"):
@@ -27,16 +27,6 @@ class _FakeImageSearchService:
             items=[],
         )
 
-    def get_session(self, session_id):
-        self.calls.append(("get", session_id))
-        return ImageSearchSessionResource(
-            session_id=session_id,
-            status="ready",
-            page_size=20,
-            next_cursor="cursor-1",
-            expires_at=datetime(2026, 3, 13, 10, 0, 0),
-        )
-
     def list_results(self, session_id, cursor=None):
         self.calls.append(("results", session_id, cursor))
         return ImageSearchSessionPageResource(
@@ -51,11 +41,9 @@ class _FakeImageSearchService:
 
 def test_image_search_router_requires_authentication(client):
     create_response = client.post("/image-search/sessions")
-    session_response = client.get("/image-search/sessions/session-1")
     results_response = client.get("/image-search/sessions/session-1/results")
 
     assert create_response.status_code == 401
-    assert session_response.status_code == 401
     assert results_response.status_code == 401
 
 
@@ -91,21 +79,15 @@ def test_image_search_routes_call_service(client, account_user, monkeypatch):
         },
         headers={"Authorization": f"Bearer {token}"},
     )
-    session_response = client.get(
-        "/image-search/sessions/session-1",
-        headers={"Authorization": f"Bearer {token}"},
-    )
     results_response = client.get(
         "/image-search/sessions/session-1/results?cursor=cursor-1",
         headers={"Authorization": f"Bearer {token}"},
     )
 
     assert create_response.status_code == 200
-    assert session_response.status_code == 200
     assert results_response.status_code == 200
     assert fake_service.calls[0][0] == "create"
-    assert fake_service.calls[1] == ("get", "session-1")
-    assert fake_service.calls[2] == ("results", "session-1", "cursor-1")
+    assert fake_service.calls[1] == ("results", "session-1", "cursor-1")
 
 
 def test_create_image_search_session_returns_503_when_inference_service_is_unavailable(

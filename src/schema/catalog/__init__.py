@@ -9,7 +9,6 @@ from .actors import (
     YearResource,
 )
 from .movies import (
-    ActorMovieResource,
     MovieJavdbSearchRequest,
     MovieActorResource,
     MovieDetailResource,
@@ -28,7 +27,6 @@ __all__ = [
     "ActorJavdbSearchRequest",
     "ActorListGender",
     "ActorListSubscriptionStatus",
-    "ActorMovieResource",
     "MovieActorResource",
     "ActorResource",
     "ImageResource",

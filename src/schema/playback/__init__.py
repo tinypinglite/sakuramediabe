@@ -1,5 +1,4 @@
 from .media import (
-    MediaListItemResource,
     MediaPointCreateRequest,
     MediaPointListItemResource,
     MediaPointResource,
@@ -16,7 +15,6 @@ __all__ = [
     "MediaProgressResource",
     "MediaProgressUpdateRequest",
     "MediaPointCreateRequest",
-    "MediaListItemResource",
     "MediaPointResource",
     "MediaLibraryCreateRequest",
     "MediaLibraryResource",

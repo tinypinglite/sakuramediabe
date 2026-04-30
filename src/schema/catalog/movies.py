@@ -92,17 +92,6 @@ class SimilarMovieListItemResource(MovieListItemResource):
     similarity_score: float = 0.0
 
 
-class ActorMovieResource(SchemaModel):
-    javdb_id: str = Field()
-    movie_number: str
-    title: str
-    title_zh: str = ""
-    cover_image: ImageResource | None = None
-    thin_cover_image: ImageResource | None = None
-    can_play: bool = False
-    is_4k: bool = False
-
-
 class MovieActorResource(SchemaModel):
     id: int
     javdb_id: str = Field()

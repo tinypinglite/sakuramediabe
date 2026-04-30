@@ -10,7 +10,6 @@
 
 - `GET /system/resource-task-states/definitions`
 - `GET /system/resource-task-states`
-- `POST /system/resource-task-states/{task_key}/{resource_id}/reset`
 
 如果是活动中心首屏，请优先使用：
 
@@ -86,16 +85,6 @@
 - 这个接口继续用于筛选、分页和加载更多
 - 活动中心首屏不要再并行拼这个接口，改走 `GET /system/activity/bootstrap`
 
-### `GET /system/task-runs/active`
-
-只返回 `pending` / `running` 任务。
-
-说明：
-
-- 这个接口继续保留给独立任务面板或非首屏刷新使用
-- 活动中心首屏不要再单独请求它，改由 bootstrap 一次返回
-- `active` 的语义是“系统当前确认仍活跃的任务”；如果后台进程或线程已经中断，启动恢复逻辑会把旧任务改成 `failed`
-
 ### `GET /system/resource-task-states/definitions`
 
 返回所有已注册资源任务定义，供前端渲染任务切换 Tab。
@@ -106,7 +95,6 @@
 - `resource_type`
 - `display_name`
 - `default_sort`
-- `allow_reset`
 - `state_counts`
   - `pending`
   - `running`
@@ -151,21 +139,6 @@
 - 这个接口只返回已落到 `resource_task_state` 的记录
 - 前端可结合 `last_task_run_id` 跳转到批次级任务详情
 
-### `POST /system/resource-task-states/{task_key}/{resource_id}/reset`
-
-把一条失败记录重置回 `pending`，供下次调度重新纳入候选。
-
-重置语义：
-
-- 仅允许当前 `state == failed` 的记录
-- `state` 重置为 `pending`
-- `attempt_count` 重置为 `0`
-- 清空 `last_error`、`last_error_at`
-- `last_trigger_type` 记为 `manual`
-- `last_task_run_id` 清空
-- 保留 `last_attempted_at`、`last_succeeded_at` 作为历史痕迹
-- 如果任务使用 `extra.terminal = true` 表示终态失败，reset 会同时清掉这个标记
-
 ### `GET /system/events/stream`
 
 返回 `text/event-stream`，用于在线场景的增量刷新。
@@ -194,7 +167,6 @@
 
 - `movie_desc_sync` 在 DMM 明确返回“未找到对应番号”时，会把记录写成 `failed` 且 `extra.terminal = true`
 - 这类记录不会再被自动调度重复抓取
-- 如果后续需要人工重新尝试，可以调用 reset 清掉终态标记，再重新进入候选
 
 ## APS 手动与定时互斥
 

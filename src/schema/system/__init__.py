@@ -1,9 +1,7 @@
 from .activity import (
     ActivityBootstrapResource,
-    NotificationArchiveResponse,
     NotificationReadResponse,
     NotificationResource,
-    NotificationUnreadCountResource,
     SystemEventEnvelope,
     TaskRunResource,
 )
@@ -24,10 +22,8 @@ from .resource_task_state import (
 
 __all__ = [
     "ActivityBootstrapResource",
-    "NotificationArchiveResponse",
     "NotificationReadResponse",
     "NotificationResource",
-    "NotificationUnreadCountResource",
     "MovieDescTranslationSettingsResource",
     "MovieDescTranslationSettingsTestRequest",
     "MovieDescTranslationSettingsTestResource",

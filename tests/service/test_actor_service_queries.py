@@ -1,12 +1,9 @@
 from datetime import datetime
 
-import pytest
-
 from src.config.config import settings
 from src.metadata.provider import MetadataNotFoundError
-from src.model import Actor, Image, Media, Movie, MovieActor, MovieTag, Tag
+from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag
 from src.schema.catalog.actors import ActorListGender, ActorListSubscriptionStatus
-from src.schema.catalog.movies import MovieSpecialTagFilter
 from sakuramedia_metadata_providers.models import JavdbMovieActorResource
 from src.service.catalog.actor_service import ActorService
 from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
@@ -257,85 +254,6 @@ def test_actor_service_get_actor_years_uses_database_distinct(app, test_db):
     assert len(year_queries) == 1
     assert "DISTINCT" in year_queries[0]
     assert "strftime" in year_queries[0]
-
-
-def test_actor_service_get_actor_movies_sets_can_play_by_valid_media(app):
-    actor = _create_actor("三上悠亚", "ActorA1")
-    playable_movie = _create_movie("ABC-001", "MovieA1", title="Movie 1")
-    not_playable_movie = _create_movie("ABC-002", "MovieA2", title="Movie 2")
-    MovieActor.create(movie=playable_movie, actor=actor)
-    MovieActor.create(movie=not_playable_movie, actor=actor)
-    Media.create(movie=playable_movie, path="/library/main/abc-001.mp4", valid=True)
-    Media.create(movie=not_playable_movie, path="/library/main/abc-002.mp4", valid=False)
-
-    response = ActorService.get_actor_movies(actor.id, page=1, page_size=20)
-
-    assert response.model_dump()["items"] == [
-        {
-            "javdb_id": "MovieA1",
-            "movie_number": "ABC-001",
-            "title": "Movie 1",
-            "title_zh": "",
-            "cover_image": None,
-            "thin_cover_image": None,
-            "can_play": True,
-            "is_4k": False,
-        },
-        {
-            "javdb_id": "MovieA2",
-            "movie_number": "ABC-002",
-            "title": "Movie 2",
-            "title_zh": "",
-            "cover_image": None,
-            "thin_cover_image": None,
-            "can_play": False,
-            "is_4k": False,
-        },
-    ]
-
-
-def test_actor_service_get_actor_movies_sets_is_4k_from_valid_media_only(app):
-    actor = _create_actor("三上悠亚", "ActorA1")
-    valid_4k_movie = _create_movie("ABC-001", "MovieA1", title="Movie 1")
-    invalid_4k_movie = _create_movie("ABC-002", "MovieA2", title="Movie 2")
-    MovieActor.create(movie=valid_4k_movie, actor=actor)
-    MovieActor.create(movie=invalid_4k_movie, actor=actor)
-    Media.create(movie=valid_4k_movie, path="/library/main/abc-001.mp4", valid=True, special_tags="4K")
-    Media.create(movie=invalid_4k_movie, path="/library/main/abc-002.mp4", valid=False, special_tags="4K")
-
-    response = ActorService.get_actor_movies(actor.id, page=1, page_size=20)
-
-    assert [item.is_4k for item in response.items] == [True, False]
-
-
-@pytest.mark.parametrize(
-    ("special_tag", "matched_tags"),
-    [
-        (MovieSpecialTagFilter.FOUR_K, "4K"),
-        (MovieSpecialTagFilter.UNCENSORED, "无码"),
-        (MovieSpecialTagFilter.VR, "VR"),
-    ],
-)
-def test_actor_service_get_actor_movies_filters_by_special_tag_using_valid_media_only(
-    app,
-    special_tag: MovieSpecialTagFilter,
-    matched_tags: str,
-):
-    actor = _create_actor("三上悠亚", "ActorA1")
-    matched_movie = _create_movie("ABC-001", "MovieA1", title="Movie 1")
-    invalid_matched_movie = _create_movie("ABC-002", "MovieA2", title="Movie 2")
-    normal_movie = _create_movie("ABC-003", "MovieA3", title="Movie 3")
-    MovieActor.create(movie=matched_movie, actor=actor)
-    MovieActor.create(movie=invalid_matched_movie, actor=actor)
-    MovieActor.create(movie=normal_movie, actor=actor)
-    Media.create(movie=matched_movie, path="/library/main/abc-001.mp4", valid=True, special_tags=matched_tags)
-    Media.create(movie=invalid_matched_movie, path="/library/main/abc-002.mp4", valid=False, special_tags=matched_tags)
-    Media.create(movie=normal_movie, path="/library/main/abc-003.mp4", valid=True, special_tags="普通")
-
-    response = ActorService.get_actor_movies(actor.id, special_tag=special_tag, page=1, page_size=20)
-
-    assert [item.movie_number for item in response.items] == ["ABC-001"]
-    assert response.total == 1
 
 
 def test_stream_search_actor_uses_catalog_import_service(app, test_db, monkeypatch):

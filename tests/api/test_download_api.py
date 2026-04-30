@@ -1,9 +1,7 @@
 from src.api.exception.errors import ApiError
-from src.model import DownloadClient, DownloadTask, MediaLibrary
+from src.model import DownloadClient, MediaLibrary
 from src.schema.transfers.downloads import (
-    DownloadClientSyncResponse,
     DownloadRequestCreateResponse,
-    DownloadTaskImportResponse,
     DownloadTaskResource,
 )
 
@@ -23,10 +21,6 @@ def test_download_endpoints_require_authentication(client):
     assert client.delete("/download-clients/1").status_code == 401
     assert client.get("/download-candidates", params={"movie_number": "ABC-001"}).status_code == 401
     assert client.post("/download-requests", json={}).status_code == 401
-    assert client.post("/download-clients/1/sync").status_code == 401
-    assert client.get("/download-tasks").status_code == 401
-    assert client.post("/download-tasks/1/import").status_code == 401
-    assert client.delete("/download-tasks").status_code == 401
 
 
 def test_download_client_crud_api(client, account_user):
@@ -203,103 +197,6 @@ def test_download_request_api_returns_201_or_200(client, account_user, monkeypat
 
     assert first.status_code == 201
     assert second.status_code == 200
-
-
-def test_download_sync_api_returns_summary(client, account_user, monkeypatch):
-    token = _login(client, username=account_user.username)
-    monkeypatch.setattr(
-        "src.api.routers.transfers.downloads.DownloadSyncService.sync_client",
-        lambda self, client_id: DownloadClientSyncResponse(
-            client_id=client_id,
-            scanned_count=2,
-            created_count=1,
-            updated_count=1,
-            unchanged_count=0,
-        ),
-    )
-
-    response = client.post(
-        "/download-clients/7/sync",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["client_id"] == 7
-
-
-def test_download_task_import_api_returns_202(client, account_user, monkeypatch):
-    token = _login(client, username=account_user.username)
-    monkeypatch.setattr(
-        "src.api.routers.transfers.downloads.DownloadTaskService.trigger_import",
-        lambda task_id: DownloadTaskImportResponse(task_id=task_id, import_job_id=5, task_run_id=8, status="accepted"),
-    )
-
-    response = client.post(
-        "/download-tasks/9/import",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 202
-    assert response.json() == {"task_id": 9, "import_job_id": 5, "task_run_id": 8, "status": "accepted"}
-
-
-def test_download_task_list_and_delete_api(client, account_user):
-    token = _login(client, username=account_user.username)
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
-    client_row = DownloadClient.create(
-        name="client-a",
-        base_url="http://localhost:8080",
-        username="alice",
-        password="secret",
-        client_save_path="/downloads/a",
-        local_root_path="/mnt/downloads/a",
-        media_library=library,
-    )
-    first = DownloadTask.create(
-        client=client_row,
-        movie="ABC-001",
-        name="task-1",
-        info_hash="hash-1",
-        save_path="/mnt/downloads/a/task-1",
-        progress=0.2,
-        download_state="downloading",
-        import_status="pending",
-    )
-    second = DownloadTask.create(
-        client=client_row,
-        movie="ABC-001",
-        name="task-2",
-        info_hash="hash-2",
-        save_path="/mnt/downloads/a/task-2",
-        progress=1.0,
-        download_state="completed",
-        import_status="completed",
-    )
-
-    response = client.get(
-        "/download-tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        params={
-            "page": 1,
-            "page_size": 20,
-            "download_state": "completed",
-            "import_status": "completed",
-            "movie_number": "abc-001",
-            "query": "hash-2",
-            "sort": "created_at:asc",
-        },
-    )
-    assert response.status_code == 200
-    assert response.json()["items"][0]["id"] == second.id
-
-    delete_response = client.delete(
-        "/download-tasks",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"task_ids": str(first.id)},
-    )
-    assert delete_response.status_code == 204
-    assert DownloadTask.get_or_none(DownloadTask.id == first.id) is None
-
 
 def test_download_request_api_propagates_domain_errors(client, account_user, monkeypatch):
     token = _login(client, username=account_user.username)

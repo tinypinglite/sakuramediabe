@@ -3,8 +3,6 @@ from pathlib import Path
 from typing import Sequence
 
 from loguru import logger
-from peewee import fn
-
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import require_record, resolve_sort, validate_page
 from src.common.runtime_time import utc_now_for_db
@@ -13,7 +11,6 @@ from src.model.base import get_database
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
-    MediaListItemResource,
     MediaPointCreateRequest,
     MediaPointListItemResource,
     MediaPointResource,
@@ -25,14 +22,9 @@ from src.service.catalog.image_cleanup_service import ImageCleanupService
 from src.service.collections import PlaylistService
 from src.service.discovery import get_lancedb_thumbnail_store
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
-from src.service.system.resource_task_state_service import ResourceTaskStateService
 
 
 class MediaService:
-    MEDIA_SORT_FIELDS = {
-        "created_at:desc": [Media.created_at.desc(), Media.id.desc()],
-        "created_at:asc": [Media.created_at.asc(), Media.id.asc()],
-    }
     MEDIA_POINT_SORT_FIELDS = {
         "created_at:desc": [MediaPoint.created_at.desc(), MediaPoint.id.desc()],
         "created_at:asc": [MediaPoint.created_at.asc(), MediaPoint.id.asc()],
@@ -93,17 +85,6 @@ class MediaService:
         )
 
     @classmethod
-    def _resolve_media_sort(cls, value: str | None) -> Sequence:
-        return resolve_sort(
-            value, cls.MEDIA_SORT_FIELDS,
-            default_key="created_at:desc", error_code="invalid_media_filter",
-        )
-
-    @staticmethod
-    def _validate_media_page(page: int, page_size: int) -> None:
-        validate_page(page, page_size, error_code="invalid_media_filter")
-
-    @classmethod
     def _resolve_media_point_sort(cls, value: str | None) -> Sequence:
         return resolve_sort(
             value, cls.MEDIA_POINT_SORT_FIELDS,
@@ -115,91 +96,11 @@ class MediaService:
         validate_page(page, page_size, error_code="invalid_media_point_filter")
 
     @staticmethod
-    def _derive_thumbnail_task_fields(media_id: int) -> tuple[bool, int, str | None]:
-        task_state = ResourceTaskStateService.get_state_or_default(
-            MediaThumbnailService.TASK_KEY,
-            media_id,
-        )
-        is_terminal = bool(isinstance(task_state.extra, dict) and task_state.extra.get("terminal") is True)
-        need_thumbnail_generation = task_state.state != ResourceTaskStateService.STATE_SUCCEEDED and not is_terminal
-        return need_thumbnail_generation, task_state.attempt_count, task_state.last_error
-
-    @staticmethod
     def _delete_local_media_file(media: Media) -> None:
         try:
             Path(media.path).unlink()
         except FileNotFoundError:
             return
-
-    @classmethod
-    def list_media(
-        cls,
-        *,
-        page: int = 1,
-        page_size: int = 20,
-        sort: str | None = None,
-        valid: bool | None = None,
-    ) -> PageResponse[MediaListItemResource]:
-        cls._validate_media_page(page, page_size)
-        start = (page - 1) * page_size
-        order_by = cls._resolve_media_sort(sort)
-        query = Media.select(Media, Movie).join(Movie, on=(Media.movie == Movie.movie_number))
-        if valid is not None:
-            query = query.where(Media.valid == valid)
-
-        total = query.count()
-        media_items = list(query.order_by(*order_by).offset(start).limit(page_size))
-        if not media_items:
-            return PageResponse[MediaListItemResource](
-                items=[],
-                page=page,
-                page_size=page_size,
-                total=total,
-            )
-
-        media_ids = [item.id for item in media_items]
-        thumbnail_counts_query = (
-            MediaThumbnail.select(
-                MediaThumbnail.media_id,
-                fn.COUNT(MediaThumbnail.id).alias("thumbnail_count"),
-            )
-            .where(MediaThumbnail.media_id.in_(media_ids))
-            .group_by(MediaThumbnail.media_id)
-        )
-        thumbnail_counts = {
-            item.media_id: int(item.thumbnail_count)
-            for item in thumbnail_counts_query
-        }
-        resources = []
-        for media in media_items:
-            need_thumbnail_generation, thumbnail_retry_count, thumbnail_last_error = cls._derive_thumbnail_task_fields(media.id)
-            resources.append(
-                MediaListItemResource(
-                    media_id=media.id,
-                    movie_number=media.movie.movie_number,
-                    library_id=media.library_id,
-                    path=media.path,
-                    storage_mode=media.storage_mode,
-                    file_size_bytes=media.file_size_bytes,
-                    resolution=media.resolution,
-                    duration_seconds=media.duration_seconds,
-                    video_info=media.video_info,
-                    special_tags=media.special_tags,
-                    need_thumbnail_generation=need_thumbnail_generation,
-                    thumbnail_retry_count=thumbnail_retry_count,
-                    thumbnail_last_error=thumbnail_last_error,
-                    thumbnail_generated_count=thumbnail_counts.get(media.id, 0),
-                    valid=media.valid,
-                    created_at=media.created_at,
-                    updated_at=media.updated_at,
-                )
-            )
-        return PageResponse[MediaListItemResource](
-            items=resources,
-            page=page,
-            page_size=page_size,
-            total=total,
-        )
 
     @classmethod
     def list_media_points(

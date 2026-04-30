@@ -14,13 +14,10 @@ class ImageSearchResultItemResource(SchemaModel):
     image: ImageResource
 
 
-class ImageSearchSessionResource(SchemaModel):
+class ImageSearchSessionPageResource(SchemaModel):
     session_id: str
     status: str
     page_size: int
     next_cursor: str | None = None
     expires_at: datetime
-
-
-class ImageSearchSessionPageResource(ImageSearchSessionResource):
     items: list[ImageSearchResultItemResource]

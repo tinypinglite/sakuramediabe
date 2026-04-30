@@ -1,29 +1,23 @@
-from typing import List, Optional
+from typing import List
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from src.api.routers.deps import db_deps, get_current_user
-from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
     DownloadCandidateResource,
     DownloadCandidatesQuery,
     DownloadClientCreateRequest,
     DownloadClientResource,
-    DownloadClientSyncResponse,
     DownloadClientUpdateRequest,
     DownloadRequestCreateRequest,
     DownloadRequestCreateResponse,
-    DownloadTaskImportResponse,
-    DownloadTaskResource,
 )
 from src.service.transfers import (
     DownloadClientService,
     DownloadRequestService,
     DownloadSearchService,
-    DownloadTaskService,
-    DownloadSyncService,
 )
 
 router = APIRouter(
@@ -83,53 +77,3 @@ def create_download_request(
     result = DownloadRequestService().create_request(payload)
     status_code = status.HTTP_201_CREATED if result.created else status.HTTP_200_OK
     return JSONResponse(status_code=status_code, content=jsonable_encoder(result))
-
-
-@router.post(
-    "/download-clients/{client_id}/sync",
-    response_model=DownloadClientSyncResponse,
-)
-def sync_download_client(client_id: int, current_user=Depends(get_current_user)):
-    return DownloadSyncService().sync_client(client_id)
-
-
-@router.get("/download-tasks", response_model=PageResponse[DownloadTaskResource])
-def list_download_tasks(
-    page: int = Query(default=1),
-    page_size: int = Query(default=20),
-    client_id: Optional[int] = Query(default=None),
-    download_state: Optional[str] = Query(default=None),
-    import_status: Optional[str] = Query(default=None),
-    movie_number: Optional[str] = Query(default=None),
-    query: Optional[str] = Query(default=None),
-    sort: Optional[str] = Query(default=None),
-    current_user=Depends(get_current_user),
-):
-    return DownloadTaskService.list_tasks(
-        page=page,
-        page_size=page_size,
-        client_id=client_id,
-        download_state=download_state,
-        import_status=import_status,
-        movie_number=movie_number,
-        query=query,
-        sort=sort,
-    )
-
-
-@router.post(
-    "/download-tasks/{task_id}/import",
-    response_model=DownloadTaskImportResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def trigger_download_task_import(task_id: int, current_user=Depends(get_current_user)):
-    return DownloadTaskService.trigger_import(task_id)
-
-
-@router.delete("/download-tasks", status_code=status.HTTP_204_NO_CONTENT)
-def delete_download_tasks(
-    task_ids: Optional[str] = Query(default=None),
-    current_user=Depends(get_current_user),
-):
-    DownloadTaskService.delete_tasks(task_ids)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -43,16 +43,6 @@ class NotificationReadResponse(SchemaModel):
     read_at: datetime | None = None
 
 
-class NotificationArchiveResponse(SchemaModel):
-    id: int
-    archived: bool
-    archived_at: datetime | None = None
-
-
-class NotificationUnreadCountResource(SchemaModel):
-    unread_count: int
-
-
 class ActivityBootstrapResource(SchemaModel):
     latest_event_id: int
     notifications: PageResponse[NotificationResource]
