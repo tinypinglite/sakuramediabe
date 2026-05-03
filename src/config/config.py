@@ -178,6 +178,7 @@ class Scheduler(BaseModel):
     image_search_index_cron: str = "0 0 * * *"
     image_search_optimize_cron: str = "0 3 * * *"
     movie_similarity_recompute_cron: str = "30 3 * * *"
+    metadata_provider_license_renew_cron: str = "0 */6 * * *"
 
 
 class Logging(BaseModel):
