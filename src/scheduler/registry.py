@@ -20,6 +20,7 @@ from src.service.discovery import (
     RankingSyncService,
 )
 from src.service.playback import MediaFileScanService, MediaThumbnailService
+from src.service.system.metadata_provider_license_service import MetadataProviderLicenseService
 from src.service.transfers import DownloadSyncService, SubscribedMovieAutoDownloadService
 
 
@@ -366,6 +367,14 @@ JOB_REGISTRY: list[JobDefinition] = [
             "image search optimize finished:",
             ("compacted", "compacted", False),
         ),
+    ),
+    JobDefinition(
+        task_key="metadata_provider_license_renew",
+        log_name="metadata-provider-license-renew",
+        cli_name="renew-metadata-provider-license",
+        cli_help="执行一次元数据授权续租",
+        cron_setting="metadata_provider_license_renew_cron",
+        service_factory=lambda _reporter: MetadataProviderLicenseService.renew_scheduled(),
     ),
 ]
 

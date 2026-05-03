@@ -231,3 +231,36 @@ class MetadataProviderLicenseService:
         if code in cls.BAD_GATEWAY_CODES:
             return 502
         return 502
+
+    @classmethod
+    def renew_scheduled(cls) -> dict[str, Any]:
+        """定时续租授权，供调度器调用。未配置时静默跳过，网络错误时记录警告不中断调度。"""
+        try:
+            current_status = cls._status_to_resource(cls._build_client().status())
+        except Exception:
+            return {"skipped": True, "reason": "not_configured"}
+
+        if not current_status.configured:
+            return {"skipped": True, "reason": "not_configured"}
+
+        try:
+            renewed = cls._status_to_resource(cls._build_client().renew())
+            logger.info(
+                "Metadata provider license renewed active={} expires_at={}",
+                renewed.active,
+                renewed.expires_at,
+            )
+            return {"skipped": False, "active": renewed.active, "expires_at": renewed.expires_at}
+        except MetadataLicenseError as exc:
+            code = exc.code or "license_error"
+            logger.warning("Metadata provider license scheduled renewal failed: {}", code)
+            return {"skipped": False, "error_code": code}
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Metadata provider license service unavailable during scheduled renewal: {}",
+                exc.__class__.__name__,
+            )
+            return {"skipped": False, "error_code": "service_unavailable"}
+        except Exception:
+            logger.exception("Metadata provider license scheduled renewal unexpected error")
+            return {"skipped": False, "error_code": "unexpected_error"}
