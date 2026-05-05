@@ -122,7 +122,7 @@ def test_build_javdb_provider_routes_site_proxy_and_license_runtime(
     assert captured["resolver_proxy"] == expected_gfriends_proxy
 
 
-def test_build_missav_providers_pass_license_runtime_only(monkeypatch):
+def test_build_missav_providers_pass_site_proxy_and_license_runtime(monkeypatch):
     captured = {}
 
     def fake_create_thumbnail(**kwargs):
@@ -135,16 +135,20 @@ def test_build_missav_providers_pass_license_runtime_only(monkeypatch):
 
     monkeypatch.setattr("src.metadata.factory.create_missav_thumbnail_provider", fake_create_thumbnail)
     monkeypatch.setattr("src.metadata.factory.create_missav_ranking_provider", fake_create_ranking)
+    monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
+    monkeypatch.setattr(settings.metadata, "dmm_proxy", None)
 
     assert build_missav_thumbnail_provider() is not None
     assert build_missav_ranking_provider() is not None
     assert captured == {
         "thumbnail": {
+            "proxy": "http://site-proxy:7890",
             "version": "v1.2.3",
             "state_path": "/data/config/provider-license-state.json",
             "license_proxy": "http://license-proxy:7890",
         },
         "ranking": {
+            "proxy": "http://site-proxy:7890",
             "version": "v1.2.3",
             "state_path": "/data/config/provider-license-state.json",
             "license_proxy": "http://license-proxy:7890",

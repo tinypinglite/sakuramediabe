@@ -123,8 +123,14 @@ def build_dmm_provider() -> DmmProvider:
 
 
 def build_missav_thumbnail_provider() -> MissavThumbnailProvider:
-    return create_missav_thumbnail_provider(**_license_kwargs())
+    return create_missav_thumbnail_provider(
+        proxy=settings.metadata.normalized_proxy,
+        **_license_kwargs(),
+    )
 
 
 def build_missav_ranking_provider() -> MissavRankingProvider:
-    return create_missav_ranking_provider(**_license_kwargs())
+    return create_missav_ranking_provider(
+        proxy=settings.metadata.normalized_proxy,
+        **_license_kwargs(),
+    )
