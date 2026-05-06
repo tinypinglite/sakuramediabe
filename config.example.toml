@@ -57,10 +57,10 @@ timeout_seconds = 120
 connect_timeout_seconds = 3
 
 [metadata]
-# DMM 与 GFriends 共用的代理地址；JavDB 默认直连。不需要代理时留空。
+# DMM、MissAV 与 GFriends 共用的代理地址；JavDB 默认直连。不需要代理时留空。
 # 仅支持 http 代理：例如 http://192.168.1.1:7890
 proxy = ""
-# SakuraMedia 授权中心专用 HTTP 代理；不影响 DMM/JavDB/GFriends 站点请求。
+# SakuraMedia 授权中心专用 HTTP 代理；不影响 DMM/JavDB/GFriends/MissAV 站点请求。
 license_proxy = ""
 
 [image_search]

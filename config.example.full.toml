@@ -91,10 +91,10 @@ max_thumbnail_process_count = 4
 [metadata]
 # JavDB API域名，不带协议头。
 javdb_host = "jdforrepam.com"
-# DMM 与 GFriends 共用的代理地址；JavDB 默认直连。不需要代理时留空。
+# DMM、MissAV 与 GFriends 共用的代理地址；JavDB 默认直连。不需要代理时留空。
 # 示例：http://192.168.1.1:7890 仅支持 http 代理；DMM 通常需要可访问日本站点的代理。
 proxy = ""
-# SakuraMedia 授权中心专用 HTTP 代理；不影响 DMM/JavDB/GFriends 站点请求。
+# SakuraMedia 授权中心专用 HTTP 代理；不影响 DMM/JavDB/GFriends/MissAV 站点请求。
 license_proxy = ""
 # GFriends 文件树索引地址。如果这个地址不可用，可以尝试更换可用的镜像地址
 gfriends_filetree_url = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
