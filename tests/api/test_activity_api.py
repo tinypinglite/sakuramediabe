@@ -171,3 +171,123 @@ def test_activity_sse_endpoint_streams_events(client, account_user, monkeypatch)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "event: notification_created" in response.text
+
+
+def test_system_directory_api_filters_blocked_roots(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    response = client.get(
+        "/system/files/directories",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"path": "/"},
+    )
+
+    assert response.status_code == 200
+    names = {item["name"] for item in response.json()["entries"]}
+    assert "proc" not in names
+    assert "sys" not in names
+    assert "tmp" not in names
+    assert "usr" not in names
+
+
+def test_system_directory_api_rejects_unsafe_path(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    response = client.get(
+        "/system/files/directories",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"path": "../etc"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_manual_media_import_api_submits_and_cancels_task(client, account_user, tmp_path, monkeypatch):
+    token = _login(client, username=account_user.username)
+    from src.model import MediaLibrary
+
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    submitted = {}
+
+    monkeypatch.setattr(
+        "src.service.transfers.manual_media_import_service.BackgroundTaskRunner.submit",
+        lambda task_run_id, fn, *args: submitted.update({"task_run_id": task_run_id, "args": args}),
+    )
+
+    response = client.post(
+        "/system/task-runs/media-import",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"library_id": library.id, "source_path": str(source_dir)},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "accepted"
+    assert submitted["task_run_id"] == payload["task_run_id"]
+
+    cancel_response = client.post(
+        f"/system/task-runs/{payload['task_run_id']}/cancel",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["cancel_requested_at"] is not None
+
+
+def test_manual_media_import_api_converts_mutex_integrity_error_to_conflict(
+    client, account_user, tmp_path, monkeypatch
+):
+    token = _login(client, username=account_user.username)
+    from peewee import IntegrityError
+    from src.model import MediaLibrary
+
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+
+    def _raise_mutex_conflict(**kwargs):
+        raise IntegrityError("unique mutex_key")
+
+    monkeypatch.setattr(
+        "src.service.transfers.manual_media_import_service.ActivityService.create_task_run",
+        _raise_mutex_conflict,
+    )
+
+    response = client.post(
+        "/system/task-runs/media-import",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"library_id": library.id, "source_path": str(source_dir)},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "manual_media_import_conflict"
+
+
+def test_task_run_items_api_returns_records(client, account_user):
+    token = _login(client, username=account_user.username)
+    from src.model import BackgroundTaskRun
+    from src.service.system import ActivityService, TaskRunItemService
+
+    task_run = ActivityService.create_task_run(
+        task_key="manual_media_import",
+        trigger_type="manual",
+        state="running",
+    )
+    TaskRunItemService.upsert_item(
+        task_run_id=task_run.id,
+        item_type="media_import_file",
+        item_key="/source/ABC-001.mp4",
+        state="succeeded",
+        source_path="/source/ABC-001.mp4",
+        target_path="/library/ABC-001.mp4",
+    )
+
+    response = client.get(
+        f"/system/task-runs/{task_run.id}/items",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["target_path"] == "/library/ABC-001.mp4"

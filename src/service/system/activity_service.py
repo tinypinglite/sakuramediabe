@@ -29,7 +29,7 @@ from src.schema.system.activity import (
 
 ALLOWED_NOTIFICATION_CATEGORIES = {"reminder", "info", "warning", "error"}
 ALLOWED_TASK_TRIGGER_TYPES = {"scheduled", "manual", "startup", "internal"}
-ALLOWED_TASK_STATES = {"pending", "running", "completed", "failed"}
+ALLOWED_TASK_STATES = {"pending", "running", "completed", "completed_with_errors", "failed", "canceled"}
 TASK_RUN_SORT_FIELDS = {
     "started_at:desc": (BackgroundTaskRun.started_at.desc(), BackgroundTaskRun.id.desc()),
     "started_at:asc": (BackgroundTaskRun.started_at.asc(), BackgroundTaskRun.id.asc()),
@@ -58,6 +58,7 @@ TASK_NAME_REGISTRY = {
     "image_search_index": "图像搜索索引构建",
     "image_search_optimize": "图像搜索索引优化",
     "download_task_import": "下载任务导入",
+    "manual_media_import": "手动媒体导入",
 }
 
 ALLOWED_TASK_CONFLICT_POLICIES = {"raise", "skip"}
@@ -606,10 +607,16 @@ class ActivityService:
         *,
         result_summary: dict[str, Any] | None = None,
         result_text: str | None = None,
+        state: str = "completed",
     ) -> BackgroundTaskRun:
+        normalized_state = _normalize_allowed_filter(
+            state,
+            field_name="state",
+            allowed_values={"completed", "completed_with_errors", "canceled"},
+        ) or "completed"
         with get_database().atomic():
             task_run = BackgroundTaskRun.get_by_id(task_run_id)
-            task_run.state = "completed"
+            task_run.state = normalized_state
             task_run.finished_at = _now()
             task_run.mutex_key = None
             task_run.result_summary = _merge_summary(task_run.result_summary or {}, result_summary)
@@ -622,8 +629,54 @@ class ActivityService:
                 resource_type="task_run",
                 resource_id=task_run.id,
             )
-            cls._notify_task_result(task_run, failed=False)
+            if normalized_state != "canceled":
+                cls._notify_task_result(task_run, failed=False)
             return task_run
+
+    @classmethod
+    def request_task_cancel(
+        cls,
+        task_run_id: int,
+        *,
+        reason: str | None = None,
+    ) -> BackgroundTaskRun:
+        with get_database().atomic():
+            task_run = BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == task_run_id)
+            if task_run is None:
+                raise ApiError(404, "task_run_not_found", "任务不存在", {"task_run_id": task_run_id})
+            if task_run.state not in {"pending", "running"}:
+                return task_run
+            task_run.cancel_requested_at = _now()
+            task_run.cancel_reason = (reason or "").strip() or "用户取消任务"
+            task_run.updated_at = _now()
+            task_run.save()
+            SystemEventService.publish(
+                event_type="task_run_updated",
+                payload=cls._task_run_resource(task_run).model_dump(mode="json"),
+                resource_type="task_run",
+                resource_id=task_run.id,
+            )
+            return task_run
+
+    @staticmethod
+    def is_task_cancel_requested(task_run_id: int) -> bool:
+        task_run = BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == task_run_id)
+        return bool(task_run is not None and task_run.cancel_requested_at is not None)
+
+    @classmethod
+    def cancel_task_run(
+        cls,
+        task_run_id: int,
+        *,
+        result_summary: dict[str, Any] | None = None,
+        result_text: str | None = None,
+    ) -> BackgroundTaskRun:
+        return cls.complete_task_run(
+            task_run_id,
+            result_summary=result_summary,
+            result_text=result_text or "任务已取消",
+            state="canceled",
+        )
 
     @classmethod
     def fail_task_run(
@@ -803,6 +856,8 @@ class ActivityService:
                 try:
                     result = func(reporter)
                 except Exception as exc:
+                    if exc.__class__.__name__ == "MediaImportCanceled":
+                        raise
                     cls.fail_task_run(
                         task_run.id,
                         error_message=str(exc),
@@ -814,11 +869,16 @@ class ActivityService:
                     raise
 
                 result_summary = reporter.summary
+                completion_state = "completed"
                 if isinstance(result, dict):
                     result_summary = _merge_summary(result_summary, result)
+                    requested_state = result.get("task_run_state")
+                    if requested_state in {"completed", "completed_with_errors", "canceled"}:
+                        completion_state = requested_state
                 cls.complete_task_run(
                     task_run.id,
                     result_summary=result_summary,
+                    state=completion_state,
                 )
                 if task_logger:
                     elapsed_ms = int((time.time() - started_at) * 1000)
@@ -899,6 +959,13 @@ class ActivityService:
             sort=sort,
         )
         return cls._page_task_runs(query, page=page, page_size=page_size)
+
+    @classmethod
+    def get_task_run(cls, task_run_id: int) -> TaskRunResource:
+        task_run = BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == task_run_id)
+        if task_run is None:
+            raise ApiError(404, "task_run_not_found", "任务不存在", {"task_run_id": task_run_id})
+        return cls._task_run_resource(task_run)
 
     @classmethod
     def list_active_task_runs(cls) -> list[TaskRunResource]:
