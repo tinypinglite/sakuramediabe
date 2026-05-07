@@ -1,11 +1,14 @@
 import json
+from datetime import datetime
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
+from src.common.runtime_time import serialize_runtime_local
 from src.schema.catalog.movies import (
     MovieCollectionMarkRequest,
     MovieCollectionMarkResponse,
@@ -36,7 +39,12 @@ router = APIRouter(
 
 
 def _to_sse_event(event: str, payload: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    # SSE 事件先转为 JSON 安全结构，避免 datetime 等对象中断流式响应。
+    encoded_payload = jsonable_encoder(
+        payload,
+        custom_encoder={datetime: serialize_runtime_local},
+    )
+    return f"event: {event}\ndata: {json.dumps(encoded_payload, ensure_ascii=False)}\n\n"
 
 
 def _parse_csv_positive_ints(raw: str | None, field_name: str) -> list[int] | None:

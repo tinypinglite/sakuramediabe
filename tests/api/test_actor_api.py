@@ -1,6 +1,7 @@
 import json
 from datetime import datetime
 
+from src.common.runtime_time import serialize_runtime_local
 from src.config.config import settings
 from src.metadata.provider import MetadataNotFoundError
 from src.model import (
@@ -959,7 +960,14 @@ def test_javdb_actor_stream_already_exists_flow(client, account_user, monkeypatc
 
 def test_javdb_actor_stream_preserves_existing_subscription_state(client, account_user, monkeypatch, tmp_path):
     token = _login(client, username=account_user.username)
-    _create_actor("Old Name", "ActorA1", alias_name="Old Alias", is_subscribed=True)
+    subscribed_at = datetime(2026, 3, 8, 1, 0, 0)
+    _create_actor(
+        "Old Name",
+        "ActorA1",
+        alias_name="Old Alias",
+        is_subscribed=True,
+        subscribed_at=subscribed_at,
+    )
 
     class FakeProvider:
         def search_actors(self, actor_name: str):
@@ -991,9 +999,11 @@ def test_javdb_actor_stream_preserves_existing_subscription_state(client, accoun
     events = _parse_sse_events(response.text)
     assert events[-1]["data"]["success"] is True
     assert events[-1]["data"]["actors"][0]["is_subscribed"] is True
+    assert events[-1]["data"]["actors"][0]["subscribed_at"] == serialize_runtime_local(subscribed_at)
     actor = Actor.get(Actor.javdb_id == "ActorA1")
     assert actor.alias_name == "三上悠亞 / 三上悠亚 / 鬼头桃菜 / Old Alias"
     assert actor.is_subscribed is True
+    assert actor.subscribed_at == subscribed_at
 
 
 def test_javdb_actor_stream_actor_not_found_flow(client, account_user, monkeypatch):
