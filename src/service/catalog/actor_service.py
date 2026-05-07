@@ -355,13 +355,16 @@ class ActorService:
         cls._require_actor(actor_id)
         year_expression = cls._year_expression()
         query = (
-            Movie.select(year_expression.alias("year"))
+            Movie.select(
+                year_expression.alias("year"),
+                fn.COUNT(Movie.id).alias("movie_count"),
+            )
             .join(MovieActor, JOIN.INNER, on=(MovieActor.movie == Movie.id))
             .where(
                 MovieActor.actor == actor_id,
                 Movie.release_date.is_null(False),
             )
-            .distinct()
+            .group_by(year_expression)
             .order_by(year_expression.desc())
         )
         years = []
@@ -370,5 +373,5 @@ class ActorService:
             year = row.year
             if year is None:
                 continue
-            years.append(int(year))
-        return [YearResource(year=year) for year in years]
+            years.append(YearResource(year=int(year), movie_count=int(row.movie_count)))
+        return years

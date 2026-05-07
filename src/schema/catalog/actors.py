@@ -68,6 +68,7 @@ class MovieIdResource(SchemaModel):
 
 class YearResource(SchemaModel):
     year: int
+    movie_count: int
 
 
 class ActorJavdbSearchRequest(SchemaModel):
