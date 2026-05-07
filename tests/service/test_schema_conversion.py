@@ -211,17 +211,33 @@ def test_actor_service_list_actors_returns_page_schema_with_filters(app):
 
 def test_actor_service_get_actor_years_returns_year_schema(app):
     actor = _create_actor("三上悠亚", "ActorA1")
-    movie = _create_movie(
+    first_movie = _create_movie(
         "ABC-001",
         "MovieA1",
         title="Movie 1",
         release_date=datetime(2024, 1, 2, 3, 4, 5),
     )
-    MovieActor.create(movie=movie, actor=actor)
+    second_movie = _create_movie(
+        "ABC-002",
+        "MovieB2",
+        title="Movie 2",
+        release_date=datetime(2024, 6, 2, 3, 4, 5),
+    )
+    older_movie = _create_movie(
+        "ABC-003",
+        "MovieC3",
+        title="Movie 3",
+        release_date=datetime(2023, 1, 2, 3, 4, 5),
+    )
+    unknown_year_movie = _create_movie("ABC-004", "MovieD4", title="Movie 4")
+    MovieActor.create(movie=first_movie, actor=actor)
+    MovieActor.create(movie=second_movie, actor=actor)
+    MovieActor.create(movie=older_movie, actor=actor)
+    MovieActor.create(movie=unknown_year_movie, actor=actor)
 
     years = ActorService.get_actor_years(actor.id)
 
-    assert years == [YearResource(year=2024)]
+    assert years == [YearResource(year=2024, movie_count=2), YearResource(year=2023, movie_count=1)]
 
 
 def test_movie_service_detail_returns_schema_without_manual_field_mapping(

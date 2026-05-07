@@ -496,8 +496,17 @@ def test_get_actor_tags_and_years(client, account_user):
         title="Movie 2",
         release_date="2024-02-03 04:05:06",
     )
+    another_newer_movie = _create_movie(
+        "ABC-003",
+        "MovieC3",
+        title="Movie 3",
+        release_date="2024-06-03 04:05:06",
+    )
+    unknown_year_movie = _create_movie("ABC-004", "MovieD4", title="Movie 4")
     MovieActor.create(movie=older_movie, actor=actor)
     MovieActor.create(movie=newer_movie, actor=actor)
+    MovieActor.create(movie=another_newer_movie, actor=actor)
+    MovieActor.create(movie=unknown_year_movie, actor=actor)
     MovieTag.create(movie=older_movie, tag=drama)
     MovieTag.create(movie=newer_movie, tag=drama)
     MovieTag.create(movie=newer_movie, tag=uniform)
@@ -512,7 +521,7 @@ def test_get_actor_tags_and_years(client, account_user):
         {"tag_id": uniform.id, "name": "制服"},
     ]
     assert years_response.status_code == 200
-    assert years_response.json() == [{"year": 2024}, {"year": 2023}]
+    assert years_response.json() == [{"year": 2024, "movie_count": 2}, {"year": 2023, "movie_count": 1}]
 
 
 def test_get_movie_detail_returns_actor_entities(

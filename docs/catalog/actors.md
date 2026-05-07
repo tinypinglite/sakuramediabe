@@ -265,18 +265,21 @@ data: {"success":false,"reason":"actor_not_found","actors":[]}
 ### `GET /actors/{actor_id}/years`
 
 - 鉴权：需要 Bearer Token
-- 返回：年份数组（去重，按年份降序）
+- 返回：年份数组（去重，按年份降序），包含每个年份的关联影片数量
 - 仅统计 `release_date` 非空影片
+- 字段：`year`、`movie_count`
 
 示例响应：
 
 ```json
 [
   {
-    "year": 2024
+    "year": 2024,
+    "movie_count": 18
   },
   {
-    "year": 2023
+    "year": 2023,
+    "movie_count": 25
   }
 ]
 ```

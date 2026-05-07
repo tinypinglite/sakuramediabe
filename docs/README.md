@@ -49,6 +49,10 @@
 
 - [transfers/downloads.md](./transfers/downloads.md): 下载器配置与下载任务
 
+### Releases
+
+- [releases/2026-05-07-actor-year-movie-count.md](./releases/2026-05-07-actor-year-movie-count.md): 女优影片年份数量返回
+
 ### Deployment
 
 - [deployment/docker.md](./deployment/docker.md): Docker 部署教程
