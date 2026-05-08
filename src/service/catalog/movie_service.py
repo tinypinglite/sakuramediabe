@@ -11,7 +11,7 @@ from threading import Thread
 from typing import Dict, Iterator, List, Optional, Sequence
 
 from loguru import logger
-from peewee import JOIN, fn
+from peewee import JOIN, Ordering, fn
 
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import (
@@ -168,8 +168,13 @@ class MovieService:
             filtered_query = filtered_query.where(Movie.maker_name == maker_name)
         return filtered_query
 
+    @staticmethod
+    def _latest_media_created_at_subquery():
+        """查询影片最近一次本地媒体入库时间，供可播放列表按媒体入库排序。"""
+        return Media.select(fn.MAX(Media.created_at)).where(Media.movie == Movie.movie_number)
+
     @classmethod
-    def _build_movie_list_sort(cls, sort: Optional[str]) -> Sequence:
+    def _build_movie_list_sort(cls, sort: Optional[str], status: MovieListStatus = MovieListStatus.ALL) -> Sequence:
         """解析 ``field:direction`` 排序表达式，并补上稳定的次级排序。"""
         if sort is None:
             return [Movie.movie_number.asc()]
@@ -196,8 +201,12 @@ class MovieService:
                 {"sort": sort},
             )
 
-        sort_field = cls.MOVIE_LIST_SORT_FIELD_MAP[field_name]
-        ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
+        if field_name == "added_at" and status == MovieListStatus.PLAYABLE:
+            sort_field = cls._latest_media_created_at_subquery()
+            ordered_field = Ordering(sort_field, direction.upper())
+        else:
+            sort_field = cls.MOVIE_LIST_SORT_FIELD_MAP[field_name]
+            ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
         tie_breaker = Movie.id.asc() if direction == "asc" else Movie.id.desc()
         if field_name in cls.MOVIE_LIST_NULLABLE_SORT_FIELDS:
             # 允许空值的字段统一放到后面，避免不同数据库里空值排序行为不一致。
@@ -234,7 +243,7 @@ class MovieService:
                 maker_name,
             ).select(Movie, can_play_expression, is_4k_expression)
         )
-        return query.order_by(*cls._build_movie_list_sort(sort))
+        return query.order_by(*cls._build_movie_list_sort(sort, status))
 
     @classmethod
     def _latest_movies_query(cls):

@@ -853,6 +853,36 @@ def test_list_movies_supports_sort_added_at_desc(client, account_user):
     assert [item["movie_number"] for item in response.json()["items"]] == ["ABP-121", "ABP-120"]
 
 
+def test_list_movies_playable_added_at_sort_uses_latest_media_created_at(client, account_user):
+    token = _login(client, username=account_user.username)
+    older_inserted_movie = _create_movie("ABP-120", "MovieA1", title="Movie 1")
+    older_media_movie = _create_movie("ABP-121", "MovieA2", title="Movie 2")
+    tie_movie = _create_movie("ABP-122", "MovieA3", title="Movie 3")
+    invalid_only_movie = _create_movie("ABP-123", "MovieA4", title="Movie 4")
+
+    latest_media = Media.create(movie=older_inserted_movie, path="/library/main/abp-120.mp4", valid=True)
+    older_media = Media.create(movie=older_media_movie, path="/library/main/abp-121.mp4", valid=True)
+    tie_media = Media.create(movie=tie_movie, path="/library/main/abp-122.mp4", valid=True)
+    invalid_media = Media.create(movie=invalid_only_movie, path="/library/main/abp-123.mp4", valid=False)
+
+    Media.update(created_at="2026-03-10 09:00:00").where(Media.id == latest_media.id).execute()
+    Media.update(created_at="2026-03-08 09:00:00").where(Media.id == older_media.id).execute()
+    Media.update(created_at="2026-03-10 09:00:00").where(Media.id == tie_media.id).execute()
+    Media.update(created_at="2026-03-12 09:00:00").where(Media.id == invalid_media.id).execute()
+
+    response = client.get(
+        "/movies?status=playable&sort=added_at:desc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert [item["movie_number"] for item in response.json()["items"]] == [
+        "ABP-122",
+        "ABP-120",
+        "ABP-121",
+    ]
+
+
 def test_list_movies_supports_combined_filters_and_subscribed_at_sort(client, account_user):
     token = _login(client, username=account_user.username)
     actor = Actor.create(name="三上悠亚", javdb_id="ActorA1", alias_name="")
