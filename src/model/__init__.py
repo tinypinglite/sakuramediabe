@@ -12,7 +12,6 @@ from .discovery import HotReviewItem, ImageSearchSession, MovieSimilarity, Ranki
 from .playback import Media, MediaLibrary, MediaPoint, MediaProgress, MediaThumbnail
 from .system import (
     BackgroundTaskRun,
-    BackgroundTaskRunItem,
     ResourceTaskState,
     SchemaMigration,
     SystemEvent,
@@ -25,7 +24,6 @@ from .transfers import DownloadClient, DownloadTask, ImportJob, Indexer
 __all__ = [
     "Actor",
     "BackgroundTaskRun",
-    "BackgroundTaskRunItem",
     "BaseModel",
     "DownloadClient",
     "DownloadTask",

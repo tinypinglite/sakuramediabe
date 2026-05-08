@@ -5,14 +5,8 @@ from src.api.routers.deps import db_deps, get_current_user
 from src.schema.common.pagination import PageResponse
 from src.schema.system.activity import (
     ActivityBootstrapResource,
-    DirectoryListResource,
-    ManualMediaImportRequest,
-    ManualMediaImportResponse,
-    MediaImportHistoryResource,
     NotificationReadResponse,
     NotificationResource,
-    TaskRunCancelResponse,
-    TaskRunItemResource,
     TaskRunResource,
 )
 from src.schema.system.resource_task_state import (
@@ -21,9 +15,6 @@ from src.schema.system.resource_task_state import (
 )
 from src.service.system import ActivityService, SystemEventService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
-from src.service.system.system_directory_service import SystemDirectoryService
-from src.service.system.task_run_item_service import TaskRunItemService
-from src.service.transfers.manual_media_import_service import ManualMediaImportService
 
 router = APIRouter(
     tags=["activity"],
@@ -92,64 +83,6 @@ def list_task_runs(
         trigger_type=trigger_type,
         sort=sort,
     )
-
-
-@router.get("/system/task-runs/media-imports", response_model=PageResponse[MediaImportHistoryResource])
-def list_media_import_task_runs(
-    page: int = Query(default=1),
-    page_size: int = Query(default=20),
-    library_id: int | None = Query(default=None),
-    source_path: str | None = Query(default=None),
-    state: str | None = Query(default=None),
-):
-    return ManualMediaImportService.list_import_history(
-        page=page,
-        page_size=page_size,
-        library_id=library_id,
-        source_path=source_path,
-        state=state,
-    )
-
-
-@router.post("/system/task-runs/media-import", response_model=ManualMediaImportResponse)
-def create_media_import_task_run(payload: ManualMediaImportRequest):
-    return ManualMediaImportService.submit_import(
-        library_id=payload.library_id,
-        source_path=payload.source_path,
-    )
-
-
-@router.get("/system/task-runs/{task_run_id}", response_model=TaskRunResource)
-def get_task_run(task_run_id: int):
-    return ActivityService.get_task_run(task_run_id)
-
-
-@router.get("/system/task-runs/{task_run_id}/items", response_model=PageResponse[TaskRunItemResource])
-def list_task_run_items(
-    task_run_id: int,
-    page: int = Query(default=1),
-    page_size: int = Query(default=20),
-    state: str | None = Query(default=None),
-    item_type: str | None = Query(default=None),
-):
-    return TaskRunItemService.list_items(
-        task_run_id=task_run_id,
-        page=page,
-        page_size=page_size,
-        state=state,
-        item_type=item_type,
-    )
-
-
-@router.post("/system/task-runs/{task_run_id}/cancel", response_model=TaskRunCancelResponse)
-def cancel_task_run(task_run_id: int):
-    task_run = ActivityService.request_task_cancel(task_run_id)
-    return TaskRunCancelResponse.from_attributes_model(task_run)
-
-
-@router.get("/system/files/directories", response_model=DirectoryListResource)
-def list_system_directories(path: str = Query(default="/")):
-    return SystemDirectoryService.list_directories(path)
 
 
 @router.get(

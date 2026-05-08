@@ -20,8 +20,6 @@ class BackgroundTaskRun(TimestampedMixin, BaseModel):
     result_summary = JsonTextField(default=dict)
     result_text = peewee.TextField(null=True)
     error_message = peewee.TextField(null=True)
-    cancel_requested_at = peewee.DateTimeField(null=True)
-    cancel_reason = peewee.TextField(null=True)
     started_at = peewee.DateTimeField(null=True)
     finished_at = peewee.DateTimeField(null=True)
 
@@ -52,34 +50,6 @@ class SystemNotification(TimestampedMixin, BaseModel):
 
     class Meta:
         table_name = "system_notification"
-
-
-class BackgroundTaskRunItem(TimestampedMixin, BaseModel):
-    task_run = peewee.ForeignKeyField(
-        BackgroundTaskRun,
-        backref="items",
-        on_delete="CASCADE",
-        column_name="task_run_id",
-    )
-    item_type = peewee.CharField(max_length=64, index=True)
-    item_key = peewee.CharField(max_length=1024)
-    state = peewee.CharField(max_length=32, default="pending", index=True)
-    source_path = peewee.CharField(max_length=1024, null=True)
-    target_path = peewee.CharField(max_length=1024, null=True)
-    resource_type = peewee.CharField(max_length=64, null=True)
-    resource_id = peewee.IntegerField(null=True)
-    related_resource_type = peewee.CharField(max_length=64, null=True)
-    related_resource_id = peewee.IntegerField(null=True)
-    error_code = peewee.CharField(max_length=128, null=True)
-    error_detail = peewee.TextField(null=True)
-    extra = JsonTextField(null=True, default=None)
-
-    class Meta:
-        table_name = "background_task_run_item"
-        indexes = (
-            (("task_run", "item_type", "item_key"), True),
-            (("task_run", "state", "updated_at"), False),
-        )
 
 
 class SystemEvent(TimestampedMixin, BaseModel):
