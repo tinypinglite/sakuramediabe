@@ -161,8 +161,8 @@ def test_run_pending_migrations_extracts_movie_series_from_supported_legacy_sche
         ("ABP-004", None),
     ]
     assert summary.applied_count == 2
-    # system_notification 和 actor 表在该 legacy schema 下不存在，对应迁移会主动跳过。
-    assert summary.skipped_count == 2
+    # system_notification、actor 和 background_task_run 表在该 legacy schema 下不存在，对应迁移会主动跳过。
+    assert summary.skipped_count == 3
     assert _schema_migration_names(test_db) == [
         "20260421_01_add_movie_title_zh",
         "20260424_01_extract_movie_series",
@@ -176,9 +176,9 @@ def test_run_pending_migrations_is_idempotent(test_db):
     second_summary = run_pending_migrations(test_db)
 
     assert first_summary.applied_count == 2
-    assert first_summary.skipped_count == 2
+    assert first_summary.skipped_count == 3
     assert second_summary.applied_count == 0
-    assert second_summary.skipped_count == 4
+    assert second_summary.skipped_count == 5
     assert _schema_migration_names(test_db) == [
         "20260421_01_add_movie_title_zh",
         "20260424_01_extract_movie_series",
@@ -189,7 +189,7 @@ def test_run_pending_migrations_skips_when_target_table_is_missing(test_db):
     summary = run_pending_migrations(test_db)
 
     assert summary.applied_count == 0
-    assert summary.skipped_count == 4
+    assert summary.skipped_count == 5
     assert _schema_migration_names(test_db) == []
 
 
@@ -368,10 +368,11 @@ def test_run_pending_migrations_supports_empty_database_after_create_tables(test
     assert "series_name" not in movie_columns
     assert test_db.table_exists("movie_series")
     assert "subscribed_at" in actor_columns
-    assert summary.applied_count == 4
+    assert summary.applied_count == 5
     assert [item.name for item in summary.executed] == [
         "20260421_01_add_movie_title_zh",
         "20260424_01_extract_movie_series",
         "20260426_01_merge_notification_category_level",
         "20260429_01_add_actor_subscribed_at",
+        "20260508_01_add_task_run_items_and_cancel",
     ]

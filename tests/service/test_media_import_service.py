@@ -12,6 +12,7 @@ from src.metadata.provider import MetadataNotFoundError
 from src.model import (
     Actor,
     BackgroundTaskRun,
+    BackgroundTaskRunItem,
     DownloadClient,
     DownloadTask,
     Image,
@@ -36,7 +37,7 @@ from src.service.catalog import ImageDownloadError
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeResult
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
-from src.service.transfers.media_import_service import MediaImportService
+from src.service.transfers.media_import_service import MediaImportCanceled, MediaImportService
 
 
 @pytest.fixture()
@@ -55,6 +56,7 @@ def import_tables(test_db):
         DownloadClient,
         DownloadTask,
         BackgroundTaskRun,
+        BackgroundTaskRunItem,
         ImportJob,
         Media,
         MediaThumbnail,
@@ -427,7 +429,7 @@ def test_import_media_records_failures_and_continues(import_tables, tmp_path, mo
     )
     job = service.import_from_source(str(source_dir), library.id)
 
-    assert job.state == "failed"
+    assert job.state == "completed_with_errors"
     assert job.imported_count == 1
     assert job.failed_count == 2
     reasons = [item["reason"] for item in _read_failed_files(job)]
@@ -453,7 +455,7 @@ def test_import_media_records_image_download_failed_reason(import_tables, tmp_pa
     )
     job = service.import_from_source(str(source_dir), library.id)
 
-    assert job.state == "failed"
+    assert job.state == "completed_with_errors"
     assert job.imported_count == 0
     assert job.failed_count == 1
     assert any(item["reason"] == "image_download_failed" for item in _read_failed_files(job))
@@ -1168,7 +1170,7 @@ def test_import_media_parallel_metadata_failure_still_imports_other_movies(
 
     job = service.import_from_source(str(source_dir), library.id)
 
-    assert job.state == "failed"
+    assert job.state == "completed_with_errors"
     assert job.imported_count == 1
     assert job.failed_count == 1
     assert Media.select().count() == 1
@@ -1356,8 +1358,84 @@ def test_import_media_marks_group_failed_when_vr_merge_raises(
 
     job = service.import_from_source(str(source_dir), library.id)
 
-    assert job.state == "failed"
+    assert job.state == "completed_with_errors"
     assert job.imported_count == 0
     assert job.failed_count == 1
     assert Media.select().count() == 0
     assert any(item["reason"] == "vr_media_merge_failed" for item in _read_failed_files(job))
+
+
+def test_import_media_cancel_in_file_loop_keeps_task_canceled(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    (source_dir / "ABP-321.mp4").write_bytes(b"x" * 10)
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    checks = {"count": 0}
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+
+    service = MediaImportService(
+        provider=FakeJavdbProvider({"ABP-321": _build_detail("ABP-321")}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+        media_metadata_probe_service=FakeMediaMetadataProbeService(
+            resolution="1920x1080",
+            duration_seconds=120,
+            video_info=_build_video_info(1920, 1080),
+        ),
+    )
+
+    def _cancel_in_file_loop() -> bool:
+        checks["count"] += 1
+        return checks["count"] >= 4
+
+    with pytest.raises(MediaImportCanceled):
+        service.import_from_source(str(source_dir), library.id, cancel_checker=_cancel_in_file_loop)
+
+    job = ImportJob.get()
+    assert job.state == "canceled"
+    assert job.failed_count == 0
+
+
+def test_import_media_emits_item_callbacks_with_success_details(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    video_path = source_dir / "ABP-321.mp4"
+    video_path.write_bytes(b"x" * 10)
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    image_root = tmp_path / "images"
+    events: List[dict] = []
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(image_root))
+
+    service = MediaImportService(
+        provider=FakeJavdbProvider({"ABP-321": _build_detail("ABP-321")}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+        media_metadata_probe_service=FakeMediaMetadataProbeService(
+            resolution="1920x1080",
+            duration_seconds=120,
+            video_info=_build_video_info(1920, 1080),
+        ),
+    )
+
+    job = service.import_from_source(
+        str(source_dir),
+        library.id,
+        item_callback=lambda payload: events.append(payload),
+    )
+
+    success_events = [event for event in events if event.get("event") == "item_succeeded"]
+    assert job.state == "completed"
+    assert len(success_events) == 1
+    assert success_events[0]["source_path"] == str(video_path)
+    assert success_events[0]["target_path"].endswith("/ABP-321.mp4")
+    assert success_events[0]["movie_number"] == "ABP-321"
+    assert success_events[0]["movie_id"] == Movie.get(Movie.movie_number == "ABP-321").id
+    assert success_events[0]["media_id"] == Media.get().id

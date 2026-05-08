@@ -3,6 +3,7 @@ from .download_request_service import DownloadRequestService
 from .download_search_service import DownloadSearchService
 from .download_sync_service import DownloadSyncService
 from .download_task_service import DownloadTaskService
+from .manual_media_import_service import ManualMediaImportService
 from .media_import_service import MediaImportService
 from .subscribed_movie_auto_download_service import SubscribedMovieAutoDownloadService
 
@@ -12,6 +13,7 @@ __all__ = [
     "DownloadSearchService",
     "DownloadSyncService",
     "DownloadTaskService",
+    "ManualMediaImportService",
     "MediaImportService",
     "SubscribedMovieAutoDownloadService",
 ]

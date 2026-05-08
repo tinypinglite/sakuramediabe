@@ -1,8 +1,15 @@
 from .activity import (
     ActivityBootstrapResource,
+    DirectoryEntryResource,
+    DirectoryListResource,
+    ManualMediaImportRequest,
+    ManualMediaImportResponse,
+    MediaImportHistoryResource,
     NotificationReadResponse,
     NotificationResource,
     SystemEventEnvelope,
+    TaskRunCancelResponse,
+    TaskRunItemResource,
     TaskRunResource,
 )
 from .movie_desc_translation_settings import (
@@ -22,6 +29,11 @@ from .resource_task_state import (
 
 __all__ = [
     "ActivityBootstrapResource",
+    "DirectoryEntryResource",
+    "DirectoryListResource",
+    "ManualMediaImportRequest",
+    "ManualMediaImportResponse",
+    "MediaImportHistoryResource",
     "NotificationReadResponse",
     "NotificationResource",
     "MovieDescTranslationSettingsResource",
@@ -31,6 +43,8 @@ __all__ = [
     "ResourceTaskDefinitionResource",
     "ResourceTaskRecordResource",
     "SystemEventEnvelope",
+    "TaskRunCancelResponse",
+    "TaskRunItemResource",
     "TaskRecordResourceSummary",
     "TaskRecordStateCountsResource",
     "TaskRunResource",
