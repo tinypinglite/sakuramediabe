@@ -47,7 +47,6 @@ def parse_movie_number(file_path: str) -> str:
 
 
 ImportProgressCallback = Callable[[Dict[str, object]], None]
-ImportCancelChecker = Callable[[], bool]
 
 
 @dataclass
@@ -70,10 +69,6 @@ class ImportGroup:
     movie_number: str
     files: List[ScannedSourceFile]
     merge_mode: Literal["single", "vr_concat"]
-
-
-class MediaImportCanceled(RuntimeError):
-    pass
 
 
 class MediaImportService:
@@ -207,8 +202,6 @@ class MediaImportService:
         download_task_id: int | None = None,
         import_job_id: int | None = None,
         progress_callback: ImportProgressCallback | None = None,
-        item_callback: ImportProgressCallback | None = None,
-        cancel_checker: ImportCancelChecker | None = None,
     ) -> ImportJob:
         """执行一次完整的媒体导入，并把中间状态写回 ImportJob。"""
         source_entry = Path(source_path).expanduser().resolve()
@@ -266,10 +259,6 @@ class MediaImportService:
         failed_count = 0
         new_playable_movies: Dict[int, Dict[str, object]] = {}
 
-        def _check_canceled() -> None:
-            if cancel_checker is not None and cancel_checker():
-                raise MediaImportCanceled("media_import_canceled")
-
         job.state = "running"
         job.started_at = utc_now_for_db()
         job.save()
@@ -279,12 +268,10 @@ class MediaImportService:
         logger.info("Import job running job_id={}", job.id)
 
         try:
-            _check_canceled()
             # 第一阶段只扫描和分组文件，不碰远端元数据和目标媒体库。
             grouped_files, grouped_skipped_count, grouped_failed_count = self._scan_source_files(
                 source_entry,
                 failure_items,
-                item_callback=item_callback,
             )
             skipped_count += grouped_skipped_count
             failed_count += grouped_failed_count
@@ -297,16 +284,6 @@ class MediaImportService:
             )
             total_movie_numbers = len(grouped_files)
             completed_movie_numbers = 0
-            for group in grouped_files.values():
-                for file_entry in group.files:
-                    self._emit_progress(
-                        item_callback,
-                        event="item_pending",
-                        source_path=str(file_entry.path),
-                        item_key=str(file_entry.path),
-                        movie_number=group.movie_number,
-                        content_fingerprint=file_entry.content_fingerprint,
-                    )
             self._emit_progress(
                 progress_callback,
                 event="scan_complete",
@@ -327,11 +304,9 @@ class MediaImportService:
                 max_workers = self._metadata_max_workers(total_movie_numbers)
                 with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="import-metadata") as executor:
                     for movie_number in grouped_files:
-                        _check_canceled()
                         metadata_futures[movie_number] = executor.submit(self._import_movie_metadata, movie_number)
 
                     for movie_number, group in grouped_files.items():
-                        _check_canceled()
                         logger.info(
                             "Import processing movie_number={} files={} job_id={}",
                             movie_number,
@@ -363,15 +338,6 @@ class MediaImportService:
                         if metadata_result.failure_reason is not None:
                             for file_entry in group.files:
                                 failed_count += 1
-                                self._emit_progress(
-                                    item_callback,
-                                    event="item_failed",
-                                    source_path=str(file_entry.path),
-                                    item_key=str(file_entry.path),
-                                    movie_number=movie_number,
-                                    error_code=metadata_result.failure_reason,
-                                    error_detail=metadata_result.failure_detail or "",
-                                )
                                 failure_items.append(
                                     {
                                         "path": str(file_entry.path),
@@ -426,7 +392,6 @@ class MediaImportService:
 
                         if group.merge_mode == "vr_concat":
                             try:
-                                _check_canceled()
                                 if self._import_vr_media_group(group=group, library=library, movie=movie, failure_items=failure_items):
                                     imported_count += 1
                                     new_playable_movies[movie.id] = {
@@ -434,49 +399,8 @@ class MediaImportService:
                                         "movie_number": movie.movie_number,
                                         "title": movie.title,
                                     }
-                                    media = self._find_media_by_content_fingerprint(
-                                        self._build_group_content_fingerprint(
-                                            [file_entry.content_fingerprint for file_entry in group.files]
-                                        ),
-                                        valid=True,
-                                    )
-                                    for file_entry in group.files:
-                                        self._emit_progress(
-                                            item_callback,
-                                            event="item_succeeded",
-                                            source_path=str(file_entry.path),
-                                            item_key=str(file_entry.path),
-                                            target_path=media.path if media is not None else None,
-                                            movie_number=movie.movie_number,
-                                            movie_id=movie.id,
-                                            media_id=media.id if media is not None else None,
-                                            storage_mode="concat",
-                                            content_fingerprint=self._build_group_content_fingerprint(
-                                                [entry.content_fingerprint for entry in group.files]
-                                            ),
-                                        )
                                 else:
                                     skipped_count += 1
-                                    existing_media = self._find_media_by_content_fingerprint(
-                                        self._build_group_content_fingerprint(
-                                            [file_entry.content_fingerprint for file_entry in group.files]
-                                        ),
-                                        valid=True,
-                                    )
-                                    for file_entry in group.files:
-                                        self._emit_progress(
-                                            item_callback,
-                                            event="item_skipped",
-                                            source_path=str(file_entry.path),
-                                            item_key=str(file_entry.path),
-                                            target_path=existing_media.path if existing_media is not None else None,
-                                            movie_number=movie.movie_number,
-                                            movie_id=movie.id,
-                                            media_id=existing_media.id if existing_media is not None else None,
-                                            skip_reason="duplicate_content_fingerprint",
-                                        )
-                            except MediaImportCanceled:
-                                raise
                             except Exception as exc:
                                 failed_count += 1
                                 logger.exception(
@@ -492,48 +416,15 @@ class MediaImportService:
                                         "detail": str(exc),
                                     }
                                 )
-                                for file_entry in group.files:
-                                    self._emit_progress(
-                                        item_callback,
-                                        event="item_failed",
-                                        source_path=str(file_entry.path),
-                                        item_key=str(file_entry.path),
-                                        movie_number=movie_number,
-                                        movie_id=movie.id,
-                                        error_code="vr_media_merge_failed",
-                                        error_detail=str(exc),
-                                    )
                         else:
                             for file_entry in group.files:
                                 try:
-                                    _check_canceled()
-                                    self._emit_progress(
-                                        item_callback,
-                                        event="item_running",
-                                        source_path=str(file_entry.path),
-                                        item_key=str(file_entry.path),
-                                        movie_number=movie.movie_number,
-                                        movie_id=movie.id,
-                                    )
                                     if self._import_single_scanned_file(
                                         file_entry=file_entry,
                                         library=library,
                                         movie=movie,
                                     ):
                                         imported_count += 1
-                                        media = self._find_media_by_content_fingerprint(file_entry.content_fingerprint, valid=True)
-                                        self._emit_progress(
-                                            item_callback,
-                                            event="item_succeeded",
-                                            source_path=str(file_entry.path),
-                                            item_key=str(file_entry.path),
-                                            target_path=media.path if media is not None else None,
-                                            movie_number=movie.movie_number,
-                                            movie_id=movie.id,
-                                            media_id=media.id if media is not None else None,
-                                            storage_mode=media.storage_mode if media is not None else None,
-                                            content_fingerprint=file_entry.content_fingerprint,
-                                        )
                                         new_playable_movies[movie.id] = {
                                             "movie_id": movie.id,
                                             "movie_number": movie.movie_number,
@@ -541,20 +432,6 @@ class MediaImportService:
                                         }
                                     else:
                                         skipped_count += 1
-                                        existing_media = self._find_media_by_content_fingerprint(file_entry.content_fingerprint, valid=True)
-                                        self._emit_progress(
-                                            item_callback,
-                                            event="item_skipped",
-                                            source_path=str(file_entry.path),
-                                            item_key=str(file_entry.path),
-                                            target_path=existing_media.path if existing_media is not None else None,
-                                            movie_number=movie.movie_number,
-                                            movie_id=movie.id,
-                                            media_id=existing_media.id if existing_media is not None else None,
-                                            skip_reason="duplicate_content_fingerprint",
-                                        )
-                                except MediaImportCanceled:
-                                    raise
                                 except Exception as exc:
                                     failed_count += 1
                                     logger.exception(
@@ -570,16 +447,6 @@ class MediaImportService:
                                             "reason": "media_import_failed",
                                             "detail": str(exc),
                                         }
-                                    )
-                                    self._emit_progress(
-                                        item_callback,
-                                        event="item_failed",
-                                        source_path=str(file_entry.path),
-                                        item_key=str(file_entry.path),
-                                        movie_number=movie_number,
-                                        movie_id=movie.id,
-                                        error_code="media_import_failed",
-                                        error_detail=str(exc),
                                     )
 
                         completed_movie_numbers += 1
@@ -608,7 +475,7 @@ class MediaImportService:
             job.imported_count = imported_count
             job.skipped_count = skipped_count
             job.failed_count = failed_count
-            job.state = "completed_with_errors" if failed_count > 0 else "completed"
+            job.state = "failed" if failed_count > 0 else "completed"
             job.failed_files = json.dumps(failure_items, ensure_ascii=False)
             job.finished_at = utc_now_for_db()
             job.save()
@@ -637,29 +504,6 @@ class MediaImportService:
                 },
             )
             return job
-        except MediaImportCanceled:
-            job.imported_count = imported_count
-            job.skipped_count = skipped_count
-            job.failed_count = failed_count
-            job.state = "canceled"
-            job.failed_files = json.dumps(failure_items, ensure_ascii=False)
-            job.finished_at = utc_now_for_db()
-            job.save()
-            if download_task is not None:
-                download_task.import_status = "failed"
-                download_task.save()
-            self._emit_progress(
-                progress_callback,
-                event="job_canceled",
-                text="媒体导入任务已取消",
-                summary_patch={
-                    "imported_count": imported_count,
-                    "skipped_count": skipped_count,
-                    "failed_count": failed_count,
-                    "new_playable_movies": list(new_playable_movies.values()),
-                },
-            )
-            raise
         except Exception as exc:
             # 走到这里说明导入流程本身崩溃了，而不是单个文件失败，需要额外补一条任务级错误。
             failure_items.append(
@@ -702,8 +546,6 @@ class MediaImportService:
         self,
         source_entry: Path,
         failure_items: List[Dict[str, str]],
-        *,
-        item_callback: ImportProgressCallback | None = None,
     ) -> Tuple[Dict[str, ImportGroup], int, int]:
         """扫描源目录，过滤无效文件，并按影片编号聚合待导入媒体。"""
         minimum_size = settings.media.allowed_min_video_file_size
@@ -745,13 +587,6 @@ class MediaImportService:
                         "reason": "file_too_small",
                     }
                 )
-                self._emit_progress(
-                    item_callback,
-                    event="item_skipped",
-                    source_path=str(path),
-                    item_key=str(path),
-                    skip_reason="file_too_small",
-                )
                 continue
 
             movie_number = parse_movie_number(str(path))
@@ -763,13 +598,6 @@ class MediaImportService:
                         "path": str(path),
                         "reason": "movie_number_not_found",
                     }
-                )
-                self._emit_progress(
-                    item_callback,
-                    event="item_failed",
-                    source_path=str(path),
-                    item_key=str(path),
-                    error_code="movie_number_not_found",
                 )
                 continue
 
@@ -785,18 +613,6 @@ class MediaImportService:
                     existing_media.id,
                     existing_media.path,
                     content_fingerprint,
-                )
-                self._emit_progress(
-                    item_callback,
-                    event="item_skipped",
-                    source_path=str(path),
-                    item_key=str(path),
-                    target_path=existing_media.path,
-                    movie_number=movie_number,
-                    movie_id=existing_media.movie.id,
-                    media_id=existing_media.id,
-                    content_fingerprint=content_fingerprint,
-                    skip_reason="duplicate_content_fingerprint",
                 )
                 continue
 
@@ -825,15 +641,6 @@ class MediaImportService:
                         movie_number,
                         str(file_entry.path),
                         file_entry.content_fingerprint,
-                    )
-                    self._emit_progress(
-                        item_callback,
-                        event="item_skipped",
-                        source_path=str(file_entry.path),
-                        item_key=str(file_entry.path),
-                        movie_number=movie_number,
-                        content_fingerprint=file_entry.content_fingerprint,
-                        skip_reason="same_batch_duplicate_content_fingerprint",
                     )
                     continue
                 deduplicated_entries.append(file_entry)

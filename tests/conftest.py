@@ -20,7 +20,6 @@ from src.metadata.provider import MetadataNotFoundError
 from src.model import (
     Actor,
     BackgroundTaskRun,
-    BackgroundTaskRunItem,
     DownloadClient,
     DownloadTask,
     HotReviewItem,
@@ -82,7 +81,6 @@ TEST_MODELS = [
     RankingItem,
     HotReviewItem,
     BackgroundTaskRun,
-    BackgroundTaskRunItem,
     ResourceTaskState,
     SchemaMigration,
     SystemNotification,

@@ -8,7 +8,6 @@ from src.config import settings
 from src.model import (
     Actor,
     BackgroundTaskRun,
-    BackgroundTaskRunItem,
     DownloadClient,
     DownloadTask,
     HotReviewItem,
@@ -73,7 +72,6 @@ def create_tables():
             HotReviewItem,
             MovieSimilarity,
             BackgroundTaskRun,
-            BackgroundTaskRunItem,
             ResourceTaskState,
             SchemaMigration,
             SystemNotification,
