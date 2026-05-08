@@ -682,6 +682,7 @@ data: {"success":false,"reason":"local_series_not_found","movies":[]}
 - 行为：
   - 未传 `sort` 时，按 `movie.movie_number` 升序
   - 传入 `sort` 时，按指定字段和方向排序；若主排序值相同，则按 `movie.id` 同方向稳定排序
+  - `sort=added_at:*` 在 `status=playable` 时按每部影片关联媒体的 `MAX(media.created_at)` 排序；其他状态仍按 `movie.id` 表示的影片记录插入顺序排序
   - `release_date`、`subscribed_at` 为空的影片始终排在最后
   - `total` 为过滤后的影片总数
   - `tag_ids` 只返回至少命中一个指定标签的影片

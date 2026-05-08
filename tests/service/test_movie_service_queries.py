@@ -1045,6 +1045,27 @@ def test_movie_service_list_movies_supports_added_at_sort_desc(app):
     assert [item.movie_number for item in response.items] == ["ABC-003", "ABC-002", "ABC-001"]
 
 
+def test_movie_service_list_movies_playable_added_at_sort_uses_latest_media_created_at(app):
+    older_inserted_movie = _create_movie("ABC-001", "MovieA1", title="Movie 1")
+    older_media_movie = _create_movie("ABC-002", "MovieA2", title="Movie 2")
+    tie_movie = _create_movie("ABC-003", "MovieA3", title="Movie 3")
+    invalid_only_movie = _create_movie("ABC-004", "MovieA4", title="Movie 4")
+
+    latest_media = Media.create(movie=older_inserted_movie, path="/library/main/abc-001.mp4", valid=True)
+    older_media = Media.create(movie=older_media_movie, path="/library/main/abc-002.mp4", valid=True)
+    tie_media = Media.create(movie=tie_movie, path="/library/main/abc-003.mp4", valid=True)
+    invalid_media = Media.create(movie=invalid_only_movie, path="/library/main/abc-004.mp4", valid=False)
+
+    Media.update(created_at="2026-03-10 09:00:00").where(Media.id == latest_media.id).execute()
+    Media.update(created_at="2026-03-08 09:00:00").where(Media.id == older_media.id).execute()
+    Media.update(created_at="2026-03-10 09:00:00").where(Media.id == tie_media.id).execute()
+    Media.update(created_at="2026-03-12 09:00:00").where(Media.id == invalid_media.id).execute()
+
+    response = MovieService.list_movies(status=MovieListStatus.PLAYABLE, sort="added_at:desc")
+
+    assert [item.movie_number for item in response.items] == ["ABC-003", "ABC-001", "ABC-002"]
+
+
 @pytest.mark.parametrize(
     ("sort", "field_name"),
     [
