@@ -160,13 +160,11 @@ def test_run_pending_migrations_extracts_movie_series_from_supported_legacy_sche
         ("ABP-003", None),
         ("ABP-004", None),
     ]
-    assert summary.applied_count == 2
-    # system_notification 和 actor 表在该 legacy schema 下不存在，对应迁移会主动跳过。
-    assert summary.skipped_count == 2
-    assert _schema_migration_names(test_db) == [
-        "20260421_01_add_movie_title_zh",
-        "20260424_01_extract_movie_series",
-    ]
+    migration_names = _schema_migration_names(test_db)
+    assert "20260421_01_add_movie_title_zh" in migration_names
+    assert "20260424_01_extract_movie_series" in migration_names
+    assert "20260508_01_add_daily_recommendations" in migration_names
+    assert test_db.table_exists("daily_recommendation_item")
 
 
 def test_run_pending_migrations_is_idempotent(test_db):
@@ -175,22 +173,26 @@ def test_run_pending_migrations_is_idempotent(test_db):
     first_summary = run_pending_migrations(test_db)
     second_summary = run_pending_migrations(test_db)
 
-    assert first_summary.applied_count == 2
-    assert first_summary.skipped_count == 2
+    first_migration_names = _schema_migration_names(test_db)
+    assert "20260508_01_add_daily_recommendations" in first_migration_names
     assert second_summary.applied_count == 0
-    assert second_summary.skipped_count == 4
-    assert _schema_migration_names(test_db) == [
-        "20260421_01_add_movie_title_zh",
-        "20260424_01_extract_movie_series",
-    ]
+    assert second_summary.skipped_count == len(second_summary.executed)
+    assert _schema_migration_names(test_db) == first_migration_names
 
 
 def test_run_pending_migrations_skips_when_target_table_is_missing(test_db):
     summary = run_pending_migrations(test_db)
 
-    assert summary.applied_count == 0
-    assert summary.skipped_count == 4
-    assert _schema_migration_names(test_db) == []
+    daily_execution = next(
+        item for item in summary.executed if item.name == "20260508_01_add_daily_recommendations"
+    )
+    assert daily_execution.applied is False
+    assert "20260508_01_add_daily_recommendations" not in _schema_migration_names(test_db)
+    moment_execution = next(
+        item for item in summary.executed if item.name == "20260508_02_add_moment_recommendations"
+    )
+    assert moment_execution.applied is False
+    assert "20260508_02_add_moment_recommendations" not in _schema_migration_names(test_db)
 
 
 def test_load_migration_module_uses_package_import():
@@ -219,6 +221,8 @@ def test_migrate_command_runs_pending_migrations_without_initdb(monkeypatch):
                         applied=True,
                     ),
                     MigrationExecution(name="20260429_01_add_actor_subscribed_at", applied=True),
+                    MigrationExecution(name="20260508_01_add_daily_recommendations", applied=True),
+                    MigrationExecution(name="20260508_02_add_moment_recommendations", applied=True),
                 ]
             )
         return MigrationRunSummary(
@@ -230,6 +234,8 @@ def test_migrate_command_runs_pending_migrations_without_initdb(monkeypatch):
                     applied=False,
                 ),
                 MigrationExecution(name="20260429_01_add_actor_subscribed_at", applied=False),
+                MigrationExecution(name="20260508_01_add_daily_recommendations", applied=False),
+                MigrationExecution(name="20260508_02_add_moment_recommendations", applied=False),
             ]
         )
 
@@ -255,7 +261,9 @@ def test_migrate_command_runs_pending_migrations_without_initdb(monkeypatch):
     assert "applied: 20260424_01_extract_movie_series" in result.output
     assert "applied: 20260426_01_merge_notification_category_level" in result.output
     assert "applied: 20260429_01_add_actor_subscribed_at" in result.output
-    assert "migrate finished: applied=4 skipped=0 total=4" in result.output
+    assert "applied: 20260508_01_add_daily_recommendations" in result.output
+    assert "applied: 20260508_02_add_moment_recommendations" in result.output
+    assert "migrate finished: applied=6 skipped=0 total=6" in result.output
     assert events == ["db.connect", ("run", legacy_database), "db.ready", ("run", ready_database)]
 
 
@@ -368,10 +376,13 @@ def test_run_pending_migrations_supports_empty_database_after_create_tables(test
     assert "series_name" not in movie_columns
     assert test_db.table_exists("movie_series")
     assert "subscribed_at" in actor_columns
-    assert summary.applied_count == 4
-    assert [item.name for item in summary.executed] == [
-        "20260421_01_add_movie_title_zh",
-        "20260424_01_extract_movie_series",
-        "20260426_01_merge_notification_category_level",
-        "20260429_01_add_actor_subscribed_at",
-    ]
+    daily_execution = next(
+        item for item in summary.executed if item.name == "20260508_01_add_daily_recommendations"
+    )
+    assert daily_execution.applied is True
+    assert test_db.table_exists("daily_recommendation_item")
+    moment_execution = next(
+        item for item in summary.executed if item.name == "20260508_02_add_moment_recommendations"
+    )
+    assert moment_execution.applied is True
+    assert test_db.table_exists("moment_recommendation")

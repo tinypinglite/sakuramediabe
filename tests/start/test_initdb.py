@@ -1,9 +1,16 @@
+from datetime import date, datetime
+
 from peewee import IntegrityError
 
 from src.config.config import DatabaseEngine
 from src.model import (
     Actor,
     BackgroundTaskRun,
+    DailyRecommendationItem,
+    Image,
+    Media,
+    MediaThumbnail,
+    MomentRecommendation,
     HotReviewItem,
     Movie,
     MoviePlotImage,
@@ -71,6 +78,7 @@ def test_create_tables_creates_system_tables(test_db, monkeypatch):
     assert MoviePlotImage.table_exists()
     assert MovieSeries.table_exists()
     assert MovieSimilarity.table_exists()
+    assert DailyRecommendationItem.table_exists()
     assert RankingItem.table_exists()
     assert HotReviewItem.table_exists()
     assert Playlist.table_exists()
@@ -80,6 +88,107 @@ def test_create_tables_creates_system_tables(test_db, monkeypatch):
     assert SystemNotification.table_exists()
     assert SystemEvent.table_exists()
     assert Subtitle.table_exists()
+
+
+def test_create_tables_creates_daily_recommendation_unique_constraints(test_db, monkeypatch):
+    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
+    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
+
+    create_tables()
+
+    first_movie = Movie.create(movie_number="ABP-001", javdb_id="daily-1", title="Daily 1")
+    second_movie = Movie.create(movie_number="ABP-002", javdb_id="daily-2", title="Daily 2")
+    DailyRecommendationItem.create(
+        snapshot_date=date(2026, 5, 8),
+        movie=first_movie,
+        rank=1,
+        generated_at=datetime(2026, 5, 8, 5, 0, 0),
+    )
+
+    try:
+        DailyRecommendationItem.create(
+            snapshot_date=date(2026, 5, 8),
+            movie=second_movie,
+            rank=1,
+            generated_at=datetime(2026, 5, 8, 5, 0, 0),
+        )
+    except IntegrityError:
+        pass
+    else:
+        raise AssertionError("daily recommendation rank unique constraint missing")
+
+    try:
+        DailyRecommendationItem.create(
+            snapshot_date=date(2026, 5, 8),
+            movie=first_movie,
+            rank=2,
+            generated_at=datetime(2026, 5, 8, 5, 0, 0),
+        )
+    except IntegrityError:
+        pass
+    else:
+        raise AssertionError("daily recommendation movie unique constraint missing")
+
+
+def test_create_tables_creates_moment_recommendation_unique_constraints(test_db, monkeypatch):
+    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
+    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
+
+    create_tables()
+
+    first_movie = Movie.create(movie_number="ABP-101", javdb_id="moment-1", title="Moment 1")
+    second_movie = Movie.create(movie_number="ABP-102", javdb_id="moment-2", title="Moment 2")
+    first_media = Media.create(movie=first_movie, path="/library/moment-1.mp4")
+    second_media = Media.create(movie=second_movie, path="/library/moment-2.mp4")
+    first_image = Image.create(origin="a.webp", small="a.webp", medium="a.webp", large="a.webp")
+    second_image = Image.create(origin="b.webp", small="b.webp", medium="b.webp", large="b.webp")
+    first_thumbnail = MediaThumbnail.create(media=first_media, image=first_image, offset=120)
+    second_thumbnail = MediaThumbnail.create(media=second_media, image=second_image, offset=240)
+    MomentRecommendation.create(
+        rank=1,
+        score=0.8,
+        strategy="popular",
+        reason="热门",
+        movie=first_movie,
+        media=first_media,
+        thumbnail=first_thumbnail,
+        offset_seconds=120,
+        generated_at=datetime(2026, 5, 8, 4, 0, 0),
+    )
+
+    try:
+        MomentRecommendation.create(
+            rank=1,
+            score=0.7,
+            strategy="popular",
+            reason="热门",
+            movie=second_movie,
+            media=second_media,
+            thumbnail=second_thumbnail,
+            offset_seconds=240,
+            generated_at=datetime(2026, 5, 8, 4, 0, 0),
+        )
+    except IntegrityError:
+        pass
+    else:
+        raise AssertionError("moment recommendation rank unique constraint missing")
+
+    try:
+        MomentRecommendation.create(
+            rank=2,
+            score=0.7,
+            strategy="popular",
+            reason="热门",
+            movie=first_movie,
+            media=first_media,
+            thumbnail=first_thumbnail,
+            offset_seconds=120,
+            generated_at=datetime(2026, 5, 8, 4, 0, 0),
+        )
+    except IntegrityError:
+        pass
+    else:
+        raise AssertionError("moment recommendation thumbnail unique constraint missing")
 
 
 def test_create_tables_creates_current_schema_columns(test_db, monkeypatch):

@@ -1,3 +1,4 @@
+from .daily_recommendation_service import DailyRecommendationService
 from .hot_review_service import HotReviewCatalogService, HotReviewSyncService
 from .image_search_index_service import ImageSearchIndexService
 from .image_search_service import ImageSearchService, get_image_search_service
@@ -8,10 +9,12 @@ from .lancedb_thumbnail_store import (
     LanceDbThumbnailStore,
     get_lancedb_thumbnail_store,
 )
+from .moment_recommendation_service import MomentRecommendationService
 from .ranking_service import RankingCatalogService, RankingSyncService
 from .recommendation_service import MovieRecommendationService
 
 __all__ = [
+    "DailyRecommendationService",
     "ImageSearchIndexService",
     "ImageSearchService",
     "HotReviewCatalogService",
@@ -19,6 +22,7 @@ __all__ = [
     "JoyTagEmbeddingResult",
     "JoyTagEmbedderClient",
     "MovieRecommendationService",
+    "MomentRecommendationService",
     "ThumbnailVectorRecord",
     "ThumbnailVectorSearchHit",
     "LanceDbThumbnailStore",

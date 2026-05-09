@@ -8,7 +8,14 @@ from .collections import (
     Playlist,
     PlaylistMovie,
 )
-from .discovery import HotReviewItem, ImageSearchSession, MovieSimilarity, RankingItem
+from .discovery import (
+    DailyRecommendationItem,
+    HotReviewItem,
+    ImageSearchSession,
+    MomentRecommendation,
+    MovieSimilarity,
+    RankingItem,
+)
 from .playback import Media, MediaLibrary, MediaPoint, MediaProgress, MediaThumbnail
 from .system import (
     BackgroundTaskRun,
@@ -25,6 +32,7 @@ __all__ = [
     "Actor",
     "BackgroundTaskRun",
     "BaseModel",
+    "DailyRecommendationItem",
     "DownloadClient",
     "DownloadTask",
     "HotReviewItem",
@@ -38,6 +46,7 @@ __all__ = [
     "MediaPoint",
     "MediaProgress",
     "MediaThumbnail",
+    "MomentRecommendation",
     "Movie",
     "MovieActor",
     "MoviePlotImage",
