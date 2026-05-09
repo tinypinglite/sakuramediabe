@@ -41,6 +41,8 @@
 
 ### Discovery
 
+- [discovery/daily-recommendations.md](./discovery/daily-recommendations.md): 最近一次每日推荐快照分页查询
+- [discovery/moment-recommendations.md](./discovery/moment-recommendations.md): 当前推荐时刻池分页查询
 - [discovery/image-search.md](./discovery/image-search.md): 以图搜图会话与结果分页
 - [discovery/hot-reviews.md](./discovery/hot-reviews.md): JavDB 热评快照分页查询
 - [discovery/ranking-sources.md](./discovery/ranking-sources.md): 多来源排行榜资源与榜单条目查询
@@ -74,6 +76,8 @@
 - `media libraries`
 - `media points`
 - `image search sessions`
+- `daily recommendations`
+- `moment recommendations`
 - `hot reviews`
 - `ranking sources`
 - `download clients`

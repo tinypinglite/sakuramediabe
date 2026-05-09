@@ -14,8 +14,10 @@ from src.service.catalog import (
     SubscribedActorMovieSyncService,
 )
 from src.service.discovery import (
+    DailyRecommendationService,
     HotReviewSyncService,
     ImageSearchIndexService,
+    MomentRecommendationService,
     MovieRecommendationService,
     RankingSyncService,
 )
@@ -354,6 +356,41 @@ JOB_REGISTRY: list[JobDefinition] = [
             ("processed_movies", "processed_movies", 0),
             ("stored_pairs", "stored_pairs", 0),
             ("skipped_movies", "skipped_movies", 0),
+        ),
+    ),
+    JobDefinition(
+        task_key="moment_recommendation_generate",
+        log_name="moment-recommendation-generate",
+        cli_name="generate-moment-recommendations",
+        cli_help="执行一次推荐时刻生成",
+        cron_setting="moment_recommendation_generate_cron",
+        service_factory=lambda reporter: MomentRecommendationService().generate_recommendations(
+            progress_callback=reporter.progress_callback,
+        ),
+        format_stats=_build_stats_formatter(
+            "moment recommendation generate finished:",
+            ("seed_points", "seed_points", 0),
+            ("visual_candidates", "visual_candidates", 0),
+            ("similar_candidates", "similar_candidates", 0),
+            ("popular_candidates", "popular_candidates", 0),
+            ("stored_items", "stored_items", 0),
+        ),
+    ),
+    JobDefinition(
+        task_key="daily_recommendation_generate",
+        log_name="daily-recommendation-generate",
+        cli_name="generate-daily-recommendations",
+        cli_help="执行一次每日推荐快照生成",
+        cron_setting="daily_recommendation_generate_cron",
+        service_factory=lambda reporter: DailyRecommendationService.generate_latest_snapshot(
+            progress_callback=reporter.progress_callback,
+        ),
+        format_stats=_build_stats_formatter(
+            "daily recommendation generate finished:",
+            ("candidate_movies", "candidate_movies", 0),
+            ("stored_items", "stored_items", 0),
+            ("cold_start", "cold_start", False),
+            ("extreme_cold_start", "extreme_cold_start", False),
         ),
     ),
     JobDefinition(

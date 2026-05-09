@@ -252,6 +252,37 @@ def test_aps_recompute_movie_similarities_command_runs_job(monkeypatch):
     )
 
 
+def test_aps_generate_daily_recommendations_command_runs_job(monkeypatch):
+    _test_cli_command(
+        monkeypatch,
+        "generate-daily-recommendations",
+        {
+            "candidate_movies": 8,
+            "stored_items": 5,
+            "cold_start": True,
+            "extreme_cold_start": False,
+        },
+        "daily recommendation generate finished: candidate_movies=8 stored_items=5 "
+        "cold_start=True extreme_cold_start=False",
+    )
+
+
+def test_aps_generate_moment_recommendations_command_runs_job(monkeypatch):
+    _test_cli_command(
+        monkeypatch,
+        "generate-moment-recommendations",
+        {
+            "seed_points": 3,
+            "visual_candidates": 4,
+            "similar_candidates": 2,
+            "popular_candidates": 1,
+            "stored_items": 5,
+        },
+        "moment recommendation generate finished: seed_points=3 visual_candidates=4 "
+        "similar_candidates=2 popular_candidates=1 stored_items=5",
+    )
+
+
 def test_aps_auto_download_subscribed_movies_command_invokes_job(monkeypatch):
     _test_cli_command(
         monkeypatch,
@@ -339,6 +370,8 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.image_search_index_cron", "*/10 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.image_search_optimize_cron", "0 */6 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_similarity_recompute_cron", "30 3 * * *")
+    monkeypatch.setattr("src.start.aps.settings.scheduler.moment_recommendation_generate_cron", "0 4 * * *")
+    monkeypatch.setattr("src.start.aps.settings.scheduler.daily_recommendation_generate_cron", "0 5 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.ranking_sync_cron", "10 1 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.hot_review_sync_cron", "20 1 * * *")
 
@@ -367,6 +400,8 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert str(scheduler.get_job("image_search_index").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"
     assert str(scheduler.get_job("image_search_optimize").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*/6', minute='0']"
     assert str(scheduler.get_job("movie_similarity_recompute").trigger) == "cron[month='*', day='*', day_of_week='*', hour='3', minute='30']"
+    assert str(scheduler.get_job("moment_recommendation_generate").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='0']"
+    assert str(scheduler.get_job("daily_recommendation_generate").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"
     assert scheduler.timezone.key == "Asia/Shanghai"
 
 

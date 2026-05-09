@@ -41,6 +41,10 @@ movie_desc_sync_cron = "0 4 * * *"
 movie_desc_translation_cron = "15 4 * * *"
 # 影片相似度重算 cron 表达式。
 movie_similarity_recompute_cron = "30 3 * * *"
+# 推荐时刻生成 cron 表达式。
+moment_recommendation_generate_cron = "0 4 * * *"
+# 每日推荐快照生成 cron 表达式。
+daily_recommendation_generate_cron = "0 5 * * *"
 
 [movie_info_translation]
 # 是否启用影片信息翻译任务（简介翻译、标题翻译共用）。

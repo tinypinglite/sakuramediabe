@@ -27,8 +27,10 @@ from src.api.exception.errors import ApiError
 from src.api.routers.catalog.actors import router as actors_router
 from src.api.routers.catalog.movies import router as movies_router
 from src.api.routers.catalog.tags import router as tags_router
+from src.api.routers.discovery.daily_recommendations import router as daily_recommendations_router
 from src.api.routers.discovery.hot_reviews import router as hot_reviews_router
 from src.api.routers.discovery.image_search import router as image_search_router
+from src.api.routers.discovery.moment_recommendations import router as moment_recommendations_router
 from src.api.routers.discovery.ranking_sources import router as ranking_sources_router
 from src.api.routers.system.account import router as account_router
 from src.api.routers.system.auth import router as auth_router
@@ -86,7 +88,9 @@ def create_app() -> FastAPI:
     app.include_router(media_router)
     app.include_router(media_points_router)
     app.include_router(media_libraries_router)
+    app.include_router(daily_recommendations_router)
     app.include_router(image_search_router)
+    app.include_router(moment_recommendations_router)
     app.include_router(hot_reviews_router)
     app.include_router(ranking_sources_router)
     app.include_router(downloads_router)

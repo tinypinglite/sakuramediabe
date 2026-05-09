@@ -418,7 +418,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
         assert persisted["indexer_settings"]["type"] == "jackett"
         assert persisted["indexer_settings"]["api_key"] == "updated-secret-key"
         assert "file_signature_secret" not in persisted["auth"]
-        assert persisted["scheduler"] == {
+        expected_scheduler = {
             "enabled": True,
             "log_dir": "./logs/tasks",
             "actor_subscription_sync_cron": "0 2 * * *",
@@ -438,7 +438,12 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             "image_search_index_cron": "*/10 * * * *",
             "image_search_optimize_cron": "0 */6 * * *",
             "movie_similarity_recompute_cron": "30 3 * * *",
+            "moment_recommendation_generate_cron": "0 4 * * *",
+            "daily_recommendation_generate_cron": "0 5 * * *",
+            "metadata_provider_license_renew_cron": "0 */6 * * *",
         }
+        for key, value in expected_scheduler.items():
+            assert persisted["scheduler"][key] == value
         assert persisted["media"]["collection_duration_threshold_minutes"] == 420
         assert persisted["media"]["max_thumbnail_process_count"] == 6
         assert persisted["movie_info_translation"] == {
