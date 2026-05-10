@@ -36,7 +36,6 @@ MOMENT_RECOMMENDATION_SEED_LIMIT = 30
 VISUAL_SEARCH_PER_SEED_LIMIT = 40
 SIMILAR_MOVIE_PER_SEED_LIMIT = 50
 MAX_RECOMMENDATIONS_PER_MOVIE = 3
-SAME_MOVIE_PENALTY = 0.75
 POPULAR_TARGET_RATIO = 0.35
 STRATEGY_VISUAL = "visual"
 STRATEGY_SIMILAR_MOVIE = "similar_movie"
@@ -200,7 +199,11 @@ class MomentRecommendationService:
             if not query_vector:
                 continue
             try:
-                hits = self.store.search(query_vector, limit=VISUAL_SEARCH_PER_SEED_LIMIT)
+                hits = self.store.search(
+                    query_vector,
+                    limit=VISUAL_SEARCH_PER_SEED_LIMIT,
+                    exclude_movie_ids=[seed.movie.id],
+                )
             except Exception as exc:
                 logger.warning("Moment recommendation vector search skipped point_id={} detail={}", seed.point.id, exc)
                 continue
@@ -216,12 +219,10 @@ class MomentRecommendationService:
                 # 推荐时刻只面向单部影片，视觉召回也要排除合集条目。
                 if movie.is_collection:
                     continue
-                same_movie_penalty = SAME_MOVIE_PENALTY if movie.id == seed.movie.id else 1.0
-                score = (
-                    0.75 * float(hit.score)
-                    + 0.15 * self._heat_score(movie)
-                    + 0.10 * seed.recency_score
-                ) * same_movie_penalty
+                # 双层排除种子所属影片，避免旧索引或测试替身漏传过滤条件时引入同片时刻。
+                if movie.id == seed.movie.id:
+                    continue
+                score = 0.75 * float(hit.score) + 0.15 * self._heat_score(movie) + 0.10 * seed.recency_score
                 before_count = len(candidates_by_thumbnail_id)
                 self._add_candidate(
                     candidates_by_thumbnail_id,
@@ -306,6 +307,7 @@ class MomentRecommendationService:
                 .join(Movie, on=(MovieSimilarity.target_movie == Movie.id))
                 .where(
                     MovieSimilarity.source_movie == seed.movie.id,
+                    MovieSimilarity.target_movie != seed.movie.id,
                     MovieSimilarity.rank <= SIMILAR_MOVIE_PER_SEED_LIMIT,
                     Movie.is_collection == False,
                 )
