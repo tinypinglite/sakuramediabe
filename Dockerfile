@@ -22,7 +22,7 @@ RUN pyarmor gen -O /obfuscated -r src \
 FROM python:3.10-slim-bookworm AS runtime-base
 WORKDIR /app
 
-ARG SAKURAMEDIA_BACKEND_VERSION=dev-local
+ARG SAKURAMEDIA_BACKEND_VERSION=v0.0.1
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PUID=1000 \
