@@ -96,7 +96,7 @@ def _hit(thumbnail: MediaThumbnail, score: float):
     )
 
 
-def test_generate_recommendations_uses_visual_candidates_and_same_movie_penalty(_image_root):
+def test_generate_recommendations_filters_same_movie_visual_candidates(_image_root):
     seed_movie = _create_movie("ABP-001", "javdb-seed", heat=10)
     target_movie = _create_movie("ABP-002", "javdb-target", heat=20)
     seed_media, seed_thumbnail = _create_thumbnail(seed_movie, 100, root=_image_root)
@@ -106,14 +106,14 @@ def test_generate_recommendations_uses_visual_candidates_and_same_movie_penalty(
     store = _DummyStore([_hit(same_movie_thumbnail, 0.99), _hit(target_thumbnail, 0.80)])
     service = MomentRecommendationService(store=store, embedder=_DummyEmbedder())
 
-    stats = service.generate_recommendations(limit=2)
+    stats = service.generate_recommendations(limit=1)
     rows = list(MomentRecommendation.select().order_by(MomentRecommendation.rank.asc()))
 
     assert stats["seed_points"] == 1
-    assert stats["visual_candidates"] == 2
-    assert [row.thumbnail_id for row in rows] == [target_thumbnail.id, same_movie_thumbnail.id]
+    assert stats["visual_candidates"] == 1
+    assert store.calls[0]["exclude_movie_ids"] == [seed_movie.id]
+    assert [row.thumbnail_id for row in rows] == [target_thumbnail.id]
     assert all(row.strategy == STRATEGY_VISUAL for row in rows)
-    assert rows[0].score > rows[1].score
 
 
 def test_generate_recommendations_filters_collection_visual_candidates(_image_root):
@@ -158,6 +158,21 @@ def test_generate_recommendations_falls_back_to_similar_movie_candidates(_image_
     assert row.thumbnail_id == similar_thumbnail.id
     assert row.media_id == similar_media.id
     assert row.movie_similarity_score == 0.9
+
+
+def test_generate_recommendations_filters_same_movie_similar_candidates(_image_root):
+    seed_movie = _create_movie("ABP-012", "javdb-seed-same-similar")
+    seed_media, seed_thumbnail = _create_thumbnail(seed_movie, 200, duration=1000, root=_image_root)
+    _create_thumbnail(seed_movie, 220, duration=1000, root=_image_root)
+    MediaPoint.create(media=seed_media, thumbnail=seed_thumbnail, offset_seconds=200)
+    MovieSimilarity.create(source_movie=seed_movie, target_movie=seed_movie, score=1.0, rank=1)
+    service = MomentRecommendationService(store=_DummyStore([], fail=True), embedder=_DummyEmbedder(fail=True))
+
+    stats = service.generate_recommendations(limit=5)
+
+    assert stats["visual_candidates"] == 0
+    assert stats["similar_candidates"] == 0
+    assert MomentRecommendation.select().where(MomentRecommendation.source_movie == seed_movie).count() == 0
 
 
 def test_generate_recommendations_uses_popular_candidates_without_seed(_image_root):
