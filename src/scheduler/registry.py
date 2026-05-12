@@ -38,6 +38,8 @@ class JobDefinition(BaseModel):
     # 业务回收仅处理每条记录的 running 状态，不再承担 task_run / mutex 回收。
     business_recovery: Callable[[], dict[str, int]] | None = None
     format_stats: Callable[[dict[str, Any]], str] | None = None
+    # 是否允许通过 HTTP 接口手动触发；False 时仅保留 cron / CLI 两条路径。
+    manual_trigger_allowed: bool = True
 
 
 def _resolve_stat_value(
@@ -412,6 +414,7 @@ JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次元数据授权续租",
         cron_setting="metadata_provider_license_renew_cron",
         service_factory=lambda _reporter: MetadataProviderLicenseService.renew_scheduled(),
+        manual_trigger_allowed=False,
     ),
 ]
 

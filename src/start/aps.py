@@ -1,17 +1,21 @@
 from __future__ import annotations
 
+import threading
 from typing import Any, Callable
 
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
+from peewee import IntegrityError
 
 from src.common.database import ensure_database_ready
 from src.common.runtime_time import get_runtime_timezone, get_runtime_timezone_name
 from src.config.config import Scheduler, settings
+from src.model import BackgroundTaskRun
 from src.scheduler.registry import JOB_REGISTRY, JobDefinition
 from src.service.system import ActivityService
+from src.service.system.activity_service import TaskRunConflictError
 from src.start.recovery import recover_interrupted_tasks
 
 INTERRUPTED_TASK_RUN_ERROR_MESSAGE = "任务执行中断，等待重试"
@@ -25,16 +29,8 @@ def _resolve_scheduler_cron_expr(cron_setting: str) -> str:
     return getattr(Scheduler(), cron_setting)
 
 
-def run_job(
-    job_def: JobDefinition,
-    *,
-    trigger_type: str = "scheduled",
-    extra_callbacks: list[Callable[[dict[str, Any]], None]] | None = None,
-) -> Any:
-    """通用任务执行入口，供 APS 定时触发和 CLI 手动触发共用。"""
-    ensure_database_ready()
-
-    # 统一先回收当前 task_key 遗留的 task_run，确保 stale mutex 不会卡死后续调度。
+def _prepare_recovery(job_def: JobDefinition) -> tuple[Callable[..., Any], dict[str, int], int]:
+    """统一执行 stale task_run 回收，并把回收统计折叠进任务结果。"""
     recovered_task_runs = ActivityService.recover_interrupted_task_runs(
         task_key=job_def.task_key,
         error_message=INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
@@ -59,6 +55,21 @@ def run_job(
 
         func = func_with_recovery
 
+    return func, recovery_stats, len(recovered_task_runs)
+
+
+def run_job(
+    job_def: JobDefinition,
+    *,
+    trigger_type: str = "scheduled",
+    extra_callbacks: list[Callable[[dict[str, Any]], None]] | None = None,
+) -> Any:
+    """通用任务执行入口，供 APS 定时触发和 CLI 手动触发共用。"""
+    ensure_database_ready()
+
+    # 统一先回收当前 task_key 遗留的 task_run，确保 stale mutex 不会卡死后续调度。
+    func, _recovery_stats, _recovered_count = _prepare_recovery(job_def)
+
     conflict_policy = "raise" if trigger_type == "manual" else "skip"
     result = ActivityService.run_task(
         task_key=job_def.task_key,
@@ -82,6 +93,60 @@ def run_job(
             result.get("blocking_trigger_type"),
         )
     return result
+
+
+def submit_manual_job(job_def: JobDefinition) -> BackgroundTaskRun:
+    """在当前进程内同步预占 task_run 并启动后台线程执行，返回新建的 task_run。
+
+    冲突时抛 ``TaskRunConflictError``；调用方负责把它映射为 HTTP 响应。
+    """
+    ensure_database_ready()
+
+    func, _recovery_stats, _recovered_count = _prepare_recovery(job_def)
+
+    mutex_key = f"aps:{job_def.task_key}"
+    try:
+        task_run = ActivityService.create_task_run(
+            task_key=job_def.task_key,
+            trigger_type="manual",
+            mutex_key=mutex_key,
+        )
+    except IntegrityError as exc:
+        blocking_task_run = ActivityService.find_task_run_by_mutex_key(mutex_key)
+        if blocking_task_run is None:
+            raise
+        raise TaskRunConflictError(blocking_task_run) from exc
+
+    task_run_id = task_run.id
+
+    def _runner() -> None:
+        try:
+            ensure_database_ready()
+            ActivityService.run_task(
+                task_key=job_def.task_key,
+                trigger_type="manual",
+                func=func,
+                task_run_id=task_run_id,
+                log_task_name=job_def.log_name,
+                mutex_key=mutex_key,
+                conflict_policy="raise",
+            )
+        except Exception:
+            # run_task 内部已经把异常写入 task_run；这里仅记录线程层日志，
+            # 避免未捕获异常打断 daemon 线程的清理路径。
+            logger.exception(
+                "Manual job thread crashed task_key={} task_run_id={}",
+                job_def.task_key,
+                task_run_id,
+            )
+
+    thread = threading.Thread(
+        target=_runner,
+        name=f"manual-job-{job_def.task_key}-{task_run_id}",
+        daemon=True,
+    )
+    thread.start()
+    return task_run
 
 
 def build_scheduler() -> BlockingScheduler:

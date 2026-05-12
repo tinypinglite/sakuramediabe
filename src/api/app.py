@@ -37,6 +37,7 @@ from src.api.routers.system.auth import router as auth_router
 from src.api.routers.system.activity import router as activity_router
 from src.api.routers.system.collection_number_features import router as collection_number_features_router
 from src.api.routers.system.indexer_settings import router as indexer_settings_router
+from src.api.routers.system.jobs import router as jobs_router
 from src.api.routers.system.movie_desc_translation_settings import (
     router as movie_desc_translation_settings_router,
 )
@@ -96,6 +97,7 @@ def create_app() -> FastAPI:
     app.include_router(downloads_router)
     app.include_router(status_router)
     app.include_router(activity_router)
+    app.include_router(jobs_router)
     app.include_router(account_router)
     app.include_router(auth_router)
     app.include_router(indexer_settings_router)

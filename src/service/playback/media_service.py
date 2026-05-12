@@ -2,15 +2,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
+import peewee
 from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import require_record, resolve_sort, validate_page
 from src.common.runtime_time import utc_now_for_db
-from src.model import Image, Media, MediaPoint, MediaProgress, MediaThumbnail, Movie, ResourceTaskState
+from src.model import Image, Media, MediaLibrary, MediaPoint, MediaProgress, MediaThumbnail, Movie, ResourceTaskState
 from src.model.base import get_database
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
+    InvalidMediaResource,
     MediaPointCreateRequest,
     MediaPointListItemResource,
     MediaPointResource,
@@ -260,3 +262,52 @@ class MediaService:
     def list_thumbnails(cls, media_id: int) -> list[MediaThumbnailResource]:
         cls._require_media(media_id)
         return MediaThumbnailService.list_media_thumbnails(media_id)
+
+    @classmethod
+    def list_invalid_media(
+        cls,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        search: str | None = None,
+    ) -> PageResponse[InvalidMediaResource]:
+        validate_page(page, page_size, error_code="invalid_media_filter")
+        base_query = (
+            Media.select(Media, Movie, MediaLibrary)
+            .join(Movie, on=(Media.movie == Movie.movie_number))
+            .switch(Media)
+            .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
+            .where(Media.valid == False)
+        )
+        normalized = (search or "").strip()
+        if normalized:
+            base_query = base_query.where(
+                (Movie.movie_number.contains(normalized))
+                | (Movie.title.contains(normalized))
+                | (Media.path.contains(normalized))
+            )
+        total = base_query.count()
+        rows = list(
+            base_query.order_by(Media.updated_at.desc(), Media.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = [
+            InvalidMediaResource(
+                id=media.id,
+                movie_number=media.movie.movie_number,
+                movie_title=media.movie.title,
+                path=media.path,
+                library_id=media.library_id,
+                library_name=media.library.name if media.library_id is not None else None,
+                file_size_bytes=media.file_size_bytes,
+                updated_at=media.updated_at,
+            )
+            for media in rows
+        ]
+        return PageResponse[InvalidMediaResource](
+            items=items,
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
