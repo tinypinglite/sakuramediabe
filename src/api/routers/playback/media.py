@@ -8,7 +8,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
 from src.common import resolve_media_file_path, verify_media_signature
+from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
+    InvalidMediaResource,
     MediaPointCreateRequest,
     MediaPointResource,
     MediaProgressResource,
@@ -81,6 +83,16 @@ def _range_requests_response(request: Request, file_path: str, content_type: str
         headers=headers,
         status_code=status_code,
     )
+
+
+@router.get("/invalid", response_model=PageResponse[InvalidMediaResource])
+def list_invalid_media(
+    page: int = 1,
+    page_size: int = 20,
+    search: str | None = None,
+    current_user=Depends(get_current_user),
+):
+    return MediaService.list_invalid_media(page=page, page_size=page_size, search=search)
 
 
 @router.get("/{media_id}/points", response_model=list[MediaPointResource])

@@ -11,6 +11,7 @@
 - 缩略图列表查询
 - 全局媒体书签分页查询
 - 媒体删除与有效性管理
+- 失效媒体列表查询
 
 当前项目里，媒体详情不会单独通过 `/media/{media_id}` 返回，而是包含在影片详情的 `media_items` 中，详见 [../catalog/movies.md](../catalog/movies.md)。
 
@@ -92,6 +93,7 @@
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/media-points` | 分页获取全局媒体书签列表 |
+| `GET` | `/media/invalid` | 分页获取所有失效媒体列表 |
 | `GET` | `/media/{media_id}/points` | 获取指定媒体的书签列表 |
 | `POST` | `/media/{media_id}/points` | 为指定媒体添加书签；重复缩略图幂等返回已有书签 |
 | `DELETE` | `/media/{media_id}/points/{point_id}` | 删除指定媒体下的单个书签 |
@@ -190,6 +192,78 @@ Authorization: Bearer <token>
   "page": 1,
   "page_size": 20,
   "total": 2
+}
+```
+
+### Endpoint
+
+`GET /media/invalid`
+
+### Purpose
+
+分页返回当前 `valid=false` 的媒体记录，用于让用户/前端发现并清理失效媒体。
+
+### Auth
+
+需要 Bearer Token。
+
+### Path Params
+
+无。
+
+### Query Params
+
+- `page`: 页码，默认 `1`，必须大于 `0`
+- `page_size`: 每页数量，默认 `20`，取值范围 `1-100`
+- `search`: 可选，按 `movie_number`、`Movie.title` 或 `Media.path` 模糊匹配
+
+### Request Body
+
+无。
+
+### Success Responses
+
+- `200 OK`: 返回分页结果
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `422 Unprocessable Entity`: `page` 或 `page_size` 非法
+
+### Behavior
+
+- 仅返回 `Media.valid == false` 的记录
+- 按 `updated_at` 降序排列（巡检翻 `valid` 时会更新 `updated_at`，因此近似"最近失效优先"）
+- `library_id` / `library_name` 在媒体库已被删除（`SET NULL`）时为 `null`
+- `movie_title` 在影片未补全标题时可能为 `null`
+- 失效媒体可通过 `DELETE /media/{media_id}` 清理；删除后该影片若仍订阅且无任何 media 行，下一轮订阅自动下载会重新搜种
+
+### Example Request
+
+```http
+GET /media/invalid?page=1&page_size=20&search=ABC
+Authorization: Bearer <token>
+```
+
+### Example Response
+
+```json
+{
+  "items": [
+    {
+      "id": 100,
+      "movie_number": "ABC-001",
+      "movie_title": "示例标题",
+      "path": "/media/library/main/ABC-001/v1/ABC-001.mp4",
+      "library_id": 1,
+      "library_name": "Main Library",
+      "file_size_bytes": 2147483648,
+      "updated_at": "2026-05-12T03:00:00"
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 1
 }
 ```
 

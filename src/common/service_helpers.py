@@ -70,6 +70,16 @@ def playable_exists_expression():
     return fn.EXISTS(playable_media)
 
 
+def media_exists_expression():
+    """返回"影片是否存在任何 media 行"的子查询表达式（不区分 valid）。"""
+    from src.model import Media, Movie
+
+    from peewee import fn
+
+    media_query = Media.select(Media.id).where(Media.movie == Movie.movie_number)
+    return fn.EXISTS(media_query)
+
+
 def media_special_tag_match_expression(media_tag: str):
     """按空格分隔标签做精确匹配，避免把普通子串误判成命中。"""
     from src.model import Media

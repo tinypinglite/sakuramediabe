@@ -20,6 +20,7 @@
 - [system/metadata-provider-license.md](./system/metadata-provider-license.md): 闭源元数据 Provider 授权状态与激活
 - [system/collection-number-features.md](./system/collection-number-features.md): 合集影片番号特征管理
 - [system/notifications.md](./system/notifications.md): 通知中心接口
+- [system/jobs.md](./system/jobs.md): 系统任务元数据与手动触发接口
 - [system/task-runs.md](./system/task-runs.md): 任务中心与事件流接口
 - [system/flutter-activity-integration.md](./system/flutter-activity-integration.md): Flutter 活动中心对接说明
 
@@ -75,6 +76,7 @@
 - `media`
 - `media libraries`
 - `media points`
+- `system jobs`
 - `image search sessions`
 - `daily recommendations`
 - `moment recommendations`

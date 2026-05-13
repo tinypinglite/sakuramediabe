@@ -57,3 +57,14 @@ class MediaThumbnailResource(SchemaModel):
     media_id: int
     offset_seconds: int
     image: ImageResource
+
+
+class InvalidMediaResource(SchemaModel):
+    id: int
+    movie_number: str
+    movie_title: str | None
+    path: str
+    library_id: int | None
+    library_name: str | None
+    file_size_bytes: int
+    updated_at: datetime

@@ -15,6 +15,10 @@
 
 - `GET /system/activity/bootstrap`
 
+如果要展示可手动执行的 APS 任务列表，请使用：
+
+- [系统任务接口](./jobs.md)
+
 ## 任务模型
 
 - `task_key`

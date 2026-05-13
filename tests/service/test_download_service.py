@@ -1184,6 +1184,21 @@ def test_subscribed_movie_auto_download_selects_only_subscribed_movies_without_m
     assert [movie.movie_number for movie in candidate_movies] == [candidate_movie.movie_number]
 
 
+def test_subscribed_movie_auto_download_skips_movies_with_only_invalid_media(download_tables):
+    library = _create_library()
+    invalid_media_movie = _create_movie("ABC-010", title="only-invalid")
+    Media.create(
+        movie=invalid_media_movie,
+        library=library,
+        path="/library/main/ABC-010.mp4",
+        valid=False,
+    )
+
+    candidate_movies = SubscribedMovieAutoDownloadService()._list_candidate_movies()
+
+    assert invalid_media_movie.movie_number not in [movie.movie_number for movie in candidate_movies]
+
+
 def test_subscribed_movie_auto_download_prefers_4k_candidate_even_when_non_4k_has_more_seeders(
     download_tables,
 ):

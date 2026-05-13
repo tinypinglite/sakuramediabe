@@ -1,0 +1,84 @@
+from fastapi import APIRouter, Depends
+
+from src.api.exception.errors import ApiError
+from src.api.routers.deps import db_deps, get_current_user
+from src.model import BackgroundTaskRun
+from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY, JobDefinition
+from src.schema.system.activity import TaskRunResource
+from src.schema.system.jobs import JobMetadataResource, ManualJobTriggerResponse
+from src.service.system.activity_service import TaskRunConflictError
+from src.start.aps import _resolve_scheduler_cron_expr, submit_manual_job
+
+router = APIRouter(
+    tags=["jobs"],
+    dependencies=[Depends(db_deps), Depends(get_current_user)],
+)
+
+
+def _latest_task_run_by_key() -> dict[str, BackgroundTaskRun]:
+    # 用单条查询取每个 task_key 的最新一条 task_run，避免对 JOB_REGISTRY 做 N 次查询。
+    # 取 id 降序即可——BackgroundTaskRun.id 自增，新建总是大于旧记录。
+    rows = (
+        BackgroundTaskRun.select()
+        .where(BackgroundTaskRun.task_key.in_(list(JOB_REGISTRY_BY_KEY.keys())))
+        .order_by(BackgroundTaskRun.task_key, BackgroundTaskRun.id.desc())
+    )
+    latest: dict[str, BackgroundTaskRun] = {}
+    for row in rows:
+        if row.task_key in latest:
+            continue
+        latest[row.task_key] = row
+    return latest
+
+
+def _build_job_metadata(job_def: JobDefinition, last_run: BackgroundTaskRun | None) -> JobMetadataResource:
+    return JobMetadataResource(
+        task_key=job_def.task_key,
+        log_name=job_def.log_name,
+        cli_name=job_def.cli_name,
+        cli_help=job_def.cli_help,
+        cron_setting=job_def.cron_setting,
+        cron_expr=_resolve_scheduler_cron_expr(job_def.cron_setting),
+        manual_trigger_allowed=job_def.manual_trigger_allowed,
+        last_task_run=TaskRunResource.model_validate(last_run) if last_run else None,
+    )
+
+
+@router.get("/system/jobs", response_model=list[JobMetadataResource])
+def list_jobs():
+    latest = _latest_task_run_by_key()
+    return [_build_job_metadata(job_def, latest.get(job_def.task_key)) for job_def in JOB_REGISTRY]
+
+
+@router.post("/system/jobs/{task_key}/run", response_model=ManualJobTriggerResponse)
+def trigger_job(task_key: str):
+    job_def = JOB_REGISTRY_BY_KEY.get(task_key)
+    if job_def is None:
+        raise ApiError(404, "job_not_found", f"未知任务 task_key={task_key}")
+    if not job_def.manual_trigger_allowed:
+        raise ApiError(
+            403,
+            "manual_trigger_forbidden",
+            f"任务 {task_key} 不允许通过接口手动触发",
+        )
+
+    try:
+        task_run = submit_manual_job(job_def)
+    except TaskRunConflictError as exc:
+        blocking = exc.blocking_task_run
+        raise ApiError(
+            409,
+            "task_conflict",
+            str(exc),
+            details={
+                "blocking_task_run_id": blocking.id,
+                "blocking_trigger_type": blocking.trigger_type,
+                "blocking_state": blocking.state,
+            },
+        ) from exc
+
+    return ManualJobTriggerResponse(
+        task_run_id=task_run.id,
+        task_key=task_key,
+        state=task_run.state,
+    )

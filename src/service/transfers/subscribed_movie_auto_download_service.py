@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Sequence
 from loguru import logger
 from peewee import fn
 
-from src.common.service_helpers import playable_exists_expression
+from src.common.service_helpers import media_exists_expression
 from src.model import DownloadTask, Media, Movie
 from src.schema.transfers.downloads import (
     DownloadCandidateCreatePayload,
@@ -114,7 +114,7 @@ class SubscribedMovieAutoDownloadService:
             }
         )
 
-    _playable_exists_expression = staticmethod(playable_exists_expression)
+    _media_exists_expression = staticmethod(media_exists_expression)
 
     @staticmethod
     def _download_task_exists_expression():
@@ -127,7 +127,7 @@ class SubscribedMovieAutoDownloadService:
         query = (
             Movie.select()
             .where(Movie.is_subscribed == True)
-            .where(~self._playable_exists_expression())
+            .where(~self._media_exists_expression())
             .where(~self._download_task_exists_expression())
             .order_by(Movie.subscribed_at.asc(), Movie.id.asc())
         )
