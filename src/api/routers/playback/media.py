@@ -16,6 +16,7 @@ from src.schema.playback.media import (
     MediaProgressResource,
     MediaProgressUpdateRequest,
     MediaThumbnailResource,
+    MediaValidityCheckResponse,
 )
 from src.service.playback import MediaService
 
@@ -93,6 +94,14 @@ def list_invalid_media(
     current_user=Depends(get_current_user),
 ):
     return MediaService.list_invalid_media(page=page, page_size=page_size, search=search)
+
+
+@router.post("/{media_id}/validity-check", response_model=MediaValidityCheckResponse)
+def check_media_validity(
+    media_id: int,
+    current_user=Depends(get_current_user),
+):
+    return MediaService.check_media_validity(media_id)
 
 
 @router.get("/{media_id}/points", response_model=list[MediaPointResource])

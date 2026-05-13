@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from src.api.exception.errors import ApiError
 from src.model import Image, Media, MediaLibrary, Movie, MovieSeries, ResourceTaskState, Subtitle
 from src.service.playback.media_file_scan_service import MediaFileScanService
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeResult
@@ -60,6 +61,31 @@ def test_scan_media_files_invalidates_missing_media(media_file_scan_tables, tmp_
     assert refreshed.valid is False
 
 
+def test_check_media_file_invalidates_missing_media(media_file_scan_tables, tmp_path):
+    movie = _create_movie("ABC-311", "Movie311")
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    media = Media.create(
+        movie=movie,
+        library=library,
+        path=str(tmp_path / "missing.mp4"),
+        valid=True,
+    )
+    service = MediaFileScanService()
+
+    result = service.check_media_file(media.id)
+    refreshed = Media.get_by_id(media.id)
+
+    assert result.id == media.id
+    assert result.path == str(tmp_path / "missing.mp4")
+    assert result.file_exists is False
+    assert result.valid_before is True
+    assert result.valid_after is False
+    assert result.updated is True
+    assert result.invalidated is True
+    assert result.revived is False
+    assert refreshed.valid is False
+
+
 def test_scan_media_files_revives_media_and_backfills_video_info(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-302", "Movie302")
     library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
@@ -105,6 +131,49 @@ def test_scan_media_files_revives_media_and_backfills_video_info(media_file_scan
     assert fake_probe.called_paths == [file_path.resolve()]
 
 
+def test_check_media_file_revives_media_and_backfills_video_info(media_file_scan_tables, tmp_path):
+    movie = _create_movie("ABC-312", "Movie312")
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    file_path = tmp_path / "ABC-312-4K-C.mp4"
+    file_path.write_bytes(b"video-bytes")
+    file_path.with_suffix(".srt").write_text("subtitle", encoding="utf-8")
+    probe_result = MediaMetadataProbeResult(
+        resolution="3840x2160",
+        duration_seconds=600,
+        video_info=_build_video_info(3840, 2160),
+    )
+    media = Media.create(
+        movie=movie,
+        library=library,
+        path=str(file_path),
+        file_size_bytes=0,
+        resolution=None,
+        duration_seconds=0,
+        video_info=None,
+        special_tags="普通",
+        valid=False,
+    )
+    fake_probe = _FakeProbeService(probe_result)
+    service = MediaFileScanService(metadata_probe_service=fake_probe)
+
+    result = service.check_media_file(media.id)
+    refreshed = Media.get_by_id(media.id)
+
+    assert result.file_exists is True
+    assert result.valid_before is False
+    assert result.valid_after is True
+    assert result.updated is True
+    assert result.invalidated is False
+    assert result.revived is True
+    assert refreshed.valid is True
+    assert refreshed.file_size_bytes == len(b"video-bytes")
+    assert refreshed.resolution == "3840x2160"
+    assert refreshed.duration_seconds == 600
+    assert refreshed.video_info == probe_result.video_info
+    assert refreshed.special_tags == "中字 4K"
+    assert fake_probe.called_paths == [file_path.resolve()]
+
+
 def test_scan_media_files_skips_probe_when_video_info_exists(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-303", "Movie303")
     library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
@@ -137,6 +206,42 @@ def test_scan_media_files_skips_probe_when_video_info_exists(media_file_scan_tab
     assert stats["skipped_media"] == 1
     assert fake_probe.called_paths == []
     assert refreshed.video_info == existing_video_info
+
+
+def test_check_media_file_returns_unchanged_when_valid_state_matches(media_file_scan_tables, tmp_path):
+    movie = _create_movie("ABC-313", "Movie313")
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    file_path = tmp_path / "abc-313.mp4"
+    file_path.write_bytes(b"video-bytes")
+    media = Media.create(
+        movie=movie,
+        library=library,
+        path=str(file_path),
+        file_size_bytes=len(b"video-bytes"),
+        video_info={"container": {"format_name": "mp4"}, "video": None, "audio": None, "subtitles": []},
+        valid=True,
+    )
+    fake_probe = _FakeProbeService(MediaMetadataProbeResult())
+    service = MediaFileScanService(metadata_probe_service=fake_probe)
+
+    result = service.check_media_file(media.id)
+
+    assert result.file_exists is True
+    assert result.valid_before is True
+    assert result.valid_after is True
+    assert result.updated is False
+    assert result.invalidated is False
+    assert result.revived is False
+    assert fake_probe.called_paths == []
+
+
+def test_check_media_file_returns_not_found_for_missing_media(media_file_scan_tables):
+    service = MediaFileScanService()
+
+    with pytest.raises(ApiError) as exc_info:
+        service.check_media_file(999)
+
+    assert exc_info.value.code == "media_not_found"
 
 
 def test_scan_media_files_removes_4k_when_real_video_info_is_not_4k(media_file_scan_tables, tmp_path):

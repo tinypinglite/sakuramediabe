@@ -49,6 +49,7 @@ def _create_thumbnail(media: Media, offset_seconds: int, suffix: str | None = No
 def test_update_media_progress_requires_authentication(client):
     response = client.put("/media/1/progress", json={"position_seconds": 600})
     thumbnails_response = client.get("/media/1/thumbnails")
+    validity_check_response = client.post("/media/1/validity-check")
     media_points_response = client.get("/media-points")
     media_point_list_response = client.get("/media/1/points")
     media_point_create_response = client.post("/media/1/points", json={"thumbnail_id": 1})
@@ -59,6 +60,8 @@ def test_update_media_progress_requires_authentication(client):
     assert response.json()["error"]["code"] == "unauthorized"
     assert thumbnails_response.status_code == 401
     assert thumbnails_response.json()["error"]["code"] == "unauthorized"
+    assert validity_check_response.status_code == 401
+    assert validity_check_response.json()["error"]["code"] == "unauthorized"
     assert media_points_response.status_code == 401
     assert media_points_response.json()["error"]["code"] == "unauthorized"
     assert media_point_list_response.status_code == 401
@@ -69,6 +72,87 @@ def test_update_media_progress_requires_authentication(client):
     assert media_point_delete_response.json()["error"]["code"] == "unauthorized"
     assert delete_response.status_code == 401
     assert delete_response.json()["error"]["code"] == "unauthorized"
+
+
+def test_check_media_validity_invalidates_missing_file(client, account_user, tmp_path):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-040", "MovieA40", title="Movie 40")
+    missing_path = tmp_path / "missing.mp4"
+    media = Media.create(movie=movie, path=str(missing_path), valid=True)
+
+    response = client.post(
+        f"/media/{media.id}/validity-check",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["id"] == media.id
+    assert payload["path"] == str(missing_path)
+    assert payload["file_exists"] is False
+    assert payload["valid_before"] is True
+    assert payload["valid_after"] is False
+    assert payload["updated"] is True
+    assert payload["invalidated"] is True
+    assert payload["revived"] is False
+    assert "Z" not in payload["checked_at"]
+    assert Media.get_by_id(media.id).valid is False
+
+
+def test_check_media_validity_revives_invalid_media_and_removes_from_invalid_list(
+    client,
+    account_user,
+    tmp_path,
+):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-041", "MovieA41", title="Movie 41")
+    file_path = tmp_path / "abc-041.mp4"
+    file_path.write_bytes(b"video-bytes")
+    media = Media.create(
+        movie=movie,
+        path=str(file_path),
+        valid=False,
+        video_info={"container": {"format_name": "mp4"}, "video": None, "audio": None, "subtitles": []},
+    )
+
+    before_response = client.get(
+        "/media/invalid",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    check_response = client.post(
+        f"/media/{media.id}/validity-check",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    after_response = client.get(
+        "/media/invalid",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert before_response.status_code == 200
+    assert before_response.json()["total"] == 1
+    assert check_response.status_code == 200
+    payload = check_response.json()
+    assert payload["file_exists"] is True
+    assert payload["valid_before"] is False
+    assert payload["valid_after"] is True
+    assert payload["updated"] is True
+    assert payload["invalidated"] is False
+    assert payload["revived"] is True
+    assert after_response.status_code == 200
+    assert after_response.json()["total"] == 0
+    assert Media.get_by_id(media.id).valid is True
+
+
+def test_check_media_validity_returns_not_found_for_missing_media(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    response = client.post(
+        "/media/999/validity-check",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "media_not_found"
 
 def test_list_media_thumbnails_returns_expected_payload(client, account_user):
     token = _login(client, username=account_user.username)

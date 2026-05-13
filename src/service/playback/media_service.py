@@ -13,6 +13,7 @@ from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
     InvalidMediaResource,
+    MediaValidityCheckResponse,
     MediaPointCreateRequest,
     MediaPointListItemResource,
     MediaPointResource,
@@ -23,6 +24,7 @@ from src.schema.playback.media import (
 from src.service.catalog.image_cleanup_service import ImageCleanupService
 from src.service.collections import PlaylistService
 from src.service.discovery import get_lancedb_thumbnail_store
+from src.service.playback.media_file_scan_service import MediaFileScanService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 
 
@@ -262,6 +264,22 @@ class MediaService:
     def list_thumbnails(cls, media_id: int) -> list[MediaThumbnailResource]:
         cls._require_media(media_id)
         return MediaThumbnailService.list_media_thumbnails(media_id)
+
+    @classmethod
+    def check_media_validity(cls, media_id: int) -> MediaValidityCheckResponse:
+        cls._require_media(media_id)
+        result = MediaFileScanService().check_media_file(media_id)
+        return MediaValidityCheckResponse(
+            id=result.id,
+            path=result.path,
+            file_exists=result.file_exists,
+            valid_before=result.valid_before,
+            valid_after=result.valid_after,
+            updated=result.updated,
+            invalidated=result.invalidated,
+            revived=result.revived,
+            checked_at=result.checked_at,
+        )
 
     @classmethod
     def list_invalid_media(

@@ -1,12 +1,28 @@
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from loguru import logger
 
+from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.model import Media
 from src.service.catalog.movie_subtitle_service import MovieSubtitleService
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
 from src.service.transfers.tag_rules import build_scanned_media_special_tags
+
+
+@dataclass(frozen=True)
+class MediaFileCheckResult:
+    id: int
+    path: str
+    file_exists: bool
+    valid_before: bool
+    valid_after: bool
+    updated: bool
+    invalidated: bool
+    revived: bool
+    checked_at: datetime
 
 
 class MediaFileScanService:
@@ -29,14 +45,17 @@ class MediaFileScanService:
             return
         progress_callback(payload)
 
-    def _scan_single_media(self, media: Media) -> dict[str, bool]:
+    def _scan_single_media(self, media: Media) -> dict[str, bool | datetime]:
         file_path = Path(media.path).expanduser().resolve()
         file_exists = file_path.exists() and file_path.is_file()
+        checked_at = utc_now_for_db()
         updates: dict = {}
         result = {
             "updated": False,
             "invalidated": False,
             "revived": False,
+            "file_exists": file_exists,
+            "checked_at": checked_at,
         }
 
         if media.valid != file_exists:
@@ -74,11 +93,37 @@ class MediaFileScanService:
 
         for field, value in updates.items():
             setattr(media, field.name, value)
-        media.updated_at = utc_now_for_db()
+        media.updated_at = checked_at
         media.save(only=[*updates.keys(), Media.updated_at])
         MovieSubtitleService.sync_movie_subtitles(media.movie)
         result["updated"] = True
         return result
+
+    def check_media_file(self, media_id: int) -> MediaFileCheckResult:
+        media = Media.get_or_none(Media.id == media_id)
+        if media is None:
+            raise ApiError(
+                404,
+                "media_not_found",
+                "Media not found",
+                {"media_id": media_id},
+            )
+
+        valid_before = bool(media.valid)
+        result = self._scan_single_media(media)
+        media = Media.get_by_id(media.id)
+        # 单条复查直接返回状态变化，前端无需再推断 valid 是否被本次修正。
+        return MediaFileCheckResult(
+            id=media.id,
+            path=media.path,
+            file_exists=bool(result["file_exists"]),
+            valid_before=valid_before,
+            valid_after=bool(media.valid),
+            updated=bool(result["updated"]),
+            invalidated=bool(result["invalidated"]),
+            revived=bool(result["revived"]),
+            checked_at=result["checked_at"],
+        )
 
     @staticmethod
     def _has_sidecar_subtitle(media_path: Path) -> bool:
