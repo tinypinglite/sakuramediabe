@@ -5,7 +5,12 @@ from typing import Sequence
 import peewee
 from loguru import logger
 from src.api.exception.errors import ApiError
-from src.common.service_helpers import require_record, resolve_sort, validate_page
+from src.common.service_helpers import (
+    require_record,
+    resolve_sort,
+    validate_page,
+    with_movie_card_relations,
+)
 from src.common.runtime_time import utc_now_for_db
 from src.model import Image, Media, MediaLibrary, MediaPoint, MediaProgress, MediaThumbnail, Movie, ResourceTaskState
 from src.model.base import get_database
@@ -290,9 +295,14 @@ class MediaService:
         search: str | None = None,
     ) -> PageResponse[InvalidMediaResource]:
         validate_page(page, page_size, error_code="invalid_media_filter")
+        base_query = Media.select(Media, Movie).join(
+            Movie,
+            on=(Media.movie == Movie.movie_number),
+        )
+        # 失效媒体卡片需要展示影片横版与竖版封面，沿用影片卡片的关联加载逻辑。
+        base_query, _thin_cover_alias = with_movie_card_relations(base_query)
         base_query = (
-            Media.select(Media, Movie, MediaLibrary)
-            .join(Movie, on=(Media.movie == Movie.movie_number))
+            base_query.select_extend(MediaLibrary)
             .switch(Media)
             .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
             .where(Media.valid == False)
@@ -315,6 +325,12 @@ class MediaService:
                 id=media.id,
                 movie_number=media.movie.movie_number,
                 movie_title=media.movie.title,
+                cover_image=ImageResource.from_attributes_model(media.movie.cover_image)
+                if media.movie.cover_image_id is not None
+                else None,
+                thin_cover_image=ImageResource.from_attributes_model(media.movie.thin_cover_image)
+                if media.movie.thin_cover_image_id is not None
+                else None,
                 path=media.path,
                 library_id=media.library_id,
                 library_name=media.library.name if media.library_id is not None else None,

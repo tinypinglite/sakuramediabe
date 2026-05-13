@@ -238,6 +238,7 @@ Authorization: Bearer <token>
 - 按 `updated_at` 降序排列（巡检翻 `valid` 时会更新 `updated_at`，因此近似"最近失效优先"）
 - `library_id` / `library_name` 在媒体库已被删除（`SET NULL`）时为 `null`
 - `movie_title` 在影片未补全标题时可能为 `null`
+- `cover_image` / `thin_cover_image` 分别返回影片横版主封面和竖屏封面，影片缺少对应封面时为 `null`
 - 失效媒体可通过 `DELETE /media/{media_id}` 清理；删除后该影片若仍订阅且无任何 media 行，下一轮订阅自动下载会重新搜种
 
 ### Example Request
@@ -256,6 +257,20 @@ Authorization: Bearer <token>
       "id": 100,
       "movie_number": "ABC-001",
       "movie_title": "示例标题",
+      "cover_image": {
+        "id": 10,
+        "origin": "/files/images/movies/ABC-001/cover.webp?expires=1760000000&signature=example",
+        "small": "/files/images/movies/ABC-001/cover.webp?expires=1760000000&signature=example",
+        "medium": "/files/images/movies/ABC-001/cover.webp?expires=1760000000&signature=example",
+        "large": "/files/images/movies/ABC-001/cover.webp?expires=1760000000&signature=example"
+      },
+      "thin_cover_image": {
+        "id": 11,
+        "origin": "/files/images/movies/ABC-001/thin-cover.webp?expires=1760000000&signature=example",
+        "small": "/files/images/movies/ABC-001/thin-cover.webp?expires=1760000000&signature=example",
+        "medium": "/files/images/movies/ABC-001/thin-cover.webp?expires=1760000000&signature=example",
+        "large": "/files/images/movies/ABC-001/thin-cover.webp?expires=1760000000&signature=example"
+      },
       "path": "/media/library/main/ABC-001/v1/ABC-001.mp4",
       "library_id": 1,
       "library_name": "Main Library",
