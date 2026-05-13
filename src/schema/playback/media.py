@@ -68,3 +68,15 @@ class InvalidMediaResource(SchemaModel):
     library_name: str | None
     file_size_bytes: int
     updated_at: datetime
+
+
+class MediaValidityCheckResponse(SchemaModel):
+    id: int
+    path: str
+    file_exists: bool
+    valid_before: bool
+    valid_after: bool
+    updated: bool
+    invalidated: bool
+    revived: bool
+    checked_at: datetime

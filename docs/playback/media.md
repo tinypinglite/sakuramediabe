@@ -12,6 +12,7 @@
 - 全局媒体书签分页查询
 - 媒体删除与有效性管理
 - 失效媒体列表查询
+- 单个媒体文件有效性复查
 
 当前项目里，媒体详情不会单独通过 `/media/{media_id}` 返回，而是包含在影片详情的 `media_items` 中，详见 [../catalog/movies.md](../catalog/movies.md)。
 
@@ -94,6 +95,7 @@
 |---|---|---|
 | `GET` | `/media-points` | 分页获取全局媒体书签列表 |
 | `GET` | `/media/invalid` | 分页获取所有失效媒体列表 |
+| `POST` | `/media/{media_id}/validity-check` | 单次复查媒体文件是否有效，并同步修正 `valid` |
 | `GET` | `/media/{media_id}/points` | 获取指定媒体的书签列表 |
 | `POST` | `/media/{media_id}/points` | 为指定媒体添加书签；重复缩略图幂等返回已有书签 |
 | `DELETE` | `/media/{media_id}/points/{point_id}` | 删除指定媒体下的单个书签 |
@@ -264,6 +266,70 @@ Authorization: Bearer <token>
   "page": 1,
   "page_size": 20,
   "total": 1
+}
+```
+
+### Endpoint
+
+`POST /media/{media_id}/validity-check`
+
+### Purpose
+
+同步复查单个媒体文件是否仍然存在，并把数据库中的 `Media.valid` 修正为当前文件状态。适合前端在失效媒体列表中让用户二次确认某条记录。
+
+### Auth
+
+需要 Bearer Token。
+
+### Path Params
+
+- `media_id`: 媒体 ID
+
+### Query Params
+
+无。
+
+### Request Body
+
+无。
+
+### Success Responses
+
+- `200 OK`: 返回本次复查结果
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `404 media_not_found`: 媒体不存在
+
+### Behavior
+
+- 有效性定义与全量 `scan-media-files` 巡检一致：`Media.path` 指向的路径存在且是普通文件
+- 该接口不是只读检查；会根据当前文件状态同步修正 `Media.valid`
+- 原本 `valid=false` 的媒体如果文件已恢复，会被改回 `valid=true`，随后会从 `GET /media/invalid` 结果中消失
+- 文件恢复且 `video_info` 为空时，会沿用全量巡检逻辑补充文件大小、分辨率、时长、视频信息、特殊标签，并同步字幕
+- 接口同步执行，不创建后台任务、不写任务中心记录
+
+### Example Request
+
+```http
+POST /media/100/validity-check
+Authorization: Bearer <token>
+```
+
+### Example Response
+
+```json
+{
+  "id": 100,
+  "path": "/media/library/main/ABC-001/v1/ABC-001.mp4",
+  "file_exists": true,
+  "valid_before": false,
+  "valid_after": true,
+  "updated": true,
+  "invalidated": false,
+  "revived": true,
+  "checked_at": "2026-05-13T12:00:00"
 }
 ```
 
