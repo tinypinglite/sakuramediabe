@@ -46,6 +46,10 @@ def _create_thumbnail(media: Media, offset_seconds: int, suffix: str | None = No
     return MediaThumbnail.create(media=media, image=image, offset=offset_seconds)
 
 
+def _create_image(path: str) -> Image:
+    return Image.create(origin=path, small=path, medium=path, large=path)
+
+
 def test_update_media_progress_requires_authentication(client):
     response = client.put("/media/1/progress", json={"position_seconds": 600})
     thumbnails_response = client.get("/media/1/thumbnails")
@@ -141,6 +145,51 @@ def test_check_media_validity_revives_invalid_media_and_removes_from_invalid_lis
     assert after_response.status_code == 200
     assert after_response.json()["total"] == 0
     assert Media.get_by_id(media.id).valid is True
+
+
+def test_list_invalid_media_returns_movie_cover_images(client, account_user):
+    token = _login(client, username=account_user.username)
+    cover_image = _create_image("movies/ABC-042/cover.webp")
+    thin_cover_image = _create_image("movies/ABC-042/thin-cover.webp")
+    movie = _create_movie(
+        "ABC-042",
+        "MovieA42",
+        title="Movie 42",
+        cover_image=cover_image,
+        thin_cover_image=thin_cover_image,
+    )
+    media = Media.create(movie=movie, path="/library/main/abc-042.mp4", valid=False)
+
+    response = client.get(
+        "/media/invalid",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    item = payload["items"][0]
+    assert item["id"] == media.id
+    assert item["cover_image"]["id"] == cover_image.id
+    assert item["thin_cover_image"]["id"] == thin_cover_image.id
+    assert item["cover_image"]["medium"].startswith("/files/images/")
+    assert item["thin_cover_image"]["medium"].startswith("/files/images/")
+
+
+def test_list_invalid_media_returns_null_cover_images_when_missing(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-043", "MovieA43", title="Movie 43")
+    Media.create(movie=movie, path="/library/main/abc-043.mp4", valid=False)
+
+    response = client.get(
+        "/media/invalid",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["cover_image"] is None
+    assert item["thin_cover_image"] is None
 
 
 def test_check_media_validity_returns_not_found_for_missing_media(client, account_user):

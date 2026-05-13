@@ -63,6 +63,8 @@ class InvalidMediaResource(SchemaModel):
     id: int
     movie_number: str
     movie_title: str | None
+    cover_image: ImageResource | None = None
+    thin_cover_image: ImageResource | None = None
     path: str
     library_id: int | None
     library_name: str | None
