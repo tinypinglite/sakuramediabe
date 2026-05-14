@@ -22,7 +22,7 @@ def test_import_media_command_validates_source_path_exists():
 
 def test_import_media_command_reports_service_validation_error(monkeypatch, tmp_path):
     class FakeMediaImportService:
-        def import_from_source(self, source_path: str, library_id: int, progress_callback=None):
+        def import_from_source(self, source_path: str, library_id: int, progress_callback=None, transfer_mode="auto"):
             raise ValueError("media_library_not_found")
 
     runner = CliRunner()
@@ -40,8 +40,11 @@ def test_import_media_command_reports_service_validation_error(monkeypatch, tmp_
 
 
 def test_import_media_command_prints_job_summary(monkeypatch, tmp_path):
+    recorded = {}
+
     class FakeMediaImportService:
-        def import_from_source(self, source_path: str, library_id: int, progress_callback=None):
+        def import_from_source(self, source_path: str, library_id: int, progress_callback=None, transfer_mode="auto"):
+            recorded["transfer_mode"] = transfer_mode
             return SimpleNamespace(
                 id=7,
                 state="completed",
@@ -66,13 +69,72 @@ def test_import_media_command_prints_job_summary(monkeypatch, tmp_path):
     assert "imported=9" in result.output
     assert "skipped=2" in result.output
     assert "failed=1" in result.output
+    assert recorded["transfer_mode"] == "auto"
+
+
+def test_import_media_command_passes_cleanup_source_mode(monkeypatch, tmp_path):
+    recorded = {}
+
+    class FakeMediaImportService:
+        def import_from_source(self, source_path: str, library_id: int, progress_callback=None, transfer_mode="auto"):
+            recorded["transfer_mode"] = transfer_mode
+            return SimpleNamespace(
+                id=9,
+                state="completed",
+                imported_count=1,
+                skipped_count=0,
+                failed_count=0,
+            )
+
+    runner = CliRunner()
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+
+    monkeypatch.setattr("src.start.commands.MediaImportService", FakeMediaImportService)
+    result = runner.invoke(
+        main,
+        [
+            "import-media",
+            "--source-path",
+            str(source_dir),
+            "--library-id",
+            "1",
+            "--transfer-mode",
+            "cleanup-source",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert recorded["transfer_mode"] == "cleanup-source"
+
+
+def test_import_media_command_rejects_old_copy_delete_source_mode(tmp_path):
+    runner = CliRunner()
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+
+    result = runner.invoke(
+        main,
+        [
+            "import-media",
+            "--source-path",
+            str(source_dir),
+            "--library-id",
+            "1",
+            "--transfer-mode",
+            "copy-delete-source",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Invalid value for '--transfer-mode'" in result.output
 
 
 def test_import_media_command_configures_logging_before_running(monkeypatch, tmp_path):
     events = []
 
     class FakeMediaImportService:
-        def import_from_source(self, source_path: str, library_id: int, progress_callback=None):
+        def import_from_source(self, source_path: str, library_id: int, progress_callback=None, transfer_mode="auto"):
             events.append("service")
             return SimpleNamespace(
                 id=7,
@@ -118,7 +180,7 @@ def test_import_media_command_shows_tqdm_progress(monkeypatch, tmp_path):
             recorded["closed"] = True
 
     class FakeMediaImportService:
-        def import_from_source(self, source_path: str, library_id: int, progress_callback=None):
+        def import_from_source(self, source_path: str, library_id: int, progress_callback=None, transfer_mode="auto"):
             assert progress_callback is not None
             progress_callback({"event": "scan_complete", "total_movies": 2})
             progress_callback(

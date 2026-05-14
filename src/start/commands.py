@@ -480,8 +480,20 @@ for _job_def in JOB_REGISTRY:
     help="Import source directory.",
 )
 @click.option("--library-id", required=True, type=int, help="Target media library id.")
-def import_media(source_path: str, library_id: int):
-    logger.info("CLI import-media start source_path={} library_id={}", source_path, library_id)
+@click.option(
+    "--transfer-mode",
+    type=click.Choice(["auto", "cleanup-source"]),
+    default="auto",
+    show_default=True,
+    help="File transfer mode. cleanup-source deletes successfully imported source media files.",
+)
+def import_media(source_path: str, library_id: int, transfer_mode: str):
+    logger.info(
+        "CLI import-media start source_path={} library_id={} transfer_mode={}",
+        source_path,
+        library_id,
+        transfer_mode,
+    )
     _ensure_database_ready()
     service = MediaImportService()
     progress_bar = None
@@ -522,12 +534,18 @@ def import_media(source_path: str, library_id: int):
             source_path=source_path,
             library_id=library_id,
             progress_callback=_handle_progress,
+            transfer_mode=transfer_mode,
         )
     except ValueError as exc:
         logger.warning("CLI import-media validation failed detail={}", exc)
         raise click.ClickException(str(exc))
     except Exception:
-        logger.exception("CLI import-media crashed source_path={} library_id={}", source_path, library_id)
+        logger.exception(
+            "CLI import-media crashed source_path={} library_id={} transfer_mode={}",
+            source_path,
+            library_id,
+            transfer_mode,
+        )
         raise
     finally:
         if progress_bar is not None:

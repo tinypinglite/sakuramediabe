@@ -253,6 +253,235 @@ def test_import_media_groups_by_number_and_creates_one_version_per_video(
     assert image.origin == image.small == image.medium == image.large
 
 
+def test_import_media_cleanup_source_removes_imported_media_but_keeps_subtitle(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    source_video = source_dir / "ABP-123-C.mp4"
+    source_subtitle = source_dir / "ABP-123-C.srt"
+    source_video.write_bytes(b"video-content")
+    source_subtitle.write_text("subtitle", encoding="utf-8")
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+
+    service = MediaImportService(
+        provider=FakeJavdbProvider({"ABP-123": _build_detail("ABP-123")}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+    )
+
+    job = service.import_from_source(str(source_dir), library.id, transfer_mode="cleanup-source")
+
+    assert job.state == "completed"
+    assert job.imported_count == 1
+    assert job.failed_count == 0
+    assert not source_video.exists()
+    assert source_subtitle.exists()
+    media = Media.get()
+    assert media.storage_mode == "copy"
+    assert Path(media.path).exists()
+
+
+def test_import_media_cleanup_source_removes_duplicate_but_keeps_failed_media(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    duplicate_video = source_dir / "ABP-123-duplicate.mp4"
+    failed_video = source_dir / "BAD-NAME.mp4"
+    duplicate_video.write_bytes(b"duplicate-content")
+    failed_video.write_bytes(b"failed-content")
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    existing_path = tmp_path / "library" / "existing.mp4"
+    existing_path.parent.mkdir(parents=True)
+    existing_path.write_bytes(b"duplicate-content")
+    movie = Movie.create(movie_number="ABP-123", title="existing")
+    Media.create(
+        movie=movie,
+        library=library,
+        path=str(existing_path),
+        storage_mode="copy",
+        content_fingerprint=MediaImportService(
+            provider=FakeJavdbProvider({}),
+            image_downloader=_fake_downloader,
+        )._build_content_fingerprint(duplicate_video, "ABP-123"),
+        valid=True,
+    )
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+
+    service = MediaImportService(
+        provider=FakeJavdbProvider({}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+    )
+
+    job = service.import_from_source(str(source_dir), library.id, transfer_mode="cleanup-source")
+
+    assert job.state == "failed"
+    assert job.imported_count == 0
+    assert job.skipped_count == 1
+    assert job.failed_count == 1
+    assert not duplicate_video.exists()
+    assert failed_video.exists()
+    assert any(item["reason"] == "movie_number_not_found" for item in _read_failed_files(job))
+
+
+def test_import_media_cleanup_source_marks_failed_when_duplicate_delete_fails(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    duplicate_video = source_dir / "ABP-123-duplicate.mp4"
+    duplicate_video.write_bytes(b"duplicate-content")
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    existing_path = tmp_path / "library" / "existing.mp4"
+    existing_path.parent.mkdir(parents=True)
+    existing_path.write_bytes(b"duplicate-content")
+    movie = Movie.create(movie_number="ABP-123", title="existing")
+    Media.create(
+        movie=movie,
+        library=library,
+        path=str(existing_path),
+        storage_mode="copy",
+        content_fingerprint=MediaImportService(
+            provider=FakeJavdbProvider({}),
+            image_downloader=_fake_downloader,
+        )._build_content_fingerprint(duplicate_video, "ABP-123"),
+        valid=True,
+    )
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+
+    original_unlink = Path.unlink
+
+    def _raise_unlink(path: Path, *args, **kwargs):
+        if path == duplicate_video:
+            raise OSError("unlink denied")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _raise_unlink)
+
+    service = MediaImportService(
+        provider=FakeJavdbProvider({}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+    )
+
+    job = service.import_from_source(str(source_dir), library.id, transfer_mode="cleanup-source")
+
+    assert job.state == "failed"
+    assert job.imported_count == 0
+    assert job.skipped_count == 1
+    assert job.failed_count == 1
+    assert duplicate_video.exists()
+    assert any(item["reason"] == "source_delete_failed" and item["path"] == str(duplicate_video) for item in _read_failed_files(job))
+
+
+def test_import_media_cleanup_source_rejects_media_library_root(import_tables, tmp_path):
+    library_root = tmp_path / "library"
+    library_root.mkdir(parents=True)
+    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    service = MediaImportService(provider=FakeJavdbProvider({}), image_downloader=_fake_downloader)
+
+    with pytest.raises(ValueError, match="cleanup_source_inside_media_library"):
+        service.import_from_source(str(library_root), library.id, transfer_mode="cleanup-source")
+
+    assert ImportJob.select().count() == 0
+
+
+def test_import_media_cleanup_source_rejects_any_media_library_child_path(import_tables, tmp_path):
+    target_library_root = tmp_path / "target-library"
+    other_library_root = tmp_path / "other-library"
+    source_file = other_library_root / "nested" / "ABP-123.mp4"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_bytes(b"video-content")
+    target_library_root.mkdir(parents=True)
+    target_library = MediaLibrary.create(name="Target", root_path=str(target_library_root))
+    MediaLibrary.create(name="Other", root_path=str(other_library_root))
+    service = MediaImportService(provider=FakeJavdbProvider({}), image_downloader=_fake_downloader)
+
+    with pytest.raises(ValueError, match="cleanup_source_inside_media_library"):
+        service.import_from_source(str(source_file), target_library.id, transfer_mode="cleanup-source")
+
+    assert source_file.exists()
+    assert ImportJob.select().count() == 0
+
+
+def test_import_media_cleanup_source_skips_media_library_when_source_parent_contains_library(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    source_root = tmp_path / "source-root"
+    library_root = source_root / "library"
+    library_media_dir = library_root / "ABP-123" / "existing"
+    incoming_dir = source_root / "incoming"
+    library_media_dir.mkdir(parents=True)
+    incoming_dir.mkdir(parents=True)
+    library_video = library_media_dir / "ABP-123.mp4"
+    source_video = incoming_dir / "ABP-124.mp4"
+    library_video.write_bytes(b"existing-library-video")
+    source_video.write_bytes(b"incoming-video")
+    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    existing_movie = Movie.create(movie_number="ABP-123", title="existing")
+    Media.create(
+        movie=existing_movie,
+        library=library,
+        path=str(library_video),
+        storage_mode="copy",
+        content_fingerprint=MediaImportService(
+            provider=FakeJavdbProvider({}),
+            image_downloader=_fake_downloader,
+        )._build_content_fingerprint(library_video, "ABP-123"),
+        valid=True,
+    )
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+    service = MediaImportService(
+        provider=FakeJavdbProvider({"ABP-124": _build_detail("ABP-124")}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+    )
+
+    job = service.import_from_source(str(source_root), library.id, transfer_mode="cleanup-source")
+
+    assert job.state == "completed"
+    assert job.imported_count == 1
+    assert job.skipped_count == 0
+    assert job.failed_count == 0
+    assert library_video.exists()
+    assert not source_video.exists()
+    assert Media.select().count() == 2
+
+
+def test_import_media_auto_allows_source_inside_media_library(import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch):
+    library_root = tmp_path / "library"
+    source_dir = library_root / "incoming"
+    source_dir.mkdir(parents=True)
+    source_video = source_dir / "ABP-123.mp4"
+    source_video.write_bytes(b"video-content")
+    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+    service = MediaImportService(
+        provider=FakeJavdbProvider({"ABP-123": _build_detail("ABP-123")}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+    )
+
+    job = service.import_from_source(str(source_dir), library.id)
+
+    assert job.state == "completed"
+    assert job.imported_count == 1
+    assert source_video.exists()
+
+
 def test_import_media_marks_4k_from_real_video_info_even_when_file_name_has_no_4k(
     import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -568,6 +797,49 @@ def test_import_media_duplicate_check_happens_before_version_directory_creation(
 
     assert first_versions == ["1730000000000"]
     assert second_versions == ["1730000000000"]
+
+
+def test_import_media_cleanup_source_imports_when_duplicate_record_path_missing(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    source_video = source_dir / "ABP-123.mp4"
+    source_video.write_bytes(b"video-content")
+    library_root = tmp_path / "library"
+    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    stale_movie = Movie.create(movie_number="ABP-123", title="stale")
+    stale_path = tmp_path / "missing" / "ABP-123.mp4"
+    Media.create(
+        movie=stale_movie,
+        library=library,
+        path=str(stale_path),
+        storage_mode="copy",
+        content_fingerprint=MediaImportService(
+            provider=FakeJavdbProvider({}),
+            image_downloader=_fake_downloader,
+        )._build_content_fingerprint(source_video, "ABP-123"),
+        valid=True,
+    )
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+    service = MediaImportService(
+        provider=FakeJavdbProvider({"ABP-123": _build_detail("ABP-123")}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+    )
+
+    job = service.import_from_source(str(source_dir), library.id, transfer_mode="cleanup-source")
+
+    assert job.state == "completed"
+    assert job.imported_count == 1
+    assert job.skipped_count == 0
+    assert job.failed_count == 0
+    assert not source_video.exists()
+    assert Media.select().count() == 2
+    imported_media = Media.get(Media.path != str(stale_path))
+    assert Path(imported_media.path).exists()
 
 
 def test_import_media_still_imports_when_same_movie_number_but_different_source_file(
@@ -1128,7 +1400,7 @@ def test_import_media_keeps_file_import_order_when_metadata_finishes_out_of_orde
 
     imported_movie_numbers: List[str] = []
 
-    def _record_import(file_path: Path, library: MediaLibrary, movie_number: str):
+    def _record_import(file_path: Path, library: MediaLibrary, movie_number: str, transfer_mode="auto"):
         imported_movie_numbers.append(movie_number)
         target_directory = Path(library.root_path) / movie_number / str(service.now_ms())
         target_directory.mkdir(parents=True, exist_ok=True)
@@ -1219,6 +1491,79 @@ def test_import_media_merges_multi_file_vr_into_single_media(
     assert media.file_size_bytes == len(b"merged-video")
     assert Path(media.path).name == "SIVR-001.mp4"
     assert (library_root / "SIVR-001" / "1730000000000" / "SIVR-001.srt").read_text(encoding="utf-8") == "subtitle"
+
+
+def test_import_media_cleanup_source_removes_vr_fragments_after_merge(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    first = source_dir / "SIVR-001-part1.mp4"
+    second = source_dir / "SIVR-001-part2.mp4"
+    subtitle = source_dir / "SIVR-001-part1.srt"
+    first.write_bytes(b"first-fragment")
+    second.write_bytes(b"second-fragment")
+    subtitle.write_text("subtitle", encoding="utf-8")
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+
+    service = MediaImportService(
+        provider=FakeJavdbProvider({"SIVR-001": _build_detail("SIVR-001")}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+    )
+
+    monkeypatch.setattr(service, "_merge_media_files", lambda files, target_path: target_path.write_bytes(b"merged-video"))
+
+    job = service.import_from_source(str(source_dir), library.id, transfer_mode="cleanup-source")
+
+    assert job.state == "completed"
+    assert job.imported_count == 1
+    assert job.failed_count == 0
+    assert not first.exists()
+    assert not second.exists()
+    assert subtitle.exists()
+    assert Media.get().storage_mode == "concat"
+
+
+def test_import_media_cleanup_source_reports_delete_failure_after_import(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    source_video = source_dir / "ABP-123.mp4"
+    source_video.write_bytes(b"video-content")
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+
+    service = MediaImportService(
+        provider=FakeJavdbProvider({"ABP-123": _build_detail("ABP-123")}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+    )
+
+    original_unlink = Path.unlink
+
+    def _raise_unlink(path: Path, *args, **kwargs):
+        if path == source_video:
+            raise OSError("unlink denied")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", _raise_unlink)
+
+    job = service.import_from_source(str(source_dir), library.id, transfer_mode="cleanup-source")
+
+    assert job.state == "failed"
+    assert job.imported_count == 1
+    assert job.failed_count == 1
+    assert Media.select().count() == 1
+    assert source_video.exists()
+    failed_files = _read_failed_files(job)
+    assert any(item["reason"] == "source_delete_failed" and item["path"] == str(source_video) for item in failed_files)
 
 
 def test_import_media_keeps_non_vr_multi_file_as_separate_media(

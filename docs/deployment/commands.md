@@ -108,8 +108,11 @@ poetry run python -m src.start.commands cleanup-movie-subtitle-fetch-history
 ```bash
 poetry run python -m src.start.commands add-media-library --name Main --root-path /data/media
 poetry run python -m src.start.commands import-media --source-path /data/import --library-id 1
+poetry run python -m src.start.commands import-media --source-path /data/import --library-id 1 --transfer-mode cleanup-source
 poetry run python -m src.start.commands backfill-movie-thin-cover-images
 ```
+
+说明：`import-media` 默认使用 `auto` 传输模式，即优先硬链接，失败后复制。显式指定 `--transfer-mode cleanup-source` 时，命令会复制新入库媒体并在入库成功后删除对应源视频文件；扫描阶段确认已在媒体库中的重复源视频也会删除。为避免误删已入库文件，`cleanup-source` 不允许对任一媒体库根目录或其子目录执行。字幕、目录、解析失败文件、过小文件和非媒体文件都会保留。
 
 - 历史竖封面图回填：
 
