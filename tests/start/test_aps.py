@@ -228,15 +228,6 @@ def test_aps_index_image_search_thumbnails_command_runs_job(monkeypatch):
     )
 
 
-def test_aps_optimize_image_search_index_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "optimize-image-search-index",
-        {"compacted": True},
-        "image search optimize finished: compacted=True",
-    )
-
-
 def test_aps_recompute_movie_similarities_command_runs_job(monkeypatch):
     _test_cli_command(
         monkeypatch,
@@ -368,7 +359,6 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_title_translation_cron", "20 4 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_thumbnail_cron", "*/5 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.image_search_index_cron", "*/10 * * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.image_search_optimize_cron", "0 */6 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_similarity_recompute_cron", "30 3 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.moment_recommendation_generate_cron", "0 4 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.daily_recommendation_generate_cron", "0 5 * * *")
@@ -398,7 +388,6 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert str(scheduler.get_job("media_file_scan").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*/6', minute='0']"
     assert str(scheduler.get_job("media_thumbnail_generation").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/5']"
     assert str(scheduler.get_job("image_search_index").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"
-    assert str(scheduler.get_job("image_search_optimize").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*/6', minute='0']"
     assert str(scheduler.get_job("movie_similarity_recompute").trigger) == "cron[month='*', day='*', day_of_week='*', hour='3', minute='30']"
     assert str(scheduler.get_job("moment_recommendation_generate").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='0']"
     assert str(scheduler.get_job("daily_recommendation_generate").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"

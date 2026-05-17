@@ -23,10 +23,10 @@ from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.discovery import MomentRecommendationItemResource, MomentRecommendationPageResource
 from src.service.discovery.joytag_embedder_client import JoyTagInferenceClientError, get_joytag_embedder_client
-from src.service.discovery.lancedb_thumbnail_store import (
-    LanceDbThumbnailStore,
+from src.service.discovery.chroma_thumbnail_store import (
+    ChromaThumbnailStore,
     ThumbnailVectorSearchHit,
-    get_lancedb_thumbnail_store,
+    get_chroma_thumbnail_store,
 )
 from src.service.discovery.recommendation_service import MovieRecommendationService
 
@@ -82,10 +82,10 @@ class MomentRecommendationService:
     def __init__(
         self,
         *,
-        store: LanceDbThumbnailStore | None = None,
+        store: ChromaThumbnailStore | None = None,
         embedder=None,
     ) -> None:
-        self.store = store or get_lancedb_thumbnail_store()
+        self.store = store or get_chroma_thumbnail_store()
         self.embedder = embedder or get_joytag_embedder_client()
 
     @staticmethod

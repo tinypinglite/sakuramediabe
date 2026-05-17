@@ -396,18 +396,6 @@ JOB_REGISTRY: list[JobDefinition] = [
         ),
     ),
     JobDefinition(
-        task_key="image_search_optimize",
-        log_name="image-search-optimize",
-        cli_name="optimize-image-search-index",
-        cli_help="执行一次以图搜图向量索引优化",
-        cron_setting="image_search_optimize_cron",
-        service_factory=lambda _reporter: ImageSearchIndexService().optimize_index(),
-        format_stats=_build_stats_formatter(
-            "image search optimize finished:",
-            ("compacted", "compacted", False),
-        ),
-    ),
-    JobDefinition(
         task_key="metadata_provider_license_renew",
         log_name="metadata-provider-license-renew",
         cli_name="renew-metadata-provider-license",
