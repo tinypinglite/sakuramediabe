@@ -4,7 +4,7 @@ import pytest
 
 from src.model import Image, ImageSearchSession, Media, MediaLibrary, MediaThumbnail, Movie, MovieSeries
 from src.service.discovery.image_search_service import ImageSearchService
-from src.service.discovery.chroma_thumbnail_store import ThumbnailVectorSearchHit
+from src.service.discovery.lancedb_thumbnail_store import ThumbnailVectorSearchHit
 
 
 class _DummyEmbedder:

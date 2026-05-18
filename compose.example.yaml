@@ -18,7 +18,7 @@ services:
       - ./docker-data/db:/data/db
       - ./docker-data/cache/assets:/data/cache/assets
       - ./docker-data/cache/gfriends:/data/cache/gfriends
-      # 存储chromadb数据库文件，建议放在ssd
+      # 存储lancedb数据库文件，建议放在ssd
       - ./docker-data/image-search-index:/data/indexes
       - ./docker-data/logs:/data/logs
 

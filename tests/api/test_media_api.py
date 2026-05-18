@@ -831,7 +831,7 @@ def test_delete_media_hard_deletes_media_and_cleans_related_records(client, acco
     PlaylistMovie.create(playlist=recent_playlist, movie=movie)
     deleted_media_ids = []
     monkeypatch.setattr(
-        "src.service.playback.media_service.get_chroma_thumbnail_store",
+        "src.service.playback.media_service.get_lancedb_thumbnail_store",
         lambda: type("Store", (), {"delete_by_media_id": lambda self, media_id: deleted_media_ids.append(media_id)})(),
     )
 

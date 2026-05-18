@@ -51,13 +51,15 @@ class StatusJoyTagSummary(SchemaModel):
     error: str | None = None
 
 
-class StatusChromaDbSummary(SchemaModel):
+class StatusLanceDbSummary(SchemaModel):
     healthy: bool
     uri: str
-    collection_name: str
-    collection_exists: bool
+    table_name: str
+    table_exists: bool
     row_count: int | None = None
     vector_size: int | None = None
+    vector_dtype: str | None = None
+    has_vector_index: bool | None = None
     error: str | None = None
 
 
@@ -71,7 +73,7 @@ class StatusImageSearchResource(SchemaModel):
     healthy: bool
     checked_at: datetime
     joytag: StatusJoyTagSummary
-    chromadb: StatusChromaDbSummary
+    lancedb: StatusLanceDbSummary
     indexing: StatusImageSearchIndexingSummary
 
 
