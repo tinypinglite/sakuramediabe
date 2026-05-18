@@ -123,7 +123,7 @@ MovieDescTranslation = MovieInfoTranslation
 
 
 class Metadata(BaseModel):
-    javdb_host: str = "apidd.btyjscl.com"
+    javdb_host: str = "jdforrepam.com"
     proxy: str | None = None
     license_proxy: str | None = None
     # 兼容旧配置项：新版本统一使用 proxy，dmm_proxy 仅在 proxy 为空时作为读取回退。
