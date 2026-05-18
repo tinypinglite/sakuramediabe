@@ -92,7 +92,6 @@ poetry run python -m src.start.commands aps sync-movie-collections
 poetry run python -m src.start.commands aps translate-movie-title
 poetry run python -m src.start.commands aps generate-media-thumbnails
 poetry run python -m src.start.commands aps index-image-search-thumbnails
-poetry run python -m src.start.commands aps optimize-image-search-index
 poetry run python -m src.start.commands aps generate-daily-recommendations
 poetry run python -m src.start.commands aps generate-moment-recommendations
 ```

@@ -46,7 +46,6 @@
   - `poetry run python -m src.start.commands aps generate-media-thumbnails`
   - `poetry run python -m src.start.commands aps index-image-search-thumbnails`
   - `poetry run python -m src.start.commands aps recompute-movie-similarities`
-  - `poetry run python -m src.start.commands aps optimize-image-search-index`
 - 独立 CLI：
   - `poetry run python -m src.start.commands add-media-library --name <name> --root-path <abs_path>`
   - `poetry run python -m src.start.commands import-media --source-path <dir> --library-id <id>`
@@ -68,7 +67,7 @@
 - 新增独立 CLI：同步检查 `src/start/commands.py`、对应 service、`docs/deployment/commands.md` / `docs/deployment/external-service-tests.md` 与 `tests/start/`。
 - 新增模型：至少同步检查 `src/model/__init__.py` 导出、对应子域 `__init__.py`、`src/start/initdb.py` 建表列表、`tests/conftest.py` 中的 `TEST_MODELS`。
 - 改动下载、导入、缩略图、图像检索、简介回填/翻译、字幕识别等状态流转逻辑时，不要只改 router；优先复用现有 service 边界，并同步检查 `ResourceTaskStateService`、`ActivityService`、`recover_interrupted_tasks(...)` 链路是否仍然一致。
-- 图像搜索相关改动优先沿用 `JoyTagEmbedderClient`、`LanceDbThumbnailStore`、`ImageSearchIndexService`，必要时连同 `src/joytag_infer/` 与状态页健康检查一起更新。
+- 图像搜索相关改动优先沿用 `JoyTagEmbedderClient`、`ChromaThumbnailStore`、`ImageSearchIndexService`，必要时连同 `src/joytag_infer/` 与状态页健康检查一起更新。
 - 下载域当前围绕 Jackett、qBittorrent、本地索引器配置、自动导入与导入作业状态展开；新增下载源或状态同步逻辑时，优先延续现有 `download_*_service.py`、`download_*_client.py`、`media_import_service.py` 的拆分方式。
 - 改动系统活动流、通知或资源任务状态接口时，至少同步检查 `src/api/routers/system/activity.py`、`src/schema/system/activity.py`、`src/schema/system/resource_task_state.py` 与对应测试。
 - 改动影片相似度或推荐逻辑时，优先复用 `MovieRecommendationService` 和 `MovieSimilarity`，并同步检查推荐接口与重算任务。

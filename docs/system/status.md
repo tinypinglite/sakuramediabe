@@ -35,7 +35,7 @@
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/status` | 获取系统汇总统计 |
-| `GET` | `/status/image-search` | 获取 JoyTag/LanceDB 运行状态与索引计数 |
+| `GET` | `/status/image-search` | 获取 JoyTag/ChromaDB 运行状态与索引计数 |
 | `GET` | `/status/metadata-providers/{provider}/test` | 测试闭源 Provider 提供的 JavDB/DMM 外部站点实际可用性 |
 
 ## `GET /status`
@@ -87,15 +87,13 @@
     "probe_latency_ms": 42,
     "error": null
   },
-  "lancedb": {
+  "chromadb": {
     "healthy": true,
     "uri": "/data/indexes/image-search",
-    "table_name": "media_thumbnail_vectors",
-    "table_exists": true,
+    "collection_name": "media_thumbnail_vectors",
+    "collection_exists": true,
     "row_count": 15320,
     "vector_size": 768,
-    "vector_dtype": "halffloat",
-    "has_vector_index": true,
     "error": null
   },
   "indexing": {
@@ -108,7 +106,7 @@
 
 字段口径：
 
-- `healthy`: `joytag.healthy && lancedb.healthy`
+- `healthy`: `joytag.healthy && chromadb.healthy`
 - `checked_at`: 本次检测时间
 - `joytag.endpoint`: 当前主服务访问的远端推理服务地址
 - `joytag.backend`: 推理服务当前使用的部署后端，例如 `cpu`、`openvino`、`cuda`
@@ -118,10 +116,10 @@
 - `joytag.device_full_name`: 可选设备全名；GPU 名称探测失败时可能为空，不影响服务健康
 - `joytag.probe_latency_ms`: 本次真实推理探测耗时（毫秒）
 - `joytag.error`: JoyTag 初始化或推理失败时的错误信息
-- `lancedb.table_exists`: 向量表是否存在；`false` 不视为异常
-- `lancedb.row_count`: 当前向量表行数；仅在 `table_exists=true` 时有值
-- `lancedb.has_vector_index`: 是否存在向量索引；仅在 `table_exists=true` 时有值
-- `lancedb.error`: LanceDB 诊断失败时的错误信息
+- `chromadb.collection_exists`: 向量 collection 是否存在；`false` 不视为异常
+- `chromadb.row_count`: 当前 collection 内向量条数；仅在 `collection_exists=true` 时有值
+- `chromadb.vector_size`: 向量维度（首次写入向量后才能探测到）；仅在 `collection_exists=true` 时有值
+- `chromadb.error`: ChromaDB 诊断失败时的错误信息
 - `indexing.pending_thumbnails`: `MediaThumbnail.joytag_index_status == PENDING` 数量
 - `indexing.failed_thumbnails`: `MediaThumbnail.joytag_index_status == FAILED` 数量
 - `indexing.success_thumbnails`: `MediaThumbnail.joytag_index_status == SUCCESS` 数量

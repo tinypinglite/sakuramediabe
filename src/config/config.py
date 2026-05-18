@@ -176,7 +176,6 @@ class Scheduler(BaseModel):
     movie_title_translation_cron: str = "20 4 * * *"
     media_thumbnail_cron: str = "*/5 * * * *"
     image_search_index_cron: str = "0 0 * * *"
-    image_search_optimize_cron: str = "0 3 * * *"
     movie_similarity_recompute_cron: str = "30 3 * * *"
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
@@ -203,21 +202,12 @@ class ImageSearch(BaseModel):
     max_page_size: int = 100
     search_scan_batch_size: int = 100
     index_upsert_batch_size: int = 100
-    optimize_every_records: int = 5000
-    optimize_every_seconds: int = 1800
-    optimize_on_job_end: bool = True
 
 
-class LanceDb(BaseModel):
+class ChromaDb(BaseModel):
     uri: str = "/data/indexes/image-search"
-    table_name: str = "media_thumbnail_vectors"
-    vector_dtype: Literal["float16"] = "float16"
+    collection_name: str = "media_thumbnail_vectors"
     distance_metric: Literal["cosine"] = "cosine"
-    vector_index_type: Literal["ivf_rq", "ivf_pq"] = "ivf_rq"
-    vector_index_num_partitions: int = 512
-    vector_index_num_bits: int = 1
-    vector_index_num_sub_vectors: int = 96
-    scalar_index_columns: list[str] = Field(default_factory=lambda: ["movie_id"])
 
 
 if Path('/data/config/config.toml').exists():
@@ -240,7 +230,7 @@ class Settings(BaseSettings):
     logging: Logging = Field(default_factory=Logging)
     indexer_settings: IndexerSettings = Field(default_factory=IndexerSettings)
     image_search: ImageSearch = Field(default_factory=ImageSearch)
-    lancedb: LanceDb = Field(default_factory=LanceDb)
+    chromadb: ChromaDb = Field(default_factory=ChromaDb)
     enable_docs: bool = False
 
     model_config = SettingsConfigDict(
@@ -300,11 +290,11 @@ def refresh_runtime_settings(new_settings: Settings) -> None:
         setattr(settings, field_name, getattr(new_settings, field_name))
     # 运行时配置更新后，需要同时清理依赖配置的缓存单例。
     try:
-        from src.service.discovery import get_image_search_service, get_lancedb_thumbnail_store
+        from src.service.discovery import get_chroma_thumbnail_store, get_image_search_service
         from src.service.discovery.joytag_embedder_client import get_joytag_embedder_client
 
         get_image_search_service.cache_clear()
-        get_lancedb_thumbnail_store.cache_clear()
+        get_chroma_thumbnail_store.cache_clear()
         get_joytag_embedder_client.cache_clear()
     except Exception:
         pass

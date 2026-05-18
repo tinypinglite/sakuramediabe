@@ -12,13 +12,13 @@ from src.service.discovery.joytag_embedder_client import (
     JoyTagInferenceClientError,
     get_joytag_embedder_client,
 )
-from src.service.discovery.lancedb_thumbnail_store import get_lancedb_thumbnail_store
+from src.service.discovery.chroma_thumbnail_store import get_chroma_thumbnail_store
 from src.schema.system.status import (
     StatusActorSummary,
+    StatusChromaDbSummary,
     StatusImageSearchIndexingSummary,
     StatusImageSearchResource,
     StatusJoyTagSummary,
-    StatusLanceDbSummary,
     StatusMediaFileSummary,
     StatusMediaLibrarySummary,
     StatusMetadataProviderTestError,
@@ -89,13 +89,13 @@ class StatusService:
     @classmethod
     def get_image_search_status(cls) -> StatusImageSearchResource:
         joytag = cls._probe_joytag()
-        lancedb = cls._probe_lancedb()
+        chromadb = cls._probe_chromadb()
         indexing = cls._indexing_status()
         return StatusImageSearchResource(
-            healthy=bool(joytag.healthy and lancedb.healthy),
+            healthy=bool(joytag.healthy and chromadb.healthy),
             checked_at=utc_now_for_db(),
             joytag=joytag,
-            lancedb=lancedb,
+            chromadb=chromadb,
             indexing=indexing,
         )
 
@@ -235,31 +235,27 @@ class StatusService:
         )
 
     @staticmethod
-    def _probe_lancedb() -> StatusLanceDbSummary:
+    def _probe_chromadb() -> StatusChromaDbSummary:
         try:
-            store = get_lancedb_thumbnail_store()
+            store = get_chroma_thumbnail_store()
             status = store.inspect_status()
-            return StatusLanceDbSummary(
+            return StatusChromaDbSummary(
                 healthy=bool(status.get("healthy", False)),
                 uri=str(status.get("uri", getattr(store, "uri", ""))),
-                table_name=str(status.get("table_name", getattr(store, "table_name", ""))),
-                table_exists=bool(status.get("table_exists", False)),
+                collection_name=str(
+                    status.get("collection_name", getattr(store, "collection_name", ""))
+                ),
+                collection_exists=bool(status.get("collection_exists", False)),
                 row_count=(int(status["row_count"]) if status.get("row_count") is not None else None),
                 vector_size=(int(status["vector_size"]) if status.get("vector_size") is not None else None),
-                vector_dtype=(str(status["vector_dtype"]) if status.get("vector_dtype") is not None else None),
-                has_vector_index=(
-                    bool(status["has_vector_index"])
-                    if status.get("has_vector_index") is not None
-                    else None
-                ),
                 error=(str(status["error"]) if status.get("error") else None),
             )
         except Exception as exc:
-            return StatusLanceDbSummary(
+            return StatusChromaDbSummary(
                 healthy=False,
-                uri=str(settings.lancedb.uri),
-                table_name=str(settings.lancedb.table_name),
-                table_exists=False,
+                uri=str(settings.chromadb.uri),
+                collection_name=str(settings.chromadb.collection_name),
+                collection_exists=False,
                 error=str(exc),
             )
 
