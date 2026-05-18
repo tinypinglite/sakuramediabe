@@ -1,73 +1,373 @@
-annotated-types==0.7.0 ; python_version >= "3.10" and python_version < "4.0"
-anyio==4.13.0 ; python_version >= "3.10" and python_version < "4.0"
-apscheduler==3.11.2 ; python_version >= "3.10" and python_version < "4.0"
-av==15.1.0 ; python_version >= "3.10" and python_version < "4.0"
-bcrypt==4.3.0 ; python_version >= "3.10" and python_version < "4.0"
-beautifulsoup4==4.14.3 ; python_version >= "3.10" and python_version < "4.0" and ((sys_platform == "linux" or sys_platform == "darwin") and platform_machine == "x86_64" or sys_platform == "darwin" and platform_machine == "arm64" or sys_platform == "win32" and platform_machine == "AMD64") and python_full_version >= "3.7.0"
-certifi==2026.2.25 ; python_version >= "3.10" and python_version < "4.0"
-cffi==2.0.0 ; python_version >= "3.10" and python_version < "4.0"
-charset-normalizer==3.4.7 ; python_version >= "3.10" and python_version < "4.0"
-click==8.3.2 ; python_version >= "3.10" and python_version < "4.0" and (sys_platform != "darwin" or platform_machine != "x86_64" and platform_machine != "arm64") and (sys_platform != "win32" or platform_machine != "AMD64") and (platform_machine != "x86_64" or sys_platform != "darwin" and sys_platform != "linux")
-click==8.3.3 ; python_version >= "3.10" and python_version < "4.0" and ((sys_platform == "linux" or sys_platform == "darwin") and platform_machine == "x86_64" or sys_platform == "darwin" and platform_machine == "arm64" or sys_platform == "win32" and platform_machine == "AMD64")
-colorama==0.4.6 ; python_version >= "3.10" and python_version < "4.0" and (platform_system == "Windows" or sys_platform == "win32")
-cryptography==47.0.0 ; python_version >= "3.10" and python_version < "4.0" and (platform_machine == "x86_64" and (sys_platform == "linux" or sys_platform == "darwin") or sys_platform == "darwin" and (platform_machine == "x86_64" or platform_machine == "arm64") or sys_platform == "win32" and platform_machine == "AMD64") and python_version >= "3.8" and python_full_version != "3.9.0" and python_full_version != "3.9.1"
-curl-cffi==0.15.0 ; python_version >= "3.10" and python_version < "4.0"
-deprecation==2.1.0 ; python_version >= "3.10" and python_version < "4.0"
-ecdsa==0.19.2 ; python_version >= "3.10" and python_version < "4.0"
-exceptiongroup==1.3.1 ; python_version == "3.10"
-fastapi==0.110.1 ; python_version >= "3.10" and python_version < "4.0"
-ffmpy==0.3.3 ; python_version >= "3.10" and python_version < "4.0"
-h11==0.16.0 ; python_version >= "3.10" and python_version < "4.0"
-httpcore==1.0.9 ; python_version >= "3.10" and python_version < "4.0"
-httpx==0.28.1 ; python_version >= "3.10" and python_version < "4.0"
-idna==3.11 ; python_version >= "3.10" and python_version < "4.0"
-lancedb==0.21.2 ; python_version >= "3.10" and python_version < "4.0"
-libtorrent==2.0.11 ; python_version >= "3.10" and python_version < "4.0"
-loguru==0.7.3 ; python_version >= "3.10" and python_version < "4.0"
-lxml==6.1.0 ; python_version >= "3.10" and python_version < "4.0" and ((sys_platform == "linux" or sys_platform == "darwin") and platform_machine == "x86_64" or sys_platform == "darwin" and platform_machine == "arm64" or sys_platform == "win32" and platform_machine == "AMD64") and python_version >= "3.8"
-markdown-it-py==4.0.0 ; python_version >= "3.10" and python_version < "4.0"
-mdurl==0.1.2 ; python_version >= "3.10" and python_version < "4.0"
-numpy==1.26.4 ; python_version >= "3.10" and python_version < "4.0"
-opencv-python-headless==4.10.0.84 ; python_version >= "3.10" and python_version < "4.0"
-overrides==7.7.0 ; python_version >= "3.10" and python_version < "4.0"
-packaging==26.0 ; python_version >= "3.10" and python_version < "4.0"
-passlib==1.7.4 ; python_version >= "3.10" and python_version < "4.0"
-peewee==3.19.0 ; python_version >= "3.10" and python_version < "4.0"
-pillow==10.4.0 ; python_version >= "3.10" and python_version < "4.0"
-psycopg2-binary==2.9.11 ; python_version >= "3.10" and python_version < "4.0"
-pyarrow==16.1.0 ; python_version >= "3.10" and python_version < "4.0"
-pyasn1==0.6.3 ; python_version >= "3.10" and python_version < "4.0"
-pycparser==3.0 ; python_version >= "3.10" and python_version < "4.0" and implementation_name != "PyPy"
-pydantic-core==2.41.5 ; python_version >= "3.10" and python_version < "4.0" and (sys_platform != "darwin" or platform_machine != "x86_64" and platform_machine != "arm64") and (sys_platform != "win32" or platform_machine != "AMD64") and (platform_machine != "x86_64" or sys_platform != "darwin" and sys_platform != "linux")
-pydantic-core==2.46.3 ; python_version >= "3.10" and python_version < "4.0" and ((sys_platform == "linux" or sys_platform == "darwin") and platform_machine == "x86_64" or sys_platform == "darwin" and platform_machine == "arm64" or sys_platform == "win32" and platform_machine == "AMD64") and python_version >= "3.9"
-pydantic-settings==2.13.1 ; python_version >= "3.10" and python_version < "4.0" and (sys_platform != "darwin" or platform_machine != "x86_64" and platform_machine != "arm64") and (sys_platform != "win32" or platform_machine != "AMD64") and (platform_machine != "x86_64" or sys_platform != "darwin" and sys_platform != "linux")
-pydantic-settings==2.14.0 ; python_version >= "3.10" and python_version < "4.0" and ((sys_platform == "linux" or sys_platform == "darwin") and platform_machine == "x86_64" or sys_platform == "darwin" and platform_machine == "arm64" or sys_platform == "win32" and platform_machine == "AMD64")
-pydantic==2.12.5 ; python_version >= "3.10" and python_version < "4.0" and (sys_platform != "darwin" or platform_machine != "x86_64" and platform_machine != "arm64") and (sys_platform != "win32" or platform_machine != "AMD64") and (platform_machine != "x86_64" or sys_platform != "darwin" and sys_platform != "linux")
-pydantic==2.13.3 ; python_version >= "3.10" and python_version < "4.0" and ((sys_platform == "linux" or sys_platform == "darwin") and platform_machine == "x86_64" or sys_platform == "darwin" and platform_machine == "arm64" or sys_platform == "win32" and platform_machine == "AMD64") and python_version >= "3.9"
-pygments==2.20.0 ; python_version >= "3.10" and python_version < "4.0"
-pymysql==1.1.2 ; python_version >= "3.10" and python_version < "4.0"
-python-dotenv==1.2.2 ; python_version >= "3.10" and python_version < "4.0"
-python-jose==3.5.0 ; python_version >= "3.10" and python_version < "4.0"
-python-multipart==0.0.6 ; python_version >= "3.10" and python_version < "4.0"
-qbittorrent-api==2023.11.57 ; python_version >= "3.10" and python_version < "4.0"
-requests==2.33.1 ; python_version >= "3.10" and python_version < "4.0"
-rich==15.0.0 ; python_version >= "3.10" and python_version < "4.0"
-rsa==4.9.1 ; python_version >= "3.10" and python_version < "4.0"
-./lib/metadata-provider/sakuramedia_metadata_providers-0.1.7-cp310-cp310-linux_x86_64.whl ; python_version >= "3.10" and python_version < "4.0" and sys_platform == "linux" and platform_machine == "x86_64"
-./lib/metadata-provider/sakuramedia_metadata_providers-0.1.7-cp310-cp310-macosx_10_15_x86_64.whl ; python_version >= "3.10" and python_version < "4.0" and sys_platform == "darwin" and platform_machine == "x86_64"
-./lib/metadata-provider/sakuramedia_metadata_providers-0.1.7-cp310-cp310-macosx_11_0_arm64.whl ; python_version >= "3.10" and python_version < "4.0" and sys_platform == "darwin" and platform_machine == "arm64"
-./lib/metadata-provider/sakuramedia_metadata_providers-0.1.7-cp310-cp310-win_amd64.whl ; python_version >= "3.10" and python_version < "4.0" and sys_platform == "win32" and platform_machine == "AMD64"
-six==1.17.0 ; python_version >= "3.10" and python_version < "4.0"
-soupsieve==2.8.3 ; python_version >= "3.10" and python_version < "4.0" and ((sys_platform == "linux" or sys_platform == "darwin") and platform_machine == "x86_64" or sys_platform == "darwin" and platform_machine == "arm64" or sys_platform == "win32" and platform_machine == "AMD64") and python_version >= "3.9"
-starlette==0.37.2 ; python_version >= "3.10" and python_version < "4.0"
-toml==0.10.2 ; python_version >= "3.10" and python_version < "4.0"
-tomli==2.4.1 ; python_version == "3.10"
-tqdm==4.67.3 ; python_version >= "3.10" and python_version < "4.0"
-typing-extensions==4.15.0 ; python_version >= "3.10" and python_version < "4.0"
-typing-inspection==0.4.2 ; python_version >= "3.10" and python_version < "4.0"
-tzdata==2026.1 ; python_version >= "3.10" and python_version < "4.0" and platform_system == "Windows"
-tzlocal==5.3.1 ; python_version >= "3.10" and python_version < "4.0"
-urllib3==2.6.3 ; python_version >= "3.10" and python_version < "4.0"
-uvicorn==0.22.0 ; python_version >= "3.10" and python_version < "4.0"
-win32-setctime==1.2.0 ; python_version >= "3.10" and python_version < "4.0" and sys_platform == "win32"
-xmltodict==0.13.0 ; python_version >= "3.10" and python_version < "4.0"
+# This file was autogenerated by uv via the following command:
+#    uv export --format requirements-txt --no-hashes --no-dev --no-emit-project --output-file requirements.txt
+./lib/metadata-provider/sakuramedia_metadata_providers-0.1.7-cp310-cp310-linux_x86_64.whl ; platform_machine == 'x86_64' and sys_platform == 'linux'
+    # via sakuramediabe
+./lib/metadata-provider/sakuramedia_metadata_providers-0.1.7-cp310-cp310-macosx_10_15_x86_64.whl ; platform_machine == 'x86_64' and sys_platform == 'darwin'
+    # via sakuramediabe
+./lib/metadata-provider/sakuramedia_metadata_providers-0.1.7-cp310-cp310-macosx_11_0_arm64.whl ; platform_machine == 'arm64' and sys_platform == 'darwin'
+    # via sakuramediabe
+./lib/metadata-provider/sakuramedia_metadata_providers-0.1.7-cp310-cp310-win_amd64.whl ; platform_machine == 'AMD64' and sys_platform == 'win32'
+    # via sakuramediabe
+annotated-doc==0.0.4 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via typer
+annotated-types==0.7.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via pydantic
+anyio==4.13.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   httpx
+    #   starlette
+    #   watchfiles
+apscheduler==3.11.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+asgiref==3.11.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via opentelemetry-instrumentation-asgi
+av==15.1.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+backoff==2.2.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via posthog
+bcrypt==4.3.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   sakuramediabe
+beautifulsoup4==4.14.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramedia-metadata-providers
+build==1.5.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+certifi==2026.4.22 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   curl-cffi
+    #   httpcore
+    #   httpx
+    #   kubernetes
+    #   requests
+cffi==2.0.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   cryptography
+    #   curl-cffi
+charset-normalizer==3.4.7 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via requests
+chroma-hnswlib==0.7.6 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+chromadb==0.5.23 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+click==8.4.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   sakuramedia-metadata-providers
+    #   typer
+    #   uvicorn
+colorama==0.4.6 ; platform_machine == 'AMD64' and sys_platform == 'win32'
+    # via
+    #   build
+    #   click
+    #   loguru
+    #   tqdm
+    #   uvicorn
+cryptography==47.0.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramedia-metadata-providers
+curl-cffi==0.15.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   sakuramedia-metadata-providers
+    #   sakuramediabe
+distro==1.9.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via posthog
+durationpy==0.10 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via kubernetes
+ecdsa==0.19.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via python-jose
+exceptiongroup==1.3.1 ; (python_full_version < '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version < '3.11' and platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via anyio
+fastapi==0.110.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   sakuramediabe
+ffmpy==0.3.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+filelock==3.29.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via huggingface-hub
+flatbuffers==25.12.19 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via onnxruntime
+fsspec==2026.4.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via huggingface-hub
+googleapis-common-protos==1.75.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via opentelemetry-exporter-otlp-proto-grpc
+grpcio==1.80.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   opentelemetry-exporter-otlp-proto-grpc
+h11==0.16.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   httpcore
+    #   uvicorn
+hf-xet==1.5.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')
+    # via huggingface-hub
+httpcore==1.0.9 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via httpx
+httptools==0.7.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via uvicorn
+httpx==0.28.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   sakuramedia-metadata-providers
+    #   sakuramediabe
+huggingface-hub==0.36.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via tokenizers
+idna==3.15 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   anyio
+    #   httpx
+    #   requests
+importlib-metadata==8.7.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   build
+    #   opentelemetry-api
+importlib-resources==7.1.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+kubernetes==35.0.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+libtorrent==2.0.11 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+loguru==0.7.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   sakuramedia-metadata-providers
+    #   sakuramediabe
+lxml==6.1.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramedia-metadata-providers
+markdown-it-py==4.2.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via rich
+mdurl==0.1.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via markdown-it-py
+mmh3==5.2.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+mpmath==1.3.0 ; (python_full_version < '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version < '3.11' and platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sympy
+numpy==2.2.6 ; (python_full_version < '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version < '3.11' and platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chroma-hnswlib
+    #   chromadb
+    #   onnxruntime
+    #   opencv-python-headless
+    #   sakuramediabe
+numpy==2.4.5 ; (python_full_version >= '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version >= '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin') or (python_full_version >= '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version >= '3.11' and platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chroma-hnswlib
+    #   chromadb
+    #   onnxruntime
+    #   opencv-python-headless
+    #   sakuramediabe
+oauthlib==3.3.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via requests-oauthlib
+onnxruntime==1.24.3 ; (python_full_version < '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version < '3.11' and platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+onnxruntime==1.26.0 ; (python_full_version >= '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version >= '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin') or (python_full_version >= '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version >= '3.11' and platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+opencv-python-headless==4.10.0.84 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+opentelemetry-api==1.41.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+opentelemetry-exporter-otlp-proto-common==1.41.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-exporter-otlp-proto-grpc==1.41.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+opentelemetry-instrumentation==0.62b1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-asgi==0.62b1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-fastapi==0.62b1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+opentelemetry-proto==1.41.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   opentelemetry-exporter-otlp-proto-common
+    #   opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-sdk==1.41.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-semantic-conventions==0.62b1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   opentelemetry-instrumentation
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+    #   opentelemetry-sdk
+opentelemetry-util-http==0.62b1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   opentelemetry-instrumentation-asgi
+    #   opentelemetry-instrumentation-fastapi
+orjson==3.11.9 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+overrides==7.7.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+packaging==26.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   build
+    #   huggingface-hub
+    #   onnxruntime
+    #   opentelemetry-instrumentation
+    #   qbittorrent-api
+passlib==1.7.4 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+peewee==3.19.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+pillow==10.4.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+posthog==7.14.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+protobuf==6.33.6 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   googleapis-common-protos
+    #   onnxruntime
+    #   opentelemetry-proto
+psycopg2-binary==2.9.12 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+pyasn1==0.6.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   python-jose
+    #   rsa
+pycparser==3.0 ; (implementation_name != 'PyPy' and platform_machine == 'arm64' and sys_platform == 'darwin') or (implementation_name != 'PyPy' and platform_machine == 'x86_64' and sys_platform == 'darwin') or (implementation_name != 'PyPy' and platform_machine == 'x86_64' and sys_platform == 'linux') or (implementation_name != 'PyPy' and platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via cffi
+pydantic==2.13.4 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   fastapi
+    #   pydantic-settings
+    #   sakuramedia-metadata-providers
+    #   sakuramediabe
+pydantic-core==2.46.4 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via pydantic
+pydantic-settings==2.14.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   sakuramedia-metadata-providers
+    #   sakuramediabe
+pygments==2.20.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via rich
+pymysql==1.1.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+pypika==0.51.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+pyproject-hooks==1.2.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via build
+python-dateutil==2.9.0.post0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via kubernetes
+python-dotenv==1.2.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   pydantic-settings
+    #   uvicorn
+python-jose==3.5.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+python-multipart==0.0.6 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+pyyaml==6.0.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   huggingface-hub
+    #   kubernetes
+    #   uvicorn
+qbittorrent-api==2023.11.57 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+requests==2.34.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   huggingface-hub
+    #   kubernetes
+    #   posthog
+    #   qbittorrent-api
+    #   requests-oauthlib
+requests-oauthlib==2.0.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via kubernetes
+rich==15.0.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   curl-cffi
+    #   typer
+rsa==4.9.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via python-jose
+shellingham==1.5.4 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via typer
+six==1.17.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   ecdsa
+    #   kubernetes
+    #   python-dateutil
+soupsieve==2.8.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via beautifulsoup4
+starlette==0.37.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via fastapi
+sympy==1.14.0 ; (python_full_version < '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version < '3.11' and platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via onnxruntime
+tenacity==9.1.4 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+tokenizers==0.20.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+toml==0.10.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+tomli==2.4.1 ; (python_full_version < '3.11' and platform_machine == 'arm64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'darwin') or (python_full_version < '3.11' and platform_machine == 'x86_64' and sys_platform == 'linux') or (python_full_version < '3.11' and platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   build
+    #   sakuramediabe
+tqdm==4.67.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   huggingface-hub
+    #   sakuramediabe
+typer==0.25.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via chromadb
+typing-extensions==4.15.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   anyio
+    #   asgiref
+    #   beautifulsoup4
+    #   chromadb
+    #   cryptography
+    #   exceptiongroup
+    #   fastapi
+    #   grpcio
+    #   huggingface-hub
+    #   opentelemetry-api
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+    #   posthog
+    #   pydantic
+    #   pydantic-core
+    #   pypika
+    #   typing-inspection
+typing-inspection==0.4.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   pydantic
+    #   pydantic-settings
+tzdata==2026.2 ; platform_machine == 'AMD64' and sys_platform == 'win32'
+    # via tzlocal
+tzlocal==5.3.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via apscheduler
+urllib3==2.7.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   kubernetes
+    #   qbittorrent-api
+    #   requests
+uvicorn==0.22.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via
+    #   chromadb
+    #   sakuramediabe
+uvloop==0.22.1 ; (platform_machine == 'arm64' and platform_python_implementation != 'PyPy' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and platform_python_implementation != 'PyPy' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and platform_python_implementation != 'PyPy' and sys_platform == 'linux')
+    # via uvicorn
+watchfiles==1.2.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via uvicorn
+websocket-client==1.9.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via kubernetes
+websockets==16.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via uvicorn
+win32-setctime==1.2.0 ; platform_machine == 'AMD64' and sys_platform == 'win32'
+    # via loguru
+wrapt==2.1.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via opentelemetry-instrumentation
+xmltodict==0.13.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via sakuramediabe
+zipp==3.23.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+    # via importlib-metadata
