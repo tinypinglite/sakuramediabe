@@ -76,3 +76,9 @@ inference_timeout_seconds = 30
 inference_connect_timeout_seconds = 3
 # 推理服务鉴权 token；未启用时留空。
 inference_api_key = ""
+
+[qdrant]
+# Qdrant 服务地址；compose 部署默认使用内部服务名 qdrant。
+url = "http://qdrant:6333"
+# Qdrant API Key；未启用鉴权时留空。
+api_key = ""

@@ -13,20 +13,20 @@ from src.service.discovery.joytag_embedder_client import (
     JoyTagInferenceClientError,
     get_joytag_embedder_client,
 )
-from src.service.discovery.lancedb_thumbnail_store import (
-    LanceDbThumbnailStore,
+from src.service.discovery.qdrant_thumbnail_store import (
+    QdrantThumbnailStore,
     ThumbnailVectorRecord,
-    get_lancedb_thumbnail_store,
+    get_qdrant_thumbnail_store,
 )
 
 
 class ImageSearchIndexService:
     def __init__(
         self,
-        store: LanceDbThumbnailStore | None = None,
+        store: QdrantThumbnailStore | None = None,
         embedder=None,
     ) -> None:
-        self.store = store or get_lancedb_thumbnail_store()
+        self.store = store or get_qdrant_thumbnail_store()
         self.embedder = embedder or get_joytag_embedder_client()
         self._store_ready = False
 
@@ -38,6 +38,8 @@ class ImageSearchIndexService:
         if vector_size <= 0:
             raise RuntimeError("JoyTag embedder vector_size is invalid")
         self.store.ensure_table(vector_size)
+        # Qdrant 过滤依赖 payload index，建表后立即确保索引存在。
+        self.store.ensure_scalar_indices()
         self._store_ready = True
 
     @staticmethod

@@ -2,7 +2,7 @@
 
 ## 资源说明
 
-以图搜图能力采用搜索会话资源建模。客户端上传一张查询图片，服务端同步完成 JoyTag 向量化、执行 LanceDB 检索，并直接返回第一页结果。
+以图搜图能力采用搜索会话资源建模。客户端上传一张查询图片，服务端同步完成 JoyTag 向量化、执行 Qdrant 检索，并直接返回第一页结果。
 
 所有时间字段都由后端按当前运行环境时区转换后返回，格式为不带时区后缀的本地时间字符串。
 
@@ -23,12 +23,12 @@ API 本身只负责“上传查询图 -> 检索已索引缩略图”。要让搜
 1. 导入媒体后生成 `Media`
 2. 定时任务或单次命令 `generate-media-thumbnails` 为媒体生成 `MediaThumbnail`
 3. 新建缩略图默认 `joytag_index_status = PENDING`
-4. 定时任务或单次命令 `index-image-search-thumbnails` 读取待索引缩略图，调用 JoyTag 生成向量，并写入 LanceDB
+4. 定时任务或单次命令 `index-image-search-thumbnails` 读取待索引缩略图，调用 JoyTag 生成向量，并写入 Qdrant
 5. 定时任务或单次命令 `optimize-image-search-index` 负责压缩数据和建立/维护索引，但不是“可以搜索”的前置条件
 
 补充说明：
 
-- 如果 LanceDB 表尚未建立，或还没有任何已索引缩略图，创建搜索会话仍然会成功，但 `items` 会是空数组
+- 如果 Qdrant collection 尚未建立，或还没有任何已索引缩略图，创建搜索会话仍然会成功，但 `items` 会是空数组
 - 删除媒体时，服务会 best-effort 删除对应 `media_id` 的向量记录
 - 当前索引任务只扫描 `joytag_index_status = PENDING` 的缩略图
 
@@ -235,21 +235,21 @@ Authorization: Bearer <token>
 
 - `movie_ids` 表示仅在指定影片集合中检索
 - `exclude_movie_ids` 表示从结果中排除指定影片
-- 两个过滤条件会同时下推到 LanceDB 查询表达式
+- 两个过滤条件会同时下推到 Qdrant payload filter
 - 搜索结果组装阶段还会额外跳过 `media.valid = False` 的媒体
-- `score_threshold` 在命中结果转资源时生效，不是 LanceDB 原生距离阈值
+- `score_threshold` 在命中结果转资源时生效，不是 Qdrant 原生 score 阈值
 
 ### 扫描规则
 
-- 为了尽量凑满一页结果，服务不会只抓取精确 `page_size` 条 LanceDB 命中
+- 为了尽量凑满一页结果，服务不会只抓取精确 `page_size` 条 Qdrant 命中
 - 实际扫描批次大小为 `max(page_size, image_search.search_scan_batch_size)`
 - 命中结果在分页后还会继续经过“无效媒体过滤”和“阈值过滤”，因此某些情况下可能继续向后扫描
 
 ### 分数规则
 
-- LanceDB 检索度量固定使用 `cosine`
-- API 不直接暴露 LanceDB 原始 `_distance`
-- 返回给客户端的 `score` 按 `1 - distance / 2` 映射到 `0-1` 区间，并做边界裁剪
+- Qdrant 检索度量固定使用 `cosine`
+- API 不直接暴露 Qdrant 原始相似度
+- 返回给客户端的 `score` 按 `(cosine_score + 1) / 2` 映射到 `0-1` 区间，并做边界裁剪
 - `score` 越大表示越相似
 
 ## 配置项与调度任务
@@ -268,12 +268,9 @@ default_page_size = 20
 max_page_size = 100
 search_scan_batch_size = 100
 
-[lancedb]
-uri = "/data/indexes/image-search"
-table_name = "media_thumbnail_vectors"
-vector_dtype = "float16"
-distance_metric = "cosine"
-vector_index_type = "ivf_rq"
+[qdrant]
+url = "http://qdrant:6333"
+api_key = ""
 
 [scheduler]
 image_search_index_cron = "*/10 * * * *"
@@ -282,15 +279,16 @@ image_search_optimize_cron = "0 */6 * * *"
 
 当前实现说明：
 
-- JoyTag 推理由独立 `joytag-infer` 服务负责，主服务只保存检索会话、索引状态和 LanceDB
+- JoyTag 推理由独立 `joytag-infer` 服务负责，主服务只保存检索会话、索引状态并访问 Qdrant
 - 媒体导入后会先产生 `media` 记录；后续媒体巡检任务会继续修正 `media.valid`，并为缺失记录补齐 `video_info`
-- 嵌入维度不是在 API 文档层硬编码的常量；主服务会通过远端运行时状态读取维度，并要求与 LanceDB 表中的向量列维度一致
+- 嵌入维度不是在 API 文档层硬编码的常量；主服务会通过远端运行时状态读取维度，并要求与 Qdrant collection 中的向量维度一致
 - 远端推理服务可按部署镜像选择 CPU、OpenVINO 或 CUDA 后端
-- LanceDB 向量列类型固定要求为 `float16`
-- LanceDB 距离度量固定为 `cosine`
-- LanceDB 默认会维护 `movie_id`、`thumbnail_id`、`media_id` 的标量索引
-- 向量索引优先尝试 `IVF_RQ`；当前环境或 LanceDB 版本不支持时，会回退到 `IVF_PQ`
-- 新数据写入后即可参与搜索；`optimize` 主要用于压缩数据并建立或维护向量索引，不阻塞基础搜索能力
+- Qdrant 向量 datatype 固定要求为 `float16`
+- Qdrant 距离度量固定为 `cosine`
+- 为控制百万级 768 维向量的常驻内存，Qdrant collection 固定使用 `vectors_on_disk=true`、`hnsw.on_disk=true`、`on_disk_payload=true`
+- Qdrant 默认会维护 `movie_id`、`media_id` 的 payload index，point id 使用 `thumbnail_id`
+- 向量索引使用 Qdrant HNSW，不启用 int8 scalar quantization
+- 新数据写入后即可参与搜索；`optimize` 主要用于确保 payload index 并交由 Qdrant 后台优化器维护数据，不阻塞基础搜索能力
 
 ## 当前实现边界
 

@@ -404,7 +404,7 @@ JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: ImageSearchIndexService().optimize_index(),
         format_stats=_build_stats_formatter(
             "image search optimize finished:",
-            ("compacted", "compacted", False),
+            ("optimized", "optimized", False),
         ),
     ),
     JobDefinition(

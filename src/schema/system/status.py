@@ -51,15 +51,15 @@ class StatusJoyTagSummary(SchemaModel):
     error: str | None = None
 
 
-class StatusLanceDbSummary(SchemaModel):
+class StatusImageSearchVectorStoreSummary(SchemaModel):
     healthy: bool
-    uri: str
-    table_name: str
-    table_exists: bool
-    row_count: int | None = None
+    url: str
+    collection_name: str
+    exists: bool
+    points_count: int | None = None
     vector_size: int | None = None
     vector_dtype: str | None = None
-    has_vector_index: bool | None = None
+    collection_status: str | None = None
     error: str | None = None
 
 
@@ -73,7 +73,7 @@ class StatusImageSearchResource(SchemaModel):
     healthy: bool
     checked_at: datetime
     joytag: StatusJoyTagSummary
-    lancedb: StatusLanceDbSummary
+    image_search_vector_store: StatusImageSearchVectorStoreSummary
     indexing: StatusImageSearchIndexingSummary
 
 

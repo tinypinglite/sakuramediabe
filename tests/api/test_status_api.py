@@ -161,19 +161,19 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
             return _Runtime()
 
     class _FakeStore:
-        uri = "/data/indexes/image-search"
-        table_name = "media_thumbnail_vectors"
+        url = "http://qdrant:6333"
+        collection_name = "media_thumbnail_vectors"
 
         def inspect_status(self):
             return {
                 "healthy": True,
-                "uri": self.uri,
-                "table_name": self.table_name,
-                "table_exists": True,
-                "row_count": 12,
+                "url": self.url,
+                "collection_name": self.collection_name,
+                "exists": True,
+                "points_count": 12,
                 "vector_size": 768,
-                "vector_dtype": "halffloat",
-                "has_vector_index": True,
+                "vector_dtype": "float16",
+                "collection_status": "green",
                 "error": None,
             }
 
@@ -182,7 +182,7 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
         lambda: _FakeClient(),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_lancedb_thumbnail_store",
+        "src.service.system.status_service.get_qdrant_thumbnail_store",
         lambda: _FakeStore(),
     )
 
@@ -195,8 +195,8 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
     assert payload["joytag"]["used_device"] == "cpu"
     assert payload["joytag"]["backend"] == "cpu"
     assert payload["joytag"]["error"] is None
-    assert payload["lancedb"]["healthy"] is True
-    assert payload["lancedb"]["table_exists"] is True
+    assert payload["image_search_vector_store"]["healthy"] is True
+    assert payload["image_search_vector_store"]["exists"] is True
 
 
 def test_image_search_status_endpoint_returns_failure_payload_when_joytag_probe_fails(
@@ -211,19 +211,19 @@ def test_image_search_status_endpoint_returns_failure_payload_when_joytag_probe_
             raise JoyTagInferenceUnavailableError("probe failed")
 
     class _FakeStore:
-        uri = "/data/indexes/image-search"
-        table_name = "media_thumbnail_vectors"
+        url = "http://qdrant:6333"
+        collection_name = "media_thumbnail_vectors"
 
         def inspect_status(self):
             return {
                 "healthy": True,
-                "uri": self.uri,
-                "table_name": self.table_name,
-                "table_exists": False,
-                "row_count": None,
+                "url": self.url,
+                "collection_name": self.collection_name,
+                "exists": False,
+                "points_count": None,
                 "vector_size": None,
                 "vector_dtype": None,
-                "has_vector_index": None,
+                "collection_status": None,
                 "error": None,
             }
 
@@ -232,7 +232,7 @@ def test_image_search_status_endpoint_returns_failure_payload_when_joytag_probe_
         lambda: _FakeClient(),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_lancedb_thumbnail_store",
+        "src.service.system.status_service.get_qdrant_thumbnail_store",
         lambda: _FakeStore(),
     )
 

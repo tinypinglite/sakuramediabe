@@ -10,7 +10,7 @@ from src.config.config import (
     ImageSearch,
     IndexerSettings,
     IndexerType,
-    LanceDb,
+    Qdrant,
     Logging,
     Metadata,
     MovieInfoTranslation,
@@ -30,6 +30,8 @@ def test_image_search_defaults_to_remote_inference_endpoint():
     image_search = ImageSearch()
 
     assert image_search.inference_base_url == "http://joytag-infer:8001"
+
+
 
 
 def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
@@ -71,7 +73,7 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
     assert settings.scheduler.movie_title_translation_cron == "20 4 * * *"
     assert settings.movie_info_translation == MovieInfoTranslation()
     assert settings.image_search == ImageSearch()
-    assert settings.lancedb == LanceDb()
+    assert settings.qdrant == Qdrant()
 
 
 def test_settings_loads_metadata_gfriends_settings_from_config_file(tmp_path, monkeypatch):
@@ -269,15 +271,9 @@ def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatc
                     "max_page_size": 60,
                     "search_scan_batch_size": 30,
                 },
-                "lancedb": {
-                    "uri": "./tmp/lancedb",
-                    "table_name": "custom_thumbnail_vectors",
-                    "vector_dtype": "float16",
-                    "distance_metric": "cosine",
-                    "vector_index_type": "ivf_rq",
-                    "vector_index_num_partitions": 256,
-                    "vector_index_num_bits": 1,
-                    "vector_index_num_sub_vectors": 32,
+                "qdrant": {
+                    "url": "http://qdrant.internal:6334",
+                    "api_key": "qdrant-token",
                 },
             }
         ),
@@ -321,14 +317,8 @@ def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatc
     assert settings.image_search.default_page_size == 15
     assert settings.image_search.max_page_size == 60
     assert settings.image_search.search_scan_batch_size == 30
-    assert settings.lancedb.uri == "./tmp/lancedb"
-    assert settings.lancedb.table_name == "custom_thumbnail_vectors"
-    assert settings.lancedb.vector_dtype == "float16"
-    assert settings.lancedb.distance_metric == "cosine"
-    assert settings.lancedb.vector_index_type == "ivf_rq"
-    assert settings.lancedb.vector_index_num_partitions == 256
-    assert settings.lancedb.vector_index_num_bits == 1
-    assert settings.lancedb.vector_index_num_sub_vectors == 32
+    assert settings.qdrant.url == "http://qdrant.internal:6334"
+    assert settings.qdrant.api_key == "qdrant-token"
 
 
 def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
@@ -393,15 +383,9 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             max_page_size=90,
             search_scan_batch_size=40,
         )
-        new_settings.lancedb = LanceDb(
-            uri="/var/lib/lancedb",
-            table_name="media_thumbnail_vectors_v2",
-            vector_dtype="float16",
-            distance_metric="cosine",
-            vector_index_type="ivf_rq",
-            vector_index_num_partitions=512,
-            vector_index_num_bits=1,
-            vector_index_num_sub_vectors=96,
+        new_settings.qdrant = Qdrant(
+            url="http://qdrant.internal:6334",
+            api_key="updated-qdrant-token",
         )
         new_settings.metadata = Metadata(
             javdb_host="updated-host.example",
@@ -469,16 +453,9 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             "optimize_every_seconds": 1800,
             "optimize_on_job_end": True,
         }
-        assert persisted["lancedb"] == {
-            "uri": "/var/lib/lancedb",
-            "table_name": "media_thumbnail_vectors_v2",
-            "vector_dtype": "float16",
-            "distance_metric": "cosine",
-            "vector_index_type": "ivf_rq",
-            "vector_index_num_partitions": 512,
-            "vector_index_num_bits": 1,
-            "vector_index_num_sub_vectors": 96,
-            "scalar_index_columns": ["movie_id"],
+        assert persisted["qdrant"] == {
+            "url": "http://qdrant.internal:6334",
+            "api_key": "updated-qdrant-token",
         }
         assert persisted["logging"] == {
             "level": "DEBUG",
@@ -512,8 +489,8 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
         assert config_module.settings.movie_info_translation.model == "translator-v2"
         assert config_module.settings.image_search.inference_base_url == "http://joytag-infer.internal:8001"
         assert config_module.settings.image_search.search_scan_batch_size == 40
-        assert config_module.settings.lancedb.uri == "/var/lib/lancedb"
-        assert config_module.settings.lancedb.table_name == "media_thumbnail_vectors_v2"
+        assert config_module.settings.qdrant.url == "http://qdrant.internal:6334"
+        assert config_module.settings.qdrant.api_key == "updated-qdrant-token"
         assert config_module.settings.metadata.gfriends_filetree_cache_ttl_hours == 48
         assert config_module.settings.auth.file_signature_secret == current_file_signature_secret
     finally:
