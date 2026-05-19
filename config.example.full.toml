@@ -180,14 +180,22 @@ default_page_size = 20
 max_page_size = 100
 # 为凑满一页结果时，每次向量库扫描的批大小
 search_scan_batch_size = 100
-# JoyTag 索引任务每次批量写入 ChromaDB 的条数
+# JoyTag 索引任务每次批量写入 LanceDB 的条数
 index_upsert_batch_size = 100
+# JoyTag 索引任务每处理多少条成功记录后触发一次分段 optimize
+optimize_every_records = 5000
+# JoyTag 索引任务距离上次 optimize 超过多少秒后触发一次分段 optimize
+optimize_every_seconds = 1800
+# JoyTag 索引任务结束后是否再执行一次兜底 optimize
+optimize_on_job_end = true
 
-[chromadb]
-# ChromaDB 本地目录
+[lancedb]
+# LanceDB 本地目录
 uri = "/data/indexes/image-search"
-# Collection 名称
-collection_name = "media_thumbnail_vectors"
+# LanceDB 表名
+table_name = "media_thumbnail_vectors"
+# 标量索引字段列表（当前仅按 movie_id 过滤时建议只保留 movie_id）
+scalar_index_columns = ["movie_id"]
 
 [logging]
 # 全局日志等级。可选值：DEBUG、INFO、WARNING、ERROR、CRITICAL。

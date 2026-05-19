@@ -25,9 +25,9 @@ class _FakeJoyTagClient:
         return _Runtime()
 
 
-class _FakeChromaStore:
+class _FakeLanceDbStore:
     uri = "/data/indexes/image-search"
-    collection_name = "media_thumbnail_vectors"
+    table_name = "media_thumbnail_vectors"
 
     def __init__(self, payload: dict):
         self.payload = payload
@@ -85,15 +85,17 @@ def test_get_image_search_status_returns_success_and_indexing_counts(app, monkey
         lambda: _FakeJoyTagClient(should_fail=False),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_chroma_thumbnail_store",
-        lambda: _FakeChromaStore(
+        "src.service.system.status_service.get_lancedb_thumbnail_store",
+        lambda: _FakeLanceDbStore(
             {
                 "healthy": True,
                 "uri": "/data/indexes/image-search",
-                "collection_name": "media_thumbnail_vectors",
-                "collection_exists": True,
+                "table_name": "media_thumbnail_vectors",
+                "table_exists": True,
                 "row_count": 9,
                 "vector_size": 768,
+                "vector_dtype": "halffloat",
+                "has_vector_index": True,
                 "error": None,
             }
         ),
@@ -105,8 +107,8 @@ def test_get_image_search_status_returns_success_and_indexing_counts(app, monkey
     assert status.joytag.healthy is True
     assert status.joytag.used_device == "cpu"
     assert status.joytag.backend == "cpu"
-    assert status.chromadb.healthy is True
-    assert status.chromadb.collection_exists is True
+    assert status.lancedb.healthy is True
+    assert status.lancedb.table_exists is True
     assert status.indexing.pending_thumbnails == 1
     assert status.indexing.failed_thumbnails == 1
     assert status.indexing.success_thumbnails == 1
@@ -118,15 +120,17 @@ def test_get_image_search_status_marks_unhealthy_when_joytag_probe_fails(app, mo
         lambda: _FakeJoyTagClient(should_fail=True),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_chroma_thumbnail_store",
-        lambda: _FakeChromaStore(
+        "src.service.system.status_service.get_lancedb_thumbnail_store",
+        lambda: _FakeLanceDbStore(
             {
                 "healthy": True,
                 "uri": "/data/indexes/image-search",
-                "collection_name": "media_thumbnail_vectors",
-                "collection_exists": False,
+                "table_name": "media_thumbnail_vectors",
+                "table_exists": False,
                 "row_count": None,
                 "vector_size": None,
+                "vector_dtype": None,
+                "has_vector_index": None,
                 "error": None,
             }
         ),
@@ -137,25 +141,27 @@ def test_get_image_search_status_marks_unhealthy_when_joytag_probe_fails(app, mo
     assert status.healthy is False
     assert status.joytag.healthy is False
     assert status.joytag.error == "joytag probe failed"
-    assert status.chromadb.healthy is True
+    assert status.lancedb.healthy is True
 
 
-def test_get_image_search_status_marks_unhealthy_when_chromadb_is_unhealthy(app, monkeypatch):
+def test_get_image_search_status_marks_unhealthy_when_lancedb_is_unhealthy(app, monkeypatch):
     monkeypatch.setattr(
         "src.service.system.status_service.get_joytag_embedder_client",
         lambda: _FakeJoyTagClient(should_fail=False),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_chroma_thumbnail_store",
-        lambda: _FakeChromaStore(
+        "src.service.system.status_service.get_lancedb_thumbnail_store",
+        lambda: _FakeLanceDbStore(
             {
                 "healthy": False,
                 "uri": "/data/indexes/image-search",
-                "collection_name": "media_thumbnail_vectors",
-                "collection_exists": True,
+                "table_name": "media_thumbnail_vectors",
+                "table_exists": True,
                 "row_count": 0,
                 "vector_size": 768,
-                "error": "chromadb unavailable",
+                "vector_dtype": "halffloat",
+                "has_vector_index": False,
+                "error": "lancedb unavailable",
             }
         ),
     )
@@ -164,25 +170,27 @@ def test_get_image_search_status_marks_unhealthy_when_chromadb_is_unhealthy(app,
 
     assert status.healthy is False
     assert status.joytag.healthy is True
-    assert status.chromadb.healthy is False
-    assert status.chromadb.error == "chromadb unavailable"
+    assert status.lancedb.healthy is False
+    assert status.lancedb.error == "lancedb unavailable"
 
 
-def test_get_image_search_status_keeps_chromadb_healthy_when_collection_does_not_exist(app, monkeypatch):
+def test_get_image_search_status_keeps_lancedb_healthy_when_table_does_not_exist(app, monkeypatch):
     monkeypatch.setattr(
         "src.service.system.status_service.get_joytag_embedder_client",
         lambda: _FakeJoyTagClient(should_fail=False),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_chroma_thumbnail_store",
-        lambda: _FakeChromaStore(
+        "src.service.system.status_service.get_lancedb_thumbnail_store",
+        lambda: _FakeLanceDbStore(
             {
                 "healthy": True,
                 "uri": "/data/indexes/image-search",
-                "collection_name": "media_thumbnail_vectors",
-                "collection_exists": False,
+                "table_name": "media_thumbnail_vectors",
+                "table_exists": False,
                 "row_count": None,
                 "vector_size": None,
+                "vector_dtype": None,
+                "has_vector_index": None,
                 "error": None,
             }
         ),
@@ -191,6 +199,6 @@ def test_get_image_search_status_keeps_chromadb_healthy_when_collection_does_not
     status = StatusService.get_image_search_status()
 
     assert status.healthy is True
-    assert status.chromadb.healthy is True
-    assert status.chromadb.collection_exists is False
-    assert status.chromadb.error is None
+    assert status.lancedb.healthy is True
+    assert status.lancedb.table_exists is False
+    assert status.lancedb.error is None

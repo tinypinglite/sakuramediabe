@@ -28,7 +28,7 @@ from src.schema.playback.media import (
 )
 from src.service.catalog.image_cleanup_service import ImageCleanupService
 from src.service.collections import PlaylistService
-from src.service.discovery import get_chroma_thumbnail_store
+from src.service.discovery import get_lancedb_thumbnail_store
 from src.service.playback.media_file_scan_service import MediaFileScanService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 
@@ -261,7 +261,7 @@ class MediaService:
         ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
 
         try:
-            get_chroma_thumbnail_store().delete_by_media_id(media.id)
+            get_lancedb_thumbnail_store().delete_by_media_id(media.id)
         except Exception as exc:
             logger.warning("Delete media vectors failed media_id={} detail={}", media.id, exc)
 

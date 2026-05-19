@@ -162,16 +162,18 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
 
     class _FakeStore:
         uri = "/data/indexes/image-search"
-        collection_name = "media_thumbnail_vectors"
+        table_name = "media_thumbnail_vectors"
 
         def inspect_status(self):
             return {
                 "healthy": True,
                 "uri": self.uri,
-                "collection_name": self.collection_name,
-                "collection_exists": True,
+                "table_name": self.table_name,
+                "table_exists": True,
                 "row_count": 12,
                 "vector_size": 768,
+                "vector_dtype": "halffloat",
+                "has_vector_index": True,
                 "error": None,
             }
 
@@ -180,7 +182,7 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
         lambda: _FakeClient(),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_chroma_thumbnail_store",
+        "src.service.system.status_service.get_lancedb_thumbnail_store",
         lambda: _FakeStore(),
     )
 
@@ -193,8 +195,8 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
     assert payload["joytag"]["used_device"] == "cpu"
     assert payload["joytag"]["backend"] == "cpu"
     assert payload["joytag"]["error"] is None
-    assert payload["chromadb"]["healthy"] is True
-    assert payload["chromadb"]["collection_exists"] is True
+    assert payload["lancedb"]["healthy"] is True
+    assert payload["lancedb"]["table_exists"] is True
 
 
 def test_image_search_status_endpoint_returns_failure_payload_when_joytag_probe_fails(
@@ -210,16 +212,18 @@ def test_image_search_status_endpoint_returns_failure_payload_when_joytag_probe_
 
     class _FakeStore:
         uri = "/data/indexes/image-search"
-        collection_name = "media_thumbnail_vectors"
+        table_name = "media_thumbnail_vectors"
 
         def inspect_status(self):
             return {
                 "healthy": True,
                 "uri": self.uri,
-                "collection_name": self.collection_name,
-                "collection_exists": False,
+                "table_name": self.table_name,
+                "table_exists": False,
                 "row_count": None,
                 "vector_size": None,
+                "vector_dtype": None,
+                "has_vector_index": None,
                 "error": None,
             }
 
@@ -228,7 +232,7 @@ def test_image_search_status_endpoint_returns_failure_payload_when_joytag_probe_
         lambda: _FakeClient(),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_chroma_thumbnail_store",
+        "src.service.system.status_service.get_lancedb_thumbnail_store",
         lambda: _FakeStore(),
     )
 

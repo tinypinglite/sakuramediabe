@@ -21,10 +21,10 @@ from src.service.discovery.joytag_embedder_client import (
     JoyTagInferenceClientError,
     get_joytag_embedder_client,
 )
-from src.service.discovery.chroma_thumbnail_store import (
-    ChromaThumbnailStore,
+from src.service.discovery.lancedb_thumbnail_store import (
+    LanceDbThumbnailStore,
     ThumbnailVectorSearchHit,
-    get_chroma_thumbnail_store,
+    get_lancedb_thumbnail_store,
 )
 
 
@@ -33,10 +33,10 @@ class ImageSearchService:
 
     def __init__(
         self,
-        store: ChromaThumbnailStore | None = None,
+        store: LanceDbThumbnailStore | None = None,
         embedder=None,
     ) -> None:
-        self.store = store or get_chroma_thumbnail_store()
+        self.store = store or get_lancedb_thumbnail_store()
         self.embedder = embedder or get_joytag_embedder_client()
 
     @staticmethod

@@ -5,12 +5,12 @@ import pytest
 import src.config.config as config_module
 from src.config.config import (
     Auth,
-    ChromaDb,
     Database,
     DatabaseEngine,
     ImageSearch,
     IndexerSettings,
     IndexerType,
+    LanceDb,
     Logging,
     Metadata,
     MovieInfoTranslation,
@@ -65,12 +65,13 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
     )
     assert settings.scheduler.media_thumbnail_cron == "*/5 * * * *"
     assert settings.scheduler.image_search_index_cron == "0 0 * * *"
+    assert settings.scheduler.image_search_optimize_cron == "0 3 * * *"
     assert settings.scheduler.movie_desc_sync_cron == "0 4 * * *"
     assert settings.scheduler.movie_desc_translation_cron == "15 4 * * *"
     assert settings.scheduler.movie_title_translation_cron == "20 4 * * *"
     assert settings.movie_info_translation == MovieInfoTranslation()
     assert settings.image_search == ImageSearch()
-    assert settings.chromadb == ChromaDb()
+    assert settings.lancedb == LanceDb()
 
 
 def test_settings_loads_metadata_gfriends_settings_from_config_file(tmp_path, monkeypatch):
@@ -243,6 +244,7 @@ def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatc
                     "movie_title_translation_cron": "55 4 * * *",
                     "media_thumbnail_cron": "*/7 * * * *",
                     "image_search_index_cron": "*/8 * * * *",
+                    "image_search_optimize_cron": "30 */4 * * *",
                 },
                 "movie_info_translation": {
                     "enabled": True,
@@ -267,10 +269,15 @@ def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatc
                     "max_page_size": 60,
                     "search_scan_batch_size": 30,
                 },
-                "chromadb": {
-                    "uri": "./tmp/chroma",
-                    "collection_name": "custom_thumbnail_vectors",
+                "lancedb": {
+                    "uri": "./tmp/lancedb",
+                    "table_name": "custom_thumbnail_vectors",
+                    "vector_dtype": "float16",
                     "distance_metric": "cosine",
+                    "vector_index_type": "ivf_rq",
+                    "vector_index_num_partitions": 256,
+                    "vector_index_num_bits": 1,
+                    "vector_index_num_sub_vectors": 32,
                 },
             }
         ),
@@ -296,6 +303,7 @@ def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatc
     assert settings.scheduler.movie_title_translation_cron == "55 4 * * *"
     assert settings.scheduler.media_thumbnail_cron == "*/7 * * * *"
     assert settings.scheduler.image_search_index_cron == "*/8 * * * *"
+    assert settings.scheduler.image_search_optimize_cron == "30 */4 * * *"
     assert settings.media.collection_duration_threshold_minutes == 360
     assert settings.media.max_thumbnail_process_count == 9
     assert settings.movie_info_translation.enabled is True
@@ -313,9 +321,14 @@ def test_settings_loads_scheduler_settings_from_config_file(tmp_path, monkeypatc
     assert settings.image_search.default_page_size == 15
     assert settings.image_search.max_page_size == 60
     assert settings.image_search.search_scan_batch_size == 30
-    assert settings.chromadb.uri == "./tmp/chroma"
-    assert settings.chromadb.collection_name == "custom_thumbnail_vectors"
-    assert settings.chromadb.distance_metric == "cosine"
+    assert settings.lancedb.uri == "./tmp/lancedb"
+    assert settings.lancedb.table_name == "custom_thumbnail_vectors"
+    assert settings.lancedb.vector_dtype == "float16"
+    assert settings.lancedb.distance_metric == "cosine"
+    assert settings.lancedb.vector_index_type == "ivf_rq"
+    assert settings.lancedb.vector_index_num_partitions == 256
+    assert settings.lancedb.vector_index_num_bits == 1
+    assert settings.lancedb.vector_index_num_sub_vectors == 32
 
 
 def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
@@ -356,6 +369,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             movie_title_translation_cron="20 4 * * *",
             media_thumbnail_cron="*/5 * * * *",
             image_search_index_cron="*/10 * * * *",
+            image_search_optimize_cron="0 */6 * * *",
         )
         new_settings.media.collection_duration_threshold_minutes = 420
         new_settings.media.max_thumbnail_process_count = 6
@@ -379,10 +393,15 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             max_page_size=90,
             search_scan_batch_size=40,
         )
-        new_settings.chromadb = ChromaDb(
-            uri="/var/lib/chroma",
-            collection_name="media_thumbnail_vectors_v2",
+        new_settings.lancedb = LanceDb(
+            uri="/var/lib/lancedb",
+            table_name="media_thumbnail_vectors_v2",
+            vector_dtype="float16",
             distance_metric="cosine",
+            vector_index_type="ivf_rq",
+            vector_index_num_partitions=512,
+            vector_index_num_bits=1,
+            vector_index_num_sub_vectors=96,
         )
         new_settings.metadata = Metadata(
             javdb_host="updated-host.example",
@@ -417,6 +436,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             "movie_title_translation_cron": "20 4 * * *",
             "media_thumbnail_cron": "*/5 * * * *",
             "image_search_index_cron": "*/10 * * * *",
+            "image_search_optimize_cron": "0 */6 * * *",
             "movie_similarity_recompute_cron": "30 3 * * *",
             "moment_recommendation_generate_cron": "0 4 * * *",
             "daily_recommendation_generate_cron": "0 5 * * *",
@@ -445,11 +465,20 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             "max_page_size": 90,
             "search_scan_batch_size": 40,
             "index_upsert_batch_size": 100,
+            "optimize_every_records": 5000,
+            "optimize_every_seconds": 1800,
+            "optimize_on_job_end": True,
         }
-        assert persisted["chromadb"] == {
-            "uri": "/var/lib/chroma",
-            "collection_name": "media_thumbnail_vectors_v2",
+        assert persisted["lancedb"] == {
+            "uri": "/var/lib/lancedb",
+            "table_name": "media_thumbnail_vectors_v2",
+            "vector_dtype": "float16",
             "distance_metric": "cosine",
+            "vector_index_type": "ivf_rq",
+            "vector_index_num_partitions": 512,
+            "vector_index_num_bits": 1,
+            "vector_index_num_sub_vectors": 96,
+            "scalar_index_columns": ["movie_id"],
         }
         assert persisted["logging"] == {
             "level": "DEBUG",
@@ -483,8 +512,8 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
         assert config_module.settings.movie_info_translation.model == "translator-v2"
         assert config_module.settings.image_search.inference_base_url == "http://joytag-infer.internal:8001"
         assert config_module.settings.image_search.search_scan_batch_size == 40
-        assert config_module.settings.chromadb.uri == "/var/lib/chroma"
-        assert config_module.settings.chromadb.collection_name == "media_thumbnail_vectors_v2"
+        assert config_module.settings.lancedb.uri == "/var/lib/lancedb"
+        assert config_module.settings.lancedb.table_name == "media_thumbnail_vectors_v2"
         assert config_module.settings.metadata.gfriends_filetree_cache_ttl_hours == 48
         assert config_module.settings.auth.file_signature_secret == current_file_signature_secret
     finally:
