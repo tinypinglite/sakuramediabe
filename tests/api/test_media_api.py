@@ -831,7 +831,7 @@ def test_delete_media_hard_deletes_media_and_cleans_related_records(client, acco
     PlaylistMovie.create(playlist=recent_playlist, movie=movie)
     deleted_media_ids = []
     monkeypatch.setattr(
-        "src.service.playback.media_service.get_lancedb_thumbnail_store",
+        "src.service.playback.media_service.get_qdrant_thumbnail_store",
         lambda: type("Store", (), {"delete_by_media_id": lambda self, media_id: deleted_media_ids.append(media_id)})(),
     )
 
@@ -854,10 +854,14 @@ def test_delete_media_hard_deletes_media_and_cleans_related_records(client, acco
     assert deleted_media_ids == [media.id]
 
 
-def test_delete_media_succeeds_when_file_is_missing(client, account_user, tmp_path):
+def test_delete_media_succeeds_when_file_is_missing(client, account_user, tmp_path, monkeypatch):
     token = _login(client, username=account_user.username)
     movie = _create_movie("ABC-001", "MovieA1", title="Movie 1")
     media = Media.create(movie=movie, path=str(tmp_path / "missing.mp4"), valid=True)
+    monkeypatch.setattr(
+        "src.service.playback.media_service.get_qdrant_thumbnail_store",
+        lambda: type("Store", (), {"delete_by_media_id": lambda self, _media_id: None})(),
+    )
 
     response = client.delete(
         f"/media/{media.id}",

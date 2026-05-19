@@ -18,7 +18,7 @@ services:
       - ./docker-data/db:/data/db
       - ./docker-data/cache/assets:/data/cache/assets
       - ./docker-data/cache/gfriends:/data/cache/gfriends
-      # 存储lancedb数据库文件，建议放在ssd
+      # 旧图像搜索索引目录；迁移到 qdrant 后，确认数据迁移完成即可清理
       - ./docker-data/image-search-index:/data/indexes
       - ./docker-data/logs:/data/logs
 
@@ -55,6 +55,17 @@ services:
     # 3. 宿主机需要先安装 NVIDIA Container Toolkit
     # 4. 取消下面这一行注释，把 GPU 暴露给容器
     # gpus: all
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.4
+    container_name: qdrant
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: "6333"
+      QDRANT__LOG_LEVEL: "INFO"
+    volumes:
+      # Qdrant 向量存储；务必放 SSD，避免 vectors on_disk 查询时出现 IO 抖动
+      - ./docker-data/qdrant:/qdrant/storage
 
   sakuramedia-web:
     image: tinyping/sakuramedia-web:latest

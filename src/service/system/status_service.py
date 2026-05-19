@@ -12,13 +12,13 @@ from src.service.discovery.joytag_embedder_client import (
     JoyTagInferenceClientError,
     get_joytag_embedder_client,
 )
-from src.service.discovery.lancedb_thumbnail_store import get_lancedb_thumbnail_store
+from src.service.discovery.qdrant_thumbnail_store import get_qdrant_thumbnail_store
 from src.schema.system.status import (
     StatusActorSummary,
     StatusImageSearchIndexingSummary,
     StatusImageSearchResource,
     StatusJoyTagSummary,
-    StatusLanceDbSummary,
+    StatusImageSearchVectorStoreSummary,
     StatusMediaFileSummary,
     StatusMediaLibrarySummary,
     StatusMetadataProviderTestError,
@@ -89,13 +89,13 @@ class StatusService:
     @classmethod
     def get_image_search_status(cls) -> StatusImageSearchResource:
         joytag = cls._probe_joytag()
-        lancedb = cls._probe_lancedb()
+        image_search_vector_store = cls._probe_image_search_vector_store()
         indexing = cls._indexing_status()
         return StatusImageSearchResource(
-            healthy=bool(joytag.healthy and lancedb.healthy),
+            healthy=bool(joytag.healthy and image_search_vector_store.healthy),
             checked_at=utc_now_for_db(),
             joytag=joytag,
-            lancedb=lancedb,
+            image_search_vector_store=image_search_vector_store,
             indexing=indexing,
         )
 
@@ -235,31 +235,29 @@ class StatusService:
         )
 
     @staticmethod
-    def _probe_lancedb() -> StatusLanceDbSummary:
+    def _probe_image_search_vector_store() -> StatusImageSearchVectorStoreSummary:
         try:
-            store = get_lancedb_thumbnail_store()
+            store = get_qdrant_thumbnail_store()
             status = store.inspect_status()
-            return StatusLanceDbSummary(
+            return StatusImageSearchVectorStoreSummary(
                 healthy=bool(status.get("healthy", False)),
-                uri=str(status.get("uri", getattr(store, "uri", ""))),
-                table_name=str(status.get("table_name", getattr(store, "table_name", ""))),
-                table_exists=bool(status.get("table_exists", False)),
-                row_count=(int(status["row_count"]) if status.get("row_count") is not None else None),
+                url=str(status.get("url", getattr(store, "url", ""))),
+                collection_name=str(status.get("collection_name", getattr(store, "collection_name", ""))),
+                exists=bool(status.get("exists", False)),
+                points_count=(int(status["points_count"]) if status.get("points_count") is not None else None),
                 vector_size=(int(status["vector_size"]) if status.get("vector_size") is not None else None),
                 vector_dtype=(str(status["vector_dtype"]) if status.get("vector_dtype") is not None else None),
-                has_vector_index=(
-                    bool(status["has_vector_index"])
-                    if status.get("has_vector_index") is not None
-                    else None
+                collection_status=(
+                    str(status["collection_status"]) if status.get("collection_status") is not None else None
                 ),
                 error=(str(status["error"]) if status.get("error") else None),
             )
         except Exception as exc:
-            return StatusLanceDbSummary(
+            return StatusImageSearchVectorStoreSummary(
                 healthy=False,
-                uri=str(settings.lancedb.uri),
-                table_name=str(settings.lancedb.table_name),
-                table_exists=False,
+                url=str(settings.qdrant.url),
+                collection_name="media_thumbnail_vectors",
+                exists=False,
                 error=str(exc),
             )
 

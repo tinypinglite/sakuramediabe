@@ -232,8 +232,8 @@ def test_aps_optimize_image_search_index_command_runs_job(monkeypatch):
     _test_cli_command(
         monkeypatch,
         "optimize-image-search-index",
-        {"compacted": True},
-        "image search optimize finished: compacted=True",
+        {"optimized": True},
+        "image search optimize finished: optimized=True",
     )
 
 

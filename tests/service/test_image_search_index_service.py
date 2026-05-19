@@ -36,9 +36,13 @@ class _DummyStore:
         self.batches = []
         self.deleted_media_ids = []
         self.optimize_calls = 0
+        self.scalar_index_calls = 0
 
     def ensure_table(self, vector_size):
         self.vector_size = vector_size
+
+    def ensure_scalar_indices(self):
+        self.scalar_index_calls += 1
 
     def upsert_records(self, records):
         batch = list(records)
@@ -50,7 +54,7 @@ class _DummyStore:
 
     def optimize(self):
         self.optimize_calls += 1
-        return {"compacted": True, "optimize_calls": self.optimize_calls}
+        return {"optimized": True, "optimize_calls": self.optimize_calls}
 
 
 @pytest.fixture()
@@ -265,22 +269,25 @@ def test_optimize_index_logs_flow(monkeypatch):
         def ensure_table(self, _vector_size):
             return None
 
+        def ensure_scalar_indices(self):
+            return None
+
         def optimize(self):
-            return {"compacted": True, "indexed_rows": 3}
+            return {"optimized": True, "indexed_rows": 3}
 
     monkeypatch.setattr("src.service.discovery.image_search_index_service.logger", FakeLogger())
     service = ImageSearchIndexService(store=DummyStore(), embedder=_DummyEmbedder())
 
     result = service.optimize_index()
 
-    assert result == {"compacted": True, "indexed_rows": 3}
+    assert result == {"optimized": True, "indexed_rows": 3}
     assert any(
         level == "info" and "Starting JoyTag index optimization" in message
         for level, message in events
     )
     assert any(
         level == "info"
-        and "Finished JoyTag index optimization compacted=True indexed_rows=3" in message
+        and "Finished JoyTag index optimization optimized=True indexed_rows=3" in message
         for level, message in events
     )
 

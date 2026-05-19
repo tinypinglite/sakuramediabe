@@ -10,6 +10,7 @@ class _FakeJoyTagClient:
     def get_runtime_status(self):
         if self.should_fail:
             raise JoyTagInferenceUnavailableError("joytag probe failed")
+
         class _Runtime:
             endpoint = "http://joytag-infer:8001"
             backend = "cpu"
@@ -22,18 +23,33 @@ class _FakeJoyTagClient:
             image_size = 448
             available_providers = ["CPUExecutionProvider"]
             probe_latency_ms = 12
+
         return _Runtime()
 
 
-class _FakeLanceDbStore:
-    uri = "/data/indexes/image-search"
-    table_name = "media_thumbnail_vectors"
+class _FakeQdrantStore:
+    url = "http://qdrant:6333"
+    collection_name = "media_thumbnail_vectors"
 
     def __init__(self, payload: dict):
         self.payload = payload
 
     def inspect_status(self):
         return self.payload
+
+
+def _vector_store_payload(*, healthy: bool = True, exists: bool = True, error: str | None = None):
+    return {
+        "healthy": healthy,
+        "url": "http://qdrant:6333",
+        "collection_name": "media_thumbnail_vectors",
+        "exists": exists,
+        "points_count": 9 if exists else None,
+        "vector_size": 768 if exists else None,
+        "vector_dtype": "float16" if exists else None,
+        "collection_status": "green" if exists else None,
+        "error": error,
+    }
 
 
 def _create_thumbnail(movie_number: str, *, joytag_index_status: int):
@@ -85,20 +101,8 @@ def test_get_image_search_status_returns_success_and_indexing_counts(app, monkey
         lambda: _FakeJoyTagClient(should_fail=False),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_lancedb_thumbnail_store",
-        lambda: _FakeLanceDbStore(
-            {
-                "healthy": True,
-                "uri": "/data/indexes/image-search",
-                "table_name": "media_thumbnail_vectors",
-                "table_exists": True,
-                "row_count": 9,
-                "vector_size": 768,
-                "vector_dtype": "halffloat",
-                "has_vector_index": True,
-                "error": None,
-            }
-        ),
+        "src.service.system.status_service.get_qdrant_thumbnail_store",
+        lambda: _FakeQdrantStore(_vector_store_payload()),
     )
 
     status = StatusService.get_image_search_status()
@@ -107,8 +111,9 @@ def test_get_image_search_status_returns_success_and_indexing_counts(app, monkey
     assert status.joytag.healthy is True
     assert status.joytag.used_device == "cpu"
     assert status.joytag.backend == "cpu"
-    assert status.lancedb.healthy is True
-    assert status.lancedb.table_exists is True
+    assert status.image_search_vector_store.healthy is True
+    assert status.image_search_vector_store.exists is True
+    assert status.image_search_vector_store.points_count == 9
     assert status.indexing.pending_thumbnails == 1
     assert status.indexing.failed_thumbnails == 1
     assert status.indexing.success_thumbnails == 1
@@ -120,20 +125,8 @@ def test_get_image_search_status_marks_unhealthy_when_joytag_probe_fails(app, mo
         lambda: _FakeJoyTagClient(should_fail=True),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_lancedb_thumbnail_store",
-        lambda: _FakeLanceDbStore(
-            {
-                "healthy": True,
-                "uri": "/data/indexes/image-search",
-                "table_name": "media_thumbnail_vectors",
-                "table_exists": False,
-                "row_count": None,
-                "vector_size": None,
-                "vector_dtype": None,
-                "has_vector_index": None,
-                "error": None,
-            }
-        ),
+        "src.service.system.status_service.get_qdrant_thumbnail_store",
+        lambda: _FakeQdrantStore(_vector_store_payload(exists=False)),
     )
 
     status = StatusService.get_image_search_status()
@@ -141,28 +134,18 @@ def test_get_image_search_status_marks_unhealthy_when_joytag_probe_fails(app, mo
     assert status.healthy is False
     assert status.joytag.healthy is False
     assert status.joytag.error == "joytag probe failed"
-    assert status.lancedb.healthy is True
+    assert status.image_search_vector_store.healthy is True
 
 
-def test_get_image_search_status_marks_unhealthy_when_lancedb_is_unhealthy(app, monkeypatch):
+def test_get_image_search_status_marks_unhealthy_when_qdrant_is_unhealthy(app, monkeypatch):
     monkeypatch.setattr(
         "src.service.system.status_service.get_joytag_embedder_client",
         lambda: _FakeJoyTagClient(should_fail=False),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_lancedb_thumbnail_store",
-        lambda: _FakeLanceDbStore(
-            {
-                "healthy": False,
-                "uri": "/data/indexes/image-search",
-                "table_name": "media_thumbnail_vectors",
-                "table_exists": True,
-                "row_count": 0,
-                "vector_size": 768,
-                "vector_dtype": "halffloat",
-                "has_vector_index": False,
-                "error": "lancedb unavailable",
-            }
+        "src.service.system.status_service.get_qdrant_thumbnail_store",
+        lambda: _FakeQdrantStore(
+            _vector_store_payload(healthy=False, exists=True, error="qdrant unavailable")
         ),
     )
 
@@ -170,35 +153,23 @@ def test_get_image_search_status_marks_unhealthy_when_lancedb_is_unhealthy(app, 
 
     assert status.healthy is False
     assert status.joytag.healthy is True
-    assert status.lancedb.healthy is False
-    assert status.lancedb.error == "lancedb unavailable"
+    assert status.image_search_vector_store.healthy is False
+    assert status.image_search_vector_store.error == "qdrant unavailable"
 
 
-def test_get_image_search_status_keeps_lancedb_healthy_when_table_does_not_exist(app, monkeypatch):
+def test_get_image_search_status_keeps_qdrant_healthy_when_collection_does_not_exist(app, monkeypatch):
     monkeypatch.setattr(
         "src.service.system.status_service.get_joytag_embedder_client",
         lambda: _FakeJoyTagClient(should_fail=False),
     )
     monkeypatch.setattr(
-        "src.service.system.status_service.get_lancedb_thumbnail_store",
-        lambda: _FakeLanceDbStore(
-            {
-                "healthy": True,
-                "uri": "/data/indexes/image-search",
-                "table_name": "media_thumbnail_vectors",
-                "table_exists": False,
-                "row_count": None,
-                "vector_size": None,
-                "vector_dtype": None,
-                "has_vector_index": None,
-                "error": None,
-            }
-        ),
+        "src.service.system.status_service.get_qdrant_thumbnail_store",
+        lambda: _FakeQdrantStore(_vector_store_payload(exists=False)),
     )
 
     status = StatusService.get_image_search_status()
 
     assert status.healthy is True
-    assert status.lancedb.healthy is True
-    assert status.lancedb.table_exists is False
-    assert status.lancedb.error is None
+    assert status.image_search_vector_store.healthy is True
+    assert status.image_search_vector_store.exists is False
+    assert status.image_search_vector_store.error is None

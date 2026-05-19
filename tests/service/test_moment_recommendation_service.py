@@ -5,7 +5,7 @@ import pytest
 
 from src.config.config import settings
 from src.model import Image, Media, MediaPoint, MediaThumbnail, MomentRecommendation, Movie, MovieSimilarity
-from src.service.discovery.lancedb_thumbnail_store import ThumbnailVectorSearchHit
+from src.service.discovery.qdrant_thumbnail_store import ThumbnailVectorSearchHit
 from src.service.discovery.moment_recommendation_service import (
     MomentRecommendationService,
     STRATEGY_POPULAR,

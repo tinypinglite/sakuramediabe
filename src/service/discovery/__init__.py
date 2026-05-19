@@ -3,11 +3,11 @@ from .hot_review_service import HotReviewCatalogService, HotReviewSyncService
 from .image_search_index_service import ImageSearchIndexService
 from .image_search_service import ImageSearchService, get_image_search_service
 from .joytag_embedder_client import JoyTagEmbeddingResult, JoyTagEmbedderClient, get_joytag_embedder_client
-from .lancedb_thumbnail_store import (
+from .qdrant_thumbnail_store import (
     ThumbnailVectorRecord,
     ThumbnailVectorSearchHit,
-    LanceDbThumbnailStore,
-    get_lancedb_thumbnail_store,
+    QdrantThumbnailStore,
+    get_qdrant_thumbnail_store,
 )
 from .moment_recommendation_service import MomentRecommendationService
 from .ranking_service import RankingCatalogService, RankingSyncService
@@ -25,10 +25,10 @@ __all__ = [
     "MomentRecommendationService",
     "ThumbnailVectorRecord",
     "ThumbnailVectorSearchHit",
-    "LanceDbThumbnailStore",
+    "QdrantThumbnailStore",
     "RankingCatalogService",
     "RankingSyncService",
     "get_image_search_service",
     "get_joytag_embedder_client",
-    "get_lancedb_thumbnail_store",
+    "get_qdrant_thumbnail_store",
 ]

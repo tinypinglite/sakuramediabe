@@ -791,7 +791,7 @@ Authorization: Bearer <token>
   - `MediaThumbnail`
   - 无其他引用时，缩略图对应的 `Image`
   - `ResourceTaskState` 中 `resource_type=media` 且 `resource_id` 为当前媒体的任务状态
-  - LanceDB 中该媒体关联的缩略图向量
+  - Qdrant 中该媒体关联的缩略图向量
 - 不会联动删除 `Movie`
 - 不会删除任何 `PlaylistMovie` 关系，包括 `recently_played`
 
