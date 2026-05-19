@@ -35,26 +35,32 @@ services:
       JOYTAG_INFER_MODEL_PATH: "/data/lib/joytag/model_vit_768.onnx"
       JOYTAG_INFER_API_KEY: ""
       # OpenVINO 后端专用。只在 image 切到 tinyping/joytag-infer:openvino 后再启用。
-      # 只允许 "CPU" 或 "GPU"，默认是 "GPU"。
-      # JOYTAG_INFER_OPENVINO_DEVICE_TYPE: "GPU"
+      # 先用 "CPU" 验证 OpenVINO；Intel 核显直通后再改成 "GPU"。
+      # JOYTAG_INFER_OPENVINO_DEVICE_TYPE: "CPU"
+      # CUDA 后端专用。只在 image 切到 tinyping/joytag-infer:cuda 后再启用。
+      # NVIDIA_VISIBLE_DEVICES: "all"
+      # NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
     volumes:
       # JoyTag 模型目录只挂载到独立推理服务。
       - ./docker-data/joytag:/data/lib/joytag
+    ports:
+      # JoyTag 推理服务端口，主要供后端容器访问。
+      - "8001:8001"
 
     # 切换到 OpenVINO:
     # 1. 把 image 改成 tinyping/joytag-infer:openvino
     # 2. 把 JOYTAG_INFER_BACKEND 改成 "openvino"
-    # 3. 如果只想跑 Intel CPU，可把 JOYTAG_INFER_OPENVINO_DEVICE_TYPE 设为 "CPU"，不需要额外挂设备
-    # 4. 如果要跑 Intel 核显，请设为 "GPU"，并打开下面的 /dev/dri 映射；启动时会真实推理校验，不会静默退回 CPU
+    # 3. 先把 JOYTAG_INFER_OPENVINO_DEVICE_TYPE 设为 "CPU" 验证，不需要额外挂设备
+    # 4. 如果要跑 Intel 核显，再改成 "GPU"，并打开下面的 /dev/dri 映射；启动时会真实推理校验，不会静默退回 CPU
     # devices:
     #   - /dev/dri:/dev/dri
 
     # 切换到 CUDA:
     # 1. 把 image 改成 tinyping/joytag-infer:cuda
     # 2. 把 JOYTAG_INFER_BACKEND 改成 "cuda"
-    # 3. 宿主机需要先安装 NVIDIA Container Toolkit
-    # 4. 取消下面这一行注释，把 GPU 暴露给容器
-    # gpus: all
+    # 3. 宿主机需要先安装 NVIDIA 驱动和 NVIDIA Container Toolkit
+    # 4. 取消下面 runtime 注释，并启用上面的 NVIDIA_* 环境变量
+    # runtime: nvidia
 
   qdrant:
     image: qdrant/qdrant:v1.12.4
