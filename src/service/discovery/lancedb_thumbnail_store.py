@@ -55,7 +55,7 @@ class LanceDbThumbnailStore:
     @staticmethod
     def _ensure_dependency() -> None:
         if lancedb is None or pa is None:
-            raise RuntimeError("lancedb is not installed. Please run `poetry install` first.")
+            raise RuntimeError("lancedb is not installed. Please run `uv sync` first.")
 
     def _get_db(self):
         if self._db is None:
