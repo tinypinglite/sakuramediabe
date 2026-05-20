@@ -31,8 +31,6 @@ dependencies = [
     "psycopg2-binary>=2.9.10,<3.0.0",
     "httpx>=0.28.1,<0.29.0",
     "qdrant-client>=1.12,<1.13",
-    # onnxruntime 1.24+ 不再发布 cp310 wheel（上游 metadata Requires-Python 与实际发布不一致）。
-    "onnxruntime<1.24",
     "pymysql>=1.1.2,<2.0.0",
     "numpy>=1.26,<3",
     "curl-cffi>=0.15.0,<0.16.0",
