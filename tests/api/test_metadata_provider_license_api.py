@@ -175,6 +175,10 @@ def test_metadata_provider_license_status_returns_sanitized_status(
         "renew_after_seconds": None,
         "error_code": "license_required",
         "message": "License activation is required",
+        "circuit_open": False,
+        "consecutive_permanent_failures": 0,
+        "last_failure_code": None,
+        "last_failure_at": None,
     }
     assert fake_license_client.instances[-1].version == "v9.9.9"
     assert fake_license_client.instances[-1].state_path == "/data/config/provider-license-state.json"

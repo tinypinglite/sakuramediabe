@@ -54,10 +54,10 @@ environments = [
 
 [tool.uv.sources]
 sakuramedia-metadata-providers = [
-    { path = "lib/metadata-provider/sakuramedia_metadata_providers-0.1.9-cp310-cp310-linux_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
-    { path = "lib/metadata-provider/sakuramedia_metadata_providers-0.1.9-cp310-cp310-macosx_10_15_x86_64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'x86_64'" },
-    { path = "lib/metadata-provider/sakuramedia_metadata_providers-0.1.9-cp310-cp310-macosx_11_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
-    { path = "lib/metadata-provider/sakuramedia_metadata_providers-0.1.9-cp310-cp310-win_amd64.whl", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
+    { path = "lib/metadata-provider/sakuramedia_metadata_providers-0.2.0-cp310-cp310-linux_x86_64.whl", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" },
+    { path = "lib/metadata-provider/sakuramedia_metadata_providers-0.2.0-cp310-cp310-macosx_10_15_x86_64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'x86_64'" },
+    { path = "lib/metadata-provider/sakuramedia_metadata_providers-0.2.0-cp310-cp310-macosx_11_0_arm64.whl", marker = "sys_platform == 'darwin' and platform_machine == 'arm64'" },
+    { path = "lib/metadata-provider/sakuramedia_metadata_providers-0.2.0-cp310-cp310-win_amd64.whl", marker = "sys_platform == 'win32' and platform_machine == 'AMD64'" },
 ]
 
 [build-system]

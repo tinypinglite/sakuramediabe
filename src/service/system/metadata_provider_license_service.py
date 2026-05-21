@@ -48,6 +48,12 @@ class MetadataProviderLicenseService:
         "version_blocked",
         "request_replayed",
         "request_timestamp_invalid",
+        # lease_superseded：lease 链已断（一般是网络抖动导致客户端没拿到 server commit 的新 token）。
+        # 客户端会用同一 nonce 自动重试，仍然失败说明状态确实分裂，前端按 403 处理引导用户重新激活。
+        "lease_superseded",
+        # license_circuit_open：客户端连续 5 次永久性错误后主动熔断，等待人工 activate。
+        "license_circuit_open",
+        "lease_expired",
     })
     CONFLICT_CODES = frozenset({"activation_conflict"})
     RATE_LIMIT_CODES = frozenset({"too_many_requests"})
@@ -253,7 +259,22 @@ class MetadataProviderLicenseService:
             return {"skipped": False, "active": renewed.active, "expires_at": renewed.expires_at}
         except MetadataLicenseError as exc:
             code = exc.code or "license_error"
-            logger.warning("Metadata provider license scheduled renewal failed: {}", code)
+            # 永久性错误（lease 链断了 / 实例被踢 / license 被吊销 / 熔断打开）需要人工介入，
+            # 用 error 级别让它在日志聚合里更醒目；其它（限流/瞬时网络）保持 warning。
+            if code in {
+                "lease_superseded",
+                "instance_deactivated",
+                "license_revoked",
+                "fingerprint_mismatch",
+                "license_circuit_open",
+                "lease_expired",
+            }:
+                logger.error(
+                    "Metadata provider license scheduled renewal hit permanent error: {} -- manual reactivation may be required",
+                    code,
+                )
+            else:
+                logger.warning("Metadata provider license scheduled renewal failed: {}", code)
             return {"skipped": False, "error_code": code}
         except httpx.HTTPError as exc:
             logger.warning(
