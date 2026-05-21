@@ -31,7 +31,7 @@ from src.model import (
     Subtitle,
     Tag,
 )
-from sakuramedia_metadata_providers.models import JavdbMovieActorResource, JavdbMovieDetailResource, JavdbMovieTagResource
+from src.metadata._providers.models import JavdbMovieActorResource, JavdbMovieDetailResource, JavdbMovieTagResource
 from src.service.catalog import ImageDownloadError
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeResult
 from src.service.playback.media_thumbnail_service import MediaThumbnailService

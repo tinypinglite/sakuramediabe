@@ -6,7 +6,7 @@ from peewee import fn
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.metadata.factory import build_dmm_provider, build_javdb_provider
-from src.metadata.provider import MetadataLicenseError, MetadataNotFoundError, MetadataRequestError
+from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Actor, Media, MediaLibrary, MediaThumbnail, Movie
 from src.service.discovery.joytag_embedder_client import (
     JoyTagInferenceClientError,
@@ -129,15 +129,6 @@ class StatusService:
                     message=str(exc),
                     method=exc.method,
                     url=exc.url,
-                ),
-            )
-        except MetadataLicenseError as exc:
-            return cls._build_metadata_provider_failure(
-                provider=normalized_provider,
-                start_at=start_at,
-                error=StatusMetadataProviderTestError(
-                    type="metadata_license_error",
-                    message=str(exc),
                 ),
             )
         except Exception as exc:

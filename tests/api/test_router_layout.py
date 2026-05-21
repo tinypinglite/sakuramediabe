@@ -196,10 +196,6 @@ def test_create_app_registers_image_search_routes():
     assert "/system/task-runs" in paths
     assert "/system/events/stream" in paths
     assert "/status/metadata-providers/{provider}/test" in paths
-    assert "/metadata-provider-license/status" in paths
-    assert "/metadata-provider-license/connectivity-test" in paths
-    assert "/metadata-provider-license/activate" in paths
-    assert "/metadata-provider-license/renew" in paths
 
 
 def test_create_app_does_not_register_removed_api_endpoints():

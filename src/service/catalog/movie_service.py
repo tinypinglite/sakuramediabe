@@ -27,11 +27,11 @@ from src.common import (
 )
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
-from sakuramedia_metadata_providers.exceptions import (
+from src.metadata._providers.exceptions import (
     MissavThumbnailNotFoundError,
     MissavThumbnailRequestError,
 )
-from sakuramedia_metadata_providers.providers.javdb import JavdbProvider
+from src.metadata._providers.javdb import JavdbProvider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import (
     Actor,
@@ -69,7 +69,7 @@ from src.schema.catalog.movies import (
     TagResource,
 )
 from src.schema.common.pagination import PageResponse
-from sakuramedia_metadata_providers.models import JavdbMovieDetailResource, JavdbMovieReviewResource
+from src.metadata._providers.models import JavdbMovieDetailResource, JavdbMovieReviewResource
 from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
 from src.service.catalog.movie_desc_translation_client import MovieDescTranslationClientError
 from src.service.catalog.movie_desc_translation_service import (

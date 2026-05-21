@@ -1,5 +1,4 @@
-from sakuramedia_metadata_providers.exceptions import (
-    MetadataLicenseError,
+from src.metadata._providers.exceptions import (
     MetadataProviderError,
     MetadataProviderUnavailable,
     MissavRankingError,
@@ -8,10 +7,10 @@ from sakuramedia_metadata_providers.exceptions import (
     MissavThumbnailNotFoundError,
     MissavThumbnailRequestError,
 )
-from sakuramedia_metadata_providers.models import MissavThumbnailManifest
-from sakuramedia_metadata_providers.providers.dmm import DmmProvider
-from sakuramedia_metadata_providers.providers.javdb import JavdbProvider
-from sakuramedia_metadata_providers.providers.missav import MissavRankingProvider, MissavThumbnailProvider
+from src.metadata._providers.models import MissavThumbnailManifest
+from src.metadata._providers.dmm import DmmProvider
+from src.metadata._providers.javdb import JavdbProvider
+from src.metadata._providers.missav import MissavRankingProvider, MissavThumbnailProvider
 
 from src.metadata.gfriends import GfriendsActorImageResolver
 from src.metadata.provider import (
@@ -26,7 +25,6 @@ __all__ = [
     "DmmProvider",
     "JavdbProvider",
     "MetadataError",
-    "MetadataLicenseError",
     "MetadataNotFoundError",
     "MetadataProviderError",
     "MetadataProviderUnavailable",

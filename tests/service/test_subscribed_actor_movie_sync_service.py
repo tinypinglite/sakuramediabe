@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from src.model import Actor, Movie, MovieActor
-from sakuramedia_metadata_providers.models import (
+from src.metadata._providers.models import (
     JavdbMovieActorResource,
     JavdbMovieDetailResource,
     JavdbMovieListItemResource,

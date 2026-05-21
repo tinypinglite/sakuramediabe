@@ -6,7 +6,7 @@ from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import parse_external_datetime, utc_now_for_db
 from src.common.service_helpers import with_movie_card_relations
-from sakuramedia_metadata_providers.providers.javdb import JavdbProvider
+from src.metadata._providers.javdb import JavdbProvider
 from src.model import HotReviewItem, Media, Movie, get_database
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.common.pagination import PageResponse

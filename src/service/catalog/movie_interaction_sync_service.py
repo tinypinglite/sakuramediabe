@@ -4,9 +4,9 @@ from datetime import date, datetime, time, timedelta
 
 from loguru import logger
 
-from sakuramedia_metadata_providers.providers.javdb import JavdbProvider
+from src.metadata._providers.javdb import JavdbProvider
 from src.model import Movie, RankingItem, ResourceTaskState, get_database
-from sakuramedia_metadata_providers.models import JavdbMovieDetailResource
+from src.metadata._providers.models import JavdbMovieDetailResource
 from src.service.catalog.movie_heat_service import MovieHeatService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 

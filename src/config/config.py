@@ -125,7 +125,6 @@ MovieDescTranslation = MovieInfoTranslation
 class Metadata(BaseModel):
     javdb_host: str = "jdforrepam.com"
     proxy: str | None = None
-    license_proxy: str | None = None
     # 兼容旧配置项：新版本统一使用 proxy，dmm_proxy 仅在 proxy 为空时作为读取回退。
     dmm_proxy: str | None = Field(default=None, exclude=True)
     gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
@@ -141,11 +140,6 @@ class Metadata(BaseModel):
         if proxy:
             return proxy
         return (self.dmm_proxy or "").strip() or None
-
-    @property
-    def normalized_license_proxy(self) -> str | None:
-        # 授权中心代理与站点代理隔离，避免 metadata.proxy 误影响授权请求。
-        return (self.license_proxy or "").strip() or None
 
     @property
     def gfriends_proxy(self) -> str | None:
@@ -180,7 +174,7 @@ class Scheduler(BaseModel):
     movie_similarity_recompute_cron: str = "30 3 * * *"
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
-    metadata_provider_license_renew_cron: str = "0 */6 * * *"
+
 
 
 class Logging(BaseModel):

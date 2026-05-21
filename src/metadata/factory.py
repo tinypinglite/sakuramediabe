@@ -1,26 +1,19 @@
-"""元数据 provider 工厂函数，统一对接闭源 provider 与本地 GFriends 能力。"""
+"""元数据 provider 工厂函数，统一对接 provider 与本地 GFriends 能力。"""
 
 from __future__ import annotations
 
 from typing import Any, Iterable
 
 from loguru import logger
-from sakuramedia_metadata_providers.entrypoints import (
-    create_dmm_provider,
-    create_javdb_provider,
-    create_missav_ranking_provider,
-    create_missav_thumbnail_provider,
-)
-from sakuramedia_metadata_providers.providers.dmm import DmmProvider
-from sakuramedia_metadata_providers.providers.javdb import JavdbProvider
-from sakuramedia_metadata_providers.providers.missav import (
+
+from src.config.config import settings
+from src.metadata._providers.dmm import DmmProvider
+from src.metadata._providers.javdb import JavdbProvider
+from src.metadata._providers.missav import (
     MissavRankingProvider,
     MissavThumbnailProvider,
 )
-
-from src.config.config import settings
 from src.metadata.gfriends import GfriendsActorImageResolver
-from src.metadata.license_runtime import resolve_metadata_provider_license_runtime
 
 
 class GfriendsAvatarJavdbProvider:
@@ -85,10 +78,6 @@ class GfriendsAvatarJavdbProvider:
         return names
 
 
-def _license_kwargs() -> dict[str, str | None]:
-    return resolve_metadata_provider_license_runtime().as_provider_kwargs()
-
-
 def _build_gfriends_resolver(*, proxy: str | None) -> GfriendsActorImageResolver:
     return GfriendsActorImageResolver(
         filetree_url=settings.metadata.gfriends_filetree_url,
@@ -100,14 +89,13 @@ def _build_gfriends_resolver(*, proxy: str | None) -> GfriendsActorImageResolver
 
 
 def build_javdb_provider(*, use_metadata_proxy: bool = False) -> GfriendsAvatarJavdbProvider:
-    """构建 JavDB provider，站点抓取由闭源包负责，演员头像继续优先 GFriends。"""
+    """构建 JavDB provider，演员头像继续优先 GFriends。"""
     metadata_proxy = settings.metadata.normalized_proxy
     provider_proxy = metadata_proxy if use_metadata_proxy else None
     gfriends_proxy = metadata_proxy if use_metadata_proxy else settings.metadata.gfriends_proxy
-    provider = create_javdb_provider(
+    provider = JavdbProvider(
         host=settings.metadata.javdb_host,
         proxy=provider_proxy,
-        **_license_kwargs(),
     )
     return GfriendsAvatarJavdbProvider(
         provider=provider,
@@ -116,21 +104,18 @@ def build_javdb_provider(*, use_metadata_proxy: bool = False) -> GfriendsAvatarJ
 
 
 def build_dmm_provider() -> DmmProvider:
-    return create_dmm_provider(
+    return DmmProvider(
         proxy=settings.metadata.normalized_proxy,
-        **_license_kwargs(),
     )
 
 
 def build_missav_thumbnail_provider() -> MissavThumbnailProvider:
-    return create_missav_thumbnail_provider(
+    return MissavThumbnailProvider(
         proxy=settings.metadata.normalized_proxy,
-        **_license_kwargs(),
     )
 
 
 def build_missav_ranking_provider() -> MissavRankingProvider:
-    return create_missav_ranking_provider(
+    return MissavRankingProvider(
         proxy=settings.metadata.normalized_proxy,
-        **_license_kwargs(),
     )

@@ -35,15 +35,11 @@ def test_list_jobs_returns_registry_metadata_and_latest_task_run(client, account
     assert response.status_code == 200
     payload = response.json()
     ranking_job = next(item for item in payload if item["task_key"] == "ranking_sync")
-    license_job = next(
-        item for item in payload if item["task_key"] == "metadata_provider_license_renew"
-    )
     assert ranking_job["log_name"] == "ranking-sync"
     assert ranking_job["cli_name"] == "sync-rankings"
     assert ranking_job["manual_trigger_allowed"] is True
     assert ranking_job["last_task_run"]["id"] == latest_task_run.id
     assert ranking_job["last_task_run"]["trigger_type"] == "manual"
-    assert license_job["manual_trigger_allowed"] is False
 
 
 def test_trigger_job_starts_manual_task_run(client, account_user, monkeypatch):
@@ -79,15 +75,9 @@ def test_trigger_job_rejects_unknown_or_forbidden_jobs(client, account_user):
         "/system/jobs/not_exists/run",
         headers={"Authorization": f"Bearer {token}"},
     )
-    forbidden_response = client.post(
-        "/system/jobs/metadata_provider_license_renew/run",
-        headers={"Authorization": f"Bearer {token}"},
-    )
 
     assert missing_response.status_code == 404
     assert missing_response.json()["error"]["code"] == "job_not_found"
-    assert forbidden_response.status_code == 403
-    assert forbidden_response.json()["error"]["code"] == "manual_trigger_forbidden"
 
 
 def test_trigger_job_returns_conflict_when_same_task_is_running(client, account_user, monkeypatch):

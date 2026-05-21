@@ -4,7 +4,7 @@ from src.config.config import settings
 from src.metadata.provider import MetadataNotFoundError
 from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag
 from src.schema.catalog.actors import ActorListGender, ActorListSubscriptionStatus
-from sakuramedia_metadata_providers.models import JavdbMovieActorResource
+from src.metadata._providers.models import JavdbMovieActorResource
 from src.service.catalog.actor_service import ActorService
 from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
 

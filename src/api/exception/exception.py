@@ -6,8 +6,6 @@ from fastapi import status
 from fastapi.encoders import jsonable_encoder
 from loguru import logger
 from starlette.responses import JSONResponse
-from sakuramedia_metadata_providers.exceptions import MetadataLicenseError
-
 from src.api.exception.errors import ApiError
 
 
@@ -60,12 +58,5 @@ async def all_exception_handler(request, exc):
             exc.code,
             exc.message,
             exc.details,
-        )
-    if isinstance(exc, MetadataLicenseError):
-        return _error_response(
-            403,
-            exc.code,
-            str(exc),
-            {"license_error_code": exc.code},
         )
     return _error_response(500, "internal_error", "Internal server error")

@@ -11,12 +11,12 @@ from PIL import Image as PillowImage
 
 from src.common import build_signed_image_url, normalize_movie_number
 from src.config.config import settings
-from sakuramedia_metadata_providers.exceptions import (
+from src.metadata._providers.exceptions import (
     MissavThumbnailNotFoundError,
     MissavThumbnailRequestError,
 )
-from sakuramedia_metadata_providers.models import MissavThumbnailManifest
-from sakuramedia_metadata_providers.providers.missav import MissavThumbnailProvider
+from src.metadata._providers.models import MissavThumbnailManifest
+from src.metadata._providers.missav import MissavThumbnailProvider
 from src.schema.catalog.movies import (
     MissavThumbnailItemResource,
     MissavThumbnailResource,
