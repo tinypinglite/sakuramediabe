@@ -2,7 +2,6 @@
 FROM python:3.10-slim-bookworm AS builder
 WORKDIR /build
 COPY requirements.txt .
-COPY lib/metadata-provider ./lib/metadata-provider
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ── Stage 2: 生成 PyArmor 混淆后的应用代码 ──
