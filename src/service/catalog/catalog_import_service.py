@@ -20,12 +20,12 @@ from urllib.parse import urlparse
 import httpx
 from loguru import logger
 from PIL import Image as PillowImage, UnidentifiedImageError
-from sakuramedia_metadata_providers.providers.dmm import DmmProvider
+from src.metadata._providers.dmm import DmmProvider
 
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import Actor, Image, MediaThumbnail, Movie, MovieActor, MoviePlotImage, MovieSeries, MovieTag, Tag, get_database
-from sakuramedia_metadata_providers.models import JavdbMovieActorResource, JavdbMovieDetailResource
+from src.metadata._providers.models import JavdbMovieActorResource, JavdbMovieDetailResource
 from src.service.catalog.image_cleanup_service import ImageCleanupService
 from src.service.catalog.movie_collection_service import MovieCollectionService
 from src.service.catalog.movie_heat_service import MovieHeatService

@@ -1,6 +1,6 @@
 from src.api.exception.errors import ApiError
 from src.model import HotReviewItem, Image, Media, Movie
-from sakuramedia_metadata_providers.models import JavdbMovieReviewResource
+from src.metadata._providers.models import JavdbMovieReviewResource
 from src.service.discovery.hot_review_service import HotReviewCatalogService, HotReviewSyncService
 
 

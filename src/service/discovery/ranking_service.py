@@ -7,8 +7,8 @@ from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import with_movie_card_relations
-from sakuramedia_metadata_providers.providers.javdb import JavdbProvider
-from sakuramedia_metadata_providers.providers.missav import MissavRankingProvider
+from src.metadata._providers.javdb import JavdbProvider
+from src.metadata._providers.missav import MissavRankingProvider
 from src.model import Media, Movie, RankingItem, get_database
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.common.pagination import PageResponse

@@ -156,22 +156,6 @@ def test_metadata_proxy_takes_priority_over_legacy_dmm_proxy():
     assert metadata.normalized_dmm_proxy == "http://127.0.0.1:7890"
 
 
-@pytest.mark.parametrize(
-    ("raw_proxy", "expected_proxy"),
-    [
-        ("http://127.0.0.1:7890", "http://127.0.0.1:7890"),
-        ("  http://127.0.0.1:7890  ", "http://127.0.0.1:7890"),
-        ("", None),
-        ("   ", None),
-        (None, None),
-    ],
-)
-def test_metadata_license_proxy_normalization(raw_proxy, expected_proxy):
-    metadata = Metadata(license_proxy=raw_proxy)
-
-    assert metadata.normalized_license_proxy == expected_proxy
-
-
 def test_auth_generates_random_file_signature_secret_by_default():
     first_auth = Auth()
     second_auth = Auth()
@@ -390,7 +374,6 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
         new_settings.metadata = Metadata(
             javdb_host="updated-host.example",
             proxy="http://127.0.0.1:7890",
-            license_proxy="http://127.0.0.1:7891",
             gfriends_filetree_url="https://cdn.example.com/Filetree.json",
             gfriends_cdn_base_url="https://cdn.example.com",
             gfriends_filetree_cache_path="./tmp/gfriends.json",
@@ -424,7 +407,6 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             "movie_similarity_recompute_cron": "30 3 * * *",
             "moment_recommendation_generate_cron": "0 4 * * *",
             "daily_recommendation_generate_cron": "0 5 * * *",
-            "metadata_provider_license_renew_cron": "0 */6 * * *",
         }
         for key, value in expected_scheduler.items():
             assert persisted["scheduler"][key] == value
@@ -463,7 +445,6 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
         assert persisted["metadata"] == {
             "javdb_host": "updated-host.example",
             "proxy": "http://127.0.0.1:7890",
-            "license_proxy": "http://127.0.0.1:7891",
             "gfriends_filetree_url": "https://cdn.example.com/Filetree.json",
             "gfriends_cdn_base_url": "https://cdn.example.com",
             "gfriends_filetree_cache_path": "./tmp/gfriends.json",

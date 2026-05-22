@@ -5,7 +5,7 @@ from PIL import Image as PillowImage
 
 import src.service.catalog.missav_thumbnail_service as missav_service_module
 from src.config.config import settings
-from sakuramedia_metadata_providers.models import MissavThumbnailManifest
+from src.metadata._providers.models import MissavThumbnailManifest
 from src.service.catalog.missav_thumbnail_service import MissavThumbnailService
 
 

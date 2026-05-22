@@ -22,7 +22,7 @@ from src.model import (
     ResourceTaskState,
     Tag,
 )
-from sakuramedia_metadata_providers.models import JavdbMovieActorResource, JavdbMovieDetailResource, JavdbMovieTagResource
+from src.metadata._providers.models import JavdbMovieActorResource, JavdbMovieDetailResource, JavdbMovieTagResource
 from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
 
 

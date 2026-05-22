@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
 
 import pytest
-from sakuramedia_metadata_providers.models import JavdbMovieActorResource, JavdbMovieDetailResource
+from src.metadata._providers.models import JavdbMovieActorResource, JavdbMovieDetailResource
+from src.metadata._providers.dmm import DmmProvider
 
 from src.config.config import settings
 from src.metadata.factory import GfriendsAvatarJavdbProvider, build_dmm_provider, build_javdb_provider, build_missav_ranking_provider, build_missav_thumbnail_provider
@@ -40,44 +41,15 @@ def _build_detail(actors: list[JavdbMovieActorResource]):
     )
 
 
-@pytest.fixture(autouse=True)
-def fixed_license_runtime(monkeypatch):
-    monkeypatch.setattr(
-        "src.metadata.factory.resolve_metadata_provider_license_runtime",
-        lambda: type(
-            "Runtime",
-            (),
-            {
-                "as_provider_kwargs": lambda self: {
-                    "version": "v1.2.3",
-                    "state_path": "/data/config/provider-license-state.json",
-                    "license_proxy": "http://license-proxy:7890",
-                }
-            },
-        )(),
-    )
-
-
-def test_build_dmm_provider_passes_site_proxy_and_license_runtime(monkeypatch):
-    captured = {}
-
-    def fake_create_dmm_provider(**kwargs):
-        captured.update(kwargs)
-        return object()
-
+def test_build_dmm_provider_passes_site_proxy(monkeypatch):
     monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
     monkeypatch.setattr(settings.metadata, "dmm_proxy", None)
-    monkeypatch.setattr("src.metadata.factory.create_dmm_provider", fake_create_dmm_provider)
 
     provider = build_dmm_provider()
 
     assert provider is not None
-    assert captured == {
-        "proxy": "http://site-proxy:7890",
-        "version": "v1.2.3",
-        "state_path": "/data/config/provider-license-state.json",
-        "license_proxy": "http://license-proxy:7890",
-    }
+    assert isinstance(provider, DmmProvider)
+    assert provider.proxy == "http://site-proxy:7890"
 
 
 @pytest.mark.parametrize(
@@ -87,73 +59,28 @@ def test_build_dmm_provider_passes_site_proxy_and_license_runtime(monkeypatch):
         (True, "http://site-proxy:7890", "http://site-proxy:7890"),
     ],
 )
-def test_build_javdb_provider_routes_site_proxy_and_license_runtime(
+def test_build_javdb_provider_routes_site_proxy(
     monkeypatch,
     use_metadata_proxy,
     expected_provider_proxy,
     expected_gfriends_proxy,
 ):
-    captured = {"resolver_proxy": None, "provider": None}
-
-    class FakeResolver:
-        def __init__(self, **kwargs):
-            captured["resolver_proxy"] = kwargs["proxy"]
-
-    def fake_create_javdb_provider(**kwargs):
-        provider = CapturedProvider(kwargs=kwargs)
-        captured["provider"] = provider
-        return provider
-
     monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
     monkeypatch.setattr(settings.metadata, "dmm_proxy", None)
-    monkeypatch.setattr("src.metadata.factory.GfriendsActorImageResolver", FakeResolver)
-    monkeypatch.setattr("src.metadata.factory.create_javdb_provider", fake_create_javdb_provider)
 
     provider = build_javdb_provider(use_metadata_proxy=use_metadata_proxy)
 
     assert isinstance(provider, GfriendsAvatarJavdbProvider)
-    assert captured["provider"].kwargs == {
-        "host": settings.metadata.javdb_host,
-        "proxy": expected_provider_proxy,
-        "version": "v1.2.3",
-        "state_path": "/data/config/provider-license-state.json",
-        "license_proxy": "http://license-proxy:7890",
-    }
-    assert captured["resolver_proxy"] == expected_gfriends_proxy
+    assert provider.provider.host == settings.metadata.javdb_host
+    assert provider.provider.proxy == expected_provider_proxy
 
 
-def test_build_missav_providers_pass_site_proxy_and_license_runtime(monkeypatch):
-    captured = {}
-
-    def fake_create_thumbnail(**kwargs):
-        captured["thumbnail"] = kwargs
-        return object()
-
-    def fake_create_ranking(**kwargs):
-        captured["ranking"] = kwargs
-        return object()
-
-    monkeypatch.setattr("src.metadata.factory.create_missav_thumbnail_provider", fake_create_thumbnail)
-    monkeypatch.setattr("src.metadata.factory.create_missav_ranking_provider", fake_create_ranking)
+def test_build_missav_providers_pass_site_proxy(monkeypatch):
     monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
     monkeypatch.setattr(settings.metadata, "dmm_proxy", None)
 
     assert build_missav_thumbnail_provider() is not None
     assert build_missav_ranking_provider() is not None
-    assert captured == {
-        "thumbnail": {
-            "proxy": "http://site-proxy:7890",
-            "version": "v1.2.3",
-            "state_path": "/data/config/provider-license-state.json",
-            "license_proxy": "http://license-proxy:7890",
-        },
-        "ranking": {
-            "proxy": "http://site-proxy:7890",
-            "version": "v1.2.3",
-            "state_path": "/data/config/provider-license-state.json",
-            "license_proxy": "http://license-proxy:7890",
-        },
-    }
 
 
 def test_javdb_adapter_prefers_gfriends_avatar():

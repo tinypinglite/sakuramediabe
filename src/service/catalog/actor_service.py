@@ -15,7 +15,7 @@ from src.common.service_helpers import (
 )
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
-from sakuramedia_metadata_providers.providers.javdb import JavdbProvider
+from src.metadata._providers.javdb import JavdbProvider
 from src.metadata.provider import MetadataNotFoundError
 from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag
 from src.model.expressions import year_expression
@@ -29,7 +29,7 @@ from src.schema.catalog.actors import (
 )
 from src.schema.catalog.movies import TagResource
 from src.schema.common.pagination import PageResponse
-from sakuramedia_metadata_providers.models import JavdbMovieActorResource
+from src.metadata._providers.models import JavdbMovieActorResource
 from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
 
 

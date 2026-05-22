@@ -41,9 +41,7 @@ from src.api.routers.system.jobs import router as jobs_router
 from src.api.routers.system.movie_desc_translation_settings import (
     router as movie_desc_translation_settings_router,
 )
-from src.api.routers.system.metadata_provider_license import (
-    router as metadata_provider_license_router,
-)
+
 from src.api.routers.system.status import router as status_router
 from src.common.database import ensure_database_ready
 from src.config.config import settings
@@ -102,7 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(indexer_settings_router)
     app.include_router(movie_desc_translation_settings_router)
-    app.include_router(metadata_provider_license_router)
+
     app.include_router(collection_number_features_router)
 
     app.add_exception_handler(ApiError, api_error_handler)

@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from src.model import Movie, RankingItem, ResourceTaskState
-from sakuramedia_metadata_providers.models import JavdbMovieDetailResource
+from src.metadata._providers.models import JavdbMovieDetailResource
 from src.service.catalog.movie_interaction_sync_service import MovieInteractionSyncService
 from src.service.system import ActivityService
 

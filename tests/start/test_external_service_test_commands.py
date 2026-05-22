@@ -4,7 +4,7 @@ import pytest
 from click.testing import CliRunner
 
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
-from sakuramedia_metadata_providers.models import JavdbMovieDetailResource
+from src.metadata._providers.models import JavdbMovieDetailResource
 from src.start.commands import main
 from src.service.catalog.movie_desc_translation_client import MovieDescTranslationClientError
 

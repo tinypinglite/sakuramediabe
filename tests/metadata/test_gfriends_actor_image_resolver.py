@@ -167,7 +167,7 @@ def test_gfriends_resolver_uses_longer_timeout_than_default(tmp_path: Path, monk
         created_kwargs.append(kwargs)
         return FakeHttpClient(**kwargs)
 
-    monkeypatch.setattr("src.metadata.provider.httpx.Client", _fake_client)
+    monkeypatch.setattr("src.metadata._providers.http_client.httpx.Client", _fake_client)
 
     GfriendsActorImageResolver(
         filetree_url="https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json",

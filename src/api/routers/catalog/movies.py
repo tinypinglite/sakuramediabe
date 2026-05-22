@@ -27,7 +27,7 @@ from src.schema.catalog.movies import (
 )
 from src.schema.catalog.subtitles import MovieSubtitleListResource
 from src.schema.common.pagination import PageResponse
-from sakuramedia_metadata_providers.models import JavdbMovieReviewResource
+from src.metadata._providers.models import JavdbMovieReviewResource
 from src.service.catalog import MovieService, MovieSubtitleService
 from src.service.discovery import MovieRecommendationService
 

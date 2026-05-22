@@ -2,7 +2,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-import src.metadata.provider as provider_module
+import src.metadata._providers.http_client as http_client_module
 from src.metadata.provider import MetadataRequestClient
 
 
@@ -23,7 +23,7 @@ def test_metadata_request_client_initializes_httpx_client_with_optional_proxy(
         created_kwargs.append(kwargs)
         return FakeHttpClient(**kwargs)
 
-    monkeypatch.setattr(provider_module.httpx, "Client", fake_client)
+    monkeypatch.setattr(http_client_module.httpx, "Client", fake_client)
 
     MetadataRequestClient()
     MetadataRequestClient(proxy="http://127.0.0.1:7890")

@@ -4,7 +4,7 @@ import pytest
 
 from src.api.exception.errors import ApiError
 from src.config.config import settings
-from sakuramedia_metadata_providers.exceptions import MissavThumbnailRequestError
+from src.metadata._providers.exceptions import MissavThumbnailRequestError
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import (
     Actor,
@@ -23,7 +23,7 @@ from src.model import (
     PlaylistMovie,
     Tag,
 )
-from sakuramedia_metadata_providers.models import (
+from src.metadata._providers.models import (
     JavdbMovieActorResource,
     JavdbMovieDetailResource,
     JavdbMovieListItemResource,

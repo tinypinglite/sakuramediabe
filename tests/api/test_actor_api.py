@@ -17,7 +17,7 @@ from src.model import (
     MovieTag,
     Tag,
 )
-from sakuramedia_metadata_providers.models import JavdbMovieActorResource
+from src.metadata._providers.models import JavdbMovieActorResource
 from src.service.catalog.actor_service import ActorService
 from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
 
