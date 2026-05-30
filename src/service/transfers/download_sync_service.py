@@ -208,9 +208,10 @@ class DownloadSyncService:
     @staticmethod
     def _map_download_state(raw_state: str, *, progress: float) -> str:
         normalized = (raw_state or "").strip()
-        if progress >= 1 or normalized in {"uploading", "stalledUP", "queuedUP", "pausedUP", "forcedUP"}:
+        # qBittorrent 5.x 把 pausedUP/pausedDL 改名为 stoppedUP/stoppedDL，两套名称都要兼容
+        if progress >= 1 or normalized in {"uploading", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "forcedUP"}:
             return "completed"
-        if normalized in {"pausedDL", "pausedUP"}:
+        if normalized in {"pausedDL", "pausedUP", "stoppedDL", "stoppedUP"}:
             return "paused"
         if normalized in {"error", "missingFiles"}:
             return "failed"

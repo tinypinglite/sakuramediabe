@@ -150,8 +150,14 @@ class QBittorrentClient:
 
     @staticmethod
     def _ensure_add_success(response) -> None:
-        if response != "Ok.":
-            raise QBittorrentClientError(f"unexpected qBittorrent add response: {response}")
+        # qBittorrent 4.x：/torrents/add 成功返回文本 "Ok."，失败返回 "Fails."
+        if isinstance(response, str):
+            if response.strip() != "Ok.":
+                raise QBittorrentClientError(f"unexpected qBittorrent add response: {response}")
+            return
+        # qBittorrent 5.x：返回 JSON 元数据(TorrentsAddedMetadata)，按 failure_count 判定失败
+        if response.get("failure_count", 0):
+            raise QBittorrentClientError(f"qBittorrent add failed: {response}")
 
     @staticmethod
     def _to_dict(torrent) -> dict:
