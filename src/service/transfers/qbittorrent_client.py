@@ -56,23 +56,23 @@ class QBittorrentClient:
         self._login()
         if magnet_url:
             info_hash = self.parse_hash_from_magnet(magnet_url)
-            response = self.client.torrents_add(
+            self._submit_torrent(
+                info_hash=info_hash,
+                tags=tags,
                 urls=magnet_url,
                 rename=rename,
                 save_path=save_path,
-                tags=",".join(tags),
             )
-            self._ensure_add_success(response)
         elif torrent_url:
             torrent_bytes = self._download_torrent_file(torrent_url)
             info_hash = self.parse_hash_from_torrent(torrent_bytes)
-            response = self.client.torrents_add(
+            self._submit_torrent(
+                info_hash=info_hash,
+                tags=tags,
                 torrent_files=torrent_bytes,
                 rename=rename,
                 save_path=save_path,
-                tags=",".join(tags),
             )
-            self._ensure_add_success(response)
         else:
             raise QBittorrentClientError("candidate missing magnet_url and torrent_url")
 
@@ -147,6 +147,16 @@ class QBittorrentClient:
             return str(lt.torrent_info(torrent_bytes).info_hash()).lower()
         except Exception as exc:
             raise QBittorrentClientError(str(exc)) from exc
+
+    def _submit_torrent(self, *, info_hash: str, tags: List[str], **add_kwargs) -> None:
+        tag_string = ",".join(tags)
+        try:
+            response = self.client.torrents_add(tags=tag_string, **add_kwargs)
+        except qbittorrentapi.Conflict409Error:
+            # 种子已存在于 qBittorrent（重复提交）：补打系统标签后按幂等成功处理，复用已存在的种子
+            self.client.torrents_add_tags(tags=tag_string, torrent_hashes=info_hash)
+            return
+        self._ensure_add_success(response)
 
     @staticmethod
     def _ensure_add_success(response) -> None:

@@ -213,17 +213,22 @@ def build_task_movie_filter(movie_number: str):
 
 
 def map_remote_path(client: DownloadClient, remote_path: str) -> str:
-    normalized_remote = validate_non_empty(
+    validate_non_empty(
         remote_path,
         "invalid_download_task_save_path",
         "Download task save path cannot be empty",
     )
-    if normalized_remote == client.client_save_path:
+    # 统一去掉尾部斜杠再比较：qB 报告的路径会 strip 掉尾斜杠，而配置里的 client_save_path 可能带尾斜杠，
+    # 否则刚加完磁链（content_path 为空、_to_dict 回退用 save_path）时会因斜杠差异把正确路径误判为不匹配。
+    normalized_remote = remote_path.strip().rstrip("/")
+    client_save_path = client.client_save_path.rstrip("/")
+    local_root_path = client.local_root_path.rstrip("/")
+    if normalized_remote == client_save_path:
         return client.local_root_path
-    prefix = f"{client.client_save_path.rstrip('/')}/"
+    prefix = f"{client_save_path}/"
     if normalized_remote.startswith(prefix):
         suffix = normalized_remote[len(prefix):]
-        return f"{client.local_root_path.rstrip('/')}/{suffix}"
+        return f"{local_root_path}/{suffix}"
     raise ApiError(
         422,
         "invalid_download_client_path_mapping",
