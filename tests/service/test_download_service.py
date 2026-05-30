@@ -33,6 +33,7 @@ from src.service.transfers.subscribed_movie_auto_download_service import (
 )
 from src.service.transfers.download_sync_service import DownloadSyncService
 from src.service.transfers.download_task_service import DownloadTaskService
+from src.service.transfers.common import map_remote_path
 from src.service.transfers.jackett_client import JackettClient
 from src.service.transfers.qbittorrent_client import (
     QBittorrentClient,
@@ -1610,3 +1611,75 @@ def test_download_task_service_run_import_job_marks_failure_when_bootstrap_fails
     assert task.import_status == "failed"
     assert job.state == "failed"
     assert job.finished_at is not None
+
+
+def test_map_remote_path_tolerates_trailing_slash_in_config(download_tables):
+    # client_save_path 带尾斜杠、qB 返回不带尾斜杠（刚加完磁链 content_path 为空回退到 save_path）时，
+    # 应正确映射而不是误报 422
+    library = _create_library()
+    client = DownloadClient.create(
+        name="client-slash",
+        base_url="http://localhost:8080",
+        username="alice",
+        password="secret",
+        client_save_path="/downloads/sakura/",
+        local_root_path="/mnt/downloads/sakura/",
+        media_library=library,
+    )
+    # 恰好等于保存目录
+    assert map_remote_path(client, "/downloads/sakura") == "/mnt/downloads/sakura/"
+    # 子目录映射
+    assert map_remote_path(client, "/downloads/sakura/ABC-001") == "/mnt/downloads/sakura/ABC-001"
+
+
+def test_map_remote_path_rejects_unrelated_path(download_tables):
+    library = _create_library()
+    client = _create_client(library)  # client_save_path=/downloads/a
+    with pytest.raises(ApiError) as exc:
+        map_remote_path(client, "/elsewhere/x")
+    assert exc.value.code == "invalid_download_client_path_mapping"
+
+
+def test_add_candidate_handles_duplicate_conflict(download_tables):
+    # 重复提交已存在的种子时，torrents_add 抛 Conflict409Error，应幂等处理：补系统标签 + 复用已存在种子
+    import qbittorrentapi
+
+    class FakeTorrent:
+        hash = "abc123def4567890abc123def4567890abc12345"
+        name = "ABC-001"
+        progress = 0.0
+        state = "queuedDL"
+        tags = "sakuramedia, client:1"
+        content_path = ""
+        save_path = "/downloads/a"
+
+    class FakeApiClient:
+        def __init__(self):
+            self.added_tags = None
+
+        def auth_log_in(self):
+            return None
+
+        def torrents_add(self, **kwargs):
+            raise qbittorrentapi.Conflict409Error("Conflict")
+
+        def torrents_add_tags(self, *, tags, torrent_hashes):
+            self.added_tags = (tags, torrent_hashes)
+
+        def torrents_info(self, **kwargs):
+            return [FakeTorrent()]
+
+    fake = FakeApiClient()
+    qb = QBittorrentClient(base_url="http://x", username="u", password="p", client=fake)
+    info_hash = "abc123def4567890abc123def4567890abc12345"
+    magnet = f"magnet:?xt=urn:btih:{info_hash.upper()}&dn=ABC-001"
+    result = qb.add_candidate(
+        magnet_url=magnet,
+        torrent_url="",
+        save_path="/downloads/a",
+        rename="ABC-001",
+        client_id=1,
+    )
+
+    assert fake.added_tags == ("sakuramedia,client:1", info_hash)
+    assert result["info_hash"] == info_hash
