@@ -14,8 +14,6 @@ av==15.1.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (plat
     # via sakuramediabe
 bcrypt==4.3.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via sakuramediabe
-beautifulsoup4==4.14.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
-    # via sakuramedia-metadata-providers
 certifi==2026.4.22 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via
     #   curl-cffi
@@ -23,15 +21,11 @@ certifi==2026.4.22 ; (platform_machine == 'arm64' and sys_platform == 'darwin') 
     #   httpx
     #   requests
 cffi==2.0.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
-    # via
-    #   cryptography
-    #   curl-cffi
+    # via curl-cffi
 charset-normalizer==3.4.7 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via requests
 click==8.4.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
-    # via
-    #   sakuramedia-metadata-providers
-    #   uvicorn
+    # via uvicorn
 colorama==0.4.6 ; platform_machine == 'AMD64' and sys_platform == 'win32'
     # via
     #   click
@@ -39,12 +33,8 @@ colorama==0.4.6 ; platform_machine == 'AMD64' and sys_platform == 'win32'
     #   pylint
     #   pytest
     #   tqdm
-cryptography==47.0.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
-    # via sakuramedia-metadata-providers
 curl-cffi==0.15.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
-    # via
-    #   sakuramedia-metadata-providers
-    #   sakuramediabe
+    # via sakuramediabe
 dill==0.4.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via pylint
 ecdsa==0.19.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
@@ -76,7 +66,6 @@ httpcore==1.0.9 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or 
 httpx==0.28.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via
     #   qdrant-client
-    #   sakuramedia-metadata-providers
     #   sakuramediabe
 hyperframe==6.1.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via h2
@@ -92,11 +81,9 @@ isort==6.1.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (pl
 libtorrent==2.0.11 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via sakuramediabe
 loguru==0.7.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
-    # via
-    #   sakuramedia-metadata-providers
-    #   sakuramediabe
+    # via sakuramediabe
 lxml==6.1.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
-    # via sakuramedia-metadata-providers
+    # via sakuramediabe
 markdown-it-py==4.2.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via rich
 mccabe==0.7.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
@@ -141,14 +128,11 @@ pydantic==2.13.4 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or
     #   fastapi
     #   pydantic-settings
     #   qdrant-client
-    #   sakuramedia-metadata-providers
     #   sakuramediabe
 pydantic-core==2.46.4 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via pydantic
 pydantic-settings==2.14.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
-    # via
-    #   sakuramedia-metadata-providers
-    #   sakuramediabe
+    # via sakuramediabe
 pygments==2.20.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via rich
 pylint==3.3.9 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
@@ -163,7 +147,7 @@ python-multipart==0.0.6 ; (platform_machine == 'arm64' and sys_platform == 'darw
     # via sakuramediabe
 pywin32==311 ; platform_machine == 'AMD64' and sys_platform == 'win32'
     # via portalocker
-qbittorrent-api==2023.11.57 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
+qbittorrent-api==2026.5.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via sakuramediabe
 qdrant-client==1.12.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via sakuramediabe
@@ -177,8 +161,6 @@ setuptools==82.0.1 ; (platform_machine == 'arm64' and sys_platform == 'darwin') 
     # via grpcio-tools
 six==1.17.0 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via ecdsa
-soupsieve==2.8.3 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
-    # via beautifulsoup4
 starlette==0.37.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
     # via fastapi
 toml==0.10.2 ; (platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')
@@ -196,8 +178,6 @@ typing-extensions==4.15.0 ; (platform_machine == 'arm64' and sys_platform == 'da
     # via
     #   anyio
     #   astroid
-    #   beautifulsoup4
-    #   cryptography
     #   exceptiongroup
     #   fastapi
     #   grpcio
