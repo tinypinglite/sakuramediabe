@@ -1,3 +1,5 @@
+from loguru import logger
+
 from src.api.exception.errors import ApiError
 from src.model import DownloadTask
 from src.schema.transfers.downloads import (
@@ -42,6 +44,15 @@ class DownloadRequestService:
                 client_id=client.id,
             )
         except QBittorrentClientError as exc:
+            # qBittorrent 添加种子失败时底层异常会被包成 502，这里先记日志，避免真实报错只存在于响应体而服务端无迹可查
+            source = "magnet" if (payload.candidate.magnet_url or "").strip() else "torrent_url"
+            logger.warning(
+                "download request failed: movie_number={} client_id={} source={} error={}",
+                movie_number,
+                client.id,
+                source,
+                exc,
+            )
             raise ApiError(
                 502,
                 "download_request_failed",
