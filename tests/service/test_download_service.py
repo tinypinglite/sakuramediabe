@@ -34,6 +34,50 @@ from src.service.transfers.subscribed_movie_auto_download_service import (
 from src.service.transfers.download_sync_service import DownloadSyncService
 from src.service.transfers.download_task_service import DownloadTaskService
 from src.service.transfers.jackett_client import JackettClient
+from src.service.transfers.qbittorrent_client import (
+    QBittorrentClient,
+    QBittorrentClientError,
+)
+
+
+def test_ensure_add_success_accepts_legacy_ok_text():
+    # qBittorrent 4.x 返回文本 "Ok." 仍应通过
+    QBittorrentClient._ensure_add_success("Ok.")
+
+
+def test_ensure_add_success_rejects_legacy_fails_text():
+    with pytest.raises(QBittorrentClientError):
+        QBittorrentClient._ensure_add_success("Fails.")
+
+
+def test_ensure_add_success_accepts_qb5_metadata():
+    # qBittorrent 5.x 返回 JSON 元数据，failure_count 为 0 视为成功
+    QBittorrentClient._ensure_add_success(
+        {"added_torrent_ids": ["abc"], "failure_count": 0, "pending_count": 0, "success_count": 1}
+    )
+
+
+def test_ensure_add_success_rejects_qb5_failure_metadata():
+    with pytest.raises(QBittorrentClientError):
+        QBittorrentClient._ensure_add_success(
+            {"added_torrent_ids": [], "failure_count": 1, "pending_count": 0, "success_count": 0}
+        )
+
+
+@pytest.mark.parametrize(
+    "raw_state, progress, expected",
+    [
+        # qBittorrent 5.x 改名后的停止状态
+        ("stoppedDL", 0.4, "paused"),
+        ("stoppedUP", 1.0, "completed"),
+        ("stoppedUP", 0.0, "completed"),
+        # 旧名称继续兼容
+        ("pausedDL", 0.4, "paused"),
+        ("pausedUP", 1.0, "completed"),
+    ],
+)
+def test_map_download_state_handles_qb5_stopped_states(raw_state, progress, expected):
+    assert DownloadSyncService._map_download_state(raw_state, progress=progress) == expected
 
 
 @pytest.fixture()
