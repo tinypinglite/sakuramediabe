@@ -998,6 +998,72 @@ def test_list_movies_rejects_invalid_sort(client, account_user):
     assert response.json()["error"]["code"] == "invalid_movie_filter"
 
 
+def test_list_movies_tag_match_or_returns_union(client, account_user):
+    # 同时含 A、B 的影片与仅含 A 的影片，OR 关系下都应命中。
+    token = _login(client, username=account_user.username)
+    both_movie = _create_movie("ABP-201", "MovieOrBoth")
+    only_a_movie = _create_movie("ABP-202", "MovieOrA")
+    tag_a = Tag.create(name="标签A")
+    tag_b = Tag.create(name="标签B")
+    MovieTag.create(movie=both_movie, tag=tag_a)
+    MovieTag.create(movie=both_movie, tag=tag_b)
+    MovieTag.create(movie=only_a_movie, tag=tag_a)
+
+    # 默认 tag_match（不传）即 OR。
+    response = client.get(
+        f"/movies?tag_ids={tag_a.id},{tag_b.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    numbers = {item["movie_number"] for item in body["items"]}
+    assert numbers == {"ABP-201", "ABP-202"}
+
+    # 显式 tag_match=or 结果一致。
+    response_or = client.get(
+        f"/movies?tag_ids={tag_a.id},{tag_b.id}&tag_match=or",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response_or.status_code == 200
+    assert response_or.json()["total"] == 2
+
+
+def test_list_movies_tag_match_and_returns_intersection(client, account_user):
+    # AND 关系下只返回同时含 A、B 的影片，且 total 也走同一过滤链路。
+    token = _login(client, username=account_user.username)
+    both_movie = _create_movie("ABP-211", "MovieAndBoth")
+    only_a_movie = _create_movie("ABP-212", "MovieAndA")
+    tag_a = Tag.create(name="标签A")
+    tag_b = Tag.create(name="标签B")
+    MovieTag.create(movie=both_movie, tag=tag_a)
+    MovieTag.create(movie=both_movie, tag=tag_b)
+    MovieTag.create(movie=only_a_movie, tag=tag_a)
+
+    response = client.get(
+        f"/movies?tag_ids={tag_a.id},{tag_b.id}&tag_match=and",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert len(body["items"]) == 1
+    assert body["items"][0]["movie_number"] == "ABP-211"
+
+
+def test_list_movies_rejects_invalid_tag_match(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    response = client.get(
+        "/movies?tag_ids=1&tag_match=xor",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_list_movies_rejects_invalid_tag_ids(client, account_user):
     token = _login(client, username=account_user.username)
 

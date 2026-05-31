@@ -1,11 +1,11 @@
 from typing import ClassVar
 
-from src.model import PLAYLIST_KIND_CUSTOM
+from src.model import PLAYLIST_KIND_CUSTOM, SYSTEM_PLAYLIST_KINDS
 from src.schema.common.base import SchemaModel
 
 
 class PlaylistSummaryResource(SchemaModel):
-    SYSTEM_KINDS: ClassVar[set[str]] = {"recently_played"}
+    SYSTEM_KINDS: ClassVar[set[str]] = set(SYSTEM_PLAYLIST_KINDS)
 
     id: int
     name: str

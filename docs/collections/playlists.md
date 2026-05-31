@@ -6,25 +6,34 @@
 
 所有时间字段都由后端按当前运行环境时区转换后返回，格式为不带时区后缀的本地时间字符串。
 
-- 系统播放列表：由服务端自动创建和维护，当前内置一个 `recently_played` 列表，显示名为“最近播放”
+- 系统播放列表：由服务端自动创建和维护，当前内置三个：
+  - `recently_played`（显示名“最近播放”）：成员物化存储，客户端播放影片时由服务端自动维护成员和顺序
+  - `vr`（显示名“VR”）：虚拟列表，成员不落库，按 `media.special_tags` 含 `VR` 实时派生
+  - `4k`（显示名“4K”）：虚拟列表，成员不落库，按 `media.special_tags` 含 `4K` 实时派生
 - 自定义播放列表：由用户手动创建、改名、删除，并手动维护影片成员
 
 当前设计中，播放列表成员是影片，不是媒体文件。也就是说同一部影片即使存在多个 `media` 文件，在播放列表里仍只占一条记录。
 
 ## 系统默认数据
 
-服务端在执行初始化时，必须幂等地创建以下系统播放列表：
+服务端在执行初始化时，必须幂等地逐个创建以下系统播放列表（老库升级时会自动补建缺失项）：
 
-- `kind=recently_played`
-- `name=最近播放`
+- `kind=recently_played`，`name=最近播放`
+- `kind=vr`，`name=VR`
+- `kind=4k`，`name=4K`
 
-该列表的行为约束：
+这些列表的共同行为约束：
 
 - 不允许客户端创建同名或同 `kind` 的播放列表
 - 不允许手动重命名
 - 不允许手动删除
-- 不允许通过播放列表 API 手动添加影片
-- 会在客户端播放影片时由服务端自动维护成员和顺序
+- 不允许通过播放列表 API 手动添加 / 移除影片
+
+各自的成员维护方式：
+
+- `recently_played`：成员物化存储于 `playlist_movie`，会在客户端播放影片时由服务端自动维护成员和顺序
+- `vr` / `4k`：虚拟列表，成员不落库，每次查询时按 `media.special_tags` 实时派生，因此与影片列表的 `special_tag` 过滤、`is_4k` 标记口径完全一致、永远保持同步
+  - 已知限制：VR/4K 成员完全依赖导入时写入的 `media.special_tags`；历史上未回填 `special_tags` 的媒体不会出现在列表中（与现有 `special_tag` 过滤行为一致）
 
 ## 资源模型
 
@@ -53,12 +62,12 @@
 
 - `id`: 播放列表主标识
 - `name`: 播放列表显示名称，全局唯一
-- `kind`: 播放列表类型，当前支持 `custom`、`recently_played`
+- `kind`: 播放列表类型，当前支持 `custom`、`recently_played`、`vr`、`4k`
 - `description`: 描述信息
 - `is_system`: 是否为系统管理列表
 - `is_mutable`: 是否允许修改名称和描述
 - `is_deletable`: 是否允许删除
-- `movie_count`: 列表内影片数量
+- `movie_count`: 列表内影片数量；`vr` / `4k` 虚拟列表为实时统计的 `special_tag` 命中影片数
 - `created_at` / `updated_at`: 播放列表资源时间戳
 
 播放列表中的影片项响应在 `MovieListItemResource` 基础上增加 `playlist_item_updated_at`：
@@ -93,6 +102,7 @@
 - `playlist_item_updated_at`: 影片与播放列表关系的最近更新时间
 - 对 `recently_played` 列表，该字段表示最近一次播放时间
 - 对自定义列表，该字段表示最近一次加入列表的时间
+- 对 `vr` / `4k` 虚拟列表，该字段表示该影片最近一次媒体入库时间（即列表排序键）
 
 ## 端点列表总览
 
@@ -242,6 +252,7 @@
   - 每项包含 `playlist_item_updated_at`
   - `recently_played` 列表固定按 `playlist_item_updated_at desc`
   - 自定义列表默认也按 `playlist_item_updated_at desc`
+  - `vr` / `4k` 虚拟列表按影片最近一次媒体入库时间倒序（`playlist_item_updated_at desc`）
 
 示例响应：
 
@@ -336,4 +347,5 @@
 
 - 路径中的播放列表主标识统一使用 `playlist_id`
 - 对外稳定类型标识使用 `kind`，不要依赖 `name` 判断系统列表
-- 当前只有一个系统列表 `recently_played`，后续如需新增“想看”“继续观看”等系统列表，也应复用同一套 `kind + is_system` 设计
+- 当前系统列表有 `recently_played`、`vr`、`4k` 三个；其中 `vr` / `4k` 为按 `special_tags` 实时派生的虚拟列表，成员不落库
+- 系统列表的 `kind` 集合由后端 `SYSTEM_PLAYLIST_KINDS` 统一维护；后续如需新增“想看”“继续观看”等系统列表，应复用同一套 `kind + is_system` 设计
