@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+from loguru import logger
 
 from src.config.config import settings
 
@@ -78,18 +79,22 @@ class MovieDescTranslationClient:
         try:
             response = client.request(method, path, **kwargs)
         except httpx.TimeoutException as exc:
+            # 转自定义异常前先记日志，避免真实报错只存在于异常链而服务端无迹可查
+            logger.warning("影片简介翻译服务请求超时 method={} path={} error={}", method, path, exc)
             raise MovieDescTranslationClientError(
                 503,
                 "movie_desc_translation_unavailable",
                 "影片简介翻译服务请求超时",
             ) from exc
         except httpx.NetworkError as exc:
+            logger.warning("影片简介翻译服务不可达 method={} path={} error={}", method, path, exc)
             raise MovieDescTranslationClientError(
                 503,
                 "movie_desc_translation_unavailable",
                 "影片简介翻译服务不可达",
             ) from exc
         except httpx.HTTPError as exc:
+            logger.warning("影片简介翻译服务请求失败 method={} path={} error={}", method, path, exc)
             raise MovieDescTranslationClientError(
                 502,
                 "movie_desc_translation_failed",

@@ -54,17 +54,30 @@ class QBittorrentClient:
     ) -> dict:
         tags = [SYSTEM_QB_TAG, f"{CLIENT_QB_TAG_PREFIX}{client_id}"]
         self._login()
-        if magnet_url:
-            info_hash = self.parse_hash_from_magnet(magnet_url)
+        # 按内容而非字段名判定来源：磁力链可能被索引器放进 torrent_url 字段，
+        # 若仅凭字段名处理会把磁力链当成 .torrent 文件去 HTTP 下载，导致 "unsupported protocol 'magnet://'"。
+        magnet_link = ""
+        torrent_file_url = ""
+        for link in (magnet_url, torrent_url):
+            link = (link or "").strip()
+            if not link:
+                continue
+            if self._is_magnet(link):
+                magnet_link = magnet_link or self._normalize_magnet(link)
+            elif not torrent_file_url:
+                torrent_file_url = link
+
+        if magnet_link:
+            info_hash = self.parse_hash_from_magnet(magnet_link)
             self._submit_torrent(
                 info_hash=info_hash,
                 tags=tags,
-                urls=magnet_url,
+                urls=magnet_link,
                 rename=rename,
                 save_path=save_path,
             )
-        elif torrent_url:
-            torrent_bytes = self._download_torrent_file(torrent_url)
+        elif torrent_file_url:
+            torrent_bytes = self._download_torrent_file(torrent_file_url)
             info_hash = self.parse_hash_from_torrent(torrent_bytes)
             self._submit_torrent(
                 info_hash=info_hash,
@@ -133,6 +146,19 @@ class QBittorrentClient:
             self.client.auth_log_in()
         except Exception as exc:
             raise QBittorrentClientError(str(exc)) from exc
+
+    @staticmethod
+    def _is_magnet(value: str) -> bool:
+        return (value or "").strip().lower().startswith("magnet:")
+
+    @staticmethod
+    def _normalize_magnet(value: str) -> str:
+        # 规范化磁力链：部分索引器返回非标准的 "magnet://"，统一改写成标准的 "magnet:?"
+        text = (value or "").strip()
+        if text[:9].lower() == "magnet://":
+            rest = text[9:]
+            text = "magnet:" + rest if rest.startswith("?") else "magnet:?" + rest
+        return text
 
     @staticmethod
     def parse_hash_from_magnet(magnet_url: str) -> str:
