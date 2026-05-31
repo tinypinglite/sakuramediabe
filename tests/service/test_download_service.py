@@ -498,6 +498,88 @@ def test_jackett_client_handles_missing_item_indexer_fields_with_channel_title_f
     assert results[0].title == "ABC-001 normal 无码"
 
 
+def test_jackett_client_routes_magnet_in_link_to_magnet_url(download_tables):
+    # 只有磁力链没有 .torrent 文件时，Jackett 会把磁力链塞进 <link>/<guid>，
+    # 解析时应分流到 magnet_url，而不是误进 torrent_url
+    class FakeResponse:
+        text = """
+        <rss>
+          <channel>
+            <item>
+              <title>ABC-001</title>
+              <size>3221225472</size>
+              <link>magnet:?xt=urn:btih:HASHLINK&amp;dn=ABC-001</link>
+              <guid>magnet:?xt=urn:btih:HASHLINK&amp;dn=ABC-001</guid>
+              <torznab:attr name="seeders" value="5"/>
+            </item>
+          </channel>
+        </rss>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    class FakeHttpClient:
+        def get(self, url, params):
+            return FakeResponse()
+
+    library = _create_library()
+    download_client = _create_client(library)
+    Indexer.create(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=download_client,
+    )
+
+    results = JackettClient(api_key="secret", client=FakeHttpClient()).search("ABC-001")
+
+    assert len(results) == 1
+    assert results[0].magnet_url == "magnet:?xt=urn:btih:HASHLINK&dn=ABC-001"
+    assert results[0].torrent_url == ""
+
+
+def test_jackett_client_prefers_magneturl_attr_and_keeps_torrent_file_link(download_tables):
+    # magneturl 属性给磁力链、<link> 给 .torrent 文件地址时，两者应各归其位
+    class FakeResponse:
+        text = """
+        <rss>
+          <channel>
+            <item>
+              <title>ABC-001</title>
+              <size>3221225472</size>
+              <link>https://indexer.example/download/1.torrent</link>
+              <guid>https://indexer.example/details/1</guid>
+              <torznab:attr name="seeders" value="5"/>
+              <torznab:attr name="magneturl" value="magnet:?xt=urn:btih:HASHATTR"/>
+            </item>
+          </channel>
+        </rss>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    class FakeHttpClient:
+        def get(self, url, params):
+            return FakeResponse()
+
+    library = _create_library()
+    download_client = _create_client(library)
+    Indexer.create(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=download_client,
+    )
+
+    results = JackettClient(api_key="secret", client=FakeHttpClient()).search("ABC-001")
+
+    assert len(results) == 1
+    assert results[0].magnet_url == "magnet:?xt=urn:btih:HASHATTR"
+    assert results[0].torrent_url == "https://indexer.example/download/1.torrent"
+
+
 def test_download_search_service_rejects_invalid_indexer_kind(download_tables):
     with pytest.raises(ApiError) as exc_info:
         DownloadSearchService().search_candidates(movie_number="ABC-001", indexer_kind="ftp")

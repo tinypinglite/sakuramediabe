@@ -35,6 +35,12 @@ class DownloadSyncService:
         try:
             remote_tasks = qb_client.list_torrents(client_id=client.id)
         except QBittorrentClientError as exc:
+            # qBittorrent 客户端层本身不记日志，这里转 502 前先记，避免真实报错只存在于响应体
+            logger.warning(
+                "download task sync failed: client_id={} error={}",
+                client_id,
+                exc,
+            )
             raise ApiError(
                 502,
                 "download_task_sync_failed",

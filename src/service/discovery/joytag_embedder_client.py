@@ -2,6 +2,7 @@ from functools import lru_cache
 from typing import Any
 
 import httpx
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from src.config.config import settings
@@ -106,10 +107,14 @@ class JoyTagEmbedderClient:
         try:
             response = client.request(method, path, **kwargs)
         except httpx.TimeoutException as exc:
+            # 转自定义异常前先记日志，避免真实报错只存在于异常链而服务端无迹可查
+            logger.warning("JoyTag 推理服务请求超时 method={} path={} error={}", method, path, exc)
             raise JoyTagInferenceUnavailableError("JoyTag inference service timed out") from exc
         except httpx.NetworkError as exc:
+            logger.warning("JoyTag 推理服务不可达 method={} path={} error={}", method, path, exc)
             raise JoyTagInferenceUnavailableError("JoyTag inference service is unreachable") from exc
         except httpx.HTTPError as exc:
+            logger.warning("JoyTag 推理服务请求失败 method={} path={} error={}", method, path, exc)
             raise JoyTagInferenceUpstreamError(f"JoyTag inference request failed: {exc}") from exc
         finally:
             if close_after_request:

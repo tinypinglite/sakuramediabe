@@ -91,11 +91,18 @@ class JackettClient:
         attr_map = self._coerce_attr_map(item.get("torznab:attr"))
         remote_indexer = self._extract_indexer_metadata(item, channel_title)
         size_bytes = self._coerce_int(item.get("size"))
-        magnet_url = self._coerce_text(attr_map.get("magneturl"))
         seeders = self._coerce_int(attr_map.get("seeders"))
         title = self._coerce_text(item.get("title"))
         description = self._coerce_text(item.get("description"))
         full_title = " ".join(part for part in [title, description] if part)
+        # Torznab/Jackett 协议中磁力链可能出现在 magneturl 属性、link 或 guid 任一字段
+        # （只有磁力链没有 .torrent 文件时，Jackett 会把磁力链直接塞进 link/guid），
+        # 因此按内容而非字段名分流：磁力链归 magnet_url，其余链接归 torrent_url。
+        magnet_url, torrent_url = self._split_download_links(
+            attr_map.get("magneturl"),
+            item.get("link"),
+            item.get("guid"),
+        )
         return DownloadCandidateResource(
             source="jackett",
             indexer_name=indexer.name or remote_indexer["id"] or remote_indexer["name"],
@@ -107,9 +114,24 @@ class JackettClient:
             size_bytes=size_bytes,
             seeders=seeders,
             magnet_url=magnet_url,
-            torrent_url=self._coerce_text(item.get("link") or item.get("guid")),
+            torrent_url=torrent_url,
             tags=detect_candidate_tags(full_title or title, movie_number, size_bytes),
         )
+
+    @classmethod
+    def _split_download_links(cls, *raw_links) -> tuple[str, str]:
+        # 按内容把候选链接分流成磁力链与 .torrent 文件地址，各取第一个有效值
+        magnet_url = ""
+        torrent_url = ""
+        for raw in raw_links:
+            link = cls._coerce_text(raw)
+            if not link:
+                continue
+            if link.lower().startswith("magnet:"):
+                magnet_url = magnet_url or link
+            else:
+                torrent_url = torrent_url or link
+        return magnet_url, torrent_url
 
     @staticmethod
     def _coerce_mapping(value) -> dict:
