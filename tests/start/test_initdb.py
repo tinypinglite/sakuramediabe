@@ -16,7 +16,9 @@ from src.model import (
     MoviePlotImage,
     MovieSeries,
     MovieSimilarity,
+    PLAYLIST_KIND_4K,
     PLAYLIST_KIND_RECENTLY_PLAYED,
+    PLAYLIST_KIND_VR,
     Playlist,
     RankingItem,
     ResourceTaskState,
@@ -308,7 +310,7 @@ def test_init_user_creates_single_account_once(test_db, monkeypatch):
     assert User.select().count() == 1
 
 
-def test_init_system_playlists_creates_recently_played_once(test_db, monkeypatch):
+def test_init_system_playlists_creates_all_system_playlists_once(test_db, monkeypatch):
     monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
     monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
 
@@ -317,12 +319,32 @@ def test_init_system_playlists_creates_recently_played_once(test_db, monkeypatch
     created = init_system_playlists()
     repeated = init_system_playlists()
 
-    playlist = Playlist.get(Playlist.kind == PLAYLIST_KIND_RECENTLY_PLAYED)
+    kinds = {playlist.kind for playlist in Playlist.select()}
 
     assert created is True
     assert repeated is False
-    assert playlist.name == "最近播放"
-    assert Playlist.select().count() == 1
+    assert kinds == {PLAYLIST_KIND_RECENTLY_PLAYED, PLAYLIST_KIND_VR, PLAYLIST_KIND_4K}
+    assert Playlist.get(Playlist.kind == PLAYLIST_KIND_RECENTLY_PLAYED).name == "最近播放"
+    assert Playlist.get(Playlist.kind == PLAYLIST_KIND_VR).name == "VR"
+    assert Playlist.get(Playlist.kind == PLAYLIST_KIND_4K).name == "4K"
+    assert Playlist.select().count() == 3
+
+
+def test_init_system_playlists_backfills_missing_kinds_on_upgrade(test_db, monkeypatch):
+    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
+    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
+
+    create_tables()
+    # 显式构造"老库仅有最近播放"的初始状态，不依赖建表后表为空。
+    Playlist.delete().execute()
+    Playlist.create(kind=PLAYLIST_KIND_RECENTLY_PLAYED, name="最近播放", description="")
+
+    created = init_system_playlists()
+
+    kinds = {playlist.kind for playlist in Playlist.select()}
+    assert created is True
+    assert kinds == {PLAYLIST_KIND_RECENTLY_PLAYED, PLAYLIST_KIND_VR, PLAYLIST_KIND_4K}
+    assert Playlist.select().count() == 3
 
 
 def test_initdb_does_not_run_pending_migrations(monkeypatch):

@@ -24,6 +24,7 @@ from src.schema.catalog.movies import (
     MovieSeriesListRequest,
     MovieSpecialTagFilter,
     SimilarMovieListItemResource,
+    TagMatchMode,
 )
 from src.schema.catalog.subtitles import MovieSubtitleListResource
 from src.schema.common.pagination import PageResponse
@@ -100,6 +101,7 @@ def _parse_optional_exact_text(raw: str | None, field_name: str) -> str | None:
 def list_movies(
     actor_id: Optional[int] = None,
     tag_ids: str | None = Query(default=None),
+    tag_match: TagMatchMode = Query(default=TagMatchMode.OR),
     year: int | None = Query(default=None, ge=1),
     status: MovieListStatus = MovieListStatus.ALL,
     collection_type: MovieCollectionType = MovieCollectionType.ALL,
@@ -113,6 +115,7 @@ def list_movies(
     return MovieService.list_movies(
         actor_id=actor_id,
         tag_ids=_parse_csv_positive_ints(tag_ids, "tag_ids"),
+        tag_match=tag_match,
         year=year,
         status=status,
         collection_type=collection_type,

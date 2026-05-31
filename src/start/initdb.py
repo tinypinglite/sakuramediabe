@@ -39,9 +39,15 @@ from src.model import (
     Tag,
     User,
     UserRefreshToken,
+    FOUR_K_PLAYLIST_DESCRIPTION,
+    FOUR_K_PLAYLIST_NAME,
+    PLAYLIST_KIND_4K,
     PLAYLIST_KIND_RECENTLY_PLAYED,
+    PLAYLIST_KIND_VR,
     RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
     RECENTLY_PLAYED_PLAYLIST_NAME,
+    VR_PLAYLIST_DESCRIPTION,
+    VR_PLAYLIST_NAME,
     init_database,
 )
 
@@ -105,19 +111,26 @@ def init_user() -> bool:
     return True
 
 
-def init_system_playlists() -> bool:
-    playlist = Playlist.get_or_none(Playlist.kind == PLAYLIST_KIND_RECENTLY_PLAYED)
-    if playlist is not None:
-        logger.info("system playlist already exists, skip init recently played playlist")
-        return False
+# 系统播放列表预置清单：最近播放为物化维护，VR/4K 为按 special_tags 实时派生的虚拟列表。
+SYSTEM_PLAYLIST_SPECS = (
+    (PLAYLIST_KIND_RECENTLY_PLAYED, RECENTLY_PLAYED_PLAYLIST_NAME, RECENTLY_PLAYED_PLAYLIST_DESCRIPTION),
+    (PLAYLIST_KIND_VR, VR_PLAYLIST_NAME, VR_PLAYLIST_DESCRIPTION),
+    (PLAYLIST_KIND_4K, FOUR_K_PLAYLIST_NAME, FOUR_K_PLAYLIST_DESCRIPTION),
+)
 
-    Playlist.create(
-        kind=PLAYLIST_KIND_RECENTLY_PLAYED,
-        name=RECENTLY_PLAYED_PLAYLIST_NAME,
-        description=RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
-    )
-    logger.info("system playlist created kind={}", PLAYLIST_KIND_RECENTLY_PLAYED)
-    return True
+
+def init_system_playlists() -> bool:
+    """逐个幂等预置系统播放列表；老库升级时会自动补建缺失的 VR/4K。"""
+    created_any = False
+    for kind, name, description in SYSTEM_PLAYLIST_SPECS:
+        if Playlist.get_or_none(Playlist.kind == kind) is not None:
+            continue
+        Playlist.create(kind=kind, name=name, description=description)
+        logger.info("system playlist created kind={}", kind)
+        created_any = True
+    if not created_any:
+        logger.info("system playlists already exist, skip init")
+    return created_any
 
 
 def initdb():

@@ -3,13 +3,13 @@ from typing import ClassVar
 
 from pydantic import Field, field_validator
 
-from src.model import PLAYLIST_KIND_CUSTOM
+from src.model import PLAYLIST_KIND_CUSTOM, SYSTEM_PLAYLIST_KINDS
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.common.base import SchemaModel
 
 
 class PlaylistResource(SchemaModel):
-    SYSTEM_KINDS: ClassVar[set[str]] = {"recently_played"}
+    SYSTEM_KINDS: ClassVar[set[str]] = set(SYSTEM_PLAYLIST_KINDS)
 
     id: int
     name: str

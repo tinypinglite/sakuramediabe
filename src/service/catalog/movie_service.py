@@ -63,6 +63,7 @@ from src.schema.catalog.movies import (
     MovieListItemResource,
     MovieListStatus,
     MovieSpecialTagFilter,
+    TagMatchMode,
     MissavThumbnailResource,
     MovieNumberParseResponse,
     MovieReviewSort,
@@ -119,6 +120,7 @@ class MovieService:
         cls,
         actor_id: Optional[int] = None,
         tag_ids: list[int] | None = None,
+        tag_match: TagMatchMode = TagMatchMode.OR,
         year: int | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
@@ -137,7 +139,17 @@ class MovieService:
 
         if tag_ids is not None:
             # 标签筛选走子查询，避免主查询 join 后出现重复影片和 total 偏差。
-            tagged_movie_ids = MovieTag.select(MovieTag.movie).where(MovieTag.tag.in_(tag_ids))
+            if tag_match == TagMatchMode.AND:
+                # AND：影片须同时关联全部 tag，按影片分组后命中的去重标签数等于请求标签数。
+                tagged_movie_ids = (
+                    MovieTag.select(MovieTag.movie)
+                    .where(MovieTag.tag.in_(tag_ids))
+                    .group_by(MovieTag.movie)
+                    .having(fn.COUNT(fn.DISTINCT(MovieTag.tag)) == len(tag_ids))
+                )
+            else:
+                # OR：命中任意一个 tag 即可。
+                tagged_movie_ids = MovieTag.select(MovieTag.movie).where(MovieTag.tag.in_(tag_ids))
             filtered_query = filtered_query.where(Movie.id.in_(tagged_movie_ids))
 
         if year is not None:
@@ -218,6 +230,7 @@ class MovieService:
         cls,
         actor_id: Optional[int] = None,
         tag_ids: list[int] | None = None,
+        tag_match: TagMatchMode = TagMatchMode.OR,
         year: int | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
@@ -234,6 +247,7 @@ class MovieService:
             cls._filtered_movies(
                 actor_id,
                 tag_ids,
+                tag_match,
                 year,
                 status,
                 collection_type,
@@ -595,6 +609,7 @@ class MovieService:
     def list_movies(
         actor_id: Optional[int] = None,
         tag_ids: list[int] | None = None,
+        tag_match: TagMatchMode = TagMatchMode.OR,
         year: int | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
@@ -609,6 +624,7 @@ class MovieService:
         total = MovieService._filtered_movies(
             actor_id,
             tag_ids,
+            tag_match,
             year,
             status,
             collection_type,
@@ -621,6 +637,7 @@ class MovieService:
             MovieService._movie_list_query(
                 actor_id,
                 tag_ids,
+                tag_match,
                 year,
                 status,
                 collection_type,
@@ -673,6 +690,45 @@ class MovieService:
             page_size=page_size,
             total=total,
         )
+
+    @classmethod
+    def list_special_tag_movies(
+        cls,
+        special_tag: MovieSpecialTagFilter,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> tuple[list[Movie], int]:
+        """按特殊标签(VR/4K)实时过滤影片，按最近媒体入库时间倒序分页。
+
+        供 VR/4K 虚拟系统播放列表复用：成员关系不落库，完全由 ``Media.special_tags`` 派生。
+        返回的 Movie 实例额外携带 ``can_play`` / ``is_4k`` / ``playlist_item_updated_at`` 计算列。
+        """
+        start = max(page - 1, 0) * page_size
+        # total 走 EXISTS 子查询并基于 Movie 去重，避免 join media 后按媒体行放大。
+        total = cls._filtered_movies(special_tag=special_tag).count()
+        can_play_expression = cls._playable_exists_expression().alias("can_play")
+        is_4k_expression = cls._special_tag_exists_expression("4K").alias("is_4k")
+        # 用最近一次媒体入库时间作为列表内排序键与 playlist_item_updated_at 取值。
+        latest_media_created_at = fn.MAX(Media.created_at)
+        query, thin_cover_alias = with_movie_card_relations(
+            Movie.select(
+                Movie,
+                can_play_expression,
+                is_4k_expression,
+                latest_media_created_at.alias("playlist_item_updated_at"),
+            )
+            .join(Media)
+            .switch(Movie)
+        )
+        movies = list(
+            query
+            .where(cls._special_tag_exists_expression(special_tag.to_media_tag()))
+            .group_by(Movie.id, Image.id, thin_cover_alias.id, MovieSeries.id)
+            .order_by(latest_media_created_at.desc(), Movie.id.desc())
+            .offset(start)
+            .limit(page_size)
+        )
+        return movies, total
 
     @staticmethod
     def list_subscribed_actor_latest_movies(

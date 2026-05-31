@@ -1,4 +1,13 @@
-from src.model import PLAYLIST_KIND_RECENTLY_PLAYED, Movie, Playlist, PlaylistMovie
+from src.model import (
+    Media,
+    PLAYLIST_KIND_4K,
+    PLAYLIST_KIND_RECENTLY_PLAYED,
+    PLAYLIST_KIND_VR,
+    Movie,
+    Playlist,
+    PlaylistMovie,
+)
+from src.start.initdb import init_system_playlists
 
 
 def _login(client, username="account", password="password123"):
@@ -175,3 +184,37 @@ def test_list_playlists_includes_system_first(client, account_user):
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == [system_playlist.id, custom_playlist.id]
     assert response.json()[0]["movie_count"] == 1
+
+
+def test_virtual_system_playlists_listing_and_protection(client, account_user):
+    token = _login(client, username=account_user.username)
+    init_system_playlists()
+    movie = _create_movie("ABC-101", "Movie4K1", title="4K 1")
+    Media.create(movie=movie, path="/library/abc-101.mp4", valid=True, special_tags="4K")
+    four_k_playlist = Playlist.get(Playlist.kind == PLAYLIST_KIND_4K)
+    auth = {"Authorization": f"Bearer {token}"}
+
+    list_response = client.get("/playlists", headers=auth)
+    kinds = [item["kind"] for item in list_response.json()]
+    four_k_item = next(item for item in list_response.json() if item["kind"] == PLAYLIST_KIND_4K)
+
+    movies_response = client.get(f"/playlists/{four_k_playlist.id}/movies", headers=auth)
+    update_response = client.patch(
+        f"/playlists/{four_k_playlist.id}", headers=auth, json={"name": "新名字"}
+    )
+    add_response = client.put(
+        f"/playlists/{four_k_playlist.id}/movies/{movie.movie_number}", headers=auth
+    )
+
+    assert list_response.status_code == 200
+    assert PLAYLIST_KIND_VR in kinds and PLAYLIST_KIND_4K in kinds
+    assert four_k_item["movie_count"] == 1
+    assert four_k_item["is_system"] is True
+    assert movies_response.status_code == 200
+    assert movies_response.json()["total"] == 1
+    assert movies_response.json()["items"][0]["movie_number"] == "ABC-101"
+    assert "playlist_item_updated_at" in movies_response.json()["items"][0]
+    assert update_response.status_code == 409
+    assert update_response.json()["error"]["code"] == "playlist_managed_by_system"
+    assert add_response.status_code == 409
+    assert add_response.json()["error"]["code"] == "playlist_managed_by_system"

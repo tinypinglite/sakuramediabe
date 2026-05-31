@@ -17,14 +17,20 @@ from src.common.service_helpers import (
 )
 from src.common.runtime_time import utc_now_for_db
 from src.model import (
+    FOUR_K_PLAYLIST_NAME,
     Media,
     Movie,
+    PLAYLIST_KIND_4K,
     PLAYLIST_KIND_RECENTLY_PLAYED,
+    PLAYLIST_KIND_VR,
     Playlist,
     PlaylistMovie,
     RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
     RECENTLY_PLAYED_PLAYLIST_NAME,
+    SYSTEM_PLAYLIST_KINDS,
+    VR_PLAYLIST_NAME,
 )
+from src.schema.catalog.movies import MovieSpecialTagFilter
 from src.schema.collections.playlists import (
     PlaylistCreateRequest,
     PlaylistMovieListItemResource,
@@ -34,30 +40,36 @@ from src.schema.collections.playlists import (
 from src.schema.common.pagination import PageResponse
 from src.schema.common.playlists import PlaylistSummaryResource
 
+# 虚拟系统列表 kind -> 对应特殊标签过滤，成员关系按 Media.special_tags 实时派生。
+_VIRTUAL_KIND_TO_SPECIAL_TAG = {
+    PLAYLIST_KIND_VR: MovieSpecialTagFilter.VR,
+    PLAYLIST_KIND_4K: MovieSpecialTagFilter.FOUR_K,
+}
+
+# 系统列表内部展示次序：最近播放、VR、4K 在前，自定义列表在后。
+_SYSTEM_KIND_ORDER = (
+    (PLAYLIST_KIND_RECENTLY_PLAYED, 0),
+    (PLAYLIST_KIND_VR, 1),
+    (PLAYLIST_KIND_4K, 2),
+)
+
 
 class PlaylistService:
     """聚合播放列表查询、名称校验和最近播放维护逻辑。"""
 
-    SYSTEM_KINDS = {PLAYLIST_KIND_RECENTLY_PLAYED}
-    RESERVED_NAMES = {RECENTLY_PLAYED_PLAYLIST_NAME}
+    SYSTEM_KINDS = set(SYSTEM_PLAYLIST_KINDS)
+    RESERVED_NAMES = {RECENTLY_PLAYED_PLAYLIST_NAME, VR_PLAYLIST_NAME, FOUR_K_PLAYLIST_NAME}
+    VIRTUAL_KINDS = set(_VIRTUAL_KIND_TO_SPECIAL_TAG)
 
     @staticmethod
     def _playlist_system_order():
-        """让系统播放列表固定排在普通列表之前。"""
-        return Case(
-            None,
-            ((Playlist.kind == PLAYLIST_KIND_RECENTLY_PLAYED, 0),),
-            1,
-        )
+        """让系统播放列表固定排在普通列表之前，并给系统列表内部稳定次序。"""
+        return Case(Playlist.kind, _SYSTEM_KIND_ORDER, len(_SYSTEM_KIND_ORDER))
 
     @staticmethod
     def _movie_playlist_system_order():
         """列出影片所属播放列表时同样优先展示系统列表。"""
-        return Case(
-            None,
-            ((Playlist.kind == PLAYLIST_KIND_RECENTLY_PLAYED, 0),),
-            1,
-        )
+        return Case(Playlist.kind, _SYSTEM_KIND_ORDER, len(_SYSTEM_KIND_ORDER))
 
     _playable_exists_expression = staticmethod(playable_exists_expression)
 
@@ -167,6 +179,36 @@ class PlaylistService:
         )
 
     @classmethod
+    def _virtual_playlist_count(cls, kind: str) -> int:
+        """虚拟列表的影片数实时统计，与影片列表 special_tag 过滤口径一致。"""
+        # 延迟导入避免与 movie_service 顶层 import PlaylistService 形成循环依赖。
+        from src.service.catalog.movie_service import MovieService
+
+        special_tag = _VIRTUAL_KIND_TO_SPECIAL_TAG[kind]
+        return MovieService._filtered_movies(special_tag=special_tag).count()
+
+    @classmethod
+    def _list_virtual_playlist_movies(
+        cls,
+        playlist: Playlist,
+        page: int,
+        page_size: int,
+    ) -> PageResponse[PlaylistMovieListItemResource]:
+        """虚拟系统列表(VR/4K)按特殊标签实时派生成员，按最近媒体入库时间倒序分页。"""
+        from src.service.catalog.movie_service import MovieService
+
+        special_tag = _VIRTUAL_KIND_TO_SPECIAL_TAG[playlist.kind]
+        movies, total = MovieService.list_special_tag_movies(special_tag, page, page_size)
+        # movies 已携带 can_play / is_4k / playlist_item_updated_at 计算列，直接包装即可。
+        items = [PlaylistMovieListItemResource.from_attributes_model(movie) for movie in movies]
+        return PageResponse[PlaylistMovieListItemResource](
+            items=items,
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    @classmethod
     def list_playlists(cls, include_system: bool = True) -> List[PlaylistResource]:
         """列出播放列表，并补上每个列表的影片数量。"""
         query = Playlist.select().order_by(
@@ -177,11 +219,19 @@ class PlaylistService:
         if not include_system:
             query = query.where(Playlist.kind.not_in(cls.SYSTEM_KINDS))
         playlists = list(query)
-        counts = cls._playlist_counts([playlist.id for playlist in playlists])
-        return [
-            PlaylistResource.from_playlist(playlist, movie_count=counts.get(playlist.id, 0))
-            for playlist in playlists
+        # 仅对真实落库成员的列表统计 PlaylistMovie；虚拟列表的数量另行实时派生。
+        materialized_ids = [
+            playlist.id for playlist in playlists if playlist.kind not in cls.VIRTUAL_KINDS
         ]
+        counts = cls._playlist_counts(materialized_ids)
+        resources: List[PlaylistResource] = []
+        for playlist in playlists:
+            if playlist.kind in cls.VIRTUAL_KINDS:
+                movie_count = cls._virtual_playlist_count(playlist.kind)
+            else:
+                movie_count = counts.get(playlist.id, 0)
+            resources.append(PlaylistResource.from_playlist(playlist, movie_count=movie_count))
+        return resources
 
     @classmethod
     def create_playlist(cls, payload: PlaylistCreateRequest) -> PlaylistResource:
@@ -242,6 +292,9 @@ class PlaylistService:
     ) -> PageResponse[PlaylistMovieListItemResource]:
         """按最近触达时间列出列表内影片，并补上可播放状态。"""
         playlist = cls._require_playlist(playlist_id)
+        # VR/4K 等虚拟列表的成员不落库，按特殊标签实时派生。
+        if playlist.kind in cls.VIRTUAL_KINDS:
+            return cls._list_virtual_playlist_movies(playlist, page, page_size)
         start = max(page - 1, 0) * page_size
         total = PlaylistMovie.select().where(PlaylistMovie.playlist == playlist).count()
         can_play_expression = cls._playable_exists_expression().alias("can_play")

@@ -20,6 +20,12 @@ class MovieCollectionType(str, Enum):
     SINGLE = "single"
 
 
+class TagMatchMode(str, Enum):
+    # 多个标签筛选时的组合关系：OR 命中任意一个，AND 须同时包含全部。
+    OR = "or"
+    AND = "and"
+
+
 class MovieCollectionMarkType(str, Enum):
     COLLECTION = "collection"
     SINGLE = "single"

@@ -667,7 +667,8 @@ data: {"success":false,"reason":"local_series_not_found","movies":[]}
 - 鉴权：需要 Bearer Token
 - Query：
   - `actor_id`：按演员 ID 过滤（可选）
-  - `tag_ids`：按标签 ID 列表过滤（可选，逗号分隔，如 `1,2,3`；命中任意一个标签即可）
+  - `tag_ids`：按标签 ID 列表过滤（可选，逗号分隔，如 `1,2,3`），与 `tag_match` 配合决定组合方式
+  - `tag_match`：多个标签的组合关系（可选，`or | and`，默认 `or`）；`or` 命中任意标签即返回，`and` 须同时包含全部标签，仅在传 `tag_ids` 时生效
   - `director_name`：按导演名称精确过滤（可选；会先 `strip`）
   - `maker_name`：按厂商名称精确过滤（可选；会先 `strip`）
   - `year`：按发行年份过滤（可选，只支持单个年份）
@@ -685,7 +686,7 @@ data: {"success":false,"reason":"local_series_not_found","movies":[]}
   - `sort=added_at:*` 在 `status=playable` 时按每部影片关联媒体的 `MAX(media.created_at)` 排序；其他状态仍按 `movie.id` 表示的影片记录插入顺序排序
   - `release_date`、`subscribed_at` 为空的影片始终排在最后
   - `total` 为过滤后的影片总数
-  - `tag_ids` 只返回至少命中一个指定标签的影片
+  - `tag_ids` 默认（`tag_match=or`）只返回至少命中一个指定标签的影片；`tag_match=and` 只返回同时包含全部指定标签的影片
   - `director_name`、`maker_name` 均为精确匹配，空白值返回 422 `invalid_movie_filter`
   - `year` 只返回 `release_date` 落在该自然年的影片
   - `status=subscribed` 只返回已订阅影片
@@ -709,6 +710,10 @@ GET /movies?actor_id=1&status=playable&page=1&page_size=20
 
 ```http
 GET /movies?tag_ids=1,2&year=2024&page=1&page_size=20
+```
+
+```http
+GET /movies?tag_ids=1,2&tag_match=and&page=1&page_size=20
 ```
 
 ```http
