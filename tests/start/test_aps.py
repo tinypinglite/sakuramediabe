@@ -219,6 +219,19 @@ def test_aps_scan_media_files_command_runs_job(monkeypatch):
     )
 
 
+def test_aps_cleanup_download_small_files_command_runs_job(monkeypatch):
+    _test_cli_command(
+        monkeypatch,
+        "cleanup-download-small-files",
+        {
+            "total_clients": 2, "scanned_torrents": 5, "deselected_files": 4,
+            "deleted_files": 3, "failed_count": 1,
+        },
+        "download small file cleanup finished: total_clients=2 scanned_torrents=5 "
+        "deselected_files=4 deleted_files=3 failed_count=1",
+    )
+
+
 def test_aps_index_image_search_thumbnails_command_runs_job(monkeypatch):
     _test_cli_command(
         monkeypatch,
@@ -360,6 +373,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_heat_cron", "15 0 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_sync_cron", "*/15 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_auto_import_cron", "*/10 * * * *")
+    monkeypatch.setattr("src.start.aps.settings.scheduler.download_small_file_cleanup_cron", "*/5 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_collection_sync_cron", "0 1 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_file_scan_cron", "0 */6 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_desc_sync_cron", "0 4 * * *")
@@ -395,6 +409,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert str(scheduler.get_job("movie_heat_update").trigger) == "cron[month='*', day='*', day_of_week='*', hour='0', minute='15']"
     assert str(scheduler.get_job("download_task_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/15']"
     assert str(scheduler.get_job("download_task_auto_import").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"
+    assert str(scheduler.get_job("download_small_file_cleanup").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/5']"
     assert str(scheduler.get_job("media_file_scan").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*/6', minute='0']"
     assert str(scheduler.get_job("media_thumbnail_generation").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/5']"
     assert str(scheduler.get_job("image_search_index").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"

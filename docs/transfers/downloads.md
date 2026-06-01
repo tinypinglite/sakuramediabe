@@ -53,6 +53,26 @@
 - 每个 `Indexer` 必须绑定一个 `DownloadClient`
 - `DownloadClient` 必须绑定一个可用的 `MediaLibrary`
 
+### 下载中种子小文件清理
+
+系统包含一个内部调度任务（`download_small_file_cleanup`），默认每 5 分钟执行一次，用于清理下载中种子里夹带的小文件（sample / 垃圾文件），避免它们拖住整个下载任务、占用磁盘和带宽。
+
+行为约定：
+
+- 仅处理带 `sakuramedia` 系统标签（即经本系统添加）的种子；手动加入 qBittorrent 的种子不受影响
+- 仅处理未完成（`progress < 1.0`）的种子
+- 把种子内小于阈值的文件设为不下载（priority=0），并重命名为 `need_delete_<uuid>` 标记
+- 随后遍历下载客户端的 `local_root_path`，物理删除文件名含 `need_delete` 的残留文件
+- 已是 priority=0 的文件会跳过，保证反复执行的幂等性
+
+配置与运行：
+
+- 小文件阈值由 `[downloads].small_file_cleanup_threshold_mb` 配置，默认 `256`（MB）
+- 执行频率由 `[scheduler].download_small_file_cleanup_cron` 配置，默认 `*/5 * * * *`
+- 可手动单次执行：`uv run python -m src.start.commands aps cleanup-download-small-files`
+
+> ⚠️ 该任务不区分私有站（PT）与公开 BT 种子，凡带系统标签的下载中种子一律清理。若通过本系统下载 PT 站种子，清理小文件会破坏做种并影响分享率，请自行评估。
+
 ## 数据模型
 
 ### DownloadClient

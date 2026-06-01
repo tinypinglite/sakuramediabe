@@ -159,6 +159,7 @@ class Scheduler(BaseModel):
     subscribed_movie_auto_download_cron: str = "30 2 * * *"
     download_task_sync_cron: str = "* * * * *"
     download_task_auto_import_cron: str = "*/3 * * * *"
+    download_small_file_cleanup_cron: str = "*/5 * * * *"
     movie_collection_sync_cron: str = "0 1 * * *"
     movie_heat_cron: str = "15 0 * * *"
     movie_interaction_sync_cron: str = "0 * * * *"
@@ -175,6 +176,11 @@ class Scheduler(BaseModel):
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
 
+
+
+class Downloads(BaseModel):
+    # 下载中种子内小于该大小（MB）的文件视为可清理小文件，会被设为不下载并物理删除。
+    small_file_cleanup_threshold_mb: int = 256
 
 
 class Logging(BaseModel):
@@ -224,6 +230,7 @@ class Settings(BaseSettings):
     )
     metadata: Metadata = Field(default_factory=Metadata)
     scheduler: Scheduler = Field(default_factory=Scheduler)
+    downloads: Downloads = Field(default_factory=Downloads)
     logging: Logging = Field(default_factory=Logging)
     indexer_settings: IndexerSettings = Field(default_factory=IndexerSettings)
     image_search: ImageSearch = Field(default_factory=ImageSearch)

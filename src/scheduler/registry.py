@@ -23,7 +23,11 @@ from src.service.discovery import (
 )
 from src.service.playback import MediaFileScanService, MediaThumbnailService
 
-from src.service.transfers import DownloadSyncService, SubscribedMovieAutoDownloadService
+from src.service.transfers import (
+    DownloadSmallFileCleanupService,
+    DownloadSyncService,
+    SubscribedMovieAutoDownloadService,
+)
 
 
 class JobDefinition(BaseModel):
@@ -217,6 +221,22 @@ JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次已完成下载自动导入",
         cron_setting="download_task_auto_import_cron",
         service_factory=lambda _reporter: DownloadSyncService().enqueue_auto_imports(),
+    ),
+    JobDefinition(
+        task_key="download_small_file_cleanup",
+        log_name="download-small-file-cleanup",
+        cli_name="cleanup-download-small-files",
+        cli_help="执行一次下载中种子的小文件清理",
+        cron_setting="download_small_file_cleanup_cron",
+        service_factory=lambda _reporter: DownloadSmallFileCleanupService().cleanup_small_files(),
+        format_stats=_build_stats_formatter(
+            "download small file cleanup finished:",
+            ("total_clients", "total_clients", 0),
+            ("scanned_torrents", "scanned_torrents", 0),
+            ("deselected_files", "deselected_files", 0),
+            ("deleted_files", "deleted_files", 0),
+            ("failed_count", "failed_count", 0),
+        ),
     ),
     JobDefinition(
         task_key="media_file_scan",
