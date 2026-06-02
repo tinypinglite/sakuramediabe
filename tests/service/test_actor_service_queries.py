@@ -249,10 +249,13 @@ def test_actor_service_get_actor_years_uses_database_distinct(app, test_db):
         _restore_queries(test_db, original_execute_sql)
 
     assert [item.year for item in response] == [2024, 2023]
+    # 2024 年两部、2023 年一部，年份统计需在数据库层聚合得到
+    assert [item.movie_count for item in response] == [2, 1]
     year_queries = [sql for sql in queries if 'FROM "movie"' in sql]
 
     assert len(year_queries) == 1
-    assert "DISTINCT" in year_queries[0]
+    # 实现以 GROUP BY 在数据库层按年份聚合并计数，等价于去重且无需在 Python 侧再处理
+    assert "GROUP BY" in year_queries[0]
     assert "strftime" in year_queries[0]
 
 

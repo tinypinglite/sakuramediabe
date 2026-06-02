@@ -119,6 +119,59 @@ class QBittorrentClient:
                 result.append(self._to_dict(item))
         return result
 
+    def list_torrent_files(self, info_hash: str) -> List[dict]:
+        # 取单个种子的文件列表，归一化成业务侧需要的字段，屏蔽 qbittorrentapi 的对象结构。
+        self._login()
+        try:
+            files = self.client.torrents_files(torrent_hash=info_hash)
+        except Exception as exc:
+            raise QBittorrentClientError(str(exc)) from exc
+        result = []
+        for position, item in enumerate(files):
+            # qB 4.4.0(Web API 2.8.2)起文件列表才返回 index；旧版本缺该字段时回退用列表位置，
+            # 避免所有文件 index 都退化成 0，进而 set_files_not_download / rename 误操作错误文件。
+            raw_index = getattr(item, "index", None)
+            index = int(raw_index) if raw_index is not None else position
+            result.append(
+                {
+                    "index": index,
+                    "name": getattr(item, "name", "") or "",
+                    "size": int(getattr(item, "size", 0) or 0),
+                    "priority": int(getattr(item, "priority", 0) or 0),
+                }
+            )
+        return result
+
+    def set_files_not_download(self, info_hash: str, file_indexes: List[int]) -> None:
+        # 把指定文件优先级设为 0（不下载），让 qBittorrent 跳过这些文件。
+        if not file_indexes:
+            return
+        self._login()
+        try:
+            self.client.torrents_file_priority(
+                torrent_hash=info_hash,
+                file_ids=file_indexes,
+                priority=0,
+            )
+        except Exception as exc:
+            raise QBittorrentClientError(str(exc)) from exc
+
+    def rename_torrent_file(self, info_hash: str, file_index: int, new_name: str) -> None:
+        # 重命名种子内文件，仅用于给待删除小文件打标记；qBittorrent 重命名不会删除任何已下载数据，
+        # 真正回收空间靠调用方后续的物理删除（priority=0 同样不会删除已落盘的字节）。
+        self._login()
+        try:
+            self.client.torrents_rename_file(
+                torrent_hash=info_hash,
+                file_id=file_index,
+                new_file_name=new_name,
+            )
+        except qbittorrentapi.Conflict409Error:
+            # 文件已被重命名/移除（重复处理）时按幂等成功处理。
+            return
+        except Exception as exc:
+            raise QBittorrentClientError(str(exc)) from exc
+
     def get_torrent(self, info_hash: str, *, allow_missing: bool = False) -> Optional[dict]:
         self._login()
         for _ in range(5):

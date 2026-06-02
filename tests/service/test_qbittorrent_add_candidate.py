@@ -183,3 +183,33 @@ def test_add_candidate_requires_source():
             rename="MIAB-317",
             client_id=1,
         )
+
+
+class _FileNoIndex:
+    """模拟旧版 qB（<4.4.0）文件对象：不返回 index 字段。"""
+
+    def __init__(self, name, size, priority):
+        self.name = name
+        self.size = size
+        self.priority = priority
+
+
+def test_list_torrent_files_falls_back_to_position_when_index_missing():
+    # 旧版 qB 文件列表不含 index，应回退用列表位置，绝不能让所有文件 index 都退化成 0
+    class FakeQb:
+        def auth_log_in(self):
+            pass
+
+        def torrents_files(self, torrent_hash=None):
+            return [
+                _FileNoIndex("a.mkv", 100, 1),
+                _FileNoIndex("b.mkv", 200, 0),
+                _FileNoIndex("c.mkv", 300, 1),
+            ]
+
+    client = _make_client(qb=FakeQb())
+    files = client.list_torrent_files("hash-x")
+
+    assert [f["index"] for f in files] == [0, 1, 2]
+    assert [f["name"] for f in files] == ["a.mkv", "b.mkv", "c.mkv"]
+    assert [f["priority"] for f in files] == [1, 0, 1]
