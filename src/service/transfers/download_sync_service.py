@@ -52,10 +52,7 @@ class DownloadSyncService:
         updated_count = 0
         unchanged_count = 0
         for remote_task in remote_tasks:
-            normalized_state = self._map_download_state(
-                remote_task.get("state", ""),
-                progress=remote_task.get("progress", 0.0),
-            )
+            normalized_state = self._map_download_state(remote_task.get("state", ""))
             movie_number = parse_movie_number_from_text(
                 f"{remote_task.get('name', '')} {remote_task.get('save_path', '')}"
             ) or None
@@ -212,10 +209,16 @@ class DownloadSyncService:
         return recovered_count
 
     @staticmethod
-    def _map_download_state(raw_state: str, *, progress: float) -> str:
+    def _map_download_state(raw_state: str) -> str:
         normalized = (raw_state or "").strip()
         # qBittorrent 5.x 把 pausedUP/pausedDL 改名为 stoppedUP/stoppedDL，两套名称都要兼容
-        if progress >= 1 or normalized in {"uploading", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "forcedUP"}:
+        # 只有进入做种/完成态（下列 *UP 状态）才算下载完成。qB 把所有 piece 下完后 progress 即为
+        # 1.0，但随后还要经历 moving（把文件从下载目录搬到完成目录，跨文件系统时实为逐步复制）阶段，
+        # 此时目标文件仍在被写入；下载尾段的 downloading/checkingDL 同样 progress 偏高而内容未定。
+        # 因此绝不能仅凭 progress>=1 判完成，否则自动导入会读到未写完的文件，内容指纹抽样到不稳定
+        # 字节导致去重失效，把同一份内容反复导入成多条媒体记录。qB 只有在搬运与校验都结束后才会进入
+        # *UP 状态，这才是文件写定的可靠信号（与 qbittorrent-api 的 is_complete 判定一致）。
+        if normalized in {"uploading", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "forcedUP"}:
             return "completed"
         if normalized in {"pausedDL", "pausedUP", "stoppedDL", "stoppedUP"}:
             return "paused"
