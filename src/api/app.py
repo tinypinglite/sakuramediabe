@@ -23,6 +23,7 @@ from src.api.routers.playback.media import router as media_router
 from src.api.routers.playback.media_points import router as media_points_router
 from src.api.routers.playback.media_libraries import router as media_libraries_router
 from src.api.routers.transfers.downloads import router as downloads_router
+from src.api.routers.transfers.media_import import router as media_import_router
 from src.api.exception.errors import ApiError
 from src.api.routers.catalog.actors import router as actors_router
 from src.api.routers.catalog.movies import router as movies_router
@@ -93,6 +94,7 @@ def create_app() -> FastAPI:
     app.include_router(hot_reviews_router)
     app.include_router(ranking_sources_router)
     app.include_router(downloads_router)
+    app.include_router(media_import_router)
     app.include_router(status_router)
     app.include_router(activity_router)
     app.include_router(jobs_router)

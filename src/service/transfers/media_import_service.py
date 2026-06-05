@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Literal, Tuple
 from loguru import logger
 
 from src.common import parse_movie_number_from_path
+from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import DownloadTask, ImportJob, Media, MediaLibrary, Movie, get_database
@@ -32,13 +33,6 @@ from src.service.playback.media_metadata_probe_service import (
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 from src.service.transfers.tag_rules import build_media_special_tags
 
-SUPPORTED_VIDEO_EXTENSIONS = frozenset(
-    {
-        ".m2ts",
-        ".mkv",
-        ".mp4",
-    }
-)
 IMPORTED_SIDECAR_SUBTITLE_EXTENSION = ".srt"
 ImportTransferMode = Literal["auto", "cleanup-source"]
 
@@ -204,8 +198,12 @@ class MediaImportService:
         import_job_id: int | None = None,
         progress_callback: ImportProgressCallback | None = None,
         transfer_mode: ImportTransferMode = "auto",
+        only_files: List[str] | None = None,
     ) -> ImportJob:
-        """执行一次完整的媒体导入，并把中间状态写回 ImportJob。"""
+        """执行一次完整的媒体导入，并把中间状态写回 ImportJob。
+
+        ``only_files`` 提供时仅导入这些绝对路径，用于失败文件的子集重导。
+        """
         if transfer_mode not in ("auto", "cleanup-source"):
             logger.warning("Import rejected invalid transfer mode transfer_mode={}", transfer_mode)
             raise ValueError("invalid_transfer_mode")
@@ -214,6 +212,11 @@ class MediaImportService:
         if not source_entry.exists() or (not source_entry.is_dir() and not source_entry.is_file()):
             logger.warning("Import rejected invalid source path source_path={}", source_path)
             raise ValueError("source_path_not_found")
+
+        # 子集重导时把目标文件归一化为绝对路径集合，扫描阶段据此过滤。
+        only_file_set: set[str] | None = None
+        if only_files is not None:
+            only_file_set = {str(Path(item).expanduser().resolve()) for item in only_files}
 
         library = MediaLibrary.get_or_none(MediaLibrary.id == library_id)
         if library is None:
@@ -290,6 +293,7 @@ class MediaImportService:
                 source_entry,
                 failure_items,
                 transfer_mode=transfer_mode,
+                only_file_set=only_file_set,
             )
             skipped_count += grouped_skipped_count
             failed_count += grouped_failed_count
@@ -578,8 +582,12 @@ class MediaImportService:
         failure_items: List[Dict[str, str]],
         *,
         transfer_mode: ImportTransferMode,
+        only_file_set: set[str] | None = None,
     ) -> Tuple[Dict[str, ImportGroup], int, int]:
-        """扫描源目录，过滤无效文件，并按影片编号聚合待导入媒体。"""
+        """扫描源目录，过滤无效文件，并按影片编号聚合待导入媒体。
+
+        ``only_file_set`` 提供时仅保留命中其中绝对路径的文件，用于子集重导。
+        """
         minimum_size = settings.media.allowed_min_video_file_size
         grouped_candidates: Dict[str, List[ScannedSourceFile]] = {}
         skipped_count = 0
@@ -600,6 +608,9 @@ class MediaImportService:
         candidate_paths = self._iter_source_paths(source_entry, excluded_library_roots=excluded_library_roots)
         for path in candidate_paths:
             if not path.is_file():
+                continue
+            # 子集重导时跳过不在目标集合内的文件，只处理被显式选中的失败文件。
+            if only_file_set is not None and str(path.expanduser().resolve()) not in only_file_set:
                 continue
             scanned_count += 1
             if path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:

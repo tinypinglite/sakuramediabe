@@ -1706,3 +1706,43 @@ def test_import_media_marks_group_failed_when_vr_merge_raises(
     assert job.failed_count == 1
     assert Media.select().count() == 0
     assert any(item["reason"] == "vr_media_merge_failed" for item in _read_failed_files(job))
+
+
+def test_import_media_only_files_imports_subset_and_ignores_others(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    # only_files 子集重导：仅命中集合内的文件被扫描导入，其余文件即便有效也被忽略。
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    selected = source_dir / "ABP-123.mp4"
+    other = source_dir / "ABP-456.mp4"
+    selected.write_bytes(b"x" * 10)
+    other.write_bytes(b"y" * 10)
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+
+    service = MediaImportService(
+        provider=FakeJavdbProvider(
+            {
+                "ABP-123": _build_detail("ABP-123"),
+                "ABP-456": _build_detail("ABP-456"),
+            }
+        ),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+    )
+
+    job = service.import_from_source(
+        str(source_dir),
+        library.id,
+        only_files=[str(selected)],
+    )
+
+    assert job.state == "completed"
+    assert job.imported_count == 1
+    media_items = list(Media.select())
+    assert len(media_items) == 1
+    assert Movie.get(Movie.movie_number == "ABP-123") is not None
+    assert Movie.get_or_none(Movie.movie_number == "ABP-456") is None

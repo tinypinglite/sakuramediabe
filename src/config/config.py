@@ -183,6 +183,22 @@ class Downloads(BaseModel):
     small_file_cleanup_threshold_mb: int = 256
 
 
+class MediaImport(BaseModel):
+    # 可视化导入浏览后端文件系统时禁止进入的敏感目录黑名单（含其子树）。
+    browse_blacklist: list[str] = Field(
+        default_factory=lambda: [
+            "/etc",
+            "/proc",
+            "/sys",
+            "/boot",
+            "/dev",
+            "/run",
+            "/var/run",
+            "/root",
+        ]
+    )
+
+
 class Logging(BaseModel):
     level: str = "INFO"
 
@@ -231,6 +247,7 @@ class Settings(BaseSettings):
     metadata: Metadata = Field(default_factory=Metadata)
     scheduler: Scheduler = Field(default_factory=Scheduler)
     downloads: Downloads = Field(default_factory=Downloads)
+    media_import: MediaImport = Field(default_factory=MediaImport)
     logging: Logging = Field(default_factory=Logging)
     indexer_settings: IndexerSettings = Field(default_factory=IndexerSettings)
     image_search: ImageSearch = Field(default_factory=ImageSearch)
