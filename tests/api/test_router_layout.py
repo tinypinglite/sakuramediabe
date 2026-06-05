@@ -17,6 +17,7 @@ from src.api.routers.system import indexer_settings
 from src.api.routers.system import movie_desc_translation_settings
 from src.api.routers.system import status
 from src.api.routers.transfers import downloads
+from src.api.routers.transfers import media_import
 from src.api.app import create_app
 from src.config.config import settings
 
@@ -55,6 +56,16 @@ def test_downloads_router_uses_db_deps_as_router_level_dependency():
         or dependency.dependency is deps.db_deps
         for dependency in downloads.router.dependencies
     )
+
+
+def test_media_import_router_uses_auth_and_db_dependencies():
+    dependency_targets = {
+        dependency.dependency
+        for dependency in media_import.router.dependencies
+    }
+
+    assert deps.db_deps in dependency_targets
+    assert deps.get_current_user in dependency_targets
 
 
 def test_status_router_uses_db_deps_as_router_level_dependency():
@@ -196,6 +207,12 @@ def test_create_app_registers_image_search_routes():
     assert "/system/task-runs" in paths
     assert "/system/events/stream" in paths
     assert "/status/metadata-providers/{provider}/test" in paths
+    assert "/filesystem/entries" in paths
+    assert "/import-jobs" in paths
+    assert "/import-jobs/{import_job_id}" in paths
+    assert "/import-jobs/{import_job_id}/retry" in paths
+    assert "/import-jobs/{import_job_id}/failed-files" in paths
+    assert "/import-jobs/{import_job_id}/failed-files/rename" in paths
 
 
 def test_create_app_does_not_register_removed_api_endpoints():

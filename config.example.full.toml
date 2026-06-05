@@ -151,6 +151,11 @@ image_search_index_cron = "*/10 * * * *"
 # 下载中种子内小于该大小（MB）的文件视为可清理小文件，会被设为不下载并物理删除。
 small_file_cleanup_threshold_mb = 256
 
+[media_import]
+# 可视化导入浏览后端文件系统时禁止进入的敏感目录黑名单。
+# 命中列表中任一目录本身或其子树时返回 403，避免前端目录浏览触达系统敏感路径。
+browse_blacklist = ["/etc", "/proc", "/sys", "/boot", "/dev", "/run", "/var/run", "/root"]
+
 [movie_info_translation]
 # 是否启用影片信息翻译任务（简介翻译、标题翻译共用）。
 enabled = false
