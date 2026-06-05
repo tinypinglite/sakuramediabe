@@ -66,19 +66,40 @@ def test_ensure_add_success_rejects_qb5_failure_metadata():
 
 
 @pytest.mark.parametrize(
-    "raw_state, progress, expected",
+    "raw_state, expected",
     [
         # qBittorrent 5.x 改名后的停止状态
-        ("stoppedDL", 0.4, "paused"),
-        ("stoppedUP", 1.0, "completed"),
-        ("stoppedUP", 0.0, "completed"),
+        ("stoppedDL", "paused"),
+        ("stoppedUP", "completed"),
         # 旧名称继续兼容
-        ("pausedDL", 0.4, "paused"),
-        ("pausedUP", 1.0, "completed"),
+        ("pausedDL", "paused"),
+        ("pausedUP", "completed"),
+        # 做种态都算下载完成
+        ("uploading", "completed"),
+        ("stalledUP", "completed"),
     ],
 )
-def test_map_download_state_handles_qb5_stopped_states(raw_state, progress, expected):
-    assert DownloadSyncService._map_download_state(raw_state, progress=progress) == expected
+def test_map_download_state_handles_qb5_stopped_states(raw_state, expected):
+    assert DownloadSyncService._map_download_state(raw_state) == expected
+
+
+@pytest.mark.parametrize(
+    "raw_state",
+    [
+        # 下载完成后的校验/移动窗口：progress 已是 1.0 但文件仍在写入/移动，绝不能判完成
+        "checkingUP",
+        "checkingDL",
+        "checkingResumeData",
+        "moving",
+        # piece 已下完但仍处于下载态的尾段，同样不算完成
+        "downloading",
+        "forcedDL",
+    ],
+)
+def test_map_download_state_does_not_complete_during_checking_or_moving(raw_state):
+    # 回归：旧逻辑用 progress>=1 会把这些过渡态误判为 completed，触发对未写完文件的导入，
+    # 导致内容指纹不稳定、去重失效而重复导入。
+    assert DownloadSyncService._map_download_state(raw_state) != "completed"
 
 
 @pytest.fixture()
