@@ -1,3 +1,4 @@
+from .activity_cleanup_service import ActivityCleanupService
 from .activity_service import ActivityService, SystemEventService, TaskRunConflictError, TaskRunReporter
 from .account_service import AccountService
 from .auth_service import AuthService
@@ -8,6 +9,7 @@ from .resource_task_state_service import ResourceTaskStateService
 
 __all__ = [
     "AccountService",
+    "ActivityCleanupService",
     "ActivityService",
     "AuthService",
     "CollectionNumberFeaturesService",

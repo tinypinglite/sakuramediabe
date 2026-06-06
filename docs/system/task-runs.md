@@ -179,6 +179,16 @@
 - 定时触发时，如果同任务已经在运行，本次调度会直接跳过并写日志，不会新增伪任务记录
 - `startup` 与 `internal` 任务不参与这条互斥规则，保持各自现有行为
 
+## 记录保留与清理
+
+这三张表只写不删、会随每次任务运行无界增长，由 `activity_record_cleanup` 任务（CLI `aps cleanup-activity-records`，默认 `30 5 * * *`）按保留期回收，清理逻辑见 `ActivityCleanupService`：
+
+- `system_event`：仅服务于在线 SSE 增量推送，历史事件无回放路径，只保留最近 `activity_event_retention_days`（默认 1）天，更旧的删除。
+- `background_task_run`：每个 `task_key` 只保留最近 `activity_task_run_retention_per_key`（默认 200）条运行记录供翻页，更旧的删除；删除前会把指向它的通知外键 `related_task_run` 显式置空，避免悬挂引用。
+- `system_notification`：已读且 `read_at` 超过 `activity_notification_read_retention_days`（默认 3）天的删除，未读一律保留。
+
+> 注意：清理任务只控制后续增长，不会自动回收 PostgreSQL 已占用的磁盘；存量积压清掉后如需释放空间需另行 `VACUUM`。
+
 ## 中断恢复规则
 
 - `trigger_type = scheduled` 的任务会在 `aps` 进程启动时扫描旧的 `pending` / `running` 记录，并统一回收为 `failed`

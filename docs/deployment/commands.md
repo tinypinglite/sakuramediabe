@@ -95,6 +95,7 @@ poetry run python -m src.start.commands aps index-image-search-thumbnails
 poetry run python -m src.start.commands aps optimize-image-search-index
 poetry run python -m src.start.commands aps generate-daily-recommendations
 poetry run python -m src.start.commands aps generate-moment-recommendations
+poetry run python -m src.start.commands aps cleanup-activity-records
 ```
 
 - 清理已废弃的影片字幕抓取历史任务记录：

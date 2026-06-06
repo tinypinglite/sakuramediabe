@@ -175,6 +175,12 @@ class Scheduler(BaseModel):
     movie_similarity_recompute_cron: str = "30 3 * * *"
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
+    activity_cleanup_cron: str = "30 5 * * *"
+    # 活动中心三张表的保留期：事件流只保留最近 N 天，每个 task_key 只保留最近 N 条运行记录，
+    # 已读通知保留最近 N 天。具体语义见 ActivityCleanupService。
+    activity_event_retention_days: int = 1
+    activity_task_run_retention_per_key: int = 200
+    activity_notification_read_retention_days: int = 3
 
 
 

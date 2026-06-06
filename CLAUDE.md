@@ -49,6 +49,7 @@
   - `uv run python -m src.start.commands aps index-image-search-thumbnails`
   - `uv run python -m src.start.commands aps recompute-movie-similarities`
   - `uv run python -m src.start.commands aps optimize-image-search-index`
+  - `uv run python -m src.start.commands aps cleanup-activity-records`
 - 独立 CLI：
   - `uv run python -m src.start.commands add-media-library --name <name> --root-path <abs_path>`
   - `uv run python -m src.start.commands import-media --source-path <dir> --library-id <id>`

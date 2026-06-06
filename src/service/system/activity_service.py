@@ -590,10 +590,12 @@ class ActivityService:
             )
             return
 
-        # 成功但带 failed/skipped 统计时升级为 warning，方便前端按分类高亮。
-        category = "warning" if _detect_warning_summary(task_run.result_summary or {}) else "info"
+        # 常态成功（无 failed/skipped 统计）不再写通知：这类 info 对高频任务毫无信息量，
+        # 只会刷屏淹没真正需要关注的消息。仅当成功但带 failed/skipped 统计时，才发 warning 通知。
+        if not _detect_warning_summary(task_run.result_summary or {}):
+            return
         cls._create_notification(
-            category=category,
+            category="warning",
             title=f"{task_run.task_name}已完成",
             content=task_run.result_text or "后台任务已完成",
             related_task_run_id=task_run.id,

@@ -146,6 +146,14 @@ daily_recommendation_generate_cron = "0 5 * * *"
 media_thumbnail_cron = "*/10 * * * *"
 # 生成以图搜图缩略图向量
 image_search_index_cron = "*/10 * * * *"
+# 活动中心记录清理 cron 表达式（事件流 / 任务运行 / 已读通知）。
+activity_cleanup_cron = "30 5 * * *"
+# system_event 事件流只保留最近这些天，超期旧事件删除。
+activity_event_retention_days = 1
+# background_task_run 每个 task_key 只保留最近这些条运行记录，更旧的删除。
+activity_task_run_retention_per_key = 200
+# system_notification 已读且超过这些天的删除，未读一律保留。
+activity_notification_read_retention_days = 3
 
 [downloads]
 # 下载中种子内小于该大小（MB）的文件视为可清理小文件，会被设为不下载并物理删除。

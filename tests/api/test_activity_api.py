@@ -43,7 +43,8 @@ def test_activity_api_lists_notifications_and_task_runs(client, account_user):
     )
 
     assert notifications_response.status_code == 200
-    assert notifications_response.json()["total"] == 2
+    # 干净成功的任务不再写通知，列表里只剩下 reminder 一条。
+    assert notifications_response.json()["total"] == 1
     assert "Z" not in notifications_response.json()["items"][0]["created_at"]
     assert task_runs_response.status_code == 200
     assert task_runs_response.json()["items"][0]["task_key"] == "ranking_sync"

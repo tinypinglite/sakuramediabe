@@ -22,6 +22,7 @@ from src.service.discovery import (
     RankingSyncService,
 )
 from src.service.playback import MediaFileScanService, MediaThumbnailService
+from src.service.system import ActivityCleanupService
 
 from src.service.transfers import (
     DownloadSmallFileCleanupService,
@@ -425,6 +426,20 @@ JOB_REGISTRY: list[JobDefinition] = [
         format_stats=_build_stats_formatter(
             "image search optimize finished:",
             ("optimized", "optimized", False),
+        ),
+    ),
+    JobDefinition(
+        task_key="activity_record_cleanup",
+        log_name="activity-record-cleanup",
+        cli_name="cleanup-activity-records",
+        cli_help="执行一次活动中心记录清理（事件流 / 任务运行 / 已读通知）",
+        cron_setting="activity_cleanup_cron",
+        service_factory=lambda _reporter: ActivityCleanupService().cleanup(),
+        format_stats=_build_stats_formatter(
+            "activity record cleanup finished:",
+            ("deleted_events", "deleted_events", 0),
+            ("deleted_task_runs", "deleted_task_runs", 0),
+            ("deleted_notifications", "deleted_notifications", 0),
         ),
     ),
 ]
