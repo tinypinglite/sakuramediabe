@@ -13,11 +13,21 @@ from src.service.transfers.common import (
     require_task,
 )
 from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
-from src.service.transfers.media_import_service import MediaImportService, make_failure_item
+from src.common.media_import_status import (
+    FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED,
+    IMPORT_JOB_STATE_FAILED,
+    IMPORT_JOB_STATE_PENDING,
+    IMPORT_STATUS_FAILED,
+    IMPORT_STATUS_PENDING,
+    IMPORT_STATUS_RUNNING,
+    IMPORT_STATUS_SKIPPED,
+    make_failure_item,
+)
+from src.service.transfers.media_import_service import MediaImportService
 
 
 class DownloadTaskService:
-    DEFAULT_IMPORTABLE_STATUSES = {"pending", "failed", "skipped"}
+    DEFAULT_IMPORTABLE_STATUSES = {IMPORT_STATUS_PENDING, IMPORT_STATUS_FAILED, IMPORT_STATUS_SKIPPED}
 
     @classmethod
     def trigger_import(
@@ -50,7 +60,7 @@ class DownloadTaskService:
             source_path=str(source_path),
             library=task.client.media_library,
             download_task=task,
-            state="pending",
+            state=IMPORT_JOB_STATE_PENDING,
         )
         task_run = ActivityService.create_task_run(
             task_key="download_task_import",
@@ -60,16 +70,16 @@ class DownloadTaskService:
         # 导入作业必须持久关联 activity 任务，后续孤儿恢复才能精确回收状态。
         import_job.task_run = task_run
         import_job.save()
-        task.import_status = "running"
+        task.import_status = IMPORT_STATUS_RUNNING
         task.save()
 
         try:
             DownloadImportRunner.submit(import_job.id, cls._run_import_job, task.id, import_job.id, task_run.id)
         except Exception as exc:
-            import_job.state = "failed"
+            import_job.state = IMPORT_JOB_STATE_FAILED
             import_job.finished_at = utc_now_for_db()
             import_job.save()
-            task.import_status = "failed"
+            task.import_status = IMPORT_STATUS_FAILED
             task.save()
             ActivityService.fail_task_run(
                 task_run.id,
@@ -178,7 +188,7 @@ class DownloadTaskService:
     def _mark_import_failed(task_id: int, import_job_id: int, detail: str) -> None:
         task = DownloadTask.get_or_none(DownloadTask.id == task_id)
         if task is not None:
-            task.import_status = "failed"
+            task.import_status = IMPORT_STATUS_FAILED
             task.save()
 
         import_job = ImportJob.get_or_none(ImportJob.id == import_job_id)
@@ -193,10 +203,10 @@ class DownloadTaskService:
             failure_items = []
 
         failure_items.append(
-            make_failure_item(import_job.source_path, "import_job_bootstrap_failed", detail)
+            make_failure_item(import_job.source_path, FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED, detail)
         )
         import_job.failed_count = max(import_job.failed_count, 1)
         import_job.failed_files = json.dumps(failure_items, ensure_ascii=False)
-        import_job.state = "failed"
+        import_job.state = IMPORT_JOB_STATE_FAILED
         import_job.finished_at = utc_now_for_db()
         import_job.save()

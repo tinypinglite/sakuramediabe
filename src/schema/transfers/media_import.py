@@ -6,7 +6,15 @@
 from datetime import datetime
 from typing import List, Literal, Optional
 
+from pydantic import computed_field
+
 from src.schema.common.base import SchemaModel
+# media_import_status 是零依赖的取值/中文说明集中模块，这里仅用于把原始状态码转换成展示文案。
+from src.common.media_import_status import (
+    describe_failed_file_kind,
+    describe_failure_reason,
+    describe_import_job_state,
+)
 
 
 class FilesystemEntryResource(SchemaModel):
@@ -29,6 +37,18 @@ class FailedFileResource(SchemaModel):
     detail: str = ""
     # 条目分类：file=可重导/删除/重命名的单文件失败；skipped=主动跳过；warning=导入后告警；job=任务级失败（path 为目录）。
     kind: str = "file"
+
+    @computed_field
+    @property
+    def reason_label(self) -> str:
+        # 失败原因的中文说明，便于前端直接展示与排障。
+        return describe_failure_reason(self.reason)
+
+    @computed_field
+    @property
+    def kind_label(self) -> str:
+        # 条目分类的中文说明。
+        return describe_failed_file_kind(self.kind)
 
 
 class ImportJobCreateRequest(SchemaModel):
@@ -72,6 +92,12 @@ class ImportJobListItemResource(SchemaModel):
     finished_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+
+    @computed_field
+    @property
+    def state_label(self) -> str:
+        # 导入作业状态的中文说明。
+        return describe_import_job_state(self.state)
 
     @classmethod
     def from_model(cls, job) -> "ImportJobListItemResource":

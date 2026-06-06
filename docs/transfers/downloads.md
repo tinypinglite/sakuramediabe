@@ -88,7 +88,8 @@
 
 其中：
 
-- 添加种子时，后端应将 `client_save_path` 作为 qBittorrent 的目标保存路径传入
+- 添加种子时，后端会在 `client_save_path` 下按番号拼出独立子目录（如 `/downloads/a/ABC-001`）作为 qBittorrent 的目标保存路径，使每个种子单独落盘，避免内容平铺到下载根目录后自动导入误扫整根
+- 番号会做文件名净化（非法字符替换为下划线），杜绝路径穿越
 - `client_save_path` 必须是 qBittorrent 进程实际可访问的路径
 - `local_root_path` 仅用于后端同步任务和后续导入，不会传给 qBittorrent
 
@@ -436,7 +437,7 @@
 - 若请求体包含 `client_id`，优先使用显式指定的目标 `DownloadClient`
 - 若未传 `client_id`，根据 `candidate.indexer_name` 查找数据库中的 `Indexer`，并使用其绑定的 `DownloadClient`
 - 按候选资源优先使用 `magnet_url`，否则使用 `torrent_url`
-- 添加种子时，应显式将 `DownloadClient.client_save_path` 传给 qBittorrent 作为保存路径
+- 添加种子时，在 `DownloadClient.client_save_path` 下按番号拼出独立子目录传给 qBittorrent 作为保存路径（如 `/downloads/a/ABC-001`），避免内容平铺到下载根目录
 - 提交成功后，立即按 `(client_id, info_hash)` 幂等写入或更新本地 `DownloadTask`
 - qBittorrent 中的任务应统一打上系统标签，便于后续同步
 - 若远端已存在相同任务，可返回现有本地任务而不是报错

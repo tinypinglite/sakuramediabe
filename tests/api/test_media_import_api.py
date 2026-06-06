@@ -217,6 +217,10 @@ def test_list_and_get_import_job(client, account_user, tmp_path):
     detail = detail_response.json()
     assert detail["failed_files"][0]["reason"] == "metadata_fetch_failed"
     assert detail["failed_files"][0]["detail"] == "boom"
+    # 集中模块注入的中文标签需随接口一起返回，供前端直接展示。
+    assert detail["state_label"] == "已失败：存在单文件失败或作业级异常"
+    assert detail["failed_files"][0]["reason_label"] == "元数据抓取失败：从站点获取影片信息失败"
+    assert detail["failed_files"][0]["kind_label"] == "单文件失败：可重导/删除/重命名"
 
 
 def test_retry_import_job_failed_files(client, account_user, tmp_path, stub_runner_submit):

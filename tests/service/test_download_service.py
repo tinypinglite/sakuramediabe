@@ -33,7 +33,7 @@ from src.service.transfers.subscribed_movie_auto_download_service import (
 )
 from src.service.transfers.download_sync_service import DownloadSyncService
 from src.service.transfers.download_task_service import DownloadTaskService
-from src.service.transfers.common import map_remote_path
+from src.service.transfers.common import build_movie_save_path, map_remote_path
 from src.service.transfers.jackett_client import JackettClient
 from src.service.transfers.qbittorrent_client import (
     QBittorrentClient,
@@ -100,6 +100,29 @@ def test_map_download_state_does_not_complete_during_checking_or_moving(raw_stat
     # 回归：旧逻辑用 progress>=1 会把这些过渡态误判为 completed，触发对未写完文件的导入，
     # 导致内容指纹不稳定、去重失效而重复导入。
     assert DownloadSyncService._map_download_state(raw_state) != "completed"
+
+
+@pytest.mark.parametrize(
+    "client_save_path,movie_number,expected",
+    [
+        ("/downloads/a", "ABC-001", "/downloads/a/ABC-001"),
+        # client_save_path 带尾斜杠时不应产生双斜杠。
+        ("/downloads/a/", "ABC-001", "/downloads/a/ABC-001"),
+        # FC2 等带多段连字符的番号原样保留。
+        ("/downloads/a", "FC2-PPV-123456", "/downloads/a/FC2-PPV-123456"),
+        # 非法字符（含路径穿越）被替换成下划线，杜绝跳出下载目录。
+        ("/downloads/a", "../ABC/001", "/downloads/a/ABC_001"),
+        ("/downloads/a", "ABC:001*?", "/downloads/a/ABC_001"),
+    ],
+)
+def test_build_movie_save_path_builds_safe_subdir(client_save_path, movie_number, expected):
+    assert build_movie_save_path(client_save_path, movie_number) == expected
+
+
+def test_build_movie_save_path_rejects_number_without_valid_chars():
+    with pytest.raises(ApiError) as exc:
+        build_movie_save_path("/downloads/a", "../")
+    assert exc.value.code == "invalid_download_request_movie_number"
 
 
 @pytest.fixture()
@@ -607,7 +630,7 @@ def test_download_search_service_rejects_invalid_indexer_kind(download_tables):
     assert exc_info.value.code == "invalid_download_candidate_indexer_kind"
 
 
-def test_download_request_service_adds_task_and_passes_client_save_path(download_tables):
+def test_download_request_service_adds_task_and_passes_movie_subdir(download_tables):
     library = _create_library()
     client = _create_client(library)
     called = {}
@@ -650,7 +673,8 @@ def test_download_request_service_adds_task_and_passes_client_save_path(download
     )
 
     stored = DownloadTask.get()
-    assert called["save_path"] == "/downloads/a"
+    # 提交时按番号指定独立子目录，落盘路径不再是下载根目录。
+    assert called["save_path"] == "/downloads/a/ABC-001"
     assert called["client_id"] == client.id
     assert result.created is True
     assert stored.save_path == "/mnt/downloads/a/ABC-001"

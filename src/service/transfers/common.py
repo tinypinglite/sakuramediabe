@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from typing import Optional, Sequence, Set
 from urllib.parse import urlparse
@@ -7,6 +8,8 @@ from peewee import fn
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import require_record, resolve_sort, validate_page as _validate_page
 from src.model import DownloadClient, DownloadTask, Indexer, MediaLibrary
+# 导入状态取值统一收口到 media_import_status 模块；此处再导出，兼容历史引用路径。
+from src.common.media_import_status import ALLOWED_IMPORT_STATUSES
 
 ALLOWED_DOWNLOAD_STATES = {
     "downloading",
@@ -16,13 +19,6 @@ ALLOWED_DOWNLOAD_STATES = {
     "stalled",
     "checking",
     "queued",
-}
-ALLOWED_IMPORT_STATUSES = {
-    "pending",
-    "running",
-    "completed",
-    "failed",
-    "skipped",
 }
 TASK_SORT_FIELDS = {
     "created_at:desc": (DownloadTask.created_at.desc(), DownloadTask.id.desc()),
@@ -210,6 +206,24 @@ def validate_task_ids(task_ids: Optional[str]) -> list[int]:
 
 def build_task_movie_filter(movie_number: str):
     return fn.UPPER(fn.TRIM(DownloadTask.movie)) == movie_number.strip().upper()
+
+
+# 番号子目录只保留字母数字与连字符、下划线、点，其余字符统一替换成下划线，杜绝路径穿越与非法目录名。
+_UNSAFE_SUBDIR_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def build_movie_save_path(client_save_path: str, movie_number: str) -> str:
+    """按番号生成 qB 端的种子保存子目录，使每个种子独立落盘，避免内容平铺到下载根目录。"""
+    # 先净化番号：替换非法字符，再去掉首尾的点/下划线/连字符，防止形成隐藏目录或空段。
+    safe_number = _UNSAFE_SUBDIR_CHARS.sub("_", movie_number.strip()).strip("._-")
+    if not safe_number:
+        raise ApiError(
+            422,
+            "invalid_download_request_movie_number",
+            "movie_number 无法生成有效的保存目录",
+            {"movie_number": movie_number},
+        )
+    return f"{client_save_path.rstrip('/')}/{safe_number}"
 
 
 def map_remote_path(client: DownloadClient, remote_path: str) -> str:

@@ -1,7 +1,11 @@
 from datetime import datetime
 from typing import List, Optional
 
+from pydantic import computed_field
+
 from src.schema.common.base import SchemaModel
+# 把下载任务的 import_status 原始码转换成中文展示文案，取值集中在 media_import_status 模块。
+from src.common.media_import_status import describe_import_status
 
 
 class DownloadClientResource(SchemaModel):
@@ -108,6 +112,12 @@ class DownloadTaskResource(SchemaModel):
     import_status: str
     created_at: datetime
     updated_at: datetime
+
+    @computed_field
+    @property
+    def import_status_label(self) -> str:
+        # 下载任务导入阶段状态的中文说明。
+        return describe_import_status(self.import_status)
 
     @classmethod
     def from_model(cls, task) -> "DownloadTaskResource":
