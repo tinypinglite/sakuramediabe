@@ -53,8 +53,8 @@ download_small_file_cleanup_cron = "*/5 * * * *"
 small_file_cleanup_threshold_mb = 256
 
 [media_import]
-# 可视化导入浏览后端文件系统时禁止进入的敏感目录黑名单（含其子树）。
-browse_blacklist = ["/etc", "/proc", "/sys", "/boot", "/dev", "/run", "/var/run", "/root"]
+# 可视化导入只允许浏览/导入这些白名单根目录（含其子树），其余路径一律返回 403。
+browse_roots = ["/mnt"]
 
 [movie_info_translation]
 # 是否启用影片信息翻译任务（简介翻译、标题翻译共用）。

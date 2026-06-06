@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from src.config.config import settings
 from src.model import ImportJob, MediaLibrary
 from src.service.transfers.import_runner import DownloadImportRunner
 
@@ -12,6 +13,12 @@ def _login(client, username="account", password="password123"):
         json={"username": username, "password": password},
     )
     return response.json()["access_token"]
+
+
+@pytest.fixture(autouse=True)
+def allow_tmp_browse_roots(monkeypatch, tmp_path):
+    # 测试目录不在默认 /mnt 白名单内，放开为当前用例的 tmp_path。
+    monkeypatch.setattr(settings.media_import, "browse_roots", [str(tmp_path)])
 
 
 @pytest.fixture()
@@ -65,9 +72,10 @@ def test_browse_filesystem_returns_dirs_and_videos(client, account_user, tmp_pat
     assert "note.txt" not in names
 
 
-def test_browse_filesystem_rejects_blacklisted_path(client, account_user):
+def test_browse_filesystem_rejects_path_outside_allowed_roots(client, account_user):
     token = _login(client, username=account_user.username)
 
+    # /etc 不在白名单根（tmp_path）内，应被拒绝。
     response = client.get(
         "/filesystem/entries",
         params={"path": "/etc"},
@@ -76,6 +84,77 @@ def test_browse_filesystem_rejects_blacklisted_path(client, account_user):
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "path_forbidden"
+
+
+def test_browse_filesystem_defaults_to_single_root(client, account_user, tmp_path):
+    token = _login(client, username=account_user.username)
+    (tmp_path / "movies").mkdir()
+
+    # 不传 path 时单根白名单直接列出该根内容。
+    response = client.get(
+        "/filesystem/entries",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["path"] == str(tmp_path)
+    assert {entry["name"] for entry in body["entries"]} == {"movies"}
+
+
+def test_browse_filesystem_multi_root_returns_overview(client, account_user, tmp_path, monkeypatch):
+    token = _login(client, username=account_user.username)
+    root_a = tmp_path / "root-a"
+    root_b = tmp_path / "root-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    monkeypatch.setattr(settings.media_import, "browse_roots", [str(root_a), str(root_b)])
+
+    # 多根白名单且不传 path 时返回各根概览（path 为空，parent 为 None）。
+    response = client.get("/filesystem/entries", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["path"] == ""
+    assert body["parent"] is None
+    assert {entry["name"] for entry in body["entries"]} == {"root-a", "root-b"}
+
+
+def test_browse_filesystem_parent_is_none_at_root(client, account_user, tmp_path):
+    token = _login(client, username=account_user.username)
+    (tmp_path / "sub").mkdir()
+
+    # 浏览白名单根本身时，父目录越界，parent 应为 None，不暴露根的上级。
+    response = client.get(
+        "/filesystem/entries",
+        params={"path": str(tmp_path)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["parent"] is None
+
+
+def test_browse_filesystem_skips_symlink_pointing_outside_roots(client, account_user, tmp_path):
+    token = _login(client, username=account_user.username)
+    browse_root = tmp_path / "incoming"
+    browse_root.mkdir()
+    outside = tmp_path.parent / "outside-target"
+    outside.mkdir(exist_ok=True)
+    (browse_root / "link").symlink_to(outside, target_is_directory=True)
+    (browse_root / "ABP-1.mp4").write_bytes(b"video")
+
+    response = client.get(
+        "/filesystem/entries",
+        params={"path": str(browse_root)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    names = {entry["name"] for entry in response.json()["entries"]}
+    # 指向白名单外的符号链接不出现在列表中。
+    assert "link" not in names
+    assert "ABP-1.mp4" in names
 
 
 def test_create_import_job_accepts_and_creates_records(client, account_user, tmp_path, stub_runner_submit):

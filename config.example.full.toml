@@ -152,9 +152,9 @@ image_search_index_cron = "*/10 * * * *"
 small_file_cleanup_threshold_mb = 256
 
 [media_import]
-# 可视化导入浏览后端文件系统时禁止进入的敏感目录黑名单。
-# 命中列表中任一目录本身或其子树时返回 403，避免前端目录浏览触达系统敏感路径。
-browse_blacklist = ["/etc", "/proc", "/sys", "/boot", "/dev", "/run", "/var/run", "/root"]
+# 可视化导入只允许浏览/导入这些白名单根目录（含其自身或子树）。
+# 仅这些根目录及其子树可被前端浏览与导入，其余路径一律返回 403，避免触达系统敏感路径。
+browse_roots = ["/mnt"]
 
 [movie_info_translation]
 # 是否启用影片信息翻译任务（简介翻译、标题翻译共用）。

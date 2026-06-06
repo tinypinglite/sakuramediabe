@@ -12,7 +12,7 @@ from src.service.catalog import (
 )
 from src.service.playback import MediaThumbnailService
 from src.service.system import ActivityService
-from src.service.transfers import DownloadSyncService
+from src.service.transfers import DownloadSyncService, MediaImportJobService
 
 # 注册表: task_key -> 业务层回收 callable。
 # 启动恢复在任务层 (BackgroundTaskRun) 回收之后，按 task_key 查表联动清理业务状态。
@@ -33,6 +33,7 @@ BUSINESS_RECOVERY_HANDLERS: dict[str, Callable[[], object]] = {
         error_message=MediaThumbnailService.INTERRUPTED_GENERATION_ERROR_MESSAGE,
     ),
     "download_task_import": lambda: DownloadSyncService().recover_orphaned_imports_only(),
+    "media_directory_import": lambda: MediaImportJobService.recover_orphaned_jobs(),
 }
 
 

@@ -1,11 +1,13 @@
 """文件系统浏览与路径安全工具。
 
-供可视化媒体导入复用：归一化绝对路径、敏感目录黑名单校验、视频文件判定。
+供可视化媒体导入复用：归一化绝对路径、白名单根目录校验、视频文件判定。
+浏览/导入/删除/重命名等一切接受用户路径的入口，都必须先 ``normalize_abs_path``
+再 ``assert_within_allowed_roots``，确保解析后的真实路径落在配置的白名单根之内。
 视频后缀集合在这里作为唯一来源，导入 service 直接复用，避免重复定义。
 """
 
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List
 
 from src.api.exception.errors import ApiError
 
@@ -35,21 +37,41 @@ def normalize_abs_path(raw: str) -> Path:
     return resolved
 
 
-def assert_not_blacklisted(path: Path, blacklist: Iterable[str]) -> None:
-    """路径命中黑名单目录本身或其子树时拒绝访问。"""
-    resolved_path = path.expanduser().resolve()
-    for raw_root in blacklist:
+def resolve_allowed_roots(roots: Iterable[str]) -> List[Path]:
+    """把配置的白名单根目录归一化为去重后的绝对路径列表。"""
+    resolved_roots: List[Path] = []
+    seen: set[str] = set()
+    for raw_root in roots:
         normalized_root = (raw_root or "").strip()
         if not normalized_root:
             continue
-        blacklist_root = Path(normalized_root).expanduser().resolve()
-        if resolved_path == blacklist_root or resolved_path.is_relative_to(blacklist_root):
-            raise ApiError(
-                403,
-                "path_forbidden",
-                "该目录禁止访问",
-                {"path": str(resolved_path)},
-            )
+        root_path = Path(normalized_root).expanduser().resolve()
+        key = str(root_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        resolved_roots.append(root_path)
+    return resolved_roots
+
+
+def is_within_allowed_roots(path: Path, roots: Iterable[str]) -> bool:
+    """判断解析后的真实路径是否落在任一白名单根目录（含其自身或子树）内。"""
+    resolved_path = path.expanduser().resolve()
+    for root_path in resolve_allowed_roots(roots):
+        if resolved_path == root_path or resolved_path.is_relative_to(root_path):
+            return True
+    return False
+
+
+def assert_within_allowed_roots(path: Path, roots: Iterable[str]) -> None:
+    """路径解析后不在白名单根目录范围内时拒绝访问。"""
+    if not is_within_allowed_roots(path, roots):
+        raise ApiError(
+            403,
+            "path_forbidden",
+            "该目录不在允许的浏览范围内",
+            {"path": str(path.expanduser().resolve())},
+        )
 
 
 def is_video_file(path: Path) -> bool:

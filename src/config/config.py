@@ -184,19 +184,9 @@ class Downloads(BaseModel):
 
 
 class MediaImport(BaseModel):
-    # 可视化导入浏览后端文件系统时禁止进入的敏感目录黑名单（含其子树）。
-    browse_blacklist: list[str] = Field(
-        default_factory=lambda: [
-            "/etc",
-            "/proc",
-            "/sys",
-            "/boot",
-            "/dev",
-            "/run",
-            "/var/run",
-            "/root",
-        ]
-    )
+    # 可视化导入只允许浏览/导入这些白名单根目录（含其子树），其余路径一律 403。
+    # 采用白名单而非黑名单，避免暴露应用配置、数据库、家目录等敏感路径。
+    browse_roots: list[str] = Field(default_factory=lambda: ["/mnt"])
 
 
 class Logging(BaseModel):

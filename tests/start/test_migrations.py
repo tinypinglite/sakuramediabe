@@ -65,6 +65,39 @@ def _insert_legacy_movie(test_db, movie_number: str, javdb_id: str, series_name:
     )
 
 
+def _create_import_job_table_missing_transfer_mode(test_db):
+    test_db.execute_sql(
+        """
+        CREATE TABLE import_job (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            source_path VARCHAR(1024) NOT NULL,
+            library_id INTEGER NOT NULL,
+            download_task_id INTEGER NULL,
+            task_run_id INTEGER NULL,
+            state VARCHAR(32) NOT NULL DEFAULT 'pending',
+            imported_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            failed_files TEXT NOT NULL DEFAULT '[]',
+            started_at DATETIME NULL,
+            finished_at DATETIME NULL
+        )
+        """
+    )
+
+
+def _insert_legacy_import_job(test_db, source_path: str, state: str = "failed"):
+    test_db.execute_sql(
+        """
+        INSERT INTO import_job (created_at, updated_at, source_path, library_id, state)
+        VALUES ('2026-05-01 00:00:00', '2026-05-01 00:00:00', ?, 1, ?)
+        """,
+        (source_path, state),
+    )
+
+
 def _create_actor_table_missing_subscribed_at(test_db):
     test_db.execute_sql(
         """
@@ -360,6 +393,22 @@ def test_run_pending_migrations_adds_actor_subscribed_at_and_backfills_created_a
     assert "subscribed_at" in columns
     assert "subscribed_at" in indexed_columns
     assert rows == [("ActorA1", "2026-03-08 09:00:00"), ("ActorA2", None)]
+
+
+def test_run_pending_migrations_adds_import_job_transfer_mode_with_default(test_db):
+    _create_import_job_table_missing_transfer_mode(test_db)
+    _insert_legacy_import_job(test_db, source_path="/mnt/incoming", state="failed")
+
+    run_pending_migrations(test_db)
+
+    columns = {column.name for column in test_db.get_columns("import_job")}
+    rows = test_db.execute_sql(
+        "SELECT source_path, transfer_mode FROM import_job ORDER BY id"
+    ).fetchall()
+
+    assert "transfer_mode" in columns
+    # 历史行回填为默认值 auto，默认值由 Peewee 字段渲染而非手写字面量。
+    assert rows == [("/mnt/incoming", "auto")]
 
 
 def test_run_pending_migrations_supports_empty_database_after_create_tables(test_db):
