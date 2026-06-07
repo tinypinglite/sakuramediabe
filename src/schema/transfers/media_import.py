@@ -27,6 +27,8 @@ class FailedFileResource(SchemaModel):
     path: str
     reason: str
     detail: str = ""
+    # 条目分类：file=可重导/删除/重命名的单文件失败；skipped=主动跳过；warning=导入后告警；job=任务级失败（path 为目录）。
+    kind: str = "file"
 
 
 class ImportJobCreateRequest(SchemaModel):
@@ -62,6 +64,7 @@ class ImportJobListItemResource(SchemaModel):
     download_task_id: Optional[int] = None
     task_run_id: Optional[int] = None
     state: str
+    transfer_mode: str = "auto"
     imported_count: int
     skipped_count: int
     failed_count: int
@@ -72,23 +75,8 @@ class ImportJobListItemResource(SchemaModel):
 
     @classmethod
     def from_model(cls, job) -> "ImportJobListItemResource":
-        return cls.model_validate(
-            {
-                "id": job.id,
-                "source_path": job.source_path,
-                "library_id": job.library_id,
-                "download_task_id": job.download_task_id,
-                "task_run_id": job.task_run_id,
-                "state": job.state,
-                "imported_count": job.imported_count,
-                "skipped_count": job.skipped_count,
-                "failed_count": job.failed_count,
-                "started_at": job.started_at,
-                "finished_at": job.finished_at,
-                "created_at": job.created_at,
-                "updated_at": job.updated_at,
-            }
-        )
+        # Peewee FK 的 *_id 属性可直接按字段名读取，复用 SchemaModel 的属性转换。
+        return cls.from_attributes_model(job)
 
 
 class ImportJobResource(ImportJobListItemResource):
@@ -96,5 +84,6 @@ class ImportJobResource(ImportJobListItemResource):
 
     @classmethod
     def from_model(cls, job, *, failed_files: List[FailedFileResource]) -> "ImportJobResource":
-        base = ImportJobListItemResource.from_model(job)
-        return cls.model_validate({**base.model_dump(), "failed_files": failed_files})
+        payload = ImportJobListItemResource.from_attributes_model(job).model_dump()
+        payload["failed_files"] = [item.model_dump() for item in failed_files]
+        return cls.model_validate(payload)

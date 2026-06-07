@@ -13,7 +13,7 @@ from src.service.transfers.common import (
     require_task,
 )
 from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
-from src.service.transfers.media_import_service import MediaImportService
+from src.service.transfers.media_import_service import MediaImportService, make_failure_item
 
 
 class DownloadTaskService:
@@ -193,11 +193,7 @@ class DownloadTaskService:
             failure_items = []
 
         failure_items.append(
-            {
-                "path": import_job.source_path,
-                "reason": "import_job_bootstrap_failed",
-                "detail": detail,
-            }
+            make_failure_item(import_job.source_path, "import_job_bootstrap_failed", detail)
         )
         import_job.failed_count = max(import_job.failed_count, 1)
         import_job.failed_files = json.dumps(failure_items, ensure_ascii=False)

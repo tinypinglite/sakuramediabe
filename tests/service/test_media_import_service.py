@@ -1746,3 +1746,32 @@ def test_import_media_only_files_imports_subset_and_ignores_others(
     assert len(media_items) == 1
     assert Movie.get(Movie.movie_number == "ABP-123") is not None
     assert Movie.get_or_none(Movie.movie_number == "ABP-456") is None
+
+
+def test_import_media_only_files_all_missing_marks_failed(
+    import_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    # 子集重导时若选中文件都已不在源目录，应判 failed 并记 retry_sources_missing，而非静默 completed。
+    source_dir = tmp_path / "source"
+    source_dir.mkdir(parents=True)
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
+
+    service = MediaImportService(
+        provider=FakeJavdbProvider({}),
+        image_downloader=_fake_downloader,
+        now_ms=lambda: 1730000000000,
+    )
+
+    job = service.import_from_source(
+        str(source_dir),
+        library.id,
+        only_files=[str(source_dir / "GONE.mp4")],
+    )
+
+    assert job.state == "failed"
+    assert job.imported_count == 0
+    assert job.failed_count == 1
+    assert any(item["reason"] == "retry_sources_missing" for item in _read_failed_files(job))
