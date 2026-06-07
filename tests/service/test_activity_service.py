@@ -213,6 +213,10 @@ def test_activity_service_creates_deduplicated_media_reminder(test_db):
     assert notification is not None
     assert notification.category == "reminder"
     assert "新增可播放影片 2 部" in notification.content
+    # 样例只展示番号，不再使用标题。
+    assert "ABC-001" in notification.content
+    assert "ABC-002" in notification.content
+    assert "A片" not in notification.content
 
 
 def test_activity_service_bootstrap_aggregates_notifications_tasks_and_cursor(test_db):
