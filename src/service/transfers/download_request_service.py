@@ -8,6 +8,7 @@ from src.schema.transfers.downloads import (
     DownloadTaskResource,
 )
 from src.service.transfers.common import (
+    build_movie_save_path,
     map_remote_path,
     require_client,
     require_indexer,
@@ -35,11 +36,13 @@ class DownloadRequestService:
             )
 
         qb_client = self.qbittorrent_client_cls.from_download_client(client)
+        # 按番号给每个种子指定独立子目录落盘，避免内容平铺到下载根目录、导致自动导入误扫整根。
+        movie_save_path = build_movie_save_path(client.client_save_path, movie_number)
         try:
             remote_task = qb_client.add_candidate(
                 magnet_url=(payload.candidate.magnet_url or "").strip(),
                 torrent_url=(payload.candidate.torrent_url or "").strip(),
-                save_path=client.client_save_path,
+                save_path=movie_save_path,
                 rename=movie_number,
                 client_id=client.id,
             )
@@ -66,7 +69,7 @@ class DownloadRequestService:
             defaults={
                 "movie": movie_number,
                 "name": remote_task.get("name") or payload.candidate.title,
-                "save_path": map_remote_path(client, remote_task.get("save_path") or client.client_save_path),
+                "save_path": map_remote_path(client, remote_task.get("save_path") or movie_save_path),
                 "progress": remote_task.get("progress", 0.0),
                 "download_state": "queued",
                 "import_status": "pending",
@@ -77,7 +80,7 @@ class DownloadRequestService:
             task.name = remote_task.get("name") or payload.candidate.title
             task.save_path = map_remote_path(
                 client,
-                remote_task.get("save_path") or client.client_save_path,
+                remote_task.get("save_path") or movie_save_path,
             )
             task.progress = remote_task.get("progress", 0.0)
             task.download_state = "queued"

@@ -56,8 +56,10 @@
 
 ### 查询导入作业
 
-- `GET /import-jobs?page=&page_size=`：分页列表（按 id 倒序），含 `transfer_mode`。
-- `GET /import-jobs/{id}`：详情，额外包含解析后的 `failed_files`（`path` / `reason` / `detail` / `kind`）。
+- `GET /import-jobs?page=&page_size=`：分页列表（按 id 倒序），含 `transfer_mode`、作业状态 `state` 及其中文说明 `state_label`。
+- `GET /import-jobs/{id}`：详情，额外包含解析后的 `failed_files`（`path` / `reason` / `detail` / `kind`，并附中文说明 `reason_label` / `kind_label`）。
+
+> `state_label` / `reason_label` / `kind_label` 由后端依据[状态枚举与中文说明](#状态枚举与中文说明)集中映射注入，前端可直接展示，无需自行维护文案。
 
 `failed_files` 的 `kind` 用于区分条目性质，决定其是否可被删除/重命名/重导：
 
@@ -104,6 +106,57 @@
 - 重命名后把 `failed_files` 中该条记录的 `path` 更新为新路径，保证后续仍可对新名重导且继续满足约束。
 
 > 删除/重命名只改 `failed_files` 列表内容，不改 `imported/skipped/failed_count` 历史统计。
+
+## 状态枚举与中文说明
+
+影片导入相关的全部状态码、失败原因、条目分类，以及对应中文说明，统一收口在 `src/common/media_import_status.py`，作为“落库/序列化原始字符串”与“API 展示文案”的唯一权威来源。新增或调整取值时只改这一处，service 与 schema 两侧都引用它，避免散落的字符串字面量与文案漂移。
+
+> 该模块放在零依赖的 `src/common` 叶子层，使 service 与 schema 都能直接引用而不产生循环导入；`describe_*` 对未知取值回退原值，保证脏数据下展示层不崩。
+
+### `DownloadTask.import_status`（下载任务导入阶段状态）
+
+| 取值 | 中文说明 |
+|---|---|
+| `pending` | 待导入：下载已完成，等待自动导入触发 |
+| `running` | 导入中：导入作业正在执行 |
+| `completed` | 已导入：媒体文件全部成功入库 |
+| `failed` | 导入失败：存在未成功导入的文件 |
+| `skipped` | 已跳过：任务未触发导入 |
+
+对外经 `DownloadTaskResource.import_status_label` 暴露中文说明。
+
+### `ImportJob.state`（导入作业执行状态）
+
+| 取值 | 中文说明 |
+|---|---|
+| `pending` | 待执行：作业已创建，尚未开始扫描导入 |
+| `running` | 执行中：正在扫描、抓取元数据或导入文件 |
+| `completed` | 已完成：本次导入无失败文件 |
+| `failed` | 已失败：存在单文件失败或作业级异常 |
+
+`completed` / `failed` 为终态（`TERMINAL_JOB_STATES`），仅终态作业才允许删除/重命名/重导失败文件。对外经 `state_label` 暴露中文说明。
+
+### `failed_files[].reason`（单条失败原因）
+
+| reason | kind | 中文说明 |
+|---|---|---|
+| `movie_number_not_found` | file | 未识别番号：无法从文件名/路径解析出影片番号 |
+| `metadata_fetch_failed` | file | 元数据抓取失败：从站点获取影片信息失败 |
+| `image_download_failed` | file | 图片下载失败：影片封面/海报下载失败 |
+| `metadata_upsert_failed` | file | 元数据入库失败：影片信息写入数据库失败 |
+| `media_import_failed` | file | 文件导入失败：单个媒体文件搬运/落库异常 |
+| `vr_media_merge_failed` | file | VR 合并失败：VR 影片多分段合并出错 |
+| `file_too_small` | skipped | 文件过小：低于最小体积阈值，按样本/残片跳过 |
+| `merge_subtitle_skipped_multiple_sidecars` | warning | 字幕未合并：VR 合并时发现多个外挂字幕，未自动合并 |
+| `source_delete_failed` | warning | 源文件删除失败：媒体已入库，但清理源文件失败（仅告警） |
+| `import_job_crashed` | job | 导入流程崩溃：导入过程整体异常中断 |
+| `import_job_bootstrap_failed` | job | 作业启动失败：导入作业入队/引导阶段失败 |
+| `import_job_interrupted` | job | 导入进程中断：作业未正常结束（孤儿恢复判失败） |
+| `retry_sources_missing` | job | 源文件缺失：待重导的源文件均已不存在 |
+
+对外经 `failed_files[].reason_label` / `failed_files[].kind_label` 暴露中文说明；`kind` 的判定与可操作性见上文[失败条目分类表](#查询导入作业)。
+
+> 注意：catalog 域（`movie_service` / `actor_service`）的单片元数据抓取也用到了 `metadata_fetch_failed` 等同名 reason 字符串，但属于另一套语义，不在本模块管辖范围内。
 
 ## 安全约束小结
 

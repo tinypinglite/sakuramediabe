@@ -32,46 +32,31 @@ from src.service.playback.media_metadata_probe_service import (
 )
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 from src.service.transfers.tag_rules import build_media_special_tags
+# 导入状态/失败原因的取值统一收口到 media_import_status 模块。
+from src.common.media_import_status import (
+    FAILURE_REASON_FILE_TOO_SMALL,
+    FAILURE_REASON_IMAGE_DOWNLOAD_FAILED,
+    FAILURE_REASON_IMPORT_JOB_CRASHED,
+    FAILURE_REASON_MEDIA_IMPORT_FAILED,
+    FAILURE_REASON_MERGE_SUBTITLE_SKIPPED_MULTIPLE_SIDECARS,
+    FAILURE_REASON_METADATA_FETCH_FAILED,
+    FAILURE_REASON_METADATA_UPSERT_FAILED,
+    FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
+    FAILURE_REASON_RETRY_SOURCES_MISSING,
+    FAILURE_REASON_SOURCE_DELETE_FAILED,
+    FAILURE_REASON_VR_MEDIA_MERGE_FAILED,
+    IMPORT_JOB_STATE_COMPLETED,
+    IMPORT_JOB_STATE_FAILED,
+    IMPORT_JOB_STATE_PENDING,
+    IMPORT_JOB_STATE_RUNNING,
+    IMPORT_STATUS_COMPLETED,
+    IMPORT_STATUS_FAILED,
+    IMPORT_STATUS_RUNNING,
+    make_failure_item,
+)
 
 IMPORTED_SIDECAR_SUBTITLE_EXTENSION = ".srt"
 ImportTransferMode = Literal["auto", "cleanup-source"]
-
-# failed_files 条目分类：决定该失败项是否可被用户重导/删除/重命名。
-FAILED_FILE_KIND_FILE = "file"        # 单个媒体文件级失败，可重导/删除/重命名
-FAILED_FILE_KIND_SKIPPED = "skipped"  # 主动跳过（如小文件），仅信息展示
-FAILED_FILE_KIND_WARNING = "warning"  # 导入后告警（如删源失败/多字幕），不做文件级操作
-FAILED_FILE_KIND_JOB = "job"          # 任务级失败，path 通常为目录，不做文件级操作
-
-_FAILED_FILE_KIND_BY_REASON: Dict[str, str] = {
-    "movie_number_not_found": FAILED_FILE_KIND_FILE,
-    "metadata_fetch_failed": FAILED_FILE_KIND_FILE,
-    "image_download_failed": FAILED_FILE_KIND_FILE,
-    "metadata_upsert_failed": FAILED_FILE_KIND_FILE,
-    "media_import_failed": FAILED_FILE_KIND_FILE,
-    "vr_media_merge_failed": FAILED_FILE_KIND_FILE,
-    "file_too_small": FAILED_FILE_KIND_SKIPPED,
-    "merge_subtitle_skipped_multiple_sidecars": FAILED_FILE_KIND_WARNING,
-    "source_delete_failed": FAILED_FILE_KIND_WARNING,
-    "import_job_crashed": FAILED_FILE_KIND_JOB,
-    "import_job_bootstrap_failed": FAILED_FILE_KIND_JOB,
-    "import_job_interrupted": FAILED_FILE_KIND_JOB,
-    "retry_sources_missing": FAILED_FILE_KIND_JOB,
-}
-
-
-def classify_failed_file_kind(reason: str) -> str:
-    """按失败原因归类失败条目；未知原因按可操作的文件级失败处理。"""
-    return _FAILED_FILE_KIND_BY_REASON.get(reason or "", FAILED_FILE_KIND_FILE)
-
-
-def make_failure_item(path, reason: str, detail: str = "") -> Dict[str, str]:
-    """构造带分类的失败条目，作为写入 failed_files 的唯一来源。"""
-    return {
-        "path": str(path),
-        "reason": reason,
-        "detail": detail,
-        "kind": classify_failed_file_kind(reason),
-    }
 
 
 def parse_movie_number(file_path: str) -> str:
@@ -192,7 +177,7 @@ class MediaImportService:
             logger.warning("Import metadata fetch failed movie_number={} detail={}", movie_number, exc)
             return MetadataImportResult(
                 movie_number=movie_number,
-                failure_reason="metadata_fetch_failed",
+                failure_reason=FAILURE_REASON_METADATA_FETCH_FAILED,
                 failure_detail=str(exc),
             )
 
@@ -205,14 +190,14 @@ class MediaImportService:
             logger.warning("Import image download failed movie_number={} detail={}", movie_number, exc)
             return MetadataImportResult(
                 movie_number=movie_number,
-                failure_reason="image_download_failed",
+                failure_reason=FAILURE_REASON_IMAGE_DOWNLOAD_FAILED,
                 failure_detail=str(exc),
             )
         except Exception as exc:
             logger.exception("Import metadata upsert failed movie_number={} detail={}", movie_number, exc)
             return MetadataImportResult(
                 movie_number=movie_number,
-                failure_reason="metadata_upsert_failed",
+                failure_reason=FAILURE_REASON_METADATA_UPSERT_FAILED,
                 failure_detail=str(exc),
             )
 
@@ -294,7 +279,7 @@ class MediaImportService:
                 source_path=str(source_entry),
                 library=library,
                 download_task=download_task,
-                state="pending",
+                state=IMPORT_JOB_STATE_PENDING,
                 transfer_mode=transfer_mode,
             )
         else:
@@ -302,7 +287,7 @@ class MediaImportService:
             job.source_path = str(source_entry)
             job.library = library
             job.download_task = download_task
-            job.state = "pending"
+            job.state = IMPORT_JOB_STATE_PENDING
             job.transfer_mode = transfer_mode
             job.imported_count = 0
             job.skipped_count = 0
@@ -318,11 +303,11 @@ class MediaImportService:
         failed_count = 0
         new_playable_movies: Dict[int, Dict[str, object]] = {}
 
-        job.state = "running"
+        job.state = IMPORT_JOB_STATE_RUNNING
         job.started_at = utc_now_for_db()
         job.save()
         if download_task is not None:
-            download_task.import_status = "running"
+            download_task.import_status = IMPORT_STATUS_RUNNING
             download_task.save()
         logger.info("Import job running job_id={}", job.id)
 
@@ -352,7 +337,7 @@ class MediaImportService:
             ):
                 failed_count += 1
                 failure_items.append(
-                    make_failure_item(source_entry, "retry_sources_missing", "待重导的源文件均已不存在")
+                    make_failure_item(source_entry, FAILURE_REASON_RETRY_SOURCES_MISSING, "待重导的源文件均已不存在")
                 )
             total_movie_numbers = len(grouped_files)
             completed_movie_numbers = 0
@@ -492,7 +477,7 @@ class MediaImportService:
                                 failure_items.append(
                                     make_failure_item(
                                         group.files[0].path,
-                                        "vr_media_merge_failed",
+                                        FAILURE_REASON_VR_MEDIA_MERGE_FAILED,
                                         str(exc),
                                     )
                                 )
@@ -528,7 +513,7 @@ class MediaImportService:
                                     failure_items.append(
                                         make_failure_item(
                                             file_entry.path,
-                                            "media_import_failed",
+                                            FAILURE_REASON_MEDIA_IMPORT_FAILED,
                                             str(exc),
                                         )
                                     )
@@ -559,12 +544,12 @@ class MediaImportService:
             job.imported_count = imported_count
             job.skipped_count = skipped_count
             job.failed_count = failed_count
-            job.state = "failed" if failed_count > 0 else "completed"
+            job.state = IMPORT_JOB_STATE_FAILED if failed_count > 0 else IMPORT_JOB_STATE_COMPLETED
             job.failed_files = json.dumps(failure_items, ensure_ascii=False)
             job.finished_at = utc_now_for_db()
             job.save()
             if download_task is not None:
-                download_task.import_status = "failed" if failed_count > 0 else "completed"
+                download_task.import_status = IMPORT_STATUS_FAILED if failed_count > 0 else IMPORT_STATUS_COMPLETED
                 download_task.save()
             logger.info(
                 "Import job finished job_id={} state={} imported={} skipped={} failed={}",
@@ -591,17 +576,17 @@ class MediaImportService:
         except Exception as exc:
             # 走到这里说明导入流程本身崩溃了，而不是单个文件失败，需要额外补一条任务级错误。
             failure_items.append(
-                make_failure_item(source_entry, "import_job_crashed", str(exc))
+                make_failure_item(source_entry, FAILURE_REASON_IMPORT_JOB_CRASHED, str(exc))
             )
             job.imported_count = imported_count
             job.skipped_count = skipped_count
             job.failed_count = failed_count + 1
-            job.state = "failed"
+            job.state = IMPORT_JOB_STATE_FAILED
             job.failed_files = json.dumps(failure_items, ensure_ascii=False)
             job.finished_at = utc_now_for_db()
             job.save()
             if download_task is not None:
-                download_task.import_status = "failed"
+                download_task.import_status = IMPORT_STATUS_FAILED
                 download_task.save()
             logger.exception(
                 "Import job crashed job_id={} source_path={} detail={}",
@@ -673,14 +658,14 @@ class MediaImportService:
                     file_size,
                     minimum_size,
                 )
-                failure_items.append(make_failure_item(path, "file_too_small"))
+                failure_items.append(make_failure_item(path, FAILURE_REASON_FILE_TOO_SMALL))
                 continue
 
             movie_number = parse_movie_number(str(path))
             if not movie_number:
                 failed_count += 1
                 logger.warning("Import scan failed to parse movie number path={}", str(path))
-                failure_items.append(make_failure_item(path, "movie_number_not_found"))
+                failure_items.append(make_failure_item(path, FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND))
                 continue
 
             # 指纹里带上归一化后的番号，既能识别同内容重复文件，也能避免不同影片同尺寸文件误撞。
@@ -1025,7 +1010,7 @@ class MediaImportService:
             )
         elif multiple_subtitles:
             failure_items.append(
-                make_failure_item(group.files[0].path, "merge_subtitle_skipped_multiple_sidecars")
+                make_failure_item(group.files[0].path, FAILURE_REASON_MERGE_SUBTITLE_SKIPPED_MULTIPLE_SIDECARS)
             )
 
         self._upsert_media(
@@ -1224,7 +1209,7 @@ class MediaImportService:
                     exc,
                 )
                 failure_items.append(
-                    make_failure_item(source_path, "source_delete_failed", str(exc))
+                    make_failure_item(source_path, FAILURE_REASON_SOURCE_DELETE_FAILED, str(exc))
                 )
         return failed_count
 

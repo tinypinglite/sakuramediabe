@@ -31,16 +31,20 @@ from src.schema.transfers.media_import import (
 )
 from src.service.system import ActivityService
 from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
-from src.service.transfers.media_import_service import (
+from src.common.media_import_status import (
     FAILED_FILE_KIND_FILE,
-    MediaImportService,
+    FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED,
+    FAILURE_REASON_IMPORT_JOB_INTERRUPTED,
+    IMPORT_JOB_STATE_FAILED,
+    IMPORT_JOB_STATE_PENDING,
+    IMPORT_JOB_STATE_RUNNING,
+    TERMINAL_JOB_STATES,
     classify_failed_file_kind,
     make_failure_item,
 )
+from src.service.transfers.media_import_service import MediaImportService
 
 TASK_KEY = "media_directory_import"
-# 仅终态作业才允许执行失败文件的删除/重命名/重导，避免与运行中的导入线程竞争。
-TERMINAL_JOB_STATES = ("completed", "failed")
 
 
 class MediaImportJobService:
@@ -229,7 +233,7 @@ class MediaImportJobService:
             ImportJob.select()
             .where(
                 ImportJob.download_task.is_null(True),
-                ImportJob.state.in_(("pending", "running")),
+                ImportJob.state.in_((IMPORT_JOB_STATE_PENDING, IMPORT_JOB_STATE_RUNNING)),
             )
             .order_by(ImportJob.id.asc())
         )
@@ -239,11 +243,11 @@ class MediaImportJobService:
                 continue
             failure_items = cls._parse_failed_files(job)
             failure_items.append(
-                make_failure_item(job.source_path, "import_job_interrupted", "导入进程已中断，作业未完成")
+                make_failure_item(job.source_path, FAILURE_REASON_IMPORT_JOB_INTERRUPTED, "导入进程已中断，作业未完成")
             )
             job.failed_count = max(job.failed_count, 1)
             job.failed_files = json.dumps(failure_items, ensure_ascii=False)
-            job.state = "failed"
+            job.state = IMPORT_JOB_STATE_FAILED
             job.finished_at = utc_now_for_db()
             job.updated_at = utc_now_for_db()
             job.save()
@@ -302,7 +306,7 @@ class MediaImportJobService:
             import_job = ImportJob.create(
                 source_path=str(resolved_source),
                 library=library,
-                state="pending",
+                state=IMPORT_JOB_STATE_PENDING,
                 transfer_mode=transfer_mode,
             )
             import_job.task_run = task_run
@@ -323,11 +327,11 @@ class MediaImportJobService:
                 # 与其它失败路径保持一致：终态作业补一条任务级失败明细，避免详情页 failed 却无失败原因。
                 failure_items = cls._parse_failed_files(import_job)
                 failure_items.append(
-                    make_failure_item(resolved_source, "import_job_bootstrap_failed", str(exc))
+                    make_failure_item(resolved_source, FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED, str(exc))
                 )
                 import_job.failed_count = max(import_job.failed_count, 1)
                 import_job.failed_files = json.dumps(failure_items, ensure_ascii=False)
-                import_job.state = "failed"
+                import_job.state = IMPORT_JOB_STATE_FAILED
                 import_job.finished_at = utc_now_for_db()
                 import_job.save()
             ActivityService.fail_task_run(
@@ -395,7 +399,7 @@ class MediaImportJobService:
             )
             return {
                 "import_job_id": import_job_id,
-                "job_state": "failed",
+                "job_state": IMPORT_JOB_STATE_FAILED,
             }
 
     @staticmethod
@@ -410,11 +414,11 @@ class MediaImportJobService:
         except json.JSONDecodeError:
             failure_items = []
         failure_items.append(
-            make_failure_item(import_job.source_path, "import_job_bootstrap_failed", detail)
+            make_failure_item(import_job.source_path, FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED, detail)
         )
         import_job.failed_count = max(import_job.failed_count, 1)
         import_job.failed_files = json.dumps(failure_items, ensure_ascii=False)
-        import_job.state = "failed"
+        import_job.state = IMPORT_JOB_STATE_FAILED
         import_job.finished_at = utc_now_for_db()
         import_job.save()
 

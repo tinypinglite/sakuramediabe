@@ -15,6 +15,13 @@ from src.service.transfers.common import (
 )
 from src.service.transfers.download_task_service import DownloadTaskService
 from src.service.transfers.import_runner import DownloadImportRunner
+from src.common.media_import_status import (
+    IMPORT_JOB_STATE_FAILED,
+    IMPORT_JOB_STATE_PENDING,
+    IMPORT_JOB_STATE_RUNNING,
+    IMPORT_STATUS_PENDING,
+    IMPORT_STATUS_RUNNING,
+)
 from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
 
 
@@ -66,7 +73,7 @@ class DownloadSyncService:
                     "save_path": mapped_path,
                     "progress": remote_task.get("progress", 0.0),
                     "download_state": normalized_state,
-                    "import_status": "pending",
+                    "import_status": IMPORT_STATUS_PENDING,
                 },
             )
             if created:
@@ -141,12 +148,12 @@ class DownloadSyncService:
         queued_count = 0
         for task in DownloadTask.select().where(
             (DownloadTask.download_state == "completed")
-            & (DownloadTask.import_status == "pending")
+            & (DownloadTask.import_status == IMPORT_STATUS_PENDING)
         ):
             try:
                 DownloadTaskService.trigger_import(
                     task.id,
-                    allowed_statuses={"pending"},
+                    allowed_statuses={IMPORT_STATUS_PENDING},
                     trigger_type="internal",
                 )
                 queued_count += 1
@@ -167,12 +174,12 @@ class DownloadSyncService:
     @staticmethod
     def _recover_orphaned_imports() -> int:
         recovered_count = 0
-        for task in DownloadTask.select().where(DownloadTask.import_status == "running").order_by(DownloadTask.id.asc()):
+        for task in DownloadTask.select().where(DownloadTask.import_status == IMPORT_STATUS_RUNNING).order_by(DownloadTask.id.asc()):
             running_jobs = list(
                 ImportJob.select()
                 .where(
                     (ImportJob.download_task == task.id)
-                    & (ImportJob.state.in_(("pending", "running")))
+                    & (ImportJob.state.in_((IMPORT_JOB_STATE_PENDING, IMPORT_JOB_STATE_RUNNING)))
                 )
                 .order_by(ImportJob.id.asc())
             )
@@ -182,7 +189,7 @@ class DownloadSyncService:
                 continue
 
             for job in running_jobs:
-                job.state = "failed"
+                job.state = IMPORT_JOB_STATE_FAILED
                 job.finished_at = utc_now_for_db()
                 job.save()
                 if job.task_run_id is not None:
@@ -198,7 +205,7 @@ class DownloadSyncService:
                         allow_null_owner=allow_null_owner,
                     )
 
-            task.import_status = "pending"
+            task.import_status = IMPORT_STATUS_PENDING
             task.save()
             recovered_count += 1
             logger.warning(
