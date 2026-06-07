@@ -1,3 +1,4 @@
+import peewee
 from fastapi import APIRouter, Depends
 
 from src.api.exception.errors import ApiError
@@ -16,19 +17,17 @@ router = APIRouter(
 
 
 def _latest_task_run_by_key() -> dict[str, BackgroundTaskRun]:
-    # 用单条查询取每个 task_key 的最新一条 task_run，避免对 JOB_REGISTRY 做 N 次查询。
-    # 取 id 降序即可——BackgroundTaskRun.id 自增，新建总是大于旧记录。
-    rows = (
-        BackgroundTaskRun.select()
-        .where(BackgroundTaskRun.task_key.in_(list(JOB_REGISTRY_BY_KEY.keys())))
-        .order_by(BackgroundTaskRun.task_key, BackgroundTaskRun.id.desc())
+    # 每个 task_key 只取最新一条 task_run：先用子查询按 task_key 分组取最大 id
+    # （id 自增，最大即最新），再按主键回表。这样数据库只返回任务个数那么多行，
+    # 避免把整张 background_task_run 历史全部拉回进程后再在 Python 里去重。
+    keys = list(JOB_REGISTRY_BY_KEY.keys())
+    latest_ids = (
+        BackgroundTaskRun.select(peewee.fn.MAX(BackgroundTaskRun.id))
+        .where(BackgroundTaskRun.task_key.in_(keys))
+        .group_by(BackgroundTaskRun.task_key)
     )
-    latest: dict[str, BackgroundTaskRun] = {}
-    for row in rows:
-        if row.task_key in latest:
-            continue
-        latest[row.task_key] = row
-    return latest
+    rows = BackgroundTaskRun.select().where(BackgroundTaskRun.id.in_(latest_ids))
+    return {row.task_key: row for row in rows}
 
 
 def _build_job_metadata(job_def: JobDefinition, last_run: BackgroundTaskRun | None) -> JobMetadataResource:

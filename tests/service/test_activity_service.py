@@ -2,7 +2,7 @@ from src.model import BackgroundTaskRun, SystemEvent, SystemNotification
 from src.service.system import ActivityService, TaskRunConflictError
 
 
-def test_activity_service_tracks_successful_task_and_creates_result_notification(test_db):
+def test_activity_service_tracks_successful_task_without_creating_info_notification(test_db):
     models = [BackgroundTaskRun, SystemNotification, SystemEvent]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
@@ -22,16 +22,35 @@ def test_activity_service_tracks_successful_task_and_creates_result_notification
     )
 
     task_run = BackgroundTaskRun.get()
-    notification = SystemNotification.get()
 
     assert result["success_targets"] == 2
     assert task_run.state == "completed"
     assert task_run.progress_current == 1
     assert task_run.progress_total == 2
     assert task_run.result_summary["total_targets"] == 2
-    assert notification.category == "info"
-    assert notification.related_task_run_id == task_run.id
+    # 常态成功不再写通知，避免高频任务刷屏。
+    assert SystemNotification.select().count() == 0
     assert SystemEvent.select().count() >= 2
+
+
+def test_activity_service_creates_warning_notification_when_success_has_failures(test_db):
+    models = [BackgroundTaskRun, SystemNotification, SystemEvent]
+    test_db.bind(models, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(models)
+
+    task_run = ActivityService.create_task_run(
+        task_key="ranking_sync",
+        trigger_type="scheduled",
+    )
+    # 成功但带 failed 统计时仍需发 warning 通知，方便前端高亮。
+    ActivityService.complete_task_run(
+        task_run.id,
+        result_summary={"total_targets": 3, "success_targets": 2, "failed_targets": 1},
+    )
+
+    notification = SystemNotification.get()
+    assert notification.category == "warning"
+    assert notification.related_task_run_id == task_run.id
 
 
 def test_activity_service_resolves_movie_interaction_sync_task_name(test_db):
