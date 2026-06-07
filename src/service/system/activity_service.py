@@ -975,9 +975,9 @@ class ActivityService:
         if not unique_items:
             return None
 
-        # 提醒按批次汇总，避免导入多部影片时在通知中心刷屏。
+        # 提醒按批次汇总，避免导入多部影片时在通知中心刷屏；只取番号，标题过长且信息量低。
         sample_text = "、".join(
-            item.get("title") or item.get("movie_number") or ""
+            item.get("movie_number") or ""
             for item in unique_items[:3]
         )
         if len(unique_items) > 3:
