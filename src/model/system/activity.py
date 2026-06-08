@@ -37,7 +37,6 @@ class SystemNotification(TimestampedMixin, BaseModel):
     content = peewee.TextField()
     is_read = peewee.BooleanField(default=False, index=True)
     read_at = peewee.DateTimeField(null=True)
-    archived_at = peewee.DateTimeField(null=True, index=True)
     related_task_run = peewee.ForeignKeyField(
         BackgroundTaskRun,
         null=True,

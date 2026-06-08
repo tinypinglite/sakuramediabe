@@ -29,7 +29,6 @@ class NotificationResource(SchemaModel):
     title: str
     content: str
     is_read: bool
-    archived: bool
     created_at: datetime
     updated_at: datetime
     related_task_run_id: int | None = None
@@ -41,6 +40,18 @@ class NotificationReadResponse(SchemaModel):
     id: int
     is_read: bool
     read_at: datetime | None = None
+
+
+class NotificationReadBatchRequest(SchemaModel):
+    # 批量标记已读的目标通知 ID 列表。
+    ids: list[int]
+
+
+class NotificationBatchReadResponse(SchemaModel):
+    # 标记已读结果：本次新置为已读的条数，以及操作后剩余未读总数。
+    # 按 ID 批量（read）与全部已读（read-all）共用此响应。
+    updated_count: int
+    unread_count: int
 
 
 class ActivityBootstrapResource(SchemaModel):

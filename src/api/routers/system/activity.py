@@ -5,6 +5,8 @@ from src.api.routers.deps import db_deps, get_current_user
 from src.schema.common.pagination import PageResponse
 from src.schema.system.activity import (
     ActivityBootstrapResource,
+    NotificationBatchReadResponse,
+    NotificationReadBatchRequest,
     NotificationReadResponse,
     NotificationResource,
     TaskRunResource,
@@ -25,7 +27,6 @@ router = APIRouter(
 @router.get("/system/activity/bootstrap", response_model=ActivityBootstrapResource)
 def get_activity_bootstrap(
     notification_category: str | None = Query(default=None),
-    notification_archived: bool = Query(default=False),
     task_state: str | None = Query(default=None),
     task_key: str | None = Query(default=None),
     task_trigger_type: str | None = Query(default=None),
@@ -33,7 +34,6 @@ def get_activity_bootstrap(
 ):
     return ActivityService.get_activity_bootstrap(
         notification_category=notification_category,
-        notification_archived=notification_archived,
         task_state=task_state,
         task_key=task_key,
         task_trigger_type=task_trigger_type,
@@ -47,14 +47,12 @@ def list_notifications(
     page_size: int = Query(default=20),
     category: str | None = Query(default=None),
     is_read: bool | None = Query(default=None),
-    archived: bool = Query(default=False),
 ):
     return ActivityService.list_notifications(
         page=page,
         page_size=page_size,
         category=category,
         is_read=is_read,
-        archived=archived,
     )
 
 
@@ -64,6 +62,22 @@ def list_notifications(
 )
 def mark_notification_read(notification_id: int):
     return ActivityService.mark_notification_read(notification_id)
+
+
+@router.post(
+    "/system/notifications/read",
+    response_model=NotificationBatchReadResponse,
+)
+def mark_notifications_read(payload: NotificationReadBatchRequest):
+    return ActivityService.mark_notifications_read(payload.ids)
+
+
+@router.post(
+    "/system/notifications/read-all",
+    response_model=NotificationBatchReadResponse,
+)
+def mark_all_notifications_read():
+    return ActivityService.mark_all_notifications_read()
 
 
 @router.get("/system/task-runs", response_model=PageResponse[TaskRunResource])

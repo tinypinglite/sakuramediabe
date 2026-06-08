@@ -53,6 +53,24 @@ def test_activity_service_creates_warning_notification_when_success_has_failures
     assert notification.related_task_run_id == task_run.id
 
 
+def test_activity_service_does_not_notify_when_success_only_has_skipped(test_db):
+    models = [BackgroundTaskRun, SystemNotification, SystemEvent]
+    test_db.bind(models, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(models)
+
+    task_run = ActivityService.create_task_run(
+        task_key="ranking_sync",
+        trigger_type="scheduled",
+    )
+    # 成功且仅带 skipped 统计时不再发通知：跳过属常态，计入只会让通知中心刷屏。
+    ActivityService.complete_task_run(
+        task_run.id,
+        result_summary={"total_targets": 3, "success_targets": 2, "skipped_targets": 1},
+    )
+
+    assert SystemNotification.select().count() == 0
+
+
 def test_activity_service_resolves_movie_interaction_sync_task_name(test_db):
     models = [BackgroundTaskRun, SystemNotification, SystemEvent]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
@@ -229,7 +247,7 @@ def test_activity_service_bootstrap_aggregates_notifications_tasks_and_cursor(te
         trigger_type="scheduled",
         state="running",
     )
-    ActivityService.create_notification(
+    ActivityService._create_notification(
         category="reminder",
         title="有新的影片可以播放了",
         content="新增 1 部影片",
@@ -261,7 +279,7 @@ def test_activity_service_rolls_back_notification_when_event_publish_fails(test_
     monkeypatch.setattr("src.service.system.activity_service.SystemEventService.publish", fake_publish)
 
     try:
-        ActivityService.create_notification(
+        ActivityService._create_notification(
             category="reminder",
             title="有新的影片可以播放了",
             content="新增 1 部影片",
@@ -269,7 +287,7 @@ def test_activity_service_rolls_back_notification_when_event_publish_fails(test_
     except RuntimeError as exc:
         assert str(exc) == "event publish failed"
     else:
-        raise AssertionError("expected create_notification to fail")
+        raise AssertionError("expected _create_notification to fail")
 
     assert SystemNotification.select().count() == 0
     assert SystemEvent.select().count() == 0
@@ -421,3 +439,92 @@ def test_activity_service_does_not_recover_task_run_when_owner_process_is_alive(
     task_run = BackgroundTaskRun.get_by_id(task_run.id)
     assert recovered == []
     assert task_run.state == "running"
+
+
+def test_activity_service_marks_all_unread_notifications_read(test_db):
+    models = [BackgroundTaskRun, SystemNotification, SystemEvent]
+    test_db.bind(models, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(models)
+
+    first = ActivityService._create_notification(category="reminder", title="A", content="a")
+    second = ActivityService._create_notification(category="warning", title="B", content="b")
+    # 预先读掉一条，验证批量已读只处理仍未读的条目。
+    ActivityService.mark_notification_read(first.id)
+
+    response = ActivityService.mark_all_notifications_read()
+
+    assert response.updated_count == 1
+    assert response.unread_count == 0
+    assert ActivityService.get_unread_count() == 0
+    second_db = SystemNotification.get_by_id(second.id)
+    assert second_db.is_read is True
+    assert second_db.read_at is not None
+    # 批量已读只发一条聚合事件，并带上本次处理条数。
+    read_all_events = list(
+        SystemEvent.select().where(SystemEvent.event_type == "notifications_read_all")
+    )
+    assert len(read_all_events) == 1
+    assert read_all_events[0].payload["updated_count"] == 1
+
+
+def test_activity_service_mark_all_read_is_noop_without_unread(test_db):
+    models = [BackgroundTaskRun, SystemNotification, SystemEvent]
+    test_db.bind(models, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(models)
+
+    response = ActivityService.mark_all_notifications_read()
+
+    assert response.updated_count == 0
+    assert response.unread_count == 0
+    # 没有未读时不应产生聚合事件。
+    assert (
+        SystemEvent.select().where(SystemEvent.event_type == "notifications_read_all").count()
+        == 0
+    )
+
+
+def test_activity_service_marks_selected_notifications_read(test_db):
+    models = [BackgroundTaskRun, SystemNotification, SystemEvent]
+    test_db.bind(models, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(models)
+
+    first = ActivityService._create_notification(category="reminder", title="A", content="a")
+    second = ActivityService._create_notification(category="warning", title="B", content="b")
+    third = ActivityService._create_notification(category="error", title="C", content="c")
+
+    response = ActivityService.mark_notifications_read([first.id, second.id])
+
+    assert response.updated_count == 2
+    assert response.unread_count == 1
+    assert SystemNotification.get_by_id(first.id).is_read is True
+    assert SystemNotification.get_by_id(second.id).is_read is True
+    # 未在 ID 列表中的通知保持未读。
+    assert SystemNotification.get_by_id(third.id).is_read is False
+    # 按 ID 批量已读发一条带目标 ID 的聚合事件。
+    read_events = list(
+        SystemEvent.select().where(SystemEvent.event_type == "notifications_read")
+    )
+    assert len(read_events) == 1
+    assert read_events[0].payload["updated_count"] == 2
+    assert read_events[0].payload["ids"] == [first.id, second.id]
+
+
+def test_activity_service_mark_notifications_read_ignores_empty_and_unknown_ids(test_db):
+    models = [BackgroundTaskRun, SystemNotification, SystemEvent]
+    test_db.bind(models, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(models)
+
+    notification = ActivityService._create_notification(category="reminder", title="A", content="a")
+
+    # 空列表是良定义的 no-op，不报错也不发事件。
+    empty_response = ActivityService.mark_notifications_read([])
+    assert empty_response.updated_count == 0
+    assert empty_response.unread_count == 1
+
+    # 不存在的 ID 被忽略，仅统计真正更新的条数。
+    mixed_response = ActivityService.mark_notifications_read([notification.id, 999999])
+    assert mixed_response.updated_count == 1
+    assert mixed_response.unread_count == 0
+    assert (
+        SystemEvent.select().where(SystemEvent.event_type == "notifications_read").count() == 1
+    )

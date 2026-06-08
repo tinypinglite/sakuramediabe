@@ -21,6 +21,7 @@ from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
 from src.schema.system.activity import (
     ActivityBootstrapResource,
+    NotificationBatchReadResponse,
     NotificationReadResponse,
     NotificationResource,
     SystemEventEnvelope,
@@ -131,13 +132,15 @@ def _format_result_text(summary: dict[str, Any] | None) -> str | None:
     return " ".join(fragments) if fragments else None
 
 
-def _detect_warning_summary(summary: dict[str, Any] | None) -> bool:
+def _detect_failed_summary(summary: dict[str, Any] | None) -> bool:
+    # 仅当任务结果统计里出现 failed 计数（>0）时才需要 warning 通知；
+    # skipped 多为常态跳过（已存在/无需重复处理），计入只会让通知中心刷屏，故不触发。
     if not summary:
         return False
     for key, value in summary.items():
         if not isinstance(value, (int, float)) or value <= 0:
             continue
-        if "failed" in key or "skipped" in key:
+        if "failed" in key:
             return True
     return False
 
@@ -348,7 +351,6 @@ class ActivityService:
                 "title": notification.title,
                 "content": notification.content,
                 "is_read": notification.is_read,
-                "archived": notification.archived_at is not None,
                 "created_at": notification.created_at,
                 "updated_at": notification.updated_at,
                 "related_task_run_id": notification.related_task_run_id,
@@ -367,7 +369,6 @@ class ActivityService:
         *,
         category: str | None = None,
         is_read: bool | None = None,
-        archived: bool = False,
     ):
         normalized_category = _normalize_allowed_filter(
             category,
@@ -379,9 +380,7 @@ class ActivityService:
             query = query.where(SystemNotification.category == normalized_category)
         if is_read is not None:
             query = query.where(SystemNotification.is_read == is_read)
-        if archived:
-            return query.where(SystemNotification.archived_at.is_null(False))
-        return query.where(SystemNotification.archived_at.is_null(True))
+        return query
 
     @classmethod
     def _page_notifications(cls, query, *, page: int, page_size: int) -> PageResponse[NotificationResource]:
@@ -554,27 +553,6 @@ class ActivityService:
             return notification
 
     @classmethod
-    def create_notification(
-        cls,
-        *,
-        category: str,
-        title: str,
-        content: str,
-        related_task_run_id: int | None = None,
-        related_resource_type: str | None = None,
-        related_resource_id: int | None = None,
-    ) -> NotificationResource:
-        notification = cls._create_notification(
-            category=category,
-            title=title,
-            content=content,
-            related_task_run_id=related_task_run_id,
-            related_resource_type=related_resource_type,
-            related_resource_id=related_resource_id,
-        )
-        return cls._notification_resource(notification)
-
-    @classmethod
     def _notify_task_result(
         cls,
         task_run: BackgroundTaskRun,
@@ -590,9 +568,9 @@ class ActivityService:
             )
             return
 
-        # 常态成功（无 failed/skipped 统计）不再写通知：这类 info 对高频任务毫无信息量，
-        # 只会刷屏淹没真正需要关注的消息。仅当成功但带 failed/skipped 统计时，才发 warning 通知。
-        if not _detect_warning_summary(task_run.result_summary or {}):
+        # 常态成功不再写通知：这类 info 对高频任务毫无信息量，只会刷屏淹没真正需要关注的消息。
+        # skipped 属正常跳过，同样不发；仅当成功但带 failed 统计时才发 warning 通知，方便前端高亮。
+        if not _detect_failed_summary(task_run.result_summary or {}):
             return
         cls._create_notification(
             category="warning",
@@ -837,13 +815,11 @@ class ActivityService:
         page_size: int = 20,
         category: str | None = None,
         is_read: bool | None = None,
-        archived: bool = False,
     ) -> PageResponse[NotificationResource]:
         _validate_page(page, page_size)
         query = cls._build_notification_query(
             category=category,
             is_read=is_read,
-            archived=archived,
         )
         return cls._page_notifications(query, page=page, page_size=page_size)
 
@@ -851,10 +827,7 @@ class ActivityService:
     def get_unread_count(cls) -> int:
         unread_count = (
             SystemNotification.select()
-            .where(
-                SystemNotification.is_read == False,
-                SystemNotification.archived_at.is_null(True),
-            )
+            .where(SystemNotification.is_read == False)
             .count()
         )
         return unread_count
@@ -880,6 +853,67 @@ class ActivityService:
                 id=notification.id,
                 is_read=notification.is_read,
                 read_at=notification.read_at,
+            )
+
+    @classmethod
+    def mark_notifications_read(cls, ids: list[int]) -> NotificationBatchReadResponse:
+        now = _now()
+        with get_database().atomic():
+            # 仅更新指定 ID 中仍未读的通知，已读的跳过、不存在的忽略，保证幂等。
+            updated_count = 0
+            if ids:
+                updated_count = (
+                    SystemNotification.update(
+                        is_read=True,
+                        read_at=now,
+                        updated_at=now,
+                    )
+                    .where(
+                        SystemNotification.id.in_(ids),
+                        SystemNotification.is_read == False,
+                    )
+                    .execute()
+                )
+            unread_count = cls.get_unread_count()
+            if updated_count:
+                # 与全部已读一致用一条聚合事件，并带上目标 ID 供其它在线页面精确同步已读态。
+                SystemEventService.publish(
+                    event_type="notifications_read",
+                    payload={
+                        "ids": list(ids),
+                        "updated_count": updated_count,
+                        "unread_count": unread_count,
+                    },
+                )
+            return NotificationBatchReadResponse(
+                updated_count=updated_count,
+                unread_count=unread_count,
+            )
+
+    @classmethod
+    def mark_all_notifications_read(cls) -> NotificationBatchReadResponse:
+        now = _now()
+        with get_database().atomic():
+            # 把所有未读通知批量置为已读，与未读角标 get_unread_count 的口径保持一致。
+            updated_count = (
+                SystemNotification.update(
+                    is_read=True,
+                    read_at=now,
+                    updated_at=now,
+                )
+                .where(SystemNotification.is_read == False)
+                .execute()
+            )
+            unread_count = cls.get_unread_count()
+            if updated_count:
+                # 批量已读发一条聚合事件，让其它在线页面整体刷新已读态，避免逐条 publish 刷爆事件表。
+                SystemEventService.publish(
+                    event_type="notifications_read_all",
+                    payload={"updated_count": updated_count, "unread_count": unread_count},
+                )
+            return NotificationBatchReadResponse(
+                updated_count=updated_count,
+                unread_count=unread_count,
             )
 
     @classmethod
@@ -916,7 +950,6 @@ class ActivityService:
         cls,
         *,
         notification_category: str | None = None,
-        notification_archived: bool = False,
         task_state: str | None = None,
         task_key: str | None = None,
         task_trigger_type: str | None = None,
@@ -931,7 +964,6 @@ class ActivityService:
             notifications = cls._page_notifications(
                 cls._build_notification_query(
                     category=notification_category,
-                    archived=notification_archived,
                 ),
                 page=1,
                 page_size=ACTIVITY_BOOTSTRAP_PAGE_SIZE,
