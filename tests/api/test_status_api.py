@@ -68,6 +68,10 @@ def test_status_endpoint_returns_zero_summary_when_library_is_empty(client, acco
         "media_libraries": {
             "total": 0,
         },
+        "thumbnails": {
+            "pending_media": 0,
+            "total": 0,
+        },
     }
 
 
@@ -136,6 +140,10 @@ def test_status_endpoint_returns_aggregated_summary(client, account_user, monkey
         },
         "media_libraries": {
             "total": 2,
+        },
+        "thumbnails": {
+            "pending_media": 3,
+            "total": 0,
         },
     }
 

@@ -25,12 +25,19 @@ class StatusMediaLibrarySummary(SchemaModel):
     total: int
 
 
+class StatusThumbnailSummary(SchemaModel):
+    # 待生成缩略图的媒体文件数量，以及已生成的缩略图文件总数。
+    pending_media: int
+    total: int
+
+
 class StatusResource(SchemaModel):
     backend_version: str
     actors: StatusActorSummary
     movies: StatusMovieSummary
     media_files: StatusMediaFileSummary
     media_libraries: StatusMediaLibrarySummary
+    thumbnails: StatusThumbnailSummary
 
 
 class StatusJoyTagSummary(SchemaModel):
