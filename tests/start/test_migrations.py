@@ -435,3 +435,60 @@ def test_run_pending_migrations_supports_empty_database_after_create_tables(test
     )
     assert moment_execution.applied is True
     assert test_db.table_exists("moment_recommendation")
+
+
+def _create_legacy_notification_table_with_archived_index(test_db):
+    test_db.execute_sql(
+        """
+        CREATE TABLE system_notification (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            category VARCHAR(32) NOT NULL,
+            title VARCHAR(255) NOT NULL,
+            content TEXT NOT NULL,
+            is_read INTEGER NOT NULL DEFAULT 0,
+            read_at DATETIME NULL,
+            archived_at DATETIME NULL,
+            related_task_run_id INTEGER NULL,
+            related_resource_type VARCHAR(64) NULL,
+            related_resource_id INTEGER NULL
+        )
+        """
+    )
+    test_db.execute_sql("CREATE INDEX system_notification_category ON system_notification(category)")
+    # 旧 Peewee 模型 archived_at=index=True 自动生成的是无下划线模型名前缀索引名。
+    test_db.execute_sql(
+        "CREATE INDEX systemnotification_archived_at ON system_notification(archived_at)"
+    )
+
+
+def test_run_pending_migrations_drops_notification_archived_at(test_db):
+    _create_legacy_notification_table_with_archived_index(test_db)
+    test_db.execute_sql(
+        """
+        INSERT INTO system_notification (
+            created_at, updated_at, category, title, content
+        ) VALUES (
+            '2026-06-01 00:00:00', '2026-06-01 00:00:00', 'reminder', '新影片', ''
+        )
+        """
+    )
+
+    run_pending_migrations(test_db)
+
+    columns = {column.name for column in test_db.get_columns("system_notification")}
+    indexes = {index.name for index in test_db.get_indexes("system_notification")}
+    indexed_columns = [
+        column for index in test_db.get_indexes("system_notification") for column in index.columns
+    ]
+    rows = test_db.execute_sql(
+        "SELECT title, category FROM system_notification ORDER BY id"
+    ).fetchall()
+
+    assert "archived_at" not in columns
+    assert "systemnotification_archived_at" not in indexes
+    assert "archived_at" not in indexed_columns
+    # 删列不应破坏历史数据。
+    assert rows == [("新影片", "reminder")]
+    assert "20260609_01_drop_notification_archived_at" in _schema_migration_names(test_db)

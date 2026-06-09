@@ -10,6 +10,8 @@ def test_activity_endpoints_require_authentication(client):
     assert client.get("/system/activity/bootstrap").status_code == 401
     assert client.get("/system/notifications").status_code == 401
     assert client.patch("/system/notifications/1/read").status_code == 401
+    assert client.post("/system/notifications/read", json={"ids": [1]}).status_code == 401
+    assert client.post("/system/notifications/read-all").status_code == 401
     assert client.get("/system/task-runs").status_code == 401
     assert client.get("/system/events/stream").status_code == 401
 
@@ -27,7 +29,7 @@ def test_activity_api_lists_notifications_and_task_runs(client, account_user):
         task_run.id,
         result_summary={"total_targets": 3, "success_targets": 3},
     )
-    ActivityService.create_notification(
+    ActivityService._create_notification(
         category="reminder",
         title="有新的影片可以播放了",
         content="新增 1 部影片",
@@ -61,7 +63,7 @@ def test_activity_api_bootstrap_returns_complete_snapshot(client, account_user):
         trigger_type="scheduled",
         state="running",
     )
-    ActivityService.create_notification(
+    ActivityService._create_notification(
         category="reminder",
         title="有新的影片可以播放了",
         content="新增 1 部影片",
@@ -113,12 +115,12 @@ def test_activity_api_bootstrap_filters_match_existing_endpoints(client, account
         trigger_type="manual",
         state="completed",
     )
-    ActivityService.create_notification(
+    ActivityService._create_notification(
         category="reminder",
         title="提醒",
         content="提醒内容",
     )
-    ActivityService.create_notification(
+    ActivityService._create_notification(
         category="warning",
         title="结果",
         content="结果内容",
@@ -172,3 +174,50 @@ def test_activity_sse_endpoint_streams_events(client, account_user, monkeypatch)
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "event: notification_created" in response.text
+
+
+def test_activity_api_marks_all_notifications_read(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    from src.service.system import ActivityService
+
+    ActivityService._create_notification(category="reminder", title="A", content="a")
+    ActivityService._create_notification(category="warning", title="B", content="b")
+
+    response = client.post(
+        "/system/notifications/read-all",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["updated_count"] == 2
+    assert payload["unread_count"] == 0
+
+    # 批量已读后未读角标应清零。
+    bootstrap = client.get(
+        "/system/activity/bootstrap",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert bootstrap.json()["unread_count"] == 0
+
+
+def test_activity_api_marks_notifications_read_by_ids(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    from src.service.system import ActivityService
+
+    first = ActivityService._create_notification(category="reminder", title="A", content="a")
+    second = ActivityService._create_notification(category="warning", title="B", content="b")
+    ActivityService._create_notification(category="error", title="C", content="c")
+
+    response = client.post(
+        "/system/notifications/read",
+        json={"ids": [first.id, second.id]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["updated_count"] == 2
+    assert payload["unread_count"] == 1
