@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import peewee
 from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import parse_external_datetime, utc_now_for_db
@@ -9,8 +10,7 @@ from src.common.service_helpers import with_movie_card_relations
 from src.metadata._providers.javdb import JavdbProvider
 from src.model import HotReviewItem, Media, Movie, get_database
 from src.schema.catalog.movies import MovieListItemResource
-from src.schema.common.pagination import PageResponse
-from src.schema.discovery import HotReviewListItemResource
+from src.schema.discovery import HotReviewListItemResource, HotReviewListResource
 from src.service.catalog.catalog_import_service import CatalogImportService
 
 HOT_REVIEW_SOURCE_KEY = "javdb"
@@ -41,7 +41,7 @@ class HotReviewCatalogService:
         period: str | None,
         page: int = 1,
         page_size: int = 20,
-    ) -> PageResponse[HotReviewListItemResource]:
+    ) -> HotReviewListResource:
         normalized_period = cls._normalize_period(period)
         safe_page = max(int(page), 1)
         safe_page_size = max(int(page_size), 1)
@@ -56,13 +56,23 @@ class HotReviewCatalogService:
             .order_by(HotReviewItem.rank.asc())
         )
         total = base_query.count()
+        # 该周期整批热评的抓取时间（整周期删旧插新，全批一致），与分页无关
+        synced_at = (
+            HotReviewItem.select(peewee.fn.MAX(HotReviewItem.updated_at))
+            .where(
+                HotReviewItem.source_key == HOT_REVIEW_SOURCE_KEY,
+                HotReviewItem.period == normalized_period,
+            )
+            .scalar()
+        )
         review_rows = list(base_query.offset(start).limit(safe_page_size))
         if not review_rows:
-            return PageResponse[HotReviewListItemResource](
+            return HotReviewListResource(
                 items=[],
                 page=safe_page,
                 page_size=safe_page_size,
                 total=total,
+                synced_at=synced_at,
             )
 
         movie_ids = [item.movie_id for item in review_rows]
@@ -102,11 +112,12 @@ class HotReviewCatalogService:
                     }
                 )
             )
-        return PageResponse[HotReviewListItemResource](
+        return HotReviewListResource(
             items=items,
             page=safe_page,
             page_size=safe_page_size,
             total=total,
+            synced_at=synced_at,
         )
 
 

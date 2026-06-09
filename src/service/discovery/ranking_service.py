@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import peewee
 from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
@@ -11,8 +12,12 @@ from src.metadata._providers.javdb import JavdbProvider
 from src.metadata._providers.missav import MissavRankingProvider
 from src.model import Media, Movie, RankingItem, get_database
 from src.schema.catalog.movies import MovieListItemResource
-from src.schema.common.pagination import PageResponse
-from src.schema.discovery import RankedMovieListItemResource, RankingBoardResource, RankingSourceResource
+from src.schema.discovery import (
+    RankedMovieListItemResource,
+    RankingBoardItemsResource,
+    RankingBoardResource,
+    RankingSourceResource,
+)
 from src.service.catalog.catalog_import_service import CatalogImportService
 
 
@@ -172,7 +177,7 @@ class RankingCatalogService:
         period: str | None,
         page: int = 1,
         page_size: int = 20,
-    ) -> PageResponse[RankedMovieListItemResource]:
+    ) -> RankingBoardItemsResource:
         board = cls._require_board(source_key, board_key)
         normalized_period = cls._resolve_period(board, period)
         safe_page = max(int(page), 1)
@@ -189,13 +194,24 @@ class RankingCatalogService:
             .order_by(RankingItem.rank.asc())
         )
         total = base_query.count()
+        # 该榜单+周期整批的抓取时间（整榜删旧插新，全批一致），与分页无关
+        synced_at = (
+            RankingItem.select(peewee.fn.MAX(RankingItem.updated_at))
+            .where(
+                RankingItem.source_key == source_key,
+                RankingItem.board_key == board_key,
+                RankingItem.period == normalized_period,
+            )
+            .scalar()
+        )
         ranking_rows = list(base_query.offset(start).limit(safe_page_size))
         if not ranking_rows:
-            return PageResponse[RankedMovieListItemResource](
+            return RankingBoardItemsResource(
                 items=[],
                 page=safe_page,
                 page_size=safe_page_size,
                 total=total,
+                synced_at=synced_at,
             )
 
         movie_ids = [item.movie_id for item in ranking_rows]
@@ -228,11 +244,12 @@ class RankingCatalogService:
                     }
                 )
             )
-        return PageResponse[RankedMovieListItemResource](
+        return RankingBoardItemsResource(
             items=items,
             page=safe_page,
             page_size=safe_page_size,
             total=total,
+            synced_at=synced_at,
         )
 
 

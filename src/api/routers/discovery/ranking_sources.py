@@ -3,9 +3,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 
 from src.api.routers.deps import db_deps, get_current_user
-from src.schema.common.pagination import PageResponse
 from src.schema.discovery import (
-    RankedMovieListItemResource,
+    RankingBoardItemsResource,
     RankingBoardResource,
     RankingSourceResource,
 )
@@ -30,7 +29,7 @@ def list_ranking_boards(source_key: str):
 
 @router.get(
     "/{source_key}/boards/{board_key}/items",
-    response_model=PageResponse[RankedMovieListItemResource],
+    response_model=RankingBoardItemsResource,
 )
 def list_ranking_board_items(
     source_key: str,

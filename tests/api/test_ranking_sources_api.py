@@ -158,6 +158,8 @@ def test_list_ranking_board_items_returns_ranked_movie_list(client, account_user
     assert payload["items"][1]["thin_cover_image"] is None
     assert payload["items"][0]["is_collection"] is False
     assert payload["items"][0]["is_subscribed"] is False
+    # 响应顶层暴露该榜单+周期的抓取时间
+    assert payload["synced_at"] is not None
 
 
 def test_list_ranking_board_items_validates_source_board_and_period(client, account_user):

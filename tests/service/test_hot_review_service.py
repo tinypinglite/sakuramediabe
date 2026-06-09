@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from src.api.exception.errors import ApiError
 from src.model import HotReviewItem, Image, Media, Movie
 from src.metadata._providers.models import JavdbMovieReviewResource
@@ -259,6 +261,39 @@ def test_hot_review_catalog_service_lists_items_by_rank_with_movie_state(app):
         "2026-03-21T00:00:00",
         "2026-03-21T01:00:00",
     ]
+
+
+def test_hot_review_catalog_service_exposes_period_synced_at(app):
+    movie_a = _create_movie("ABP-001", "javdb-abp001")
+    movie_b = _create_movie("ABP-002", "javdb-abp002")
+    # 同周期整批抓取，synced_at 取该周期最新的 updated_at
+    HotReviewItem.create(
+        source_key="javdb",
+        period="weekly",
+        rank=1,
+        review_id=11,
+        movie_number=movie_a.movie_number,
+        movie=movie_a,
+        updated_at=datetime(2026, 3, 22, 5, 0, 0),
+    )
+    HotReviewItem.create(
+        source_key="javdb",
+        period="weekly",
+        rank=2,
+        review_id=12,
+        movie_number=movie_b.movie_number,
+        movie=movie_b,
+        updated_at=datetime(2026, 3, 22, 6, 30, 0),
+    )
+
+    page = HotReviewCatalogService.list_items(period="weekly", page=1, page_size=20)
+
+    assert page.model_dump(mode="json")["synced_at"] == "2026-03-22T06:30:00"
+
+    # 没有任何条目的周期，抓取时间为 None
+    empty_page = HotReviewCatalogService.list_items(period="monthly", page=1, page_size=20)
+    assert empty_page.total == 0
+    assert empty_page.synced_at is None
 
 
 def test_hot_review_catalog_service_validates_period(app):
