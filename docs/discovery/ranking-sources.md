@@ -105,7 +105,9 @@
 
 ### 成功响应
 
-返回 `PageResponse[RankedMovieListItemResource]`：
+返回 `RankingBoardItemsResource`（在标准分页响应基础上额外带 `synced_at`）：
+
+- `synced_at`: 当前 `source_key + board_key + period` 这批榜单的抓取时间（本地时区字符串）。同步是整榜删旧插新，所以整批共用同一个时间；该榜单+周期暂无数据时为 `null`。
 
 ```json
 {
@@ -133,7 +135,8 @@
   ],
   "page": 1,
   "page_size": 20,
-  "total": 1
+  "total": 1,
+  "synced_at": "2026-03-22T06:30:00"
 }
 ```
 
@@ -164,7 +167,8 @@ MissAV 返回示例：
   ],
   "page": 1,
   "page_size": 20,
-  "total": 12
+  "total": 12,
+  "synced_at": "2026-05-08T09:00:00"
 }
 ```
 

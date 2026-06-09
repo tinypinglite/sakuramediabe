@@ -109,6 +109,8 @@ def test_list_hot_reviews_returns_paginated_items(client, account_user):
         "2026-03-21T01:00:00",
         "2026-03-21T02:00:00",
     ]
+    # 响应顶层暴露该周期热评的抓取时间
+    assert payload["synced_at"] is not None
 
 
 def test_list_hot_reviews_validates_period(client, account_user):

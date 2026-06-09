@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from src.api.exception.errors import ApiError
 from src.model import Image, Media, Movie, RankingItem
 from src.service.discovery.ranking_service import RankingCatalogService, RankingSyncService
@@ -312,6 +314,51 @@ def test_ranking_catalog_service_lists_ranked_items_in_rank_order(app):
     assert page.items[1].thin_cover_image is None
     assert page.items[0].can_play is False
     assert page.items[1].can_play is True
+
+
+def test_ranking_catalog_service_exposes_scope_synced_at(app):
+    movie_a = _create_movie("ABP-001", "MovieA1")
+    movie_b = _create_movie("ABP-002", "MovieA2")
+    # 同榜单+周期整批同步，synced_at 取该作用域最新的 updated_at
+    RankingItem.create(
+        source_key="javdb",
+        board_key="censored",
+        period="daily",
+        rank=1,
+        movie_number=movie_a.movie_number,
+        movie=movie_a,
+        updated_at=datetime(2026, 3, 22, 5, 0, 0),
+    )
+    RankingItem.create(
+        source_key="javdb",
+        board_key="censored",
+        period="daily",
+        rank=2,
+        movie_number=movie_b.movie_number,
+        movie=movie_b,
+        updated_at=datetime(2026, 3, 22, 6, 30, 0),
+    )
+
+    page = RankingCatalogService.list_board_items(
+        source_key="javdb",
+        board_key="censored",
+        period="daily",
+        page=1,
+        page_size=20,
+    )
+
+    assert page.model_dump(mode="json")["synced_at"] == "2026-03-22T06:30:00"
+
+    # 没有任何条目的榜单+周期，抓取时间为 None
+    empty_page = RankingCatalogService.list_board_items(
+        source_key="javdb",
+        board_key="uncensored",
+        period="daily",
+        page=1,
+        page_size=20,
+    )
+    assert empty_page.total == 0
+    assert empty_page.synced_at is None
 
 
 def test_ranking_catalog_service_validates_period(app):
