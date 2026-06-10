@@ -26,6 +26,10 @@
   },
   "media_libraries": {
     "total": 3
+  },
+  "thumbnails": {
+    "pending_media": 24,
+    "total": 132
   }
 }
 ```
@@ -57,6 +61,8 @@
 - `media_files.total`: `Media` 总行数
 - `media_files.total_size_bytes`: 所有 `Media.file_size_bytes` 的求和（空库为 `0`）
 - `media_libraries.total`: `MediaLibrary` 总数
+- `thumbnails.pending_media`: 待生成缩略图的媒体文件数量（复用 `MediaThumbnailService` 的待处理判定：`Media.valid == true` 且缩略图任务状态为未登记、`pending` 或可重试的 `failed`）
+- `thumbnails.total`: 已生成的缩略图文件总数（`MediaThumbnail` 总行数）
 
 ## `GET /status/image-search`
 

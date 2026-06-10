@@ -60,6 +60,11 @@ class MediaThumbnailService:
         )
         return [item.id for item in query]
 
+    @classmethod
+    def count_pending_media(cls) -> int:
+        # 待生成缩略图的媒体文件数量：直接复用 _pending_media_ids 的判定口径，确保与缩略图生成实际处理范围完全一致。
+        return len(cls._pending_media_ids())
+
     @staticmethod
     def _image_root_path() -> Path:
         image_root_path = Path(settings.media.import_image_root_path).expanduser()

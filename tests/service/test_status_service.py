@@ -1,5 +1,7 @@
 from src.model import Image, Media, MediaThumbnail, Movie
 from src.service.discovery.joytag_embedder_client import JoyTagInferenceUnavailableError
+from src.service.playback.media_thumbnail_service import MediaThumbnailService
+from src.service.system.resource_task_state_service import ResourceTaskStateService
 from src.service.system.status_service import StatusService
 
 
@@ -89,6 +91,21 @@ def test_get_status_uses_default_backend_version_when_env_missing(app, monkeypat
     status = StatusService.get_status()
 
     assert status.backend_version == StatusService.BACKEND_VERSION_DEFAULT
+
+
+def test_get_status_reports_thumbnail_summary(app):
+    # 三个媒体各带一张缩略图：均未登记任务状态，默认视为待生成缩略图。
+    _create_thumbnail("THM-001", joytag_index_status=MediaThumbnail.JOYTAG_INDEX_STATUS_PENDING)
+    done = _create_thumbnail("THM-002", joytag_index_status=MediaThumbnail.JOYTAG_INDEX_STATUS_SUCCESS)
+    _create_thumbnail("THM-003", joytag_index_status=MediaThumbnail.JOYTAG_INDEX_STATUS_SUCCESS)
+    # 其中一个媒体标记为缩略图生成成功后，应从待生成数量中剔除。
+    ResourceTaskStateService.mark_succeeded(MediaThumbnailService.TASK_KEY, done.media_id)
+
+    status = StatusService.get_status()
+
+    # 缩略图文件数量 = MediaThumbnail 行数；待生成 = 未成功登记的有效媒体数。
+    assert status.thumbnails.total == 3
+    assert status.thumbnails.pending_media == 2
 
 
 def test_get_image_search_status_returns_success_and_indexing_counts(app, monkeypatch):

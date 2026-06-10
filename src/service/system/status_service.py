@@ -13,6 +13,7 @@ from src.service.discovery.joytag_embedder_client import (
     get_joytag_embedder_client,
 )
 from src.service.discovery.qdrant_thumbnail_store import get_qdrant_thumbnail_store
+from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.schema.system.status import (
     StatusActorSummary,
     StatusImageSearchIndexingSummary,
@@ -25,6 +26,7 @@ from src.schema.system.status import (
     StatusMetadataProviderTestResource,
     StatusMovieSummary,
     StatusResource,
+    StatusThumbnailSummary,
 )
 
 
@@ -60,6 +62,10 @@ class StatusService:
 
         media_library_total = MediaLibrary.select().count()
 
+        # 待生成缩略图的媒体文件数复用缩略图服务的判定口径；缩略图文件数即 MediaThumbnail 行数（与 Media 一对多）。
+        pending_thumbnail_media = MediaThumbnailService.count_pending_media()
+        thumbnail_total = MediaThumbnail.select().count()
+
         return StatusResource(
             backend_version=cls._resolve_backend_version(),
             actors=StatusActorSummary(
@@ -76,6 +82,10 @@ class StatusService:
                 total_size_bytes=int(media_file_total_size_bytes),
             ),
             media_libraries=StatusMediaLibrarySummary(total=int(media_library_total)),
+            thumbnails=StatusThumbnailSummary(
+                pending_media=int(pending_thumbnail_media),
+                total=int(thumbnail_total),
+            ),
         )
 
     @classmethod
