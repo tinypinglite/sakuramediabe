@@ -1,7 +1,7 @@
 import pytest
 
 from src.api.exception.errors import ApiError
-from src.model import BackgroundTaskRun, DownloadClient, DownloadTask, Image, ImportJob, Media, MediaLibrary, Movie, MovieSeries
+from src.model import BackgroundTaskRun, DownloadClient, DownloadTask, Image, ImportJob, Media, MediaLibrary, Movie, MovieSeries, VideoItem
 from src.schema.playback.media_libraries import (
     MediaLibraryCreateRequest,
     MediaLibraryUpdateRequest,
@@ -11,7 +11,7 @@ from src.service.playback import MediaLibraryService
 
 @pytest.fixture()
 def media_library_tables(test_db):
-    models = [Image, MovieSeries, Movie, MediaLibrary, DownloadClient, DownloadTask, BackgroundTaskRun, ImportJob, Media]
+    models = [Image, MovieSeries, Movie, VideoItem, MediaLibrary, DownloadClient, DownloadTask, BackgroundTaskRun, ImportJob, Media]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db

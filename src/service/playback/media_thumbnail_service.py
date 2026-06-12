@@ -74,10 +74,14 @@ class MediaThumbnailService:
 
     @classmethod
     def _thumbnail_directory(cls, media: Media) -> Path:
+        # 按归属分目录：JAV 用 movies/番号，非 JAV 用 videos/video_item_id，后缀沿用指纹。
+        if media.movie_number:
+            namespace = Path("movies") / media.movie_number
+        else:
+            namespace = Path("videos") / str(media.video_item_id)
         return (
             cls._image_root_path()
-            / "movies"
-            / media.movie.movie_number
+            / namespace
             / "media"
             / media.content_fingerprint
             / "thumbnails"
@@ -103,7 +107,8 @@ class MediaThumbnailService:
     def _duration_seconds_for_threshold(cls, media: Media) -> int:
         if media.duration_seconds > 0:
             return media.duration_seconds
-        if media.movie.duration_minutes > 0:
+        # 仅 JAV 媒体可回退到影片时长；非 JAV 无此元数据，依赖探测写入的 duration_seconds。
+        if media.movie_number and media.movie.duration_minutes > 0:
             return media.movie.duration_minutes * 60
         return 0
 

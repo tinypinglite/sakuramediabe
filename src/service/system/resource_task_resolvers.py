@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from src.model import Media, Movie
+from peewee import JOIN
+
+from src.model import Media, Movie, VideoItem
 from src.schema.system.resource_task_state import TaskRecordResourceSummary
 
 
@@ -57,17 +59,29 @@ def _resolve_media_summaries(resource_ids: list[int]) -> dict[int, TaskRecordRes
     normalized_ids = [int(resource_id) for resource_id in resource_ids]
     if not normalized_ids:
         return {}
+    # 非 JAV 媒体没有 movie，Movie/VideoItem 均 LEFT OUTER，标题按归属取。
     query = (
-        Media.select(Media.id, Media.path, Media.valid, Movie.movie_number, Movie.title)
-        .join(Movie, on=(Media.movie == Movie.movie_number))
+        Media.select(
+            Media.id,
+            Media.path,
+            Media.valid,
+            Movie.movie_number,
+            Movie.title,
+            VideoItem.title,
+        )
+        .join(Movie, JOIN.LEFT_OUTER, on=(Media.movie == Movie.movie_number))
+        .switch(Media)
+        .join(VideoItem, JOIN.LEFT_OUTER)
         .where(Media.id.in_(normalized_ids))
         .order_by(Media.id.asc())
     )
     return {
         media.id: TaskRecordResourceSummary(
             resource_id=media.id,
-            movie_number=media.movie.movie_number,
-            title=media.movie.title,
+            movie_number=media.movie.movie_number if media.movie_number else None,
+            title=media.movie.title if media.movie_number else (
+                media.video_item.title if media.video_item_id else None
+            ),
             path=media.path,
             valid=media.valid,
         )
@@ -81,10 +95,13 @@ def _search_media_resource_ids(search: str) -> list[int]:
         return []
     query = (
         Media.select(Media.id)
-        .join(Movie, on=(Media.movie == Movie.movie_number))
+        .join(Movie, JOIN.LEFT_OUTER, on=(Media.movie == Movie.movie_number))
+        .switch(Media)
+        .join(VideoItem, JOIN.LEFT_OUTER)
         .where(
             (Movie.movie_number.contains(normalized_search))
             | (Movie.title.contains(normalized_search))
+            | (VideoItem.title.contains(normalized_search))
             | (Media.path.contains(normalized_search))
         )
         .order_by(Media.id.asc())

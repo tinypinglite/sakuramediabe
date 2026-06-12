@@ -20,6 +20,7 @@ from typing import Any, Callable, Dict, List, Literal, Tuple
 from loguru import logger
 
 from src.common import parse_movie_number_from_path
+from src.common.content_fingerprint import compute_content_fingerprint
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
@@ -90,12 +91,6 @@ class ImportGroup:
 
 class MediaImportService:
     """把待导入目录中的视频文件转换为本地媒体库记录。"""
-
-    CONTENT_FINGERPRINT_VERSION = "fingerprint-v1"
-    FULL_HASH_THRESHOLD_BYTES = 100 * 1024 * 1024
-    SAMPLE_WINDOW_BYTES = 5 * 1024 * 1024
-    INTERIOR_SAMPLE_COUNT = 6
-    HASH_READ_CHUNK_BYTES = 1024 * 1024
 
     def __init__(
         self,
@@ -816,24 +811,11 @@ class MediaImportService:
         return any("VR" in file_entry.path.name.upper() for file_entry in files)
 
     def _build_content_fingerprint(self, file_path: Path, movie_number: str) -> str:
-        """构建内容指纹。
-
-        小文件直接全量 hash，大文件只抽样多个区段，避免导入时对超大视频做整文件扫描。
-        """
-        resolved_path = file_path.expanduser().resolve()
-        file_size = resolved_path.stat().st_size
-        hasher = hashlib.sha256()
-        hasher.update(f"{self.CONTENT_FINGERPRINT_VERSION}\0".encode("utf-8"))
-        hasher.update(f"{file_size}\0".encode("utf-8"))
-        hasher.update(f"{self._normalize_movie_number(movie_number)}\0".encode("utf-8"))
-
-        if file_size <= self.FULL_HASH_THRESHOLD_BYTES:
-            self._update_hash_with_range(hasher, resolved_path, 0, file_size)
-        else:
-            for start, end in self._sample_ranges(file_size):
-                self._update_hash_with_range(hasher, resolved_path, start, end)
-
-        return hasher.hexdigest()
+        """构建内容指纹，番号作为额外维度混入；算法统一收敛到 common 共享实现。"""
+        return compute_content_fingerprint(
+            file_path,
+            discriminator=self._normalize_movie_number(movie_number),
+        )
 
     @staticmethod
     def _build_group_content_fingerprint(content_fingerprints: List[str]) -> str:
@@ -844,53 +826,6 @@ class MediaImportService:
     @staticmethod
     def _normalize_movie_number(movie_number: str) -> str:
         return movie_number.strip().upper()
-
-    def _sample_ranges(self, file_size: int) -> List[Tuple[int, int]]:
-        """为大文件生成首尾加中间若干窗口的抽样区间。"""
-        ranges: List[Tuple[int, int]] = [
-            (0, min(file_size, self.SAMPLE_WINDOW_BYTES)),
-            (max(0, file_size - self.SAMPLE_WINDOW_BYTES), file_size),
-        ]
-        half_window = self.SAMPLE_WINDOW_BYTES // 2
-        for index in range(1, self.INTERIOR_SAMPLE_COUNT + 1):
-            center = int(file_size * index / (self.INTERIOR_SAMPLE_COUNT + 1))
-            start = max(0, center - half_window)
-            end = min(file_size, start + self.SAMPLE_WINDOW_BYTES)
-            start = max(0, end - self.SAMPLE_WINDOW_BYTES)
-            ranges.append((start, end))
-        return self._merge_ranges(ranges)
-
-    @staticmethod
-    def _merge_ranges(ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
-        """合并重叠采样区间，避免重复读取同一段文件。"""
-        merged: List[Tuple[int, int]] = []
-        for start, end in sorted(ranges):
-            if not merged or start > merged[-1][1]:
-                merged.append((start, end))
-                continue
-            previous_start, previous_end = merged[-1]
-            merged[-1] = (previous_start, max(previous_end, end))
-        return merged
-
-    def _update_hash_with_range(
-        self,
-        hasher,
-        file_path: Path,
-        start: int,
-        end: int,
-    ) -> None:
-        """把指定文件区间增量写入哈希器。"""
-        remaining = max(0, end - start)
-        if remaining == 0:
-            return
-        with file_path.open("rb") as file_handle:
-            file_handle.seek(start)
-            while remaining > 0:
-                chunk = file_handle.read(min(self.HASH_READ_CHUNK_BYTES, remaining))
-                if not chunk:
-                    break
-                hasher.update(chunk)
-                remaining -= len(chunk)
 
     @staticmethod
     def _find_media_by_content_fingerprint(content_fingerprint: str, *, valid: bool) -> Media | None:

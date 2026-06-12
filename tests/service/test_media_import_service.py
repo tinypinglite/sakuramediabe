@@ -30,6 +30,7 @@ from src.model import (
     ResourceTaskState,
     Subtitle,
     Tag,
+    VideoItem,
 )
 from src.metadata._providers.models import JavdbMovieActorResource, JavdbMovieDetailResource, JavdbMovieTagResource
 from src.service.catalog import ImageDownloadError
@@ -51,6 +52,7 @@ def import_tables(test_db):
         MovieTag,
         MoviePlotImage,
         Subtitle,
+        VideoItem,
         MediaLibrary,
         DownloadClient,
         DownloadTask,
@@ -1091,63 +1093,6 @@ def test_content_fingerprint_changes_when_movie_number_changes(import_tables, tm
     second = service._build_content_fingerprint(file_path, "SSIS-001")
 
     assert first != second
-
-
-def test_build_content_fingerprint_reads_full_file_for_small_inputs(import_tables, tmp_path, monkeypatch):
-    file_path = tmp_path / "ABP-123.mp4"
-    file_path.write_bytes(b"abcdefghijklmnopqrstuvwxyz")
-    service = MediaImportService(
-        provider=FakeJavdbProvider({}),
-        image_downloader=_fake_downloader,
-    )
-    captured_ranges: List[tuple[int, int]] = []
-    original = service._update_hash_with_range
-
-    monkeypatch.setattr(MediaImportService, "FULL_HASH_THRESHOLD_BYTES", 100)
-
-    def _record_range(hasher, target_path: Path, start: int, end: int) -> None:
-        captured_ranges.append((start, end))
-        original(hasher, target_path, start, end)
-
-    monkeypatch.setattr(service, "_update_hash_with_range", _record_range)
-
-    service._build_content_fingerprint(file_path, "ABP-123")
-
-    assert captured_ranges == [(0, file_path.stat().st_size)]
-
-
-def test_build_content_fingerprint_uses_sparse_ranges_for_large_inputs(import_tables, tmp_path, monkeypatch):
-    file_path = tmp_path / "ABP-123.mp4"
-    file_path.write_bytes(bytes(range(64)))
-    service = MediaImportService(
-        provider=FakeJavdbProvider({}),
-        image_downloader=_fake_downloader,
-    )
-    captured_ranges: List[tuple[int, int]] = []
-    original = service._update_hash_with_range
-
-    monkeypatch.setattr(MediaImportService, "FULL_HASH_THRESHOLD_BYTES", 16)
-    monkeypatch.setattr(MediaImportService, "SAMPLE_WINDOW_BYTES", 4)
-    monkeypatch.setattr(MediaImportService, "INTERIOR_SAMPLE_COUNT", 6)
-
-    def _record_range(hasher, target_path: Path, start: int, end: int) -> None:
-        captured_ranges.append((start, end))
-        original(hasher, target_path, start, end)
-
-    monkeypatch.setattr(service, "_update_hash_with_range", _record_range)
-
-    service._build_content_fingerprint(file_path, "ABP-123")
-
-    assert captured_ranges == [
-        (0, 4),
-        (7, 11),
-        (16, 20),
-        (25, 29),
-        (34, 38),
-        (43, 47),
-        (52, 56),
-        (60, 64),
-    ]
 
 
 def test_import_media_revives_invalid_media_and_preserves_thumbnail(

@@ -169,9 +169,14 @@ class ImageSearchIndexService:
 
     @staticmethod
     def _pending_thumbnail_ids() -> list[int]:
+        # 图像检索仅覆盖 JAV 影片；只挑选归属 movie 的缩略图，避免非 JAV 缩略图长期滞留待索引。
         query = (
             MediaThumbnail.select(MediaThumbnail.id)
-            .where(MediaThumbnail.joytag_index_status == MediaThumbnail.JOYTAG_INDEX_STATUS_PENDING)
+            .join(Media)
+            .where(
+                MediaThumbnail.joytag_index_status == MediaThumbnail.JOYTAG_INDEX_STATUS_PENDING,
+                Media.movie.is_null(False),
+            )
             .order_by(MediaThumbnail.id.asc())
         )
         return [item.id for item in query]

@@ -16,6 +16,7 @@ from src.model import (
     MovieSeries,
     SystemEvent,
     SystemNotification,
+    VideoItem,
 )
 from src.schema.transfers.downloads import (
     DownloadCandidateResource,
@@ -131,6 +132,7 @@ def download_tables(test_db):
         Image,
         MovieSeries,
         Movie,
+        VideoItem,
         MediaLibrary,
         Media,
         BackgroundTaskRun,

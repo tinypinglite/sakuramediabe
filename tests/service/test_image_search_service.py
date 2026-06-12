@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from src.model import Image, ImageSearchSession, Media, MediaLibrary, MediaThumbnail, Movie, MovieSeries
+from src.model import Image, ImageSearchSession, Media, MediaLibrary, MediaThumbnail, Movie, MovieSeries, VideoItem
 from src.service.discovery.image_search_service import ImageSearchService
 from src.service.discovery.qdrant_thumbnail_store import ThumbnailVectorSearchHit
 
@@ -27,7 +27,7 @@ class _DummyStore:
 
 @pytest.fixture()
 def image_search_tables(test_db):
-    models = [Image, MovieSeries, Movie, MediaLibrary, Media, MediaThumbnail, ImageSearchSession]
+    models = [Image, MovieSeries, Movie, VideoItem, MediaLibrary, Media, MediaThumbnail, ImageSearchSession]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield

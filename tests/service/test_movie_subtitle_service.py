@@ -3,13 +3,13 @@ from pathlib import Path
 import pytest
 
 from src.config.config import settings
-from src.model import Image, Media, MediaLibrary, Movie, MovieSeries, Subtitle
+from src.model import Image, Media, MediaLibrary, Movie, MovieSeries, Subtitle, VideoItem
 from src.service.catalog.movie_subtitle_service import MovieSubtitleService
 
 
 @pytest.fixture()
 def movie_subtitle_tables(test_db):
-    models = [Image, MovieSeries, Movie, Subtitle, MediaLibrary, Media]
+    models = [Image, MovieSeries, Movie, VideoItem, Subtitle, MediaLibrary, Media]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db

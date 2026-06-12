@@ -5,15 +5,25 @@ from src.model.catalog.images import Image
 from src.model.catalog.movies import Movie
 from src.model.mixins import TimestampedMixin
 from src.model.playback.libraries import MediaLibrary
+from src.model.videos.items import VideoItem
 
 
 class Media(TimestampedMixin, BaseModel):
+    # 解耦后一条 Media 归属 movie（JAV）或 video_item（非 JAV）之一，由 service 层保证恰好其一。
     movie = peewee.ForeignKeyField(
         Movie,
         field=Movie.movie_number,
+        null=True,
         backref="media_items",
         on_delete="CASCADE",
         column_name="movie_number",
+    )
+    video_item = peewee.ForeignKeyField(
+        VideoItem,
+        null=True,
+        backref="media_items",
+        on_delete="CASCADE",
+        column_name="video_item_id",
     )
     library = peewee.ForeignKeyField(
         MediaLibrary,

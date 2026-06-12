@@ -19,9 +19,15 @@ from src.model import (
     MovieTag,
     Playlist,
     PlaylistMovie,
+    Person,
     SystemEvent,
     SystemNotification,
     Tag,
+    VideoCollection,
+    VideoCollectionItem,
+    VideoItem,
+    VideoItemPerson,
+    VideoItemTag,
 )
 
 
@@ -35,6 +41,12 @@ def test_all_documented_domain_models_can_create_tables(test_db):
         MovieActor,
         MoviePlotImage,
         MovieTag,
+        Person,
+        VideoItem,
+        VideoItemTag,
+        VideoItemPerson,
+        VideoCollection,
+        VideoCollectionItem,
         Playlist,
         PlaylistMovie,
         MediaLibrary,
@@ -76,7 +88,7 @@ def test_media_model_tracks_library_and_storage_mode():
 
 
 def test_media_model_uses_resource_task_state_for_thumbnail_status(test_db):
-    models = [Image, MovieSeries, Movie, MediaLibrary, Media]
+    models = [Image, MovieSeries, Movie, VideoItem, MediaLibrary, Media]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
 
@@ -87,7 +99,7 @@ def test_media_model_uses_resource_task_state_for_thumbnail_status(test_db):
 
 
 def test_media_thumbnail_model_tracks_offset_and_joytag_status(test_db):
-    models = [Image, MovieSeries, Movie, MediaLibrary, Media, MediaThumbnail]
+    models = [Image, MovieSeries, Movie, VideoItem, MediaLibrary, Media, MediaThumbnail]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
 

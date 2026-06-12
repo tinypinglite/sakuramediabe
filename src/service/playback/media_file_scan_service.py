@@ -88,14 +88,17 @@ class MediaFileScanService:
                 updates[Media.special_tags] = special_tags
 
         if not updates:
-            MovieSubtitleService.sync_movie_subtitles(media.movie)
+            # 字幕同步是 JAV 影片维度能力，非 JAV 媒体跳过。
+            if media.movie_number:
+                MovieSubtitleService.sync_movie_subtitles(media.movie)
             return result
 
         for field, value in updates.items():
             setattr(media, field.name, value)
         media.updated_at = checked_at
         media.save(only=[*updates.keys(), Media.updated_at])
-        MovieSubtitleService.sync_movie_subtitles(media.movie)
+        if media.movie_number:
+            MovieSubtitleService.sync_movie_subtitles(media.movie)
         result["updated"] = True
         return result
 
