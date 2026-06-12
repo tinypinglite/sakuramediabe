@@ -1,0 +1,221 @@
+"""视频合集（VideoCollection）service：合集增删改查、成员管理与顺序维护。"""
+
+from datetime import datetime
+from typing import Dict, List
+
+from peewee import fn
+
+from src.api.exception.errors import ApiError
+from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import require_record
+from src.model import VideoCollection, VideoCollectionItem, VideoItem
+from src.model.base import get_database
+from src.schema.videos.collections import (
+    VideoCollectionCreateRequest,
+    VideoCollectionItemResource,
+    VideoCollectionResource,
+    VideoCollectionUpdateRequest,
+)
+from src.schema.videos.items import VideoItemListItemResource
+from src.service.videos.video_item_service import VideoItemService
+
+
+class VideoCollectionService:
+    @staticmethod
+    def _current_time() -> datetime:
+        return utc_now_for_db()
+
+    @staticmethod
+    def _require_collection(collection_id: int) -> VideoCollection:
+        return require_record(
+            VideoCollection,
+            VideoCollection.id == collection_id,
+            error_code="video_collection_not_found",
+            error_message="Video collection not found",
+            error_details={"collection_id": collection_id},
+        )
+
+    @staticmethod
+    def _require_video(video_item_id: int) -> VideoItem:
+        return require_record(
+            VideoItem,
+            VideoItem.id == video_item_id,
+            error_code="video_item_not_found",
+            error_message="Video item not found",
+            error_details={"video_item_id": video_item_id},
+        )
+
+    @classmethod
+    def _ensure_name_available(cls, name: str, exclude_id: int | None = None) -> None:
+        query = VideoCollection.select().where(VideoCollection.name == name)
+        if exclude_id is not None:
+            query = query.where(VideoCollection.id != exclude_id)
+        if query.exists():
+            raise ApiError(
+                409,
+                "video_collection_name_conflict",
+                "Video collection name already exists",
+                {"name": name},
+            )
+
+    @staticmethod
+    def _item_counts(collection_ids: List[int]) -> Dict[int, int]:
+        if not collection_ids:
+            return {}
+        query = (
+            VideoCollectionItem.select(
+                VideoCollectionItem.collection,
+                fn.COUNT(VideoCollectionItem.id).alias("item_count"),
+            )
+            .where(VideoCollectionItem.collection.in_(collection_ids))
+            .group_by(VideoCollectionItem.collection)
+        )
+        return {row.collection_id: row.item_count for row in query}
+
+    @staticmethod
+    def _touch_collection(collection: VideoCollection, touched_at: datetime) -> None:
+        collection.updated_at = touched_at
+        collection.save(only=[VideoCollection.updated_at])
+
+    @classmethod
+    def list_collections(cls) -> List[VideoCollectionResource]:
+        collections = list(
+            VideoCollection.select().order_by(
+                VideoCollection.updated_at.desc(), VideoCollection.id.desc()
+            )
+        )
+        counts = cls._item_counts([collection.id for collection in collections])
+        return [
+            VideoCollectionResource.from_collection(collection, item_count=counts.get(collection.id, 0))
+            for collection in collections
+        ]
+
+    @classmethod
+    def get_collection(cls, collection_id: int) -> VideoCollectionResource:
+        collection = cls._require_collection(collection_id)
+        counts = cls._item_counts([collection.id])
+        return VideoCollectionResource.from_collection(collection, item_count=counts.get(collection.id, 0))
+
+    @classmethod
+    def create_collection(cls, payload: VideoCollectionCreateRequest) -> VideoCollectionResource:
+        cls._ensure_name_available(payload.name)
+        collection = VideoCollection.create(name=payload.name, description=payload.description)
+        return VideoCollectionResource.from_collection(collection, item_count=0)
+
+    @classmethod
+    def update_collection(
+        cls, collection_id: int, payload: VideoCollectionUpdateRequest
+    ) -> VideoCollectionResource:
+        collection = cls._require_collection(collection_id)
+        update_data = payload.model_dump(exclude_unset=True, by_alias=False)
+        if not update_data:
+            raise ApiError(422, "validation_error", "At least one field must be provided")
+        if "name" in update_data and update_data["name"] is not None:
+            name = update_data["name"]
+            if name != collection.name:
+                cls._ensure_name_available(name, exclude_id=collection.id)
+            collection.name = name
+        if "description" in update_data and update_data["description"] is not None:
+            collection.description = update_data["description"]
+        collection.updated_at = cls._current_time()
+        collection.save()
+        return cls.get_collection(collection.id)
+
+    @classmethod
+    def delete_collection(cls, collection_id: int) -> None:
+        collection = cls._require_collection(collection_id)
+        # 仅删除合集与成员关联，视频条目本身保留。
+        collection.delete_instance(recursive=True)
+
+    @classmethod
+    def list_collection_items(cls, collection_id: int) -> List[VideoCollectionItemResource]:
+        collection = cls._require_collection(collection_id)
+        # 按 position 升序返回，前端据此顺序播放。
+        links = list(
+            VideoCollectionItem.select(VideoCollectionItem, VideoItem)
+            .join(VideoItem)
+            .where(VideoCollectionItem.collection == collection)
+            .order_by(VideoCollectionItem.position.asc(), VideoCollectionItem.id.asc())
+        )
+        stats = VideoItemService._media_stats([link.video_item_id for link in links])
+        items: List[VideoCollectionItemResource] = []
+        for link in links:
+            media_count, can_play = stats.get(link.video_item_id, (0, False))
+            items.append(
+                VideoCollectionItemResource(
+                    item_id=link.id,
+                    position=link.position,
+                    video=VideoItemService._to_list_item(link.video_item, media_count, can_play),
+                )
+            )
+        return items
+
+    @classmethod
+    def _next_position(cls, collection: VideoCollection) -> int:
+        current_max = (
+            VideoCollectionItem.select(fn.MAX(VideoCollectionItem.position))
+            .where(VideoCollectionItem.collection == collection)
+            .scalar()
+        )
+        return (current_max if current_max is not None else -1) + 1
+
+    @classmethod
+    def add_item(cls, collection_id: int, video_item_id: int) -> None:
+        collection = cls._require_collection(collection_id)
+        video = cls._require_video(video_item_id)
+        touched_at = cls._current_time()
+        existing = VideoCollectionItem.get_or_none(
+            VideoCollectionItem.collection == collection,
+            VideoCollectionItem.video_item == video,
+        )
+        if existing is None:
+            VideoCollectionItem.create(
+                collection=collection,
+                video_item=video,
+                position=cls._next_position(collection),
+                created_at=touched_at,
+                updated_at=touched_at,
+            )
+            cls._touch_collection(collection, touched_at)
+
+    @classmethod
+    def remove_item(cls, collection_id: int, item_id: int) -> None:
+        collection = cls._require_collection(collection_id)
+        deleted = (
+            VideoCollectionItem.delete()
+            .where(
+                VideoCollectionItem.id == item_id,
+                VideoCollectionItem.collection == collection,
+            )
+            .execute()
+        )
+        if deleted:
+            cls._touch_collection(collection, cls._current_time())
+
+    @classmethod
+    def reorder_items(cls, collection_id: int, ordered_item_ids: List[int]) -> List[VideoCollectionItemResource]:
+        collection = cls._require_collection(collection_id)
+        existing_ids = {
+            link.id
+            for link in VideoCollectionItem.select(VideoCollectionItem.id).where(
+                VideoCollectionItem.collection == collection
+            )
+        }
+        normalized = list(dict.fromkeys(ordered_item_ids))
+        # 校验：给出的 item_id 必须恰好覆盖该合集的全部成员，避免漏排或越权。
+        if set(normalized) != existing_ids:
+            raise ApiError(
+                422,
+                "invalid_collection_reorder",
+                "ordered_item_ids must cover exactly all collection items",
+                {"collection_id": collection_id},
+            )
+        touched_at = cls._current_time()
+        with get_database().atomic():
+            for position, item_id in enumerate(normalized):
+                item = VideoCollectionItem.get_by_id(item_id)
+                item.position = position
+                item.updated_at = touched_at
+                item.save(only=[VideoCollectionItem.position, VideoCollectionItem.updated_at])
+            cls._touch_collection(collection, touched_at)
+        return cls.list_collection_items(collection_id)

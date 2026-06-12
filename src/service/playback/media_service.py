@@ -12,7 +12,17 @@ from src.common.service_helpers import (
     with_movie_card_relations,
 )
 from src.common.runtime_time import utc_now_for_db
-from src.model import Image, Media, MediaLibrary, MediaPoint, MediaProgress, MediaThumbnail, Movie, ResourceTaskState
+from src.model import (
+    Image,
+    Media,
+    MediaLibrary,
+    MediaPoint,
+    MediaProgress,
+    MediaThumbnail,
+    Movie,
+    ResourceTaskState,
+    VideoItem,
+)
 from src.model.base import get_database
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
@@ -127,7 +137,8 @@ class MediaService:
             MediaPoint.select(MediaPoint, Media, Movie, MediaThumbnail, Image)
             .join(Media)
             .switch(Media)
-            .join(Movie, on=(Media.movie == Movie.movie_number))
+            # 非 JAV 媒体没有 movie，改为 LEFT OUTER JOIN 让两类时刻都能列出。
+            .join(Movie, peewee.JOIN.LEFT_OUTER, on=(Media.movie == Movie.movie_number))
             .switch(MediaPoint)
             .join(MediaThumbnail)
             .switch(MediaThumbnail)
@@ -140,7 +151,8 @@ class MediaService:
             MediaPointListItemResource(
                 point_id=point.id,
                 media_id=point.media_id,
-                movie_number=point.media.movie.movie_number,
+                movie_number=point.media.movie_number,
+                video_item_id=point.media.video_item_id,
                 thumbnail_id=point.thumbnail_id,
                 offset_seconds=point.offset_seconds,
                 image=ImageResource.from_attributes_model(point.thumbnail.image),
@@ -224,7 +236,9 @@ class MediaService:
             progress.updated_at = watched_at
             progress.save()
 
-        PlaylistService.touch_recently_played(media.movie)
+        # 最近播放列表是 JAV 影片维度的能力，非 JAV 媒体跳过维护。
+        if media.movie_number:
+            PlaylistService.touch_recently_played(media.movie)
         return MediaProgressResource(
             media_id=media.id,
             last_position_seconds=progress.position_seconds,
@@ -286,6 +300,42 @@ class MediaService:
             checked_at=result.checked_at,
         )
 
+    @staticmethod
+    def _to_invalid_media_resource(media: Media) -> InvalidMediaResource:
+        # 按归属拆分：JAV 媒体展示番号与影片封面，非 JAV 媒体回退到 VideoItem 标题。
+        if media.movie_number:
+            movie = media.movie
+            return InvalidMediaResource(
+                id=media.id,
+                movie_number=movie.movie_number,
+                movie_title=movie.title,
+                cover_image=ImageResource.from_attributes_model(movie.cover_image)
+                if movie.cover_image_id is not None
+                else None,
+                thin_cover_image=ImageResource.from_attributes_model(movie.thin_cover_image)
+                if movie.thin_cover_image_id is not None
+                else None,
+                path=media.path,
+                library_id=media.library_id,
+                library_name=media.library.name if media.library_id is not None else None,
+                file_size_bytes=media.file_size_bytes,
+                updated_at=media.updated_at,
+            )
+        video_item = media.video_item if media.video_item_id else None
+        return InvalidMediaResource(
+            id=media.id,
+            video_item_id=media.video_item_id,
+            movie_title=video_item.title if video_item is not None else None,
+            cover_image=ImageResource.from_attributes_model(video_item.cover_image)
+            if video_item is not None and video_item.cover_image_id is not None
+            else None,
+            path=media.path,
+            library_id=media.library_id,
+            library_name=media.library.name if media.library_id is not None else None,
+            file_size_bytes=media.file_size_bytes,
+            updated_at=media.updated_at,
+        )
+
     @classmethod
     def list_invalid_media(
         cls,
@@ -295,14 +345,18 @@ class MediaService:
         search: str | None = None,
     ) -> PageResponse[InvalidMediaResource]:
         validate_page(page, page_size, error_code="invalid_media_filter")
-        base_query = Media.select(Media, Movie).join(
+        # 非 JAV 媒体没有 movie，Movie 改为 LEFT OUTER，并补 VideoItem 兜底标题。
+        base_query = Media.select(Media, Movie, VideoItem).join(
             Movie,
+            peewee.JOIN.LEFT_OUTER,
             on=(Media.movie == Movie.movie_number),
         )
         # 失效媒体卡片需要展示影片横版与竖版封面，沿用影片卡片的关联加载逻辑。
         base_query, _thin_cover_alias = with_movie_card_relations(base_query)
         base_query = (
             base_query.select_extend(MediaLibrary)
+            .switch(Media)
+            .join(VideoItem, peewee.JOIN.LEFT_OUTER)
             .switch(Media)
             .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
             .where(Media.valid == False)
@@ -312,6 +366,7 @@ class MediaService:
             base_query = base_query.where(
                 (Movie.movie_number.contains(normalized))
                 | (Movie.title.contains(normalized))
+                | (VideoItem.title.contains(normalized))
                 | (Media.path.contains(normalized))
             )
         total = base_query.count()
@@ -320,25 +375,7 @@ class MediaService:
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        items = [
-            InvalidMediaResource(
-                id=media.id,
-                movie_number=media.movie.movie_number,
-                movie_title=media.movie.title,
-                cover_image=ImageResource.from_attributes_model(media.movie.cover_image)
-                if media.movie.cover_image_id is not None
-                else None,
-                thin_cover_image=ImageResource.from_attributes_model(media.movie.thin_cover_image)
-                if media.movie.thin_cover_image_id is not None
-                else None,
-                path=media.path,
-                library_id=media.library_id,
-                library_name=media.library.name if media.library_id is not None else None,
-                file_size_bytes=media.file_size_bytes,
-                updated_at=media.updated_at,
-            )
-            for media in rows
-        ]
+        items = [cls._to_invalid_media_resource(media) for media in rows]
         return PageResponse[InvalidMediaResource](
             items=items,
             page=page,

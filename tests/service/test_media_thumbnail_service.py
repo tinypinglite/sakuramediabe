@@ -3,13 +3,23 @@ from pathlib import Path
 
 import pytest
 
-from src.model import Image, Media, MediaLibrary, MediaThumbnail, Movie, MovieSeries, ResourceTaskState
+from src.model import (
+    Image,
+    Media,
+    MediaLibrary,
+    MediaThumbnail,
+    Movie,
+    MovieSeries,
+    ResourceTaskState,
+    VideoItem,
+)
 from src.service.system import ActivityService
 
 
 @pytest.fixture()
 def thumbnail_tables(test_db):
-    models = [Image, MovieSeries, Movie, MediaLibrary, Media, MediaThumbnail, ResourceTaskState]
+    # Media 现含指向 video_item 的外键，建表列表需包含该表以满足 FK 约束。
+    models = [Image, MovieSeries, Movie, VideoItem, MediaLibrary, Media, MediaThumbnail, ResourceTaskState]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db

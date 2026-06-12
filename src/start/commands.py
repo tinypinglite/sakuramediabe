@@ -33,6 +33,8 @@ from src.service.catalog.movie_desc_translation_test_support import (
 from src.service.playback import MediaFileScanService, MediaLibraryService
 from src.service.system import TaskRunConflictError
 from src.service.transfers import MediaImportService
+from src.service.videos import VideoImportService
+from src.schema.videos.imports import VideoImportRequest
 from src.start.initdb import create_tables
 
 
@@ -566,6 +568,69 @@ def import_media(source_path: str, library_id: int, transfer_mode: str):
         f"imported={job.imported_count} "
         f"skipped={job.skipped_count} "
         f"failed={job.failed_count}"
+    )
+
+
+def _parse_int_csv(raw: str | None) -> list[int]:
+    if not raw:
+        return []
+    try:
+        return [int(part.strip()) for part in raw.split(",") if part.strip()]
+    except ValueError as exc:
+        raise click.ClickException(f"invalid integer list: {raw}") from exc
+
+
+@main.command(name="import-videos")
+@click.option(
+    "--source-path",
+    required=True,
+    type=click.Path(exists=True, dir_okay=True, file_okay=True),
+    help="Import source directory or a single video file.",
+)
+@click.option("--library-id", type=int, default=None, help="Optional target media library id.")
+@click.option("--tag-ids", type=str, default=None, help="Comma-separated tag ids to attach.")
+@click.option("--person-ids", type=str, default=None, help="Comma-separated person ids to attach.")
+@click.option("--collection-id", type=int, default=None, help="Optional collection id to append into.")
+def import_videos(
+    source_path: str,
+    library_id: int | None,
+    tag_ids: str | None,
+    person_ids: str | None,
+    collection_id: int | None,
+):
+    logger.info(
+        "CLI import-videos start source_path={} library_id={} collection_id={}",
+        source_path,
+        library_id,
+        collection_id,
+    )
+    _ensure_database_ready()
+    payload = VideoImportRequest(
+        source_path=source_path,
+        library_id=library_id,
+        tag_ids=_parse_int_csv(tag_ids),
+        person_ids=_parse_int_csv(person_ids),
+        collection_id=collection_id,
+    )
+    try:
+        result = VideoImportService().import_from_source(payload)
+    except ApiError as exc:
+        logger.warning("CLI import-videos validation failed code={} detail={}", exc.code, exc.details)
+        raise click.ClickException(exc.code)
+    except Exception:
+        logger.exception("CLI import-videos crashed source_path={}", source_path)
+        raise
+
+    logger.info(
+        "CLI import-videos finished created={} skipped={}",
+        result.created_count,
+        result.skipped_count,
+    )
+    click.echo(
+        "video import finished: "
+        f"created={result.created_count} "
+        f"skipped={result.skipped_count} "
+        f"video_item_ids={result.video_item_ids}"
     )
 
 

@@ -3,14 +3,14 @@ from pathlib import Path
 import pytest
 
 from src.api.exception.errors import ApiError
-from src.model import Image, Media, MediaLibrary, Movie, MovieSeries, ResourceTaskState, Subtitle
+from src.model import Image, Media, MediaLibrary, Movie, MovieSeries, ResourceTaskState, Subtitle, VideoItem
 from src.service.playback.media_file_scan_service import MediaFileScanService
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeResult
 
 
 @pytest.fixture()
 def media_file_scan_tables(test_db):
-    models = [Image, MovieSeries, Movie, Subtitle, MediaLibrary, Media, ResourceTaskState]
+    models = [Image, MovieSeries, Movie, VideoItem, Subtitle, MediaLibrary, Media, ResourceTaskState]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db

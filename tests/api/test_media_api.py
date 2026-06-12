@@ -491,6 +491,7 @@ def test_list_media_points_returns_paginated_results_sorted_by_created_at(
                 "point_id": newer_point.id,
                 "media_id": second_media.id,
                 "movie_number": "ABC-002",
+                "video_item_id": None,
                 "thumbnail_id": newer_thumbnail.id,
                 "offset_seconds": 360,
                 "image": {
@@ -506,6 +507,7 @@ def test_list_media_points_returns_paginated_results_sorted_by_created_at(
                 "point_id": older_point.id,
                 "media_id": first_media.id,
                 "movie_number": "ABC-001",
+                "video_item_id": None,
                 "thumbnail_id": older_thumbnail.id,
                 "offset_seconds": 120,
                 "image": {

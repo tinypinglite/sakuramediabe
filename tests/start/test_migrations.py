@@ -492,3 +492,70 @@ def test_run_pending_migrations_drops_notification_archived_at(test_db):
     # 删列不应破坏历史数据。
     assert rows == [("新影片", "reminder")]
     assert "20260609_01_drop_notification_archived_at" in _schema_migration_names(test_db)
+
+
+def _create_legacy_media_table_not_null(test_db):
+    # 旧版 media 表：movie_number 为 NOT NULL 外键列，且没有 video_item_id。
+    test_db.execute_sql(
+        """
+        CREATE TABLE media (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            movie_number VARCHAR(255) NOT NULL,
+            library_id INTEGER NULL,
+            path VARCHAR(1024) NOT NULL UNIQUE,
+            storage_mode VARCHAR(32) NULL,
+            resolution VARCHAR(32) NULL,
+            content_fingerprint VARCHAR(255) NULL,
+            file_size_bytes INTEGER NOT NULL DEFAULT 0,
+            duration_seconds INTEGER NOT NULL DEFAULT 0,
+            video_info TEXT NULL,
+            special_tags VARCHAR(255) NOT NULL DEFAULT '普通',
+            valid INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+
+
+def _column_is_nullable(test_db, table_name: str, column_name: str) -> bool:
+    for column in test_db.get_columns(table_name):
+        if column.name == column_name:
+            return column.null
+    raise AssertionError(f"column not found: {table_name}.{column_name}")
+
+
+def test_run_pending_migrations_decouples_media_movie_and_adds_video_item(test_db, monkeypatch):
+    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
+    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
+    _create_legacy_media_table_not_null(test_db)
+    test_db.execute_sql(
+        """
+        INSERT INTO media (created_at, updated_at, movie_number, path, content_fingerprint)
+        VALUES ('2026-01-01 00:00:00', '2026-01-01 00:00:00', 'ABP-001', '/lib/abp-001.mp4', 'fp-1')
+        """
+    )
+
+    run_pending_migrations(test_db)
+
+    media_columns = {column.name for column in test_db.get_columns("media")}
+    existing_tables = set(test_db.get_tables())
+
+    # video_item 新增列存在，movie_number 放松为可空。
+    assert "video_item_id" in media_columns
+    assert _column_is_nullable(test_db, "media", "movie_number") is True
+    # videos 域新表已建出。
+    assert {
+        "video_item",
+        "person",
+        "video_item_tag",
+        "video_item_person",
+        "video_collection",
+        "video_collection_item",
+    }.issubset(existing_tables)
+    # 既有 JAV 媒体数据完好。
+    rows = test_db.execute_sql(
+        "SELECT movie_number, path, video_item_id FROM media ORDER BY id"
+    ).fetchall()
+    assert rows == [("ABP-001", "/lib/abp-001.mp4", None)]
+    assert "20260613_01_add_videos_and_decouple_media" in _schema_migration_names(test_db)

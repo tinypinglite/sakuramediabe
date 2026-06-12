@@ -26,6 +26,12 @@ from src.model import (
     Subtitle,
     SystemEvent,
     SystemNotification,
+    Person,
+    VideoCollection,
+    VideoCollectionItem,
+    VideoItem,
+    VideoItemPerson,
+    VideoItemTag,
     User,
     UserRefreshToken,
 )
@@ -90,6 +96,32 @@ def test_create_tables_creates_system_tables(test_db, monkeypatch):
     assert SystemNotification.table_exists()
     assert SystemEvent.table_exists()
     assert Subtitle.table_exists()
+
+
+def test_create_tables_creates_videos_domain_tables_and_decoupled_media(test_db, monkeypatch):
+    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
+    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
+
+    database = create_tables()
+
+    assert Person.table_exists()
+    assert VideoItem.table_exists()
+    assert VideoItemPerson.table_exists()
+    assert VideoItemTag.table_exists()
+    assert VideoCollection.table_exists()
+    assert VideoCollectionItem.table_exists()
+
+    # 合集成员带 position 排序字段。
+    collection_item_columns = {
+        row[1] for row in database.execute_sql("PRAGMA table_info(video_collection_item)").fetchall()
+    }
+    assert "position" in collection_item_columns
+
+    # Media 解耦：movie_number 可空且新增 video_item_id。
+    media_info = {row[1]: row for row in database.execute_sql("PRAGMA table_info(media)").fetchall()}
+    assert "video_item_id" in media_info
+    # PRAGMA table_info 第 3 列(notnull) 为 0 表示可空。
+    assert media_info["movie_number"][3] == 0
 
 
 def test_create_tables_creates_daily_recommendation_unique_constraints(test_db, monkeypatch):

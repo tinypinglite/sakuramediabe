@@ -45,7 +45,9 @@ class MediaPointResource(SchemaModel):
 class MediaPointListItemResource(SchemaModel):
     point_id: int
     media_id: int
-    movie_number: str
+    # 非 JAV 媒体没有番号，改为可空并附带 video_item_id 供前端区分归属。
+    movie_number: str | None = None
+    video_item_id: int | None = None
     thumbnail_id: int
     offset_seconds: int
     image: ImageResource
@@ -61,8 +63,10 @@ class MediaThumbnailResource(SchemaModel):
 
 class InvalidMediaResource(SchemaModel):
     id: int
-    movie_number: str
-    movie_title: str | None
+    # 非 JAV 媒体无番号，番号可空，标题回退到 VideoItem.title。
+    movie_number: str | None = None
+    video_item_id: int | None = None
+    movie_title: str | None = None
     cover_image: ImageResource | None = None
     thin_cover_image: ImageResource | None = None
     path: str

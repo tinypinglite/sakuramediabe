@@ -18,6 +18,10 @@ from src.api.routers.system import movie_desc_translation_settings
 from src.api.routers.system import status
 from src.api.routers.transfers import downloads
 from src.api.routers.transfers import media_import
+from src.api.routers.videos import collections as video_collections
+from src.api.routers.videos import imports as video_imports
+from src.api.routers.videos import items as video_items
+from src.api.routers.videos import persons as video_persons
 from src.api.app import create_app
 from src.config.config import settings
 
@@ -155,6 +159,31 @@ def test_tags_router_uses_auth_and_db_dependencies():
 
     assert deps.db_deps in dependency_targets
     assert deps.get_current_user in dependency_targets
+
+
+def test_videos_routers_use_auth_and_db_dependencies():
+    for module in (video_items, video_persons, video_collections, video_imports):
+        dependency_targets = {
+            dependency.dependency for dependency in module.router.dependencies
+        }
+        assert deps.db_deps in dependency_targets
+        assert deps.get_current_user in dependency_targets
+
+
+def test_create_app_registers_videos_routes():
+    app = create_app()
+    paths = {getattr(route, "path", None) for route in app.routes}
+
+    assert "/videos" in paths
+    assert "/videos/{video_id}" in paths
+    assert "/persons" in paths
+    assert "/persons/{person_id}" in paths
+    assert "/video-collections" in paths
+    assert "/video-collections/{collection_id}" in paths
+    assert "/video-collections/{collection_id}/items" in paths
+    assert "/video-collections/{collection_id}/items/{item_id}" in paths
+    assert "/video-collections/{collection_id}/items/reorder" in paths
+    assert "/video-imports" in paths
 
 
 def test_openapi_uses_oauth2_password_flow_for_authorize_button():

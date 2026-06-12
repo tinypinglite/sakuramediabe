@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.config.config import settings
-from src.model import Image, Media, MediaLibrary, MediaThumbnail, Movie, MovieSeries
+from src.model import Image, Media, MediaLibrary, MediaThumbnail, Movie, MovieSeries, VideoItem
 from src.service.discovery.joytag_embedder_client import JoyTagEmbeddingItemError, JoyTagInferenceUnavailableError
 from src.service.discovery import ImageSearchIndexService
 
@@ -59,7 +59,8 @@ class _DummyStore:
 
 @pytest.fixture()
 def image_index_tables(test_db):
-    models = [Image, MovieSeries, Movie, MediaLibrary, Media, MediaThumbnail]
+    # Media 含 video_item 外键，需建出 VideoItem 表以满足 FK 约束。
+    models = [Image, MovieSeries, Movie, VideoItem, MediaLibrary, Media, MediaThumbnail]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield

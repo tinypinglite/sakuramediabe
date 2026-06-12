@@ -12,6 +12,7 @@ from src.model import (
     MediaLibrary,
     Movie,
     MovieSeries,
+    VideoItem,
 )
 
 
@@ -21,6 +22,7 @@ def media_transfer_tables(test_db):
         Image,
         MovieSeries,
         Movie,
+        VideoItem,
         MediaLibrary,
         DownloadClient,
         Indexer,
