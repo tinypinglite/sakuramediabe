@@ -16,10 +16,12 @@ from src.api.exception.exception import (
     http_exception_handler,
     validation_exception_handler,
 )
+from src.api.routers.collections.clip_collections import router as clip_collections_router
 from src.api.routers.collections.playlists import router as playlists_router
 from src.api.routers.files.images import router as file_images_router
 from src.api.routers.files.subtitles import router as file_subtitles_router
 from src.api.routers.playback.media import router as media_router
+from src.api.routers.playback.media_clips import router as media_clips_router
 from src.api.routers.playback.media_points import router as media_points_router
 from src.api.routers.playback.media_libraries import router as media_libraries_router
 from src.api.routers.transfers.downloads import router as downloads_router
@@ -87,9 +89,11 @@ def create_app() -> FastAPI:
     app.include_router(movies_router)
     app.include_router(tags_router)
     app.include_router(playlists_router)
+    app.include_router(clip_collections_router)
     app.include_router(file_images_router)
     app.include_router(file_subtitles_router)
     app.include_router(media_router)
+    app.include_router(media_clips_router)
     app.include_router(media_points_router)
     app.include_router(media_libraries_router)
     app.include_router(daily_recommendations_router)

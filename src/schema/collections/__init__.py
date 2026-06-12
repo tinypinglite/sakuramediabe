@@ -1,3 +1,10 @@
+from .clips import (
+    ClipCollectionClipItemResource,
+    ClipCollectionCreateRequest,
+    ClipCollectionResource,
+    ClipCollectionSetClipsRequest,
+    ClipCollectionUpdateRequest,
+)
 from .playlists import (
     PlaylistCreateRequest,
     PlaylistMovieListItemResource,
@@ -6,6 +13,11 @@ from .playlists import (
 )
 
 __all__ = [
+    "ClipCollectionClipItemResource",
+    "ClipCollectionCreateRequest",
+    "ClipCollectionResource",
+    "ClipCollectionSetClipsRequest",
+    "ClipCollectionUpdateRequest",
     "PlaylistCreateRequest",
     "PlaylistMovieListItemResource",
     "PlaylistResource",

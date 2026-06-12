@@ -1,3 +1,4 @@
+from .clips import ClipCollection, ClipCollectionItem
 from .playlists import (
     FOUR_K_PLAYLIST_DESCRIPTION,
     FOUR_K_PLAYLIST_NAME,
@@ -15,6 +16,8 @@ from .playlists import (
 )
 
 __all__ = [
+    "ClipCollection",
+    "ClipCollectionItem",
     "FOUR_K_PLAYLIST_DESCRIPTION",
     "FOUR_K_PLAYLIST_NAME",
     "PLAYLIST_KIND_4K",

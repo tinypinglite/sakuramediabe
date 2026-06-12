@@ -34,10 +34,12 @@
 ### Collections
 
 - [collections/playlists.md](./collections/playlists.md): 播放列表与影片归档
+- [collections/clip-collections.md](./collections/clip-collections.md): 跨影片的有序片段合集与连续播放
 
 ### Playback
 
 - [playback/media.md](./playback/media.md): 媒体资源、播放流、缩略图、进度和精彩时间点
+- [playback/media-clips.md](./playback/media-clips.md): 用户片段（ffmpeg 切片）收藏与串流
 - [playback/media-libraries.md](./playback/media-libraries.md): 媒体库配置管理
 
 ### Discovery

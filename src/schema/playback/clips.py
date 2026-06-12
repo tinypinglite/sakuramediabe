@@ -1,0 +1,54 @@
+from datetime import datetime
+
+from pydantic import Field, field_validator
+
+from src.schema.catalog.actors import ImageResource
+from src.schema.common.base import SchemaModel
+
+
+class MediaClipCreateRequest(SchemaModel):
+    # 用户从同一媒体资源选两张缩略图圈出区间，首尾顺序不限，service 内部取 min/max。
+    start_thumbnail_id: int = Field(gt=0)
+    end_thumbnail_id: int = Field(gt=0)
+    title: str = ""
+
+    @field_validator("start_thumbnail_id", "end_thumbnail_id")
+    @classmethod
+    def validate_thumbnail_id(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("thumbnail_id must be greater than 0")
+        return value
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        return value.strip()
+
+
+class MediaClipUpdateRequest(SchemaModel):
+    title: str
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        return value.strip()
+
+
+class MediaClipResource(SchemaModel):
+    clip_id: int
+    media_id: int | None
+    movie_number: str | None
+    start_offset_seconds: int
+    end_offset_seconds: int
+    title: str
+    duration_seconds: int
+    file_size_bytes: int
+    # 封面按区间首帧缩略图实时解析；来源媒体已删除时为空。
+    cover_image: ImageResource | None = None
+    stream_url: str
+    created_at: datetime
+
+
+class MediaClipDetailResource(MediaClipResource):
+    # 区间内所有缩略图，供前端循环播放成动态预览。
+    preview_frames: list[ImageResource] = []

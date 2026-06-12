@@ -1,8 +1,11 @@
 from datetime import datetime
 
 from src.model import (
+    ClipCollection,
+    ClipCollectionItem,
     Image,
     Media,
+    MediaClip,
     MediaPoint,
     MediaProgress,
     MediaThumbnail,
@@ -854,6 +857,47 @@ def test_delete_media_hard_deletes_media_and_cleans_related_records(client, acco
     assert Movie.get_by_id(movie.id).movie_number == "ABC-001"
     assert PlaylistMovie.select().count() == 2
     assert deleted_media_ids == [media.id]
+
+
+def test_delete_media_keeps_decoupled_clips_and_collection_membership(
+    client, account_user, tmp_path, monkeypatch
+):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-050", "MovieA50", title="Movie 50")
+    file_path = tmp_path / "abc-050.mp4"
+    file_path.write_bytes(b"media")
+    media = Media.create(movie=movie, path=str(file_path), valid=True)
+    # 片段是独立资产：直接落库一条，不经过 ffmpeg。
+    clip = MediaClip.create(
+        media=media,
+        movie_number=movie.movie_number,
+        start_offset_seconds=10,
+        end_offset_seconds=30,
+        title="片段",
+        file_path=f"{movie.movie_number}/1.mp4",
+        file_size_bytes=10,
+        duration_seconds=20,
+    )
+    collection = ClipCollection.create(name="连播合集")
+    ClipCollectionItem.create(collection=collection, clip=clip, position=0)
+    monkeypatch.setattr(
+        "src.service.playback.media_service.get_qdrant_thumbnail_store",
+        lambda: type("Store", (), {"delete_by_media_id": lambda self, _media_id: None})(),
+    )
+
+    response = client.delete(
+        f"/media/{media.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 204
+    assert Media.get_or_none(Media.id == media.id) is None
+    # 片段记录保留，仅来源引用置空；番号快照与合集成员关系不受影响。
+    surviving = MediaClip.get_or_none(MediaClip.id == clip.id)
+    assert surviving is not None
+    assert surviving.media_id is None
+    assert surviving.movie_number == "ABC-050"
+    assert ClipCollectionItem.select().where(ClipCollectionItem.clip == clip.id).count() == 1
 
 
 def test_delete_media_succeeds_when_file_is_missing(client, account_user, tmp_path, monkeypatch):

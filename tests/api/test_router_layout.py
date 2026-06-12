@@ -244,6 +244,20 @@ def test_create_app_registers_image_search_routes():
     assert "/import-jobs/{import_job_id}/failed-files/rename" in paths
 
 
+def test_create_app_registers_media_clip_routes():
+    app = create_app()
+    paths = {getattr(route, "path", None) for route in app.routes}
+
+    assert "/media/{media_id}/clips" in paths
+    assert "/media-clips" in paths
+    assert "/media-clips/{clip_id}" in paths
+    assert "/media-clips/{clip_id}/stream" in paths
+    assert "/clip-collections" in paths
+    assert "/clip-collections/{collection_id}" in paths
+    assert "/clip-collections/{collection_id}/clips" in paths
+    assert "/clip-collections/{collection_id}/clips/{clip_id}" in paths
+
+
 def test_create_app_does_not_register_removed_api_endpoints():
     app = create_app()
     route_methods = {
