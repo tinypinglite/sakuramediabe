@@ -101,6 +101,8 @@ def test_create_tables_creates_system_tables(test_db, monkeypatch):
 def test_create_tables_creates_videos_domain_tables_and_decoupled_media(test_db, monkeypatch):
     monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
     monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
+    # 组合运行时其他测试可能重绑 Peewee 模型；这里显式绑定当前库再验证实际建表结果。
+    test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
 
     database = create_tables()
 
