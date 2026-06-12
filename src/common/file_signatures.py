@@ -10,6 +10,7 @@ from src.common.subtitle_paths import ensure_movie_subtitle_path
 
 IMAGE_FILE_ROUTE_PREFIX = "/files/images"
 MEDIA_STREAM_ROUTE_PREFIX = "/media"
+MEDIA_CLIP_STREAM_ROUTE_PREFIX = "/media-clips"
 SUBTITLE_FILE_ROUTE_PREFIX = "/files/subtitles"
 FILE_SIGNATURE_EXPIRE_SECONDS = 12 * 60 * 60
 
@@ -23,6 +24,13 @@ def _image_root_path() -> Path:
     if not image_root_path.is_absolute():
         image_root_path = Path.cwd() / image_root_path
     return image_root_path.resolve()
+
+
+def media_clip_root_path() -> Path:
+    clip_root_path = Path(settings.media.media_clip_root_path).expanduser()
+    if not clip_root_path.is_absolute():
+        clip_root_path = Path.cwd() / clip_root_path
+    return clip_root_path.resolve()
 
 
 def _normalize_relative_path(relative_path: str) -> str:
@@ -116,6 +124,49 @@ def resolve_media_file_path(media_id: int) -> Path:
     if media is None:
         raise ApiError(404, "media_not_found", "媒体不存在")
     return Path(media.path).expanduser().resolve()
+
+
+def _build_clip_signature(clip_id: int, expires: int) -> str:
+    signature_payload = f"clip:{clip_id}:{expires}"
+    return hmac.new(
+        settings.auth.file_signature_secret.encode("utf-8"),
+        signature_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def build_signed_clip_url(clip_id: int) -> str:
+    # 片段串流签名与其它资源共用固定有效期。
+    expires = _now_timestamp() + FILE_SIGNATURE_EXPIRE_SECONDS
+    signature = _build_clip_signature(clip_id, expires)
+    return f"{MEDIA_CLIP_STREAM_ROUTE_PREFIX}/{clip_id}/stream?expires={expires}&signature={signature}"
+
+
+def verify_clip_signature(clip_id: int, expires: int, signature: str) -> None:
+    if expires <= _now_timestamp():
+        raise ApiError(403, "file_signature_expired", "文件签名已过期")
+
+    expected_signature = _build_clip_signature(clip_id, expires)
+    if not hmac.compare_digest(expected_signature, signature):
+        raise ApiError(403, "file_signature_invalid", "文件签名无效")
+
+
+def resolve_media_clip_file_path(clip_id: int) -> Path:
+    from src.model import MediaClip
+
+    clip = MediaClip.get_or_none(MediaClip.id == clip_id)
+    if clip is None:
+        raise ApiError(404, "media_clip_not_found", "片段不存在")
+
+    normalized_path = _normalize_relative_path(clip.file_path)
+    clip_root_path = media_clip_root_path()
+    absolute_path = (clip_root_path / normalized_path).resolve()
+    # 防御性校验：解析结果必须仍在片段根目录内，避免越权读取。
+    try:
+        absolute_path.relative_to(clip_root_path)
+    except ValueError as exc:
+        raise ApiError(403, "file_path_invalid", "文件路径非法") from exc
+    return absolute_path
 
 
 def _build_subtitle_signature(subtitle_id: int, expires: int) -> str:

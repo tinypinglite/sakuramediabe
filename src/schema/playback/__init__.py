@@ -1,3 +1,9 @@
+from .clips import (
+    MediaClipCreateRequest,
+    MediaClipDetailResource,
+    MediaClipResource,
+    MediaClipUpdateRequest,
+)
 from .media import (
     MediaPointCreateRequest,
     MediaPointListItemResource,
@@ -12,6 +18,10 @@ from .media_libraries import (
 )
 
 __all__ = [
+    "MediaClipCreateRequest",
+    "MediaClipDetailResource",
+    "MediaClipResource",
+    "MediaClipUpdateRequest",
     "MediaProgressResource",
     "MediaProgressUpdateRequest",
     "MediaPointCreateRequest",
