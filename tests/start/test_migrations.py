@@ -3,7 +3,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from src.config.config import DatabaseEngine
-from src.model import SchemaMigration
+from src.model import SchemaMigration, VideoImportJob
 from src.start.commands import main
 from src.start.migrations.runner import (
     MigrationExecution,
@@ -246,6 +246,23 @@ def test_run_pending_migrations_creates_media_clip_tables_on_empty_database(test
     assert test_db.table_exists("media_clip")
     assert test_db.table_exists("clip_collection")
     assert test_db.table_exists("clip_collection_item")
+
+
+def test_run_pending_migrations_creates_video_import_job_on_existing_database(test_db):
+    test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(TEST_MODELS)
+    # 模拟尚未应用当天迁移的库：依赖表都在，但还没有 video_import_job，下次启动 migrate 应自动补建。
+    test_db.drop_tables([VideoImportJob])
+    assert not test_db.table_exists("video_import_job")
+
+    summary = run_pending_migrations(test_db)
+
+    execution = next(
+        item for item in summary.executed if item.name == "20260613_01_add_videos_and_decouple_media"
+    )
+    assert execution.applied is True
+    assert test_db.table_exists("video_import_job")
+    assert "20260613_01_add_videos_and_decouple_media" in _schema_migration_names(test_db)
 
 
 def test_load_migration_module_uses_package_import():
@@ -564,11 +581,12 @@ def test_run_pending_migrations_decouples_media_movie_and_adds_video_item(test_d
     # video_item 新增列存在，movie_number 放松为可空。
     assert "video_item_id" in media_columns
     assert _column_is_nullable(test_db, "media", "movie_number") is True
-    # videos 域新表已建出（无标签、无 person 系列表）。
+    # videos 域新表已建出（含异步导入作业表，无标签、无 person 系列表）。
     assert {
         "video_item",
         "video_collection",
         "video_collection_item",
+        "video_import_job",
     }.issubset(existing_tables)
     assert "person" not in existing_tables
     assert "video_item_person" not in existing_tables

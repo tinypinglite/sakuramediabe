@@ -57,18 +57,20 @@
   - `uv run python -m src.start.commands aps cleanup-activity-records`
 - 独立 CLI：
   - `uv run python -m src.start.commands add-media-library --name <name> --root-path <abs_path>`
-  - `uv run python -m src.start.commands import-media --source-path <dir> --library-id <id>`
-  - `uv run python -m src.start.commands import-videos --source-path <dir>`
   - `uv run python -m src.start.commands backfill-movie-thin-cover-images`
   - `uv run python -m src.start.commands cleanup-movie-subtitle-fetch-history`
   - `uv run python -m src.start.commands scan-media-files`
   - `uv run python -m src.start.commands test-trans --text "これはテストです"`
   - `uv run python -m src.start.commands test-javdb --movie-number ABP-123`
   - `uv run python -m src.start.commands test-dmm --movie-number ABP-123`
-- 测试：
-  - 全量：`uv run pytest`
+- 测试（默认 pytest-xdist 多进程并行）：
+  - 全量：`uv run pytest`（`pyproject.toml` 已设 `addopts = "-n auto"`，按 CPU 核数并行，全量约 40s）
   - 单文件：`uv run pytest tests/service/test_media_import_service.py`
   - 单用例：`uv run pytest tests/api/test_movie_api.py::test_list_movies_supports_status_subscribed -q`
+  - 增量只跑受本次改动影响的用例：`uv run pytest --testmon -n0`（testmon 不与 xdist 协同，**必须配 `-n0`**；首次会全量建依赖映射，之后才增量。映射库 `.testmondata*` 已在 `.gitignore`，是本地产物）
+  - 调试单用例（断点 / `-s` / pdb）：`uv run pytest -n0 <path::case>`（关并行）
+  - 跑很小的子集反而用 `-n0` 更快：worker 启动有固定开销，并行收益在全量/大目录
+- 测试并行安全：用例用 `test_db.bind(...)` 把模型绑到本用例的库后，必须靠 `tests/conftest.py` 的 `test_db` fixture 在 teardown 把 `TEST_MODELS` 复位回 `database_proxy`；新增类似自建库的 fixture 要保持同样复位，否则 xdist 打乱执行顺序时后续用例会命中已关闭的旧库而失败。
 
 ## 变更联动清单
 
@@ -81,7 +83,7 @@
 - 下载域当前围绕 Jackett、qBittorrent、本地索引器配置、自动导入与导入作业状态展开；新增下载源或状态同步逻辑时，优先延续现有 `download_*_service.py`、`download_*_client.py`、`media_import_service.py` 的拆分方式。
 - 改动系统活动流、通知或资源任务状态接口时，至少同步检查 `src/api/routers/system/activity.py`、`src/schema/system/activity.py`、`src/schema/system/resource_task_state.py` 与对应测试。
 - 改动影片相似度或推荐逻辑时，优先复用 `MovieRecommendationService` 和 `MovieSimilarity`，并同步检查推荐接口与重算任务；每日推荐沿用 `DailyRecommendationService` + `generate-daily-recommendations`，瞬时推荐沿用 `MomentRecommendationService` + `generate-moment-recommendations`，模型集中在 `src/model/discovery/recommendations.py`、`daily_recommendations.py`、`moment_recommendations.py`。
-- 改动非 JAV / 无番号视频（videos 域）时，优先复用 `VideoItemService`、`VideoCollectionService`、`VideoImportService` 与对应 router（`items`、`collections`、`imports`），不要把 catalog 的番号逻辑搬过来；videos 域不设标签体系，导入入口另有 `import-videos` CLI。
+- 改动非 JAV / 无番号视频（videos 域）时，优先复用 `VideoItemService`、`VideoCollectionService`、`VideoImportService`、`VideoImportJobService` 与对应 router（`items`、`collections`、`imports`），不要把 catalog 的番号逻辑搬过来；videos 域不设标签体系。视频导入与 JAV 共用一套文件落库语义：文件搬入媒体库（硬链接优先 / cleanup-source 复制后删源，复用 `src/service/transfers/file_transfer.py`）、`library_id` 必填、读取第 0 帧生成封面（`VideoCoverService`）。导入统一走 GUI：`POST /video-imports` 为异步触发（建 `VideoImportJob` + `BackgroundTaskRun`，复用 `DownloadImportRunner` + `ActivityService.run_task`，进度走 `/system/events/stream`），不再提供 CLI 入口。
 
 ### 排行榜约定
 
@@ -107,8 +109,8 @@
 - API 测试优先复用 `tests/conftest.py` 里的 `client`、`app`、`account_user` 等 fixture，不要重复创建测试应用。
 - 推荐优先参考的现有测试：
   - API：`tests/api/test_router_layout.py`、`tests/api/test_auth_api.py`、`tests/api/test_movie_api.py`、`tests/api/test_media_api.py`、`tests/api/test_activity_api.py`、`tests/api/test_ranking_sources_api.py`、`tests/api/test_collection_number_features_api.py`、`tests/api/test_system_resource_task_states.py`
-  - service：`tests/service/test_movie_service_queries.py`、`tests/service/test_actor_service_queries.py`、`tests/service/test_media_import_service.py`、`tests/service/test_image_search_index_service.py`、`tests/service/test_download_service.py`、`tests/service/test_ranking_service.py`、`tests/service/test_recommendation_service.py`、`tests/service/test_daily_recommendation_service.py`、`tests/service/test_moment_recommendation_service.py`、`tests/service/test_video_item_service.py`、`tests/service/test_video_collection_service.py`、`tests/service/test_video_import_service.py`、`tests/service/test_resource_task_state_service.py`、`tests/service/test_media_thumbnail_service.py`
-  - start：`tests/start/test_aps.py`、`tests/start/test_add_media_library_command.py`、`tests/start/test_import_media_command.py`、`tests/start/test_external_service_test_commands.py`、`tests/start/test_backfill_media_metadata_command.py`、`tests/start/test_initdb.py`、`tests/start/test_migrations.py`、`tests/start/test_docker_entrypoint.py`
+  - service：`tests/service/test_movie_service_queries.py`、`tests/service/test_actor_service_queries.py`、`tests/service/test_media_import_service.py`、`tests/service/test_image_search_index_service.py`、`tests/service/test_download_service.py`、`tests/service/test_ranking_service.py`、`tests/service/test_recommendation_service.py`、`tests/service/test_daily_recommendation_service.py`、`tests/service/test_moment_recommendation_service.py`、`tests/service/test_video_item_service.py`、`tests/service/test_video_collection_service.py`、`tests/service/test_video_import_service.py`、`tests/service/test_video_import_job_service.py`、`tests/service/test_resource_task_state_service.py`、`tests/service/test_media_thumbnail_service.py`
+  - start：`tests/start/test_aps.py`、`tests/start/test_add_media_library_command.py`、`tests/start/test_external_service_test_commands.py`、`tests/start/test_backfill_media_metadata_command.py`、`tests/start/test_initdb.py`、`tests/start/test_migrations.py`、`tests/start/test_docker_entrypoint.py`
 
 ## 配置、安全与项目边界
 

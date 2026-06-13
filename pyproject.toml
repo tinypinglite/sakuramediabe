@@ -40,8 +40,16 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=7.4.0,<8.0.0",
+    "pytest-xdist>=3.5.0,<4.0.0",
+    "pytest-testmon>=2.1.0,<3.0.0",
     "pylint>=3.3.7,<4.0.0",
 ]
+
+[tool.pytest.ini_options]
+# 默认用 pytest-xdist 多进程并行（auto = 按 CPU 核数）。全量约 6× 提速。
+# 调试单个用例需要 -s / pdb / 断点时，用 `-n0` 关闭并行：uv run pytest -n0 path::case
+addopts = "-n auto"
+testpaths = ["tests"]
 
 [tool.uv]
 environments = [

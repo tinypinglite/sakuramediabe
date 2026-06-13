@@ -2,6 +2,7 @@ import pytest
 
 from src.api.exception.errors import ApiError
 from src.model import (
+    BackgroundTaskRun,
     Image,
     Media,
     MediaLibrary,
@@ -9,6 +10,7 @@ from src.model import (
     MovieSeries,
     VideoCollection,
     VideoCollectionItem,
+    VideoImportJob,
     VideoItem,
 )
 from src.model.base import database_proxy
@@ -27,6 +29,8 @@ _MODELS = [
     VideoCollectionItem,
     MediaLibrary,
     Media,
+    BackgroundTaskRun,
+    VideoImportJob,
 ]
 
 

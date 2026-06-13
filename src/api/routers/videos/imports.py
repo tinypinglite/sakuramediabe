@@ -1,8 +1,12 @@
 from fastapi import APIRouter, Depends, status
 
 from src.api.routers.deps import db_deps, get_current_user
-from src.schema.videos.imports import VideoImportRequest, VideoImportResultResource
-from src.service.videos import VideoImportService
+from src.schema.videos.imports import (
+    VideoImportJobResource,
+    VideoImportRequest,
+    VideoImportTriggerResponse,
+)
+from src.service.videos import VideoImportJobService
 
 router = APIRouter(
     prefix="/video-imports",
@@ -11,7 +15,17 @@ router = APIRouter(
 )
 
 
-@router.post("", response_model=VideoImportResultResource, status_code=status.HTTP_201_CREATED)
-def import_videos(payload: VideoImportRequest):
-    # 就地索引指定目录或单文件为 VideoItem + Media，并按需关联标签/人物/合集。
-    return VideoImportService().import_from_source(payload)
+@router.post("", response_model=VideoImportTriggerResponse, status_code=status.HTTP_202_ACCEPTED)
+def trigger_video_import(payload: VideoImportRequest):
+    # 异步触发：把视频目录/单文件搬入媒体库并登记，进度经 /system/events/stream 或本作业详情查询。
+    return VideoImportJobService.trigger_directory_import(
+        payload.library_id,
+        payload.source_path,
+        transfer_mode=payload.transfer_mode,
+        collection_id=payload.collection_id,
+    )
+
+
+@router.get("/{video_import_job_id}", response_model=VideoImportJobResource)
+def get_video_import_job(video_import_job_id: int):
+    return VideoImportJobService.get_job(video_import_job_id)

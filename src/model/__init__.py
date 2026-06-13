@@ -39,6 +39,7 @@ from .transfers import DownloadClient, DownloadTask, ImportJob, Indexer
 from .videos import (
     VideoCollection,
     VideoCollectionItem,
+    VideoImportJob,
     VideoItem,
 )
 
@@ -91,6 +92,7 @@ __all__ = [
     "Tag",
     "VideoCollection",
     "VideoCollectionItem",
+    "VideoImportJob",
     "VideoItem",
     "User",
     "UserRefreshToken",

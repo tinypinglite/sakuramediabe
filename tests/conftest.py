@@ -49,6 +49,7 @@ from src.model import (
     PlaylistMovie,
     VideoCollection,
     VideoCollectionItem,
+    VideoImportJob,
     VideoItem,
     ResourceTaskState,
     SchemaMigration,
@@ -105,6 +106,7 @@ TEST_MODELS = [
     Indexer,
     DownloadTask,
     ImportJob,
+    VideoImportJob,
 ]
 
 
@@ -120,6 +122,10 @@ def test_db(tmp_path):
     if not database.is_closed():
         database.close()
     database_proxy.initialize(database)
+    # 还原所有测试模型到全局 proxy：用例里 test_db.bind(...) 会把模型绑死到本用例的库，
+    # 若不复位，同一进程后续用例（尤其是 pytest-xdist 并行打乱执行顺序时）会命中已关闭的旧库而失败。
+    for model in TEST_MODELS:
+        model.bind(database_proxy, bind_refs=False, bind_backrefs=False)
 
 
 @pytest.fixture(autouse=True)

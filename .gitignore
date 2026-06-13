@@ -9,6 +9,7 @@ server/docs/plans
 docs/plans
 test_media_source_dir
 .pytest_cache
+.testmondata*
 lib/joytag
 logs
 docker-data

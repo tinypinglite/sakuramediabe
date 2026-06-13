@@ -3,9 +3,12 @@ from __future__ import annotations
 from playhouse.migrate import migrate as run_migration
 
 from src.model import (
+    BackgroundTaskRun,
     Media,
+    MediaLibrary,
     VideoCollection,
     VideoCollectionItem,
+    VideoImportJob,
     VideoItem,
 )
 from src.start.migrations import SkipMigration
@@ -30,12 +33,17 @@ def migrate(database, migrator) -> None:
         raise SkipMigration("media table does not exist")
 
     # 1) 先用 Peewee 模型补建 videos 域新表，保证字段类型与当前方言一致。
+    #    video_import_job 承接非 JAV 视频的异步目录导入作业（源路径/媒体库/导入模式/统计/失败文件）。
     videos_models = [
         VideoItem,
         VideoCollection,
         VideoCollectionItem,
+        VideoImportJob,
     ]
-    with database.bind_ctx(videos_models, bind_refs=False, bind_backrefs=False):
+    # 绑定被外键引用但已存在的表（media_library / background_task_run），保证 FK DDL 解析正确；
+    # create_tables(safe=True) 只补建缺失的 videos 表，不会重建既有表。
+    bind_models = videos_models + [MediaLibrary, BackgroundTaskRun]
+    with database.bind_ctx(bind_models, bind_refs=False, bind_backrefs=False):
         database.create_tables(videos_models, safe=True)
 
     # 2) Media 新增 video_item 外键列（可空），承接非 JAV 文件归属。

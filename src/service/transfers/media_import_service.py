@@ -10,7 +10,6 @@ import ffmpy
 import hashlib
 import json
 import os
-import shutil
 import time
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -32,6 +31,11 @@ from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeService,
 )
 from src.service.system.resource_task_state_service import ResourceTaskStateService
+from src.service.transfers.file_transfer import (
+    create_version_directory,
+    delete_source_files,
+    transfer_file,
+)
 from src.service.transfers.tag_rules import build_media_special_tags
 # 导入状态/失败原因的取值统一收口到 media_import_status 模块。
 from src.common.media_import_status import (
@@ -44,7 +48,6 @@ from src.common.media_import_status import (
     FAILURE_REASON_METADATA_UPSERT_FAILED,
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
     FAILURE_REASON_RETRY_SOURCES_MISSING,
-    FAILURE_REASON_SOURCE_DELETE_FAILED,
     FAILURE_REASON_VR_MEDIA_MERGE_FAILED,
     IMPORT_JOB_STATE_COMPLETED,
     IMPORT_JOB_STATE_FAILED,
@@ -1105,20 +1108,8 @@ class MediaImportService:
 
     def _create_version_directory(self, library_root: Path, movie_number: str) -> Path:
         """在影片目录下创建唯一版本子目录，避免重复导入时相互覆盖。"""
-        number_directory = library_root / movie_number
-        number_directory.mkdir(parents=True, exist_ok=True)
-
-        base_version = str(self.now_ms())
-        version = base_version
-        suffix = 1
-        while (number_directory / version).exists():
-            version = f"{base_version}-{suffix}"
-            suffix += 1
-
-        target_directory = number_directory / version
-        target_directory.mkdir(parents=True, exist_ok=False)
-        logger.debug("Import version directory created movie_number={} version_dir={}", movie_number, str(target_directory))
-        return target_directory
+        # 复用共享版本目录工具，JAV 实体目录为“库根/番号”。
+        return create_version_directory(library_root / movie_number, now_ms=self.now_ms())
 
     def _delete_imported_source_media(
         self,
@@ -1128,25 +1119,7 @@ class MediaImportService:
         transfer_mode: ImportTransferMode,
     ) -> int:
         """仅在显式搬移模式下删除已成功导入的源媒体文件。"""
-        if transfer_mode != "cleanup-source":
-            return 0
-
-        failed_count = 0
-        for source_path in source_paths:
-            try:
-                source_path.unlink()
-                logger.info("Import source media deleted source={}", str(source_path))
-            except OSError as exc:
-                failed_count += 1
-                logger.warning(
-                    "Import source media delete failed source={} detail={}",
-                    str(source_path),
-                    exc,
-                )
-                failure_items.append(
-                    make_failure_item(source_path, FAILURE_REASON_SOURCE_DELETE_FAILED, str(exc))
-                )
-        return failed_count
+        return delete_source_files(source_paths, failure_items, transfer_mode=transfer_mode)
 
     def _transfer_file(
         self,
@@ -1156,26 +1129,7 @@ class MediaImportService:
         transfer_mode: ImportTransferMode = "auto",
     ) -> str:
         """按导入模式传输文件，并返回实际存储模式。"""
-        if transfer_mode == "cleanup-source":
-            shutil.copy2(source_path, target_path)
-            logger.debug("Import transfer copied source={} target={}", str(source_path), str(target_path))
-            return "copy"
-
-        # 默认模式优先硬链接，失败时再复制，兼容跨文件系统导入。
-        try:
-            os.link(source_path, target_path)
-            logger.debug("Import transfer hardlink source={} target={}", str(source_path), str(target_path))
-            return "hardlink"
-        except OSError as exc:
-            logger.warning(
-                "Import transfer hardlink failed, fallback to copy source={} target={} detail={}",
-                str(source_path),
-                str(target_path),
-                exc,
-            )
-            shutil.copy2(source_path, target_path)
-            logger.debug("Import transfer copied source={} target={}", str(source_path), str(target_path))
-            return "copy"
+        return transfer_file(source_path, target_path, transfer_mode=transfer_mode)
 
     def _merge_media_files(self, files: List[ScannedSourceFile], target_path: Path) -> None:
         ordered_files = sorted(files, key=lambda item: item.path.name)

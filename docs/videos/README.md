@@ -13,9 +13,10 @@
 
 | 模型 | 表 | 说明 |
 |---|---|---|
-| `VideoItem` | `video_item` | 视频条目（标题/简介/封面/发布时间），1:N 关联 `Media` |
+| `VideoItem` | `video_item` | 视频条目（标题/简介/封面/发布时间），1:N 关联 `Media`；封面 `cover_image` 由导入时读取视频**第 0 帧**生成 |
 | `VideoCollection` | `video_collection` | 合集 |
 | `VideoCollectionItem` | `video_collection_item` | 合集成员，`position` 决定顺序播放次序 |
+| `VideoImportJob` | `video_import_job` | 异步视频导入作业：源路径、归属媒体库、导入模式、统计与失败文件，关联 `BackgroundTaskRun` 供进度可观测 |
 
 ### 播放底座解耦
 
@@ -46,8 +47,15 @@
 
 ### 导入 `/video-imports`
 
-- `POST /video-imports`：body 含 `source_path`（目录或单文件）、可选 `library_id`、`collection_id`。
-- **就地索引**：不搬运文件，按 `Media.path` 唯一去重；每个视频文件创建一条 `VideoItem`（标题取文件名）+ 一条 `Media`，并按入参关联合集。
-- 探测复用 `MediaMetadataProbeService`，内容指纹复用 `src/common/content_fingerprint.py` 的共享算法。
+- `POST /video-imports`：**异步触发**，返回 `202` + `{video_import_job_id, task_run_id, status}`。body 含 `source_path`（目录或单文件）、**必填** `library_id`、`transfer_mode`（`auto`/`cleanup-source`，默认 `auto`）、可选 `collection_id`。
+- `GET /video-imports/{video_import_job_id}`：查询作业状态、各计数与 `failed_files`。
+- 进度实时查看：复用系统活动流 `GET /system/events/stream`（SSE，`task_run_updated` 事件）与 `GET /system/task-runs`，无需 videos 域另造推送。
 
-CLI 等价命令见 [../deployment/commands.md](../deployment/commands.md) 的 `import-videos`。
+导入语义（与 JAV 导入共用一套文件落库语义）：
+
+- **文件搬运**：与 JAV 共用 `src/service/transfers/file_transfer.py` 的 `transfer_file`——`auto` 硬链接优先、失败回退复制；`cleanup-source` 复制后删除源文件（禁止作用于任一媒体库目录内，触发时即拒绝）。文件落入 `library_root/videos/<video_item_id>/<timestamp>/<filename>`。
+- **媒体库归属**：`library_id` 必填，每条 `Media.library` 指向该库。
+- **首帧封面**：导入每个视频时由 `VideoCoverService` 读取第 0 帧生成 `cover_image`；失败仅记日志、不阻断导入。
+- **缩略图接手**：落库后 `ResourceTaskStateService.reset_for_requeue(...)` 置缩略图任务为待处理，由 `generate-media-thumbnails` 后台补齐。
+- **去重**：先按 `Media.path` 命中跳过，再按内容指纹（`src/common/content_fingerprint.py`）跳过；探测复用 `MediaMetadataProbeService`。
+- 后台执行复用 `DownloadImportRunner` 线程池 + `ActivityService.run_task`，触发防重依赖 `BackgroundTaskRun.mutex_key`；启动时 `recover_orphaned_jobs` 回收中断作业。

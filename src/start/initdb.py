@@ -42,6 +42,7 @@ from src.model import (
     Tag,
     VideoCollection,
     VideoCollectionItem,
+    VideoImportJob,
     VideoItem,
     User,
     UserRefreshToken,
@@ -102,6 +103,7 @@ def create_tables():
             Indexer,
             DownloadTask,
             ImportJob,
+            VideoImportJob,
         ],
         safe=True,
     )

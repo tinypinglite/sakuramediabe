@@ -6,7 +6,12 @@ from .collections import (
     VideoCollectionResource,
     VideoCollectionUpdateRequest,
 )
-from .imports import VideoImportRequest, VideoImportResultResource
+from .imports import (
+    VideoImportJobListItemResource,
+    VideoImportJobResource,
+    VideoImportRequest,
+    VideoImportTriggerResponse,
+)
 from .items import (
     VideoItemCreateRequest,
     VideoItemDetailResource,
@@ -21,8 +26,10 @@ __all__ = [
     "VideoCollectionReorderRequest",
     "VideoCollectionResource",
     "VideoCollectionUpdateRequest",
+    "VideoImportJobListItemResource",
+    "VideoImportJobResource",
     "VideoImportRequest",
-    "VideoImportResultResource",
+    "VideoImportTriggerResponse",
     "VideoItemCreateRequest",
     "VideoItemDetailResource",
     "VideoItemListItemResource",

@@ -104,25 +104,6 @@ poetry run python -m src.start.commands aps cleanup-activity-records
 poetry run python -m src.start.commands cleanup-movie-subtitle-fetch-history
 ```
 
-- 媒体库相关：
-
-```bash
-poetry run python -m src.start.commands add-media-library --name Main --root-path /data/media
-poetry run python -m src.start.commands import-media --source-path /data/import --library-id 1
-poetry run python -m src.start.commands import-media --source-path /data/import --library-id 1 --transfer-mode cleanup-source
-poetry run python -m src.start.commands backfill-movie-thin-cover-images
-```
-
-说明：`import-media` 默认使用 `auto` 传输模式，即优先硬链接，失败后复制。显式指定 `--transfer-mode cleanup-source` 时，命令会复制新入库媒体并在入库成功后删除对应源视频文件；扫描阶段确认已在媒体库中的重复源视频也会删除。为避免误删已入库文件，`cleanup-source` 不允许对任一媒体库根目录或其子目录执行。字幕、目录、解析失败文件、过小文件和非媒体文件都会保留。
-
-- 非 JAV 视频导入（无番号、无外部元数据）：
-
-```bash
-poetry run python -m src.start.commands import-videos --source-path /data/clips
-poetry run python -m src.start.commands import-videos --source-path /data/clips/one.mp4 --collection-id 1
-```
-
-说明：`import-videos` 接收一个目录或单个视频文件，**就地索引**（不搬运文件），为每个视频文件创建一条 `VideoItem` 与一条 `Media`，标题默认取文件名。`--collection-id` 为可选关联项，会一并关联到本批导入的全部视频；`--library-id` 可选用于归库分组。已按路径登记过的文件会被跳过。缩略图由 `generate-media-thumbnails` 任务自动补齐，时刻通过 `POST /media/{id}/points` 维护。
 
 - 历史竖封面图回填：
 

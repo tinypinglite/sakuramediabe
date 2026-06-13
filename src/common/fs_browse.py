@@ -11,15 +11,31 @@ from typing import Iterable, List
 
 from src.api.exception.errors import ApiError
 
-# 支持导入的视频文件后缀，作为浏览与导入扫描的共享唯一来源。
+# 支持导入的视频文件后缀，作为浏览与导入扫描的共享唯一来源（JAV 与非 JAV 共用，保持一致）。
+# 覆盖日本 AV 资源常见的容器/封装格式：主流现代封装、老资源常见的 wmv/avi/rm 系列，以及
+# 蓝光/DVD 原盘衍生的 ts/m2ts/mts/vob/iso。注意 iso/vob 为盘镜像/DVD 流，能登记入库，但探测/缩略图
+# 依赖 PyAV 解码能力，原盘类文件可能无法生成缩略图（仅记失败，不影响入库）。
 SUPPORTED_VIDEO_EXTENSIONS = frozenset(
     {
-        ".avi",
-        ".m2ts",
+        # 主流现代封装
+        ".mp4",
         ".mkv",
         ".mov",
-        ".mp4",
-    }
+        ".m4v",
+        ".webm",
+        ".ts",
+        ".m2ts",
+        ".mts",
+        ".avi",
+        ".wmv",
+        ".flv",
+        ".f4v",
+        ".mpg",
+        ".mpeg",
+        ".rm",
+        ".rmvb",
+        ".3gp",
+}
 )
 
 

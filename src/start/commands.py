@@ -10,7 +10,6 @@ from pathlib import Path
 
 import click
 from loguru import logger
-from tqdm import tqdm
 
 import src.common.logging as app_logging
 from src.common.logging import configure_logging
@@ -32,9 +31,6 @@ from src.service.catalog.movie_desc_translation_test_support import (
 )
 from src.service.playback import MediaFileScanService, MediaLibraryService
 from src.service.system import TaskRunConflictError
-from src.service.transfers import MediaImportService
-from src.service.videos import VideoImportService
-from src.schema.videos.imports import VideoImportRequest
 from src.start.initdb import create_tables
 
 
@@ -472,151 +468,6 @@ for _job_def in JOB_REGISTRY:
 # ---------------------------------------------------------------------------
 # 非 APS 命令（保持不变）
 # ---------------------------------------------------------------------------
-
-
-@main.command(name="import-media")
-@click.option(
-    "--source-path",
-    required=True,
-    type=click.Path(exists=True, dir_okay=True, file_okay=False),
-    help="Import source directory.",
-)
-@click.option("--library-id", required=True, type=int, help="Target media library id.")
-@click.option(
-    "--transfer-mode",
-    type=click.Choice(["auto", "cleanup-source"]),
-    default="auto",
-    show_default=True,
-    help="File transfer mode. cleanup-source deletes successfully imported source media files.",
-)
-def import_media(source_path: str, library_id: int, transfer_mode: str):
-    logger.info(
-        "CLI import-media start source_path={} library_id={} transfer_mode={}",
-        source_path,
-        library_id,
-        transfer_mode,
-    )
-    _ensure_database_ready()
-    service = MediaImportService()
-    progress_bar = None
-
-    def _handle_progress(event: dict[str, object]) -> None:
-        nonlocal progress_bar
-        event_type = str(event.get("event", ""))
-        if event_type == "scan_complete":
-            progress_bar = tqdm(
-                total=int(event.get("total_movies", 0)),
-                unit="movie",
-                dynamic_ncols=True,
-            )
-            return
-        if progress_bar is None:
-            return
-
-        stage = event.get("stage")
-        if stage:
-            progress_bar.set_description(str(stage))
-
-        postfix = {
-            "imported": int(event.get("imported_count", 0)),
-            "skipped": int(event.get("skipped_count", 0)),
-            "failed": int(event.get("failed_count", 0)),
-        }
-        movie_number = event.get("movie_number")
-        if movie_number:
-            postfix["movie_number"] = str(movie_number)
-        progress_bar.set_postfix(postfix)
-
-        if event_type == "movie_finished":
-            progress_bar.update(1)
-
-    click.echo("scanning source...")
-    try:
-        job = service.import_from_source(
-            source_path=source_path,
-            library_id=library_id,
-            progress_callback=_handle_progress,
-            transfer_mode=transfer_mode,
-        )
-    except ValueError as exc:
-        logger.warning("CLI import-media validation failed detail={}", exc)
-        raise click.ClickException(str(exc))
-    except Exception:
-        logger.exception(
-            "CLI import-media crashed source_path={} library_id={} transfer_mode={}",
-            source_path,
-            library_id,
-            transfer_mode,
-        )
-        raise
-    finally:
-        if progress_bar is not None:
-            progress_bar.close()
-
-    logger.info(
-        "CLI import-media finished job_id={} state={} imported={} skipped={} failed={}",
-        job.id,
-        job.state,
-        job.imported_count,
-        job.skipped_count,
-        job.failed_count,
-    )
-    click.echo(
-        "import finished: "
-        f"job_id={job.id} "
-        f"state={job.state} "
-        f"imported={job.imported_count} "
-        f"skipped={job.skipped_count} "
-        f"failed={job.failed_count}"
-    )
-
-
-@main.command(name="import-videos")
-@click.option(
-    "--source-path",
-    required=True,
-    type=click.Path(exists=True, dir_okay=True, file_okay=True),
-    help="Import source directory or a single video file.",
-)
-@click.option("--library-id", type=int, default=None, help="Optional target media library id.")
-@click.option("--collection-id", type=int, default=None, help="Optional collection id to append into.")
-def import_videos(
-    source_path: str,
-    library_id: int | None,
-    collection_id: int | None,
-):
-    logger.info(
-        "CLI import-videos start source_path={} library_id={} collection_id={}",
-        source_path,
-        library_id,
-        collection_id,
-    )
-    _ensure_database_ready()
-    payload = VideoImportRequest(
-        source_path=source_path,
-        library_id=library_id,
-        collection_id=collection_id,
-    )
-    try:
-        result = VideoImportService().import_from_source(payload)
-    except ApiError as exc:
-        logger.warning("CLI import-videos validation failed code={} detail={}", exc.code, exc.details)
-        raise click.ClickException(exc.code)
-    except Exception:
-        logger.exception("CLI import-videos crashed source_path={}", source_path)
-        raise
-
-    logger.info(
-        "CLI import-videos finished created={} skipped={}",
-        result.created_count,
-        result.skipped_count,
-    )
-    click.echo(
-        "video import finished: "
-        f"created={result.created_count} "
-        f"skipped={result.skipped_count} "
-        f"video_item_ids={result.video_item_ids}"
-    )
 
 
 @main.command(name="add-media-library")
