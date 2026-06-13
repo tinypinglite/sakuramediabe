@@ -1,6 +1,8 @@
 from .base import BaseModel, create_database, database_proxy, get_database, init_database
 from .catalog import Actor, Image, Movie, MovieActor, MoviePlotImage, MovieSeries, MovieTag, Subtitle, Tag
 from .collections import (
+    ClipCollection,
+    ClipCollectionItem,
     FOUR_K_PLAYLIST_DESCRIPTION,
     FOUR_K_PLAYLIST_NAME,
     PLAYLIST_KIND_4K,
@@ -23,7 +25,7 @@ from .discovery import (
     MovieSimilarity,
     RankingItem,
 )
-from .playback import Media, MediaLibrary, MediaPoint, MediaProgress, MediaThumbnail
+from .playback import Media, MediaClip, MediaLibrary, MediaPoint, MediaProgress, MediaThumbnail
 from .system import (
     BackgroundTaskRun,
     ResourceTaskState,
@@ -39,6 +41,8 @@ __all__ = [
     "Actor",
     "BackgroundTaskRun",
     "BaseModel",
+    "ClipCollection",
+    "ClipCollectionItem",
     "DailyRecommendationItem",
     "DownloadClient",
     "DownloadTask",
@@ -49,6 +53,7 @@ __all__ = [
     "Indexer",
     "ImportJob",
     "Media",
+    "MediaClip",
     "MediaLibrary",
     "MediaPoint",
     "MediaProgress",

@@ -73,3 +73,22 @@ class MediaPoint(TimestampedMixin, BaseModel):
 
     class Meta:
         table_name = "media_point"
+
+
+class MediaClip(TimestampedMixin, BaseModel):
+    # 片段是独立资产：来源 Media 被删除时只置空引用，片段记录与其物理文件都保留。
+    media = peewee.ForeignKeyField(Media, null=True, backref="clips", on_delete="SET NULL")
+    # 快照来源番号，便于来源 Media/Movie 删除后片段仍可归属与展示。
+    movie_number = peewee.CharField(max_length=64, null=True, index=True)
+    start_offset_seconds = peewee.IntegerField(index=True)
+    end_offset_seconds = peewee.IntegerField(index=True)
+    title = peewee.CharField(max_length=255, default="")
+    # 片段产物 mp4 相对 media_clip_root_path 的路径，独立目录便于单独挂卷。
+    file_path = peewee.CharField(max_length=1024)
+    file_size_bytes = peewee.BigIntegerField(default=0)
+    duration_seconds = peewee.IntegerField(default=0)
+
+    class Meta:
+        table_name = "media_clip"
+        # 同一来源媒体的同一区间只保留一条，创建时按此去重幂等。
+        indexes = ((("media", "start_offset_seconds", "end_offset_seconds"), True),)

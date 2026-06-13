@@ -226,6 +226,26 @@ def test_run_pending_migrations_skips_when_target_table_is_missing(test_db):
     )
     assert moment_execution.applied is False
     assert "20260508_02_add_moment_recommendations" not in _schema_migration_names(test_db)
+    clip_execution = next(
+        item for item in summary.executed if item.name == "20260613_01_add_media_clip_tables"
+    )
+    assert clip_execution.applied is False
+    assert not test_db.table_exists("media_clip")
+
+
+def test_run_pending_migrations_creates_media_clip_tables_on_empty_database(test_db):
+    test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(TEST_MODELS)
+
+    summary = run_pending_migrations(test_db)
+
+    clip_execution = next(
+        item for item in summary.executed if item.name == "20260613_01_add_media_clip_tables"
+    )
+    assert clip_execution.applied is True
+    assert test_db.table_exists("media_clip")
+    assert test_db.table_exists("clip_collection")
+    assert test_db.table_exists("clip_collection_item")
 
 
 def test_load_migration_module_uses_package_import():
