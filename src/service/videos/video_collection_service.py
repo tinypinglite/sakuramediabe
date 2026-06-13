@@ -10,6 +10,7 @@ from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import require_record
 from src.model import VideoCollection, VideoCollectionItem, VideoItem
 from src.model.base import get_database
+from src.schema.catalog.actors import ImageResource
 from src.schema.videos.collections import (
     VideoCollectionCreateRequest,
     VideoCollectionItemResource,
@@ -73,6 +74,20 @@ class VideoCollectionService:
         return {row.collection_id: row.item_count for row in query}
 
     @staticmethod
+    def _collection_cover(collection_id: int) -> ImageResource | None:
+        """合集封面取按 position 排在最前的视频封面。"""
+        first_item = (
+            VideoCollectionItem.select(VideoCollectionItem, VideoItem)
+            .join(VideoItem)
+            .where(VideoCollectionItem.collection == collection_id)
+            .order_by(VideoCollectionItem.position.asc(), VideoCollectionItem.id.asc())
+            .first()
+        )
+        if first_item is None or first_item.video_item.cover_image_id is None:
+            return None
+        return ImageResource.from_attributes_model(first_item.video_item.cover_image)
+
+    @staticmethod
     def _touch_collection(collection: VideoCollection, touched_at: datetime) -> None:
         collection.updated_at = touched_at
         collection.save(only=[VideoCollection.updated_at])
@@ -86,7 +101,11 @@ class VideoCollectionService:
         )
         counts = cls._item_counts([collection.id for collection in collections])
         return [
-            VideoCollectionResource.from_collection(collection, item_count=counts.get(collection.id, 0))
+            VideoCollectionResource.from_collection(
+                collection,
+                item_count=counts.get(collection.id, 0),
+                cover_image=cls._collection_cover(collection.id) if counts.get(collection.id, 0) else None,
+            )
             for collection in collections
         ]
 
@@ -94,7 +113,12 @@ class VideoCollectionService:
     def get_collection(cls, collection_id: int) -> VideoCollectionResource:
         collection = cls._require_collection(collection_id)
         counts = cls._item_counts([collection.id])
-        return VideoCollectionResource.from_collection(collection, item_count=counts.get(collection.id, 0))
+        item_count = counts.get(collection.id, 0)
+        return VideoCollectionResource.from_collection(
+            collection,
+            item_count=item_count,
+            cover_image=cls._collection_cover(collection.id) if item_count else None,
+        )
 
     @classmethod
     def create_collection(cls, payload: VideoCollectionCreateRequest) -> VideoCollectionResource:

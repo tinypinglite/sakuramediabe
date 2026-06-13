@@ -3,6 +3,7 @@ from typing import List
 
 from pydantic import Field, field_validator
 
+from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
 from src.schema.videos.items import VideoItemListItemResource
 
@@ -12,12 +13,18 @@ class VideoCollectionResource(SchemaModel):
     name: str
     description: str = ""
     item_count: int = 0
+    # 合集封面取按顺序排在最前的视频封面；空合集或来源缺失时为空。
+    cover_image: ImageResource | None = None
     created_at: datetime
     updated_at: datetime
 
     @classmethod
-    def from_collection(cls, collection, item_count: int = 0) -> "VideoCollectionResource":
-        return cls.from_peewee_model(collection, extra={"item_count": item_count})
+    def from_collection(
+        cls, collection, item_count: int = 0, cover_image: ImageResource | None = None
+    ) -> "VideoCollectionResource":
+        return cls.from_peewee_model(
+            collection, extra={"item_count": item_count, "cover_image": cover_image}
+        )
 
 
 class VideoCollectionItemResource(SchemaModel):
