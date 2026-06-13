@@ -119,10 +119,10 @@ poetry run python -m src.start.commands backfill-movie-thin-cover-images
 
 ```bash
 poetry run python -m src.start.commands import-videos --source-path /data/clips
-poetry run python -m src.start.commands import-videos --source-path /data/clips/one.mp4 --collection-id 1 --tag-ids 2,3 --person-ids 5
+poetry run python -m src.start.commands import-videos --source-path /data/clips/one.mp4 --collection-id 1
 ```
 
-说明：`import-videos` 接收一个目录或单个视频文件，**就地索引**（不搬运文件），为每个视频文件创建一条 `VideoItem` 与一条 `Media`，标题默认取文件名。`--tag-ids` / `--person-ids` / `--collection-id` 为可选的逗号分隔 ID，会一并关联到本批导入的全部视频；`--library-id` 可选用于归库分组。已按路径登记过的文件会被跳过。缩略图由 `generate-media-thumbnails` 任务自动补齐，时刻通过 `POST /media/{id}/points` 维护。
+说明：`import-videos` 接收一个目录或单个视频文件，**就地索引**（不搬运文件），为每个视频文件创建一条 `VideoItem` 与一条 `Media`，标题默认取文件名。`--collection-id` 为可选关联项，会一并关联到本批导入的全部视频；`--library-id` 可选用于归库分组。已按路径登记过的文件会被跳过。缩略图由 `generate-media-thumbnails` 任务自动补齐，时刻通过 `POST /media/{id}/points` 维护。
 
 - 历史竖封面图回填：
 

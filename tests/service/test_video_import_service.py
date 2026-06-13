@@ -6,13 +6,9 @@ from src.model import (
     MediaLibrary,
     Movie,
     MovieSeries,
-    Person,
-    Tag,
     VideoCollection,
     VideoCollectionItem,
     VideoItem,
-    VideoItemPerson,
-    VideoItemTag,
 )
 from src.model.base import database_proxy
 from src.schema.videos.imports import VideoImportRequest
@@ -22,11 +18,7 @@ _MODELS = [
     Image,
     MovieSeries,
     Movie,
-    Tag,
-    Person,
     VideoItem,
-    VideoItemTag,
-    VideoItemPerson,
     VideoCollection,
     VideoCollectionItem,
     MediaLibrary,
@@ -59,15 +51,11 @@ def test_import_directory_creates_video_items_and_media(video_import_tables, tmp
     _make_video_file(source, "beta.mkv")
     _make_video_file(source, "note.txt")  # 非视频后缀应被忽略
 
-    tag = Tag.create(name="收藏")
-    person = Person.create(name="阿强")
     collection = VideoCollection.create(name="合集")
 
     result = VideoImportService().import_from_source(
         VideoImportRequest(
             source_path=str(source),
-            tag_ids=[tag.id],
-            person_ids=[person.id],
             collection_id=collection.id,
         )
     )
@@ -84,9 +72,7 @@ def test_import_directory_creates_video_items_and_media(video_import_tables, tmp
         assert media.special_tags == "普通"
         assert media.content_fingerprint
 
-    # 标签/人物/合集均按入参关联到每个视频。
-    assert VideoItemTag.select().count() == 2
-    assert VideoItemPerson.select().count() == 2
+    # 合集按入参关联到每个视频。
     items = list(VideoCollectionItem.select().order_by(VideoCollectionItem.position))
     assert [item.position for item in items] == [0, 1]
 

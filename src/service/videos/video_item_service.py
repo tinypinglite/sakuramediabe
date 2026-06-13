@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Dict, List
 
-from peewee import JOIN, Case, fn
+from peewee import Case, fn
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
@@ -15,19 +15,13 @@ from src.model import (
     MediaPoint,
     MediaProgress,
     MediaThumbnail,
-    Person,
-    Tag,
     VideoItem,
-    VideoItemPerson,
-    VideoItemTag,
 )
-from src.model.base import get_database
 from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.movies import (
     MovieMediaPointResource,
     MovieMediaProgressResource,
     MovieMediaResource,
-    TagResource,
 )
 from src.schema.common.pagination import PageResponse
 from src.schema.videos.items import (
@@ -35,7 +29,6 @@ from src.schema.videos.items import (
     VideoItemDetailResource,
     VideoItemListItemResource,
     VideoItemUpdateRequest,
-    VideoPersonResource,
 )
 
 # 视频条目列表允许的排序字段。
@@ -80,29 +73,14 @@ class VideoItemService:
         cls,
         *,
         query: str | None = None,
-        tag_ids: List[int] | None = None,
-        person_ids: List[int] | None = None,
     ):
         video_query = VideoItem.select(VideoItem)
-        if tag_ids:
-            video_query = (
-                video_query.join(VideoItemTag, on=(VideoItemTag.video_item == VideoItem.id))
-                .where(VideoItemTag.tag.in_(tag_ids))
-                .switch(VideoItem)
-            )
-        if person_ids:
-            video_query = (
-                video_query.join(VideoItemPerson, on=(VideoItemPerson.video_item == VideoItem.id))
-                .where(VideoItemPerson.person.in_(person_ids))
-                .switch(VideoItem)
-            )
         if query is not None:
             normalized = query.strip()
             if not normalized:
                 raise ApiError(422, "invalid_video_filter", "Invalid video filter", {"query": query})
             video_query = video_query.where(VideoItem.title.contains(normalized))
-        # tag/person 多对多 join 可能放大行，统一去重。
-        return video_query.distinct()
+        return video_query
 
     @staticmethod
     def _media_stats(video_ids: List[int]) -> Dict[int, tuple[int, bool]]:
@@ -146,15 +124,13 @@ class VideoItemService:
         cls,
         *,
         query: str | None = None,
-        tag_ids: List[int] | None = None,
-        person_ids: List[int] | None = None,
         sort: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> PageResponse[VideoItemListItemResource]:
         validate_page(page, page_size, error_code="invalid_video_filter")
         order_by = cls._build_sort(sort)
-        base_query = cls._filtered_query(query=query, tag_ids=tag_ids, person_ids=person_ids)
+        base_query = cls._filtered_query(query=query)
         total = base_query.count()
         videos = list(
             base_query.order_by(*order_by)
@@ -172,35 +148,6 @@ class VideoItemService:
             page_size=page_size,
             total=total,
         )
-
-    @staticmethod
-    def _video_tags(video: VideoItem) -> List[TagResource]:
-        tags = (
-            Tag.select(Tag)
-            .join(VideoItemTag)
-            .where(VideoItemTag.video_item == video)
-            .order_by(Tag.id)
-        )
-        return [TagResource(tag_id=tag.id, name=tag.name) for tag in tags]
-
-    @staticmethod
-    def _video_persons(video: VideoItem) -> List[VideoPersonResource]:
-        persons = (
-            Person.select(Person)
-            .join(VideoItemPerson)
-            .where(VideoItemPerson.video_item == video)
-            .order_by(Person.id)
-        )
-        return [
-            VideoPersonResource(
-                id=person.id,
-                name=person.name,
-                avatar_image=ImageResource.from_attributes_model(person.avatar_image)
-                if person.avatar_image_id is not None
-                else None,
-            )
-            for person in persons
-        ]
 
     @staticmethod
     def _media_items(video: VideoItem) -> List[MovieMediaResource]:
@@ -267,49 +214,16 @@ class VideoItemService:
             can_play=can_play,
             created_at=video.created_at,
             updated_at=video.updated_at,
-            tags=cls._video_tags(video),
-            persons=cls._video_persons(video),
             media_items=media_items,
         )
 
-    @staticmethod
-    def _require_tags(tag_ids: List[int]) -> None:
-        for tag_id in tag_ids:
-            if Tag.get_or_none(Tag.id == tag_id) is None:
-                raise ApiError(404, "tag_not_found", "Tag not found", {"tag_id": tag_id})
-
-    @staticmethod
-    def _require_persons(person_ids: List[int]) -> None:
-        for person_id in person_ids:
-            if Person.get_or_none(Person.id == person_id) is None:
-                raise ApiError(404, "person_not_found", "Person not found", {"person_id": person_id})
-
-    @classmethod
-    def _replace_tags(cls, video: VideoItem, tag_ids: List[int]) -> None:
-        cls._require_tags(tag_ids)
-        VideoItemTag.delete().where(VideoItemTag.video_item == video).execute()
-        for tag_id in dict.fromkeys(tag_ids):
-            VideoItemTag.create(video_item=video, tag=tag_id)
-
-    @classmethod
-    def _replace_persons(cls, video: VideoItem, person_ids: List[int]) -> None:
-        cls._require_persons(person_ids)
-        VideoItemPerson.delete().where(VideoItemPerson.video_item == video).execute()
-        for person_id in dict.fromkeys(person_ids):
-            VideoItemPerson.create(video_item=video, person=person_id)
-
     @classmethod
     def create_video(cls, payload: VideoItemCreateRequest) -> VideoItemDetailResource:
-        with get_database().atomic():
-            video = VideoItem.create(
-                title=payload.title,
-                summary=payload.summary,
-                release_date=payload.release_date,
-            )
-            if payload.tag_ids:
-                cls._replace_tags(video, payload.tag_ids)
-            if payload.person_ids:
-                cls._replace_persons(video, payload.person_ids)
+        video = VideoItem.create(
+            title=payload.title,
+            summary=payload.summary,
+            release_date=payload.release_date,
+        )
         return cls.get_video_detail(video.id)
 
     @classmethod
@@ -318,20 +232,14 @@ class VideoItemService:
         update_data = payload.model_dump(exclude_unset=True, by_alias=False)
         if not update_data:
             raise ApiError(422, "validation_error", "At least one field must be provided")
-        with get_database().atomic():
-            if "title" in update_data and update_data["title"] is not None:
-                video.title = update_data["title"]
-            if "summary" in update_data and update_data["summary"] is not None:
-                video.summary = update_data["summary"]
-            if "release_date" in update_data:
-                video.release_date = update_data["release_date"]
-            video.updated_at = cls._current_time()
-            video.save()
-            # tag_ids/person_ids 传入即整体替换关联关系。
-            if update_data.get("tag_ids") is not None:
-                cls._replace_tags(video, update_data["tag_ids"])
-            if update_data.get("person_ids") is not None:
-                cls._replace_persons(video, update_data["person_ids"])
+        if "title" in update_data and update_data["title"] is not None:
+            video.title = update_data["title"]
+        if "summary" in update_data and update_data["summary"] is not None:
+            video.summary = update_data["summary"]
+        if "release_date" in update_data:
+            video.release_date = update_data["release_date"]
+        video.updated_at = cls._current_time()
+        video.save()
         return cls.get_video_detail(video.id)
 
     @classmethod
@@ -344,5 +252,5 @@ class VideoItemService:
         media_ids = [media.id for media in Media.select(Media.id).where(Media.video_item == video)]
         for media_id in media_ids:
             MediaService.delete_media(media_id)
-        # 剩余的标签/人物/合集关联均为非空外键，recursive 删除即可清理。
+        # 剩余的合集关联均为非空外键，recursive 删除即可清理。
         video.delete_instance(recursive=True)

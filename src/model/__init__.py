@@ -37,12 +37,9 @@ from .system import (
 )
 from .transfers import DownloadClient, DownloadTask, ImportJob, Indexer
 from .videos import (
-    Person,
     VideoCollection,
     VideoCollectionItem,
     VideoItem,
-    VideoItemPerson,
-    VideoItemTag,
 )
 
 __all__ = [
@@ -92,12 +89,9 @@ __all__ = [
     "FOUR_K_PLAYLIST_DESCRIPTION",
     "FOUR_K_PLAYLIST_NAME",
     "Tag",
-    "Person",
     "VideoCollection",
     "VideoCollectionItem",
     "VideoItem",
-    "VideoItemPerson",
-    "VideoItemTag",
     "User",
     "UserRefreshToken",
     "create_database",

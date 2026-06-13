@@ -21,15 +21,12 @@ from src.model import (
     MovieTag,
     Playlist,
     PlaylistMovie,
-    Person,
     SystemEvent,
     SystemNotification,
     Tag,
     VideoCollection,
     VideoCollectionItem,
     VideoItem,
-    VideoItemPerson,
-    VideoItemTag,
 )
 
 
@@ -43,10 +40,7 @@ def test_all_documented_domain_models_can_create_tables(test_db):
         MovieActor,
         MoviePlotImage,
         MovieTag,
-        Person,
         VideoItem,
-        VideoItemTag,
-        VideoItemPerson,
         VideoCollection,
         VideoCollectionItem,
         Playlist,

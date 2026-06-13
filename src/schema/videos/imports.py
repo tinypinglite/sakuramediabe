@@ -6,11 +6,9 @@ from src.schema.common.base import SchemaModel
 
 
 class VideoImportRequest(SchemaModel):
-    # 指定一个目录或单个视频文件导入；可选地一并关联标签/人物/合集。
+    # 指定一个目录或单个视频文件导入；可选地一并关联合集。
     source_path: str = Field(min_length=1)
     library_id: int | None = None
-    tag_ids: List[int] = Field(default_factory=list)
-    person_ids: List[int] = Field(default_factory=list)
     collection_id: int | None = None
 
     @field_validator("source_path")

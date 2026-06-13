@@ -9,14 +9,10 @@ from src.model import (
     MediaThumbnail,
     Movie,
     MovieSeries,
-    Person,
     ResourceTaskState,
-    Tag,
     VideoCollection,
     VideoCollectionItem,
     VideoItem,
-    VideoItemPerson,
-    VideoItemTag,
 )
 from src.model.base import database_proxy
 from src.schema.videos.items import VideoItemCreateRequest
@@ -26,11 +22,7 @@ _MODELS = [
     Image,
     MovieSeries,
     Movie,
-    Tag,
-    Person,
     VideoItem,
-    VideoItemTag,
-    VideoItemPerson,
     VideoCollection,
     VideoCollectionItem,
     MediaLibrary,
@@ -69,12 +61,9 @@ def test_detail_reports_media_count_and_can_play(video_tables):
     assert all(media.play_url for media in detail.media_items)
 
 
-def test_list_filters_by_person_and_reports_media_count(video_tables):
-    person = Person.create(name="人物")
-    video_with = VideoItemService.create_video(
-        VideoItemCreateRequest(title="有人物", person_ids=[person.id])
-    )
-    VideoItemService.create_video(VideoItemCreateRequest(title="无人物"))
+def test_list_filters_by_query_and_reports_media_count(video_tables):
+    video_with = VideoItemService.create_video(VideoItemCreateRequest(title="海边录像"))
+    VideoItemService.create_video(VideoItemCreateRequest(title="森林散步"))
     Media.create(
         video_item=VideoItem.get_by_id(video_with.id),
         path="/lib/x.mp4",
@@ -82,7 +71,7 @@ def test_list_filters_by_person_and_reports_media_count(video_tables):
         content_fingerprint="fp-x",
     )
 
-    page = VideoItemService.list_videos(person_ids=[person.id])
+    page = VideoItemService.list_videos(query="海边")
 
     assert page.total == 1
     assert page.items[0].id == video_with.id

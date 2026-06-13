@@ -1,6 +1,3 @@
-from src.model import Tag
-
-
 def _login(client, username="account", password="password123"):
     response = client.post(
         "/auth/tokens",
@@ -13,86 +10,53 @@ def _headers(token):
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_person_crud_flow(client, account_user):
+def test_video_item_create_and_filter_by_query(client, account_user):
     token = _login(client, username=account_user.username)
     headers = _headers(token)
-
-    created = client.post("/persons", json={"name": "  柚木  ", "gender": 2}, headers=headers)
-    assert created.status_code == 201
-    person = created.json()
-    assert person["name"] == "柚木"
-    assert person["gender"] == 2
-    assert person["video_count"] == 0
-
-    listed = client.get("/persons", headers=headers)
-    assert listed.status_code == 200
-    assert listed.json()["total"] == 1
-
-    updated = client.patch(f"/persons/{person['id']}", json={"name": "柚木提娜"}, headers=headers)
-    assert updated.status_code == 200
-    assert updated.json()["name"] == "柚木提娜"
-
-    deleted = client.delete(f"/persons/{person['id']}", headers=headers)
-    assert deleted.status_code == 204
-    assert client.get(f"/persons/{person['id']}", headers=headers).status_code == 404
-
-
-def test_video_item_create_with_tags_and_persons(client, account_user):
-    token = _login(client, username=account_user.username)
-    headers = _headers(token)
-
-    tag = Tag.create(name="风景")
-    person = client.post("/persons", json={"name": "小明"}, headers=headers).json()
 
     created = client.post(
         "/videos",
         json={
             "title": "海边录像",
             "summary": "测试视频",
-            "tag_ids": [tag.id],
-            "person_ids": [person["id"]],
         },
         headers=headers,
     )
     assert created.status_code == 201
     detail = created.json()
     assert detail["title"] == "海边录像"
-    assert [t["name"] for t in detail["tags"]] == ["风景"]
-    assert [p["name"] for p in detail["persons"]] == ["小明"]
+    assert "tags" not in detail
+    assert "persons" not in detail
     assert detail["media_count"] == 0
     assert detail["can_play"] is False
 
-    # 人物的 video_count 应随关联增加。
-    person_after = client.get(f"/persons/{person['id']}", headers=headers).json()
-    assert person_after["video_count"] == 1
+    client.post("/videos", json={"title": "森林散步"}, headers=headers)
 
-    # 按标签过滤能命中。
-    listed = client.get(f"/videos?tag_id={tag.id}", headers=headers)
+    # 按标题关键字过滤能命中。
+    listed = client.get("/videos?query=海边", headers=headers)
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
     assert listed.json()["items"][0]["id"] == detail["id"]
 
 
-def test_video_item_update_replaces_tags(client, account_user):
+def test_video_item_update_fields(client, account_user):
     token = _login(client, username=account_user.username)
     headers = _headers(token)
 
-    tag_a = Tag.create(name="A")
-    tag_b = Tag.create(name="B")
     video = client.post(
         "/videos",
-        json={"title": "片子", "tag_ids": [tag_a.id]},
+        json={"title": "片子"},
         headers=headers,
     ).json()
 
     updated = client.patch(
         f"/videos/{video['id']}",
-        json={"title": "新标题", "tag_ids": [tag_b.id]},
+        json={"title": "新标题", "summary": "新简介"},
         headers=headers,
     )
     assert updated.status_code == 200
     assert updated.json()["title"] == "新标题"
-    assert [t["name"] for t in updated.json()["tags"]] == ["B"]
+    assert updated.json()["summary"] == "新简介"
 
 
 def test_video_collection_ordering_and_reorder(client, account_user):
@@ -160,5 +124,4 @@ def test_video_collection_reorder_rejects_incomplete_item_set(client, account_us
 
 def test_videos_routes_require_authentication(client):
     assert client.get("/videos").status_code == 401
-    assert client.get("/persons").status_code == 401
     assert client.get("/video-collections").status_code == 401

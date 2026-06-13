@@ -4,8 +4,7 @@
 
 `videos` 域用于管理**无番号、无外部元数据**的非 JAV 视频（如个人收藏、国产/国外资源），与 JAV 的 `catalog`（`Movie`）体系完全平行。设计目标是「仅播放 + 整理」：
 
-- 按**标签**（复用 catalog 的通用 `Tag`）与**人物**（`Person`）组织；
-- 支持**合集**（`VideoCollection`），成员带 `position`，前端可按序顺序播放；
+- 按**合集**（`VideoCollection`）组织，成员带 `position`，前端可按序顺序播放；
 - 复用现有播放底座（缩略图、播放进度、**时刻** `MediaPoint`、流播放）。
 
 不提供订阅、下载、推荐、相似度、以图搜图等 JAV 专属自动化能力。
@@ -15,9 +14,6 @@
 | 模型 | 表 | 说明 |
 |---|---|---|
 | `VideoItem` | `video_item` | 视频条目（标题/简介/封面/发布时间），1:N 关联 `Media` |
-| `Person` | `person` | 人物（姓名/头像/性别），不复用 JAV 的 `Actor` |
-| `VideoItemTag` | `video_item_tag` | 条目 ↔ 复用的 `Tag` 多对多 |
-| `VideoItemPerson` | `video_item_person` | 条目 ↔ `Person` 多对多 |
 | `VideoCollection` | `video_collection` | 合集 |
 | `VideoCollectionItem` | `video_collection_item` | 合集成员，`position` 决定顺序播放次序 |
 
@@ -35,16 +31,11 @@
 
 ### 视频条目 `/videos`
 
-- `GET /videos`：分页列表，支持 `query`、`tag_id`（可重复）、`person_id`（可重复）、`sort`（`created_at|release_date|title` + `:asc|:desc`）。
-- `POST /videos`：创建，body 含 `title`、`summary`、`release_date`、`tag_ids`、`person_ids`。
-- `GET /videos/{video_id}`：详情，含 `tags`、`persons`、`media_items`（复用影片媒体资源结构，含播放进度与时刻、签名播放地址）。
-- `PATCH /videos/{video_id}`：局部更新；传入 `tag_ids` / `person_ids` 即整体替换关联关系。
+- `GET /videos`：分页列表，支持 `query`、`sort`（`created_at|release_date|title` + `:asc|:desc`）。
+- `POST /videos`：创建，body 含 `title`、`summary`、`release_date`。
+- `GET /videos/{video_id}`：详情，含 `media_items`（复用影片媒体资源结构，含播放进度与时刻、签名播放地址）。
+- `PATCH /videos/{video_id}`：局部更新（`title`、`summary`、`release_date`）。
 - `DELETE /videos/{video_id}`：删除条目及其媒体（复用 `MediaService.delete_media` 清理文件/图片/向量）。
-
-### 人物 `/persons`
-
-- `GET /persons`（分页，支持 `query`/`sort`）、`POST /persons`、`GET/PATCH/DELETE /persons/{person_id}`。
-- `PersonResource.video_count` 为关联视频数。
 
 ### 合集 `/video-collections`
 
@@ -55,8 +46,8 @@
 
 ### 导入 `/video-imports`
 
-- `POST /video-imports`：body 含 `source_path`（目录或单文件）、可选 `library_id`、`tag_ids`、`person_ids`、`collection_id`。
-- **就地索引**：不搬运文件，按 `Media.path` 唯一去重；每个视频文件创建一条 `VideoItem`（标题取文件名）+ 一条 `Media`，并按入参关联标签/人物/合集。
+- `POST /video-imports`：body 含 `source_path`（目录或单文件）、可选 `library_id`、`collection_id`。
+- **就地索引**：不搬运文件，按 `Media.path` 唯一去重；每个视频文件创建一条 `VideoItem`（标题取文件名）+ 一条 `Media`，并按入参关联合集。
 - 探测复用 `MediaMetadataProbeService`，内容指纹复用 `src/common/content_fingerprint.py` 的共享算法。
 
 CLI 等价命令见 [../deployment/commands.md](../deployment/commands.md) 的 `import-videos`。

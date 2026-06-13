@@ -564,15 +564,16 @@ def test_run_pending_migrations_decouples_media_movie_and_adds_video_item(test_d
     # video_item 新增列存在，movie_number 放松为可空。
     assert "video_item_id" in media_columns
     assert _column_is_nullable(test_db, "media", "movie_number") is True
-    # videos 域新表已建出。
+    # videos 域新表已建出（无标签、无 person 系列表）。
     assert {
         "video_item",
-        "person",
-        "video_item_tag",
-        "video_item_person",
         "video_collection",
         "video_collection_item",
     }.issubset(existing_tables)
+    assert "person" not in existing_tables
+    assert "video_item_person" not in existing_tables
+    assert "video_tag" not in existing_tables
+    assert "video_item_tag" not in existing_tables
     # 既有 JAV 媒体数据完好。
     rows = test_db.execute_sql(
         "SELECT movie_number, path, video_item_id FROM media ORDER BY id"

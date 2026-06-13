@@ -14,7 +14,7 @@
 - `src/api/routers/` 是 FastAPI 接入层，当前按 `catalog`、`collections`、`discovery`、`files`、`playback`、`system`、`transfers`、`videos` 八个域组织；统一入口是 `src/api/app.py` 的 `create_app(...)`。涉及启动期行为时，一并关注 lifespan 中的 `initdb`、任务恢复和媒体元数据回填后台线程。
 - `src/service/` 是业务编排层，按 `catalog`、`collections`、`discovery`、`playback`、`system`、`transfers`、`videos` 分域；router 保持薄层，不要在接口层写复杂查询、状态流转或抓取逻辑。
 - `src/service/discovery/` 除排行榜和图像搜索外，还包含热评、影片推荐/相似度，以及每日推荐（`DailyRecommendationService`）和瞬时/猜你喜欢推荐（`MomentRecommendationService`）；改动相似影片能力时，优先沿用 `MovieRecommendationService`。
-- `src/service/videos/` 负责非 JAV、无番号视频的导入与管理，按 `video_item_service`、`video_collection_service`、`person_service`、`video_import_service` 拆分；改动该域时不要复用 JAV 影片（catalog）的番号语义。
+- `src/service/videos/` 负责非 JAV、无番号视频的导入与管理，按 `video_item_service`、`video_collection_service`、`video_import_service` 拆分；videos 域不设标签体系，改动该域时不要复用 JAV 影片（catalog）的番号或标签语义。
 - `src/service/system/` 负责账号认证、系统状态、活动流、通知、资源任务状态、索引器设置、简介翻译设置、任务运行（jobs）、合集番号特征等系统级能力；涉及后台任务可观测性时，优先检查 `ActivityService` 和 `ResourceTaskStateService`。
 - `src/model/` 是 Peewee 模型层，当前分为 `catalog`、`collections`、`discovery`、`playback`、`system`、`transfers`、`videos` 七个子域；新增模型时优先关注 `src/model/__init__.py`、对应子域 `__init__.py`、`src/start/initdb.py`、`tests/conftest.py` 里的 `TEST_MODELS`。
 - `src/schema/` 是 Pydantic 2 协议层，按 `catalog`、`collections`、`discovery`、`playback`、`system`、`transfers`、`videos`、`metadata` 分域，并有公共 `common/`；优先复用 `src/schema/common/base.py` 的 `SchemaModel` 做 Peewee / attributes -> Pydantic 转换。
@@ -81,7 +81,7 @@
 - 下载域当前围绕 Jackett、qBittorrent、本地索引器配置、自动导入与导入作业状态展开；新增下载源或状态同步逻辑时，优先延续现有 `download_*_service.py`、`download_*_client.py`、`media_import_service.py` 的拆分方式。
 - 改动系统活动流、通知或资源任务状态接口时，至少同步检查 `src/api/routers/system/activity.py`、`src/schema/system/activity.py`、`src/schema/system/resource_task_state.py` 与对应测试。
 - 改动影片相似度或推荐逻辑时，优先复用 `MovieRecommendationService` 和 `MovieSimilarity`，并同步检查推荐接口与重算任务；每日推荐沿用 `DailyRecommendationService` + `generate-daily-recommendations`，瞬时推荐沿用 `MomentRecommendationService` + `generate-moment-recommendations`，模型集中在 `src/model/discovery/recommendations.py`、`daily_recommendations.py`、`moment_recommendations.py`。
-- 改动非 JAV / 无番号视频（videos 域）时，优先复用 `VideoItemService`、`VideoCollectionService`、`PersonService`、`VideoImportService` 与对应 router（`items`、`collections`、`persons`、`imports`），不要把 catalog 的番号逻辑搬过来；导入入口另有 `import-videos` CLI。
+- 改动非 JAV / 无番号视频（videos 域）时，优先复用 `VideoItemService`、`VideoCollectionService`、`VideoImportService` 与对应 router（`items`、`collections`、`imports`），不要把 catalog 的番号逻辑搬过来；videos 域不设标签体系，导入入口另有 `import-videos` CLI。
 
 ### 排行榜约定
 

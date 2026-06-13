@@ -12,14 +12,9 @@ from .items import (
     VideoItemDetailResource,
     VideoItemListItemResource,
     VideoItemUpdateRequest,
-    VideoPersonResource,
 )
-from .persons import PersonCreateRequest, PersonResource, PersonUpdateRequest
 
 __all__ = [
-    "PersonCreateRequest",
-    "PersonResource",
-    "PersonUpdateRequest",
     "VideoCollectionCreateRequest",
     "VideoCollectionItemAddRequest",
     "VideoCollectionItemResource",
@@ -32,5 +27,4 @@ __all__ = [
     "VideoItemDetailResource",
     "VideoItemListItemResource",
     "VideoItemUpdateRequest",
-    "VideoPersonResource",
 ]

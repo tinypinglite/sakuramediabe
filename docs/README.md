@@ -33,7 +33,7 @@
 
 ### Videos
 
-- [videos/README.md](./videos/README.md): 非 JAV 视频条目、人物、合集与就地导入
+- [videos/README.md](./videos/README.md): 非 JAV 视频条目、合集与就地导入
 
 ### Collections
 
@@ -92,7 +92,6 @@
 - `download clients`
 - `download tasks`
 - `video items`
-- `persons`
 - `video collections`
 - `media clips`
 - `clip collections`

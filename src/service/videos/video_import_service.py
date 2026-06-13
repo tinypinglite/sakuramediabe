@@ -1,7 +1,7 @@
 """非 JAV 视频导入 service：指定目录或单文件，就地索引为 VideoItem + Media。
 
 与 JAV 导入不同：不抓取外部元数据、不解析番号、不搬运文件，仅原地登记，
-标题默认取文件名；可在导入时一并关联标签 / 人物 / 合集。
+标题默认取文件名；可在导入时一并关联合集。
 """
 
 from pathlib import Path
@@ -15,12 +15,8 @@ from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.model import (
     Media,
     MediaLibrary,
-    Person,
-    Tag,
     VideoCollection,
     VideoItem,
-    VideoItemPerson,
-    VideoItemTag,
     get_database,
 )
 from src.schema.videos.imports import VideoImportRequest, VideoImportResultResource
@@ -61,12 +57,6 @@ class VideoImportService:
             library = MediaLibrary.get_or_none(MediaLibrary.id == payload.library_id)
             if library is None:
                 raise ApiError(404, "media_library_not_found", "Media library not found", {"library_id": payload.library_id})
-        for tag_id in payload.tag_ids:
-            if Tag.get_or_none(Tag.id == tag_id) is None:
-                raise ApiError(404, "tag_not_found", "Tag not found", {"tag_id": tag_id})
-        for person_id in payload.person_ids:
-            if Person.get_or_none(Person.id == person_id) is None:
-                raise ApiError(404, "person_not_found", "Person not found", {"person_id": person_id})
         if payload.collection_id is not None:
             if VideoCollection.get_or_none(VideoCollection.id == payload.collection_id) is None:
                 raise ApiError(
@@ -109,10 +99,6 @@ class VideoImportService:
                 special_tags=special_tags,
                 valid=True,
             )
-            for tag_id in dict.fromkeys(payload.tag_ids):
-                VideoItemTag.create(video_item=video, tag=tag_id)
-            for person_id in dict.fromkeys(payload.person_ids):
-                VideoItemPerson.create(video_item=video, person=person_id)
         if payload.collection_id is not None:
             VideoCollectionService.add_item(payload.collection_id, video.id)
         return video.id

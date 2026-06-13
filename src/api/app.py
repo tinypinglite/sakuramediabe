@@ -49,7 +49,6 @@ from src.api.routers.system.status import router as status_router
 from src.api.routers.videos.collections import router as video_collections_router
 from src.api.routers.videos.imports import router as video_imports_router
 from src.api.routers.videos.items import router as videos_router
-from src.api.routers.videos.persons import router as persons_router
 from src.common.database import ensure_database_ready
 from src.config.config import settings
 from src.start.recovery import recover_interrupted_tasks
@@ -114,7 +113,6 @@ def create_app() -> FastAPI:
     app.include_router(collection_number_features_router)
 
     app.include_router(videos_router)
-    app.include_router(persons_router)
     app.include_router(video_collections_router)
     app.include_router(video_imports_router)
 

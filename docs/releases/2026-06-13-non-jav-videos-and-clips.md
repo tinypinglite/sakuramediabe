@@ -4,9 +4,9 @@
 
 ## 变更摘要
 
-本次引入两套相互独立的新能力，共新增 **36 个接口**：
+本次引入两套相互独立的新能力，共新增 **31 个接口**：
 
-- **非 JAV 视频管理（`videos` 域）**：管理无番号、无外部元数据的视频，按标签/人物/合集组织，并就地导入。`Media` 由「必属 JAV 影片」解耦为「归属 `movie` 或 `video_item` 之一」。
+- **非 JAV 视频管理（`videos` 域）**：管理无番号、无外部元数据的视频，按合集组织，并就地导入。`Media` 由「必属 JAV 影片」解耦为「归属 `movie` 或 `video_item` 之一」。
 - **视频片段收藏（`MediaClip` + 片段合集）**：在某个媒体上圈选区间，用 ffmpeg 流复制切出独立 mp4 片段；片段可跨影片组成有序合集连续播放。
 
 ## 鉴权约定
@@ -22,26 +22,16 @@
 
 | 方法 | 路径 | 作用 | 请求参数 / 体 | 响应 |
 | --- | --- | --- | --- | --- |
-| GET | `/videos` | 分页列表 | `query`、`tag_id`(可重复)、`person_id`(可重复)、`sort`、`page`、`page_size` | `PageResponse[VideoItemListItemResource]` |
+| GET | `/videos` | 分页列表 | `query`、`sort`、`page`、`page_size` | `PageResponse[VideoItemListItemResource]` |
 | POST | `/videos` | 创建条目（201） | `VideoItemCreateRequest` | `VideoItemDetailResource` |
 | GET | `/videos/{video_id}` | 详情 | — | `VideoItemDetailResource` |
 | PATCH | `/videos/{video_id}` | 局部更新 | `VideoItemUpdateRequest` | `VideoItemDetailResource` |
 | DELETE | `/videos/{video_id}` | 删除条目及其媒体（204） | — | — |
 
 - `sort`：`created_at` / `release_date` / `title`，可加 `:asc` / `:desc`。
-- PATCH 传入 `tag_ids` / `person_ids` 即**整体替换**该关联；不传则保持原值。
+- PATCH 仅更新 `title` / `summary` / `release_date`，不传则保持原值。
 
-### 1.2 人物 `/persons`
-
-| 方法 | 路径 | 作用 | 请求参数 / 体 | 响应 |
-| --- | --- | --- | --- | --- |
-| GET | `/persons` | 分页列表 | `query`、`sort`、`page`、`page_size` | `PageResponse[PersonResource]` |
-| POST | `/persons` | 创建（201） | `PersonCreateRequest` | `PersonResource` |
-| GET | `/persons/{person_id}` | 详情 | — | `PersonResource` |
-| PATCH | `/persons/{person_id}` | 更新 | `PersonUpdateRequest` | `PersonResource` |
-| DELETE | `/persons/{person_id}` | 删除（204） | — | — |
-
-### 1.3 合集 `/video-collections`
+### 1.2 合集 `/video-collections`
 
 | 方法 | 路径 | 作用 | 请求参数 / 体 | 响应 |
 | --- | --- | --- | --- | --- |
@@ -57,14 +47,14 @@
 
 - `reorder` 的 `ordered_item_ids` 须**恰好覆盖全部成员**，否则 `422`。
 
-### 1.4 导入 `/video-imports`
+### 1.3 导入 `/video-imports`
 
 | 方法 | 路径 | 作用 | 请求参数 / 体 | 响应 |
 | --- | --- | --- | --- | --- |
 | POST | `/video-imports` | 就地索引目录/单文件为 `VideoItem` + `Media`（201） | `VideoImportRequest` | `VideoImportResultResource` |
 
 - **就地索引**：不搬运文件；先按 `Media.path` 跳过已登记，再按**内容指纹**去重（同内容不同路径也跳过）。
-- 标题默认取文件名，按需关联 `tag_ids` / `person_ids` / `collection_id`。
+- 标题默认取文件名，按需关联 `collection_id`。
 - 等价 CLI 见 [../deployment/commands.md](../deployment/commands.md) 的 `import-videos`。
 
 详见 [../videos/README.md](../videos/README.md)。
@@ -111,15 +101,13 @@
 
 | Schema | 字段 |
 | --- | --- |
-| `VideoItemCreateRequest` | `title`(必填,自动 strip)、`summary=""`、`release_date?`、`tag_ids=[]`、`person_ids=[]` |
-| `VideoItemUpdateRequest` | `title?`、`summary?`、`release_date?`、`tag_ids?`、`person_ids?`（传入即整体替换关联） |
-| `PersonCreateRequest` | `name`(必填)、`gender=0` |
-| `PersonUpdateRequest` | `name?`、`gender?` |
+| `VideoItemCreateRequest` | `title`(必填,自动 strip)、`summary=""`、`release_date?` |
+| `VideoItemUpdateRequest` | `title?`、`summary?`、`release_date?` |
 | `VideoCollectionCreateRequest` | `name`(必填)、`description=""` |
 | `VideoCollectionUpdateRequest` | `name?`、`description?` |
 | `VideoCollectionItemAddRequest` | `video_item_id`(>0) |
 | `VideoCollectionReorderRequest` | `ordered_item_ids`(成员 `item_id` 列表，非空) |
-| `VideoImportRequest` | `source_path`(必填)、`library_id?`、`tag_ids=[]`、`person_ids=[]`、`collection_id?` |
+| `VideoImportRequest` | `source_path`(必填)、`library_id?`、`collection_id?` |
 | `MediaClipCreateRequest` | `start_thumbnail_id`(>0)、`end_thumbnail_id`(>0)、`title=""` |
 | `MediaClipUpdateRequest` | `title` |
 | `ClipCollectionCreateRequest` | `name`(必填)、`description=""` |
@@ -131,8 +119,7 @@
 | Schema | 字段 |
 | --- | --- |
 | `VideoItemListItemResource` | `id`、`title`、`summary`、`cover_image?`、`release_date?`、`media_count`、`can_play`、`created_at`、`updated_at` |
-| `VideoItemDetailResource` | 继承上者 + `tags[]`、`persons[]`、`media_items[]`（复用影片媒体资源，含进度/时刻/签名播放地址） |
-| `PersonResource` | `id`、`name`、`avatar_image?`、`gender`、`video_count`、`created_at`、`updated_at` |
+| `VideoItemDetailResource` | 继承上者 + `media_items[]`（复用影片媒体资源，含进度/时刻/签名播放地址） |
 | `VideoCollectionResource` | `id`、`name`、`description`、`item_count`、`created_at`、`updated_at` |
 | `VideoCollectionItemResource` | `item_id`、`position`、`video`(VideoItemListItemResource) |
 | `VideoImportResultResource` | `created_count`、`skipped_count`、`video_item_ids[]` |
@@ -154,7 +141,7 @@
 | 片段合集重名 | `409 clip_collection_name_conflict` |
 | 片段合集不存在 | `404 clip_collection_not_found` |
 | 导入源不存在 / 非支持格式 | `404 import_source_not_found` / `422 import_source_unsupported` |
-| 关联的库/标签/人物/合集不存在 | `404 media_library_not_found` / `tag_not_found` / `person_not_found` / `video_collection_not_found` |
+| 关联的库/合集不存在 | `404 media_library_not_found` / `video_collection_not_found` |
 
 ## 六、关联文档
 

@@ -21,7 +21,6 @@ from src.api.routers.transfers import media_import
 from src.api.routers.videos import collections as video_collections
 from src.api.routers.videos import imports as video_imports
 from src.api.routers.videos import items as video_items
-from src.api.routers.videos import persons as video_persons
 from src.api.app import create_app
 from src.config.config import settings
 
@@ -162,7 +161,7 @@ def test_tags_router_uses_auth_and_db_dependencies():
 
 
 def test_videos_routers_use_auth_and_db_dependencies():
-    for module in (video_items, video_persons, video_collections, video_imports):
+    for module in (video_items, video_collections, video_imports):
         dependency_targets = {
             dependency.dependency for dependency in module.router.dependencies
         }
@@ -176,8 +175,6 @@ def test_create_app_registers_videos_routes():
 
     assert "/videos" in paths
     assert "/videos/{video_id}" in paths
-    assert "/persons" in paths
-    assert "/persons/{person_id}" in paths
     assert "/video-collections" in paths
     assert "/video-collections/{collection_id}" in paths
     assert "/video-collections/{collection_id}/items" in paths

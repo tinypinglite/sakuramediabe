@@ -26,12 +26,9 @@ from src.model import (
     Subtitle,
     SystemEvent,
     SystemNotification,
-    Person,
     VideoCollection,
     VideoCollectionItem,
     VideoItem,
-    VideoItemPerson,
-    VideoItemTag,
     User,
     UserRefreshToken,
 )
@@ -106,10 +103,7 @@ def test_create_tables_creates_videos_domain_tables_and_decoupled_media(test_db,
 
     database = create_tables()
 
-    assert Person.table_exists()
     assert VideoItem.table_exists()
-    assert VideoItemPerson.table_exists()
-    assert VideoItemTag.table_exists()
     assert VideoCollection.table_exists()
     assert VideoCollectionItem.table_exists()
 

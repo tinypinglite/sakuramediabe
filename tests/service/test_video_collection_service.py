@@ -7,13 +7,9 @@ from src.model import (
     MediaLibrary,
     Movie,
     MovieSeries,
-    Person,
-    Tag,
     VideoCollection,
     VideoCollectionItem,
     VideoItem,
-    VideoItemPerson,
-    VideoItemTag,
 )
 from src.model.base import database_proxy
 from src.schema.videos.collections import (
@@ -26,11 +22,7 @@ _MODELS = [
     Image,
     MovieSeries,
     Movie,
-    Tag,
-    Person,
     VideoItem,
-    VideoItemTag,
-    VideoItemPerson,
     VideoCollection,
     VideoCollectionItem,
     MediaLibrary,

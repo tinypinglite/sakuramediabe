@@ -1,5 +1,3 @@
-from typing import List
-
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from src.api.routers.deps import db_deps, get_current_user
@@ -22,16 +20,12 @@ router = APIRouter(
 @router.get("", response_model=PageResponse[VideoItemListItemResource])
 def list_videos(
     query: str | None = Query(default=None),
-    tag_id: List[int] | None = Query(default=None),
-    person_id: List[int] | None = Query(default=None),
     sort: str | None = Query(default=None),
     page: int = 1,
     page_size: int = 20,
 ):
     return VideoItemService.list_videos(
         query=query,
-        tag_ids=tag_id,
-        person_ids=person_id,
         sort=sort,
         page=page,
         page_size=page_size,

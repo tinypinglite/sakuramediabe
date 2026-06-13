@@ -4,12 +4,9 @@ from playhouse.migrate import migrate as run_migration
 
 from src.model import (
     Media,
-    Person,
     VideoCollection,
     VideoCollectionItem,
     VideoItem,
-    VideoItemPerson,
-    VideoItemTag,
 )
 from src.start.migrations import SkipMigration
 
@@ -34,10 +31,7 @@ def migrate(database, migrator) -> None:
 
     # 1) 先用 Peewee 模型补建 videos 域新表，保证字段类型与当前方言一致。
     videos_models = [
-        Person,
         VideoItem,
-        VideoItemPerson,
-        VideoItemTag,
         VideoCollection,
         VideoCollectionItem,
     ]
