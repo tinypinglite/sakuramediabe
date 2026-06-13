@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from src.config.config import settings
@@ -71,3 +73,129 @@ def test_get_video_import_job(client, account_user, tmp_path):
     assert body["state"] == "completed"
     assert body["imported_count"] == 3
     assert body["failed_files"] == []
+
+
+def test_list_video_import_jobs(client, account_user, tmp_path):
+    token = _login(client, account_user.username)
+    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    older = VideoImportJob.create(source_path=str(tmp_path / "a"), library=library, state="completed")
+    newer = VideoImportJob.create(source_path=str(tmp_path / "b"), library=library, state="failed")
+
+    response = client.get("/video-imports", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 2
+    assert body["page"] == 1
+    # 按 id 倒序：最新作业在前。
+    assert [item["id"] for item in body["items"]] == [newer.id, older.id]
+
+
+def test_retry_video_import_failed_files_returns_202(client, account_user, tmp_path):
+    token = _login(client, account_user.username)
+    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    source = tmp_path / "incoming"
+    source.mkdir()
+    failed_file = source / "clip.mp4"
+    failed_file.write_bytes(b"data")
+    job = VideoImportJob.create(
+        source_path=str(source),
+        library=library,
+        state="failed",
+        failed_count=1,
+        failed_files=json.dumps(
+            [{"path": str(failed_file), "reason": "media_import_failed", "detail": "", "kind": "file"}]
+        ),
+    )
+
+    response = client.post(
+        f"/video-imports/{job.id}/retry",
+        json={"files": [str(failed_file)]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    # 重导与 JAV import-jobs/retry 一致，返回 200（路由未声明 202）。
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "accepted"
+    # 重导会新建一个导入作业。
+    assert body["video_import_job_id"] != job.id
+
+
+def test_retry_rejects_path_not_in_failed_list(client, account_user, tmp_path):
+    token = _login(client, account_user.username)
+    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    job = VideoImportJob.create(
+        source_path=str(tmp_path),
+        library=library,
+        state="failed",
+        failed_count=0,
+        failed_files="[]",
+    )
+
+    response = client.post(
+        f"/video-imports/{job.id}/retry",
+        json={"files": [str(tmp_path / "ghost.mp4")]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_delete_video_import_failed_file(client, account_user, tmp_path):
+    token = _login(client, account_user.username)
+    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    source = tmp_path / "incoming"
+    source.mkdir()
+    failed_file = source / "clip.mp4"
+    failed_file.write_bytes(b"data")
+    job = VideoImportJob.create(
+        source_path=str(source),
+        library=library,
+        state="failed",
+        failed_count=1,
+        failed_files=json.dumps(
+            [{"path": str(failed_file), "reason": "media_import_failed", "detail": "", "kind": "file"}]
+        ),
+    )
+
+    response = client.request(
+        "DELETE",
+        f"/video-imports/{job.id}/failed-files",
+        json={"path": str(failed_file)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["failed_files"] == []
+    assert not failed_file.exists()
+
+
+def test_rename_video_import_failed_file(client, account_user, tmp_path):
+    token = _login(client, account_user.username)
+    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    source = tmp_path / "incoming"
+    source.mkdir()
+    failed_file = source / "raw.mp4"
+    failed_file.write_bytes(b"data")
+    job = VideoImportJob.create(
+        source_path=str(source),
+        library=library,
+        state="failed",
+        failed_count=1,
+        failed_files=json.dumps(
+            [{"path": str(failed_file), "reason": "media_import_failed", "detail": "", "kind": "file"}]
+        ),
+    )
+
+    response = client.post(
+        f"/video-imports/{job.id}/failed-files/rename",
+        json={"path": str(failed_file), "new_name": "clip.mp4"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    renamed = source / "clip.mp4"
+    assert renamed.exists()
+    assert not failed_file.exists()
+    assert response.json()["failed_files"][0]["path"] == str(renamed)

@@ -66,7 +66,14 @@ class VideoImportService:
     # ---- 文件扫描与校验 ----
 
     @staticmethod
-    def _collect_video_files(source_path: str) -> List[Path]:
+    def _collect_video_files(
+        source_path: str,
+        only_file_set: set[str] | None = None,
+    ) -> List[Path]:
+        """扫描源路径下的视频文件。
+
+        ``only_file_set`` 提供时仅保留命中其中绝对路径的文件，用于失败文件的子集重导。
+        """
         source = Path(source_path).expanduser()
         if not source.exists():
             raise ApiError(404, "import_source_not_found", "Import source not found", {"source_path": source_path})
@@ -78,12 +85,15 @@ class VideoImportService:
                     "Source file is not a supported video",
                     {"source_path": source_path},
                 )
-            return [source.resolve()]
-        files = [
-            path.resolve()
-            for path in sorted(source.rglob("*"))
-            if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
-        ]
+            files = [source.resolve()]
+        else:
+            files = [
+                path.resolve()
+                for path in sorted(source.rglob("*"))
+                if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+            ]
+        if only_file_set is not None:
+            files = [path for path in files if str(path) in only_file_set]
         return files
 
     @staticmethod
@@ -260,9 +270,13 @@ class VideoImportService:
         video_import_job_id: int | None = None,
         transfer_mode: str = "auto",
         collection_id: int | None = None,
+        only_files: List[str] | None = None,
         progress_callback: ImportProgressCallback | None = None,
     ) -> VideoImportJob:
-        """执行一次完整的视频导入，并把中间状态写回 VideoImportJob。"""
+        """执行一次完整的视频导入，并把中间状态写回 VideoImportJob。
+
+        ``only_files`` 提供时仅导入这些绝对路径，用于失败文件的子集重导。
+        """
         if transfer_mode not in SUPPORTED_TRANSFER_MODES:
             raise ApiError(422, "invalid_transfer_mode", "无效的导入模式", {"transfer_mode": transfer_mode})
 
@@ -273,6 +287,11 @@ class VideoImportService:
             raise ApiError(404, "import_source_not_found", "Import source not found", {"source_path": source_path})
         if transfer_mode == "cleanup-source":
             self._assert_source_outside_libraries(source_entry)
+
+        # 子集重导时把目标文件归一化为绝对路径集合，扫描阶段据此过滤。
+        only_file_set: set[str] | None = None
+        if only_files is not None:
+            only_file_set = {str(Path(item).expanduser().resolve()) for item in only_files}
 
         job = self._prepare_job(
             video_import_job_id=video_import_job_id,
@@ -300,7 +319,7 @@ class VideoImportService:
             }
 
         try:
-            files = self._collect_video_files(str(source_entry))
+            files = self._collect_video_files(str(source_entry), only_file_set=only_file_set)
             total = len(files)
             self._emit(
                 progress_callback,

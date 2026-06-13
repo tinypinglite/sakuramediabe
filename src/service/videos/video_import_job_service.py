@@ -16,20 +16,27 @@ from peewee import IntegrityError
 from src.api.exception.errors import ApiError
 from src.common.fs_browse import assert_within_allowed_roots, normalize_abs_path
 from src.common.media_import_status import (
+    FAILED_FILE_KIND_FILE,
     FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED,
     FAILURE_REASON_IMPORT_JOB_INTERRUPTED,
     IMPORT_JOB_STATE_COMPLETED,
     IMPORT_JOB_STATE_FAILED,
     IMPORT_JOB_STATE_PENDING,
     IMPORT_JOB_STATE_RUNNING,
+    TERMINAL_JOB_STATES,
     classify_failed_file_kind,
     make_failure_item,
 )
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import MediaLibrary, VideoCollection, VideoImportJob
+from src.schema.common.pagination import PageResponse
 from src.schema.transfers.media_import import FailedFileResource
-from src.schema.videos.imports import VideoImportJobResource, VideoImportTriggerResponse
+from src.schema.videos.imports import (
+    VideoImportJobListItemResource,
+    VideoImportJobResource,
+    VideoImportTriggerResponse,
+)
 from src.service.system import ActivityService
 from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
 from src.service.videos.video_import_service import VideoImportService
@@ -63,12 +70,156 @@ class VideoImportJobService:
             transfer_mode=transfer_mode,
             collection_id=collection_id,
             mutex_key=mutex_key,
+            only_files=None,
             task_name=f"视频导入 {resolved_source.name or resolved_source}",
+        )
+
+    @classmethod
+    def retry_failed_files(
+        cls,
+        video_import_job_id: int,
+        files: List[str] | None = None,
+    ) -> VideoImportTriggerResponse:
+        job = cls._require_job(video_import_job_id)
+        cls._assert_job_terminal(job)
+        library = cls._require_library(job.library_id)
+        # 只允许重导失败列表中“可操作的单文件失败项”（kind=file）。
+        actionable_paths = cls._actionable_failed_paths(job)
+
+        if files is None:
+            resolved_files = sorted(actionable_paths)
+        else:
+            # 安全约束：每个待重导路径都必须是该作业可重导的失败文件。
+            for candidate in files:
+                if candidate not in actionable_paths:
+                    raise ApiError(
+                        403,
+                        "file_not_in_failed_list",
+                        "只能重导该导入作业失败列表中的可重导文件",
+                        {"path": candidate},
+                    )
+            resolved_files = list(files)
+
+        if not resolved_files:
+            raise ApiError(
+                422,
+                "no_retry_files",
+                "没有可重导的失败文件",
+                {"video_import_job_id": video_import_job_id},
+            )
+
+        # 纵深防御：逐个待重导文件也必须落在白名单根目录内。
+        for candidate in resolved_files:
+            assert_within_allowed_roots(Path(candidate), settings.media_import.browse_roots)
+
+        resolved_source = cls._resolve_source_path(job.source_path)
+        mutex_key = cls._build_retry_mutex_key(video_import_job_id, library.id, resolved_source)
+        return cls._launch_import(
+            library=library,
+            resolved_source=resolved_source,
+            # 重导沿用原作业的导入模式与合集，避免 cleanup-source 退化或丢失合集归属。
+            transfer_mode=job.transfer_mode or "auto",
+            collection_id=job.collection_id,
+            mutex_key=mutex_key,
+            only_files=resolved_files,
+            task_name=f"重导失败视频 #{video_import_job_id}",
+        )
+
+    @classmethod
+    def list_jobs(cls, *, page: int = 1, page_size: int = 20) -> PageResponse[VideoImportJobListItemResource]:
+        if page < 1 or page_size < 1:
+            raise ApiError(422, "invalid_pagination", "分页参数非法")
+        query = VideoImportJob.select().order_by(VideoImportJob.id.desc())
+        total = query.count()
+        start = (page - 1) * page_size
+        items = [
+            VideoImportJobListItemResource.from_model(job)
+            for job in query.offset(start).limit(page_size)
+        ]
+        return PageResponse[VideoImportJobListItemResource](
+            items=items,
+            page=page,
+            page_size=page_size,
+            total=total,
         )
 
     @classmethod
     def get_job(cls, video_import_job_id: int) -> VideoImportJobResource:
         job = cls._require_job(video_import_job_id)
+        return VideoImportJobResource.from_model(job, failed_files=cls._failed_file_resources(job))
+
+    @classmethod
+    def delete_failed_file(cls, video_import_job_id: int, path: str) -> VideoImportJobResource:
+        job = cls._require_job(video_import_job_id)
+        cls._assert_job_terminal(job)
+        cls._require_actionable_failed_entry(job, path)
+        cls._assert_within_allowed_roots(path)
+
+        target = Path(path)
+        # 目录类失败项（如任务级失败写入的源目录）禁止按文件删除，避免误删整目录。
+        if target.is_dir():
+            raise ApiError(422, "cannot_delete_directory", "该失败项是目录，不能按文件删除", {"path": path})
+
+        try:
+            target.unlink()
+            logger.info("Video import failed file deleted video_import_job_id={} path={}", video_import_job_id, path)
+        except FileNotFoundError:
+            # 文件已不存在时视为删除成功，仍从失败列表移除该条记录。
+            logger.info(
+                "Video import failed file already missing video_import_job_id={} path={}", video_import_job_id, path
+            )
+        except OSError as exc:
+            raise ApiError(
+                422,
+                "delete_failed_file_failed",
+                "删除失败文件出错",
+                {"path": path, "detail": str(exc)},
+            ) from exc
+
+        failure_items = [item for item in cls._parse_failed_files(job) if item.get("path") != path]
+        cls._save_failed_files(job, failure_items)
+        return VideoImportJobResource.from_model(job, failed_files=cls._failed_file_resources(job))
+
+    @classmethod
+    def rename_failed_file(cls, video_import_job_id: int, path: str, new_name: str) -> VideoImportJobResource:
+        job = cls._require_job(video_import_job_id)
+        cls._assert_job_terminal(job)
+        cls._require_actionable_failed_entry(job, path)
+        cls._assert_within_allowed_roots(path)
+
+        normalized_new_name = cls._validate_new_name(new_name)
+
+        source = Path(path)
+        # 仅允许重命名常规文件，杜绝把目录类失败项整目录改名。
+        if not source.is_file():
+            raise ApiError(422, "cannot_rename_non_file", "该失败项不是常规文件，不能重命名", {"path": path})
+
+        target = source.parent / normalized_new_name
+        if target.exists():
+            raise ApiError(409, "rename_target_exists", "目标文件已存在", {"path": str(target)})
+
+        try:
+            source.rename(target)
+        except OSError as exc:
+            raise ApiError(
+                422,
+                "rename_failed_file_failed",
+                "重命名失败文件出错",
+                {"path": path, "detail": str(exc)},
+            ) from exc
+        logger.info(
+            "Video import failed file renamed video_import_job_id={} from={} to={}",
+            video_import_job_id,
+            path,
+            str(target),
+        )
+
+        # 把失败列表中该条记录的路径更新为新路径，保证后续仍能对新名重导且满足“仅限失败列表内”约束。
+        failure_items = cls._parse_failed_files(job)
+        for item in failure_items:
+            if item.get("path") == path:
+                item["path"] = str(target)
+        cls._save_failed_files(job, failure_items)
         return VideoImportJobResource.from_model(job, failed_files=cls._failed_file_resources(job))
 
     @classmethod
@@ -123,6 +274,7 @@ class VideoImportJobService:
         transfer_mode: str,
         collection_id: int | None,
         mutex_key: str,
+        only_files: List[str] | None,
         task_name: str,
     ) -> VideoImportTriggerResponse:
         try:
@@ -166,6 +318,7 @@ class VideoImportJobService:
                 task_run.id,
                 transfer_mode,
                 collection_id,
+                only_files,
             )
         except Exception as exc:
             import_job_id = import_job.id if import_job is not None else None
@@ -206,6 +359,7 @@ class VideoImportJobService:
         task_run_id: int,
         transfer_mode: str,
         collection_id: int | None,
+        only_files: List[str] | None = None,
     ) -> dict:
         ensure_database_ready()
         try:
@@ -217,6 +371,7 @@ class VideoImportJobService:
                     video_import_job_id=video_import_job_id,
                     transfer_mode=transfer_mode,
                     collection_id=collection_id,
+                    only_files=only_files,
                     progress_callback=reporter.progress_callback,
                 )
                 return {
@@ -294,6 +449,40 @@ class VideoImportJobService:
         return job
 
     @staticmethod
+    def _assert_job_terminal(job: VideoImportJob) -> None:
+        if job.state not in TERMINAL_JOB_STATES:
+            raise ApiError(
+                409,
+                "job_in_progress",
+                "导入作业进行中，暂不能操作失败文件",
+                {"video_import_job_id": job.id, "state": job.state},
+            )
+
+    @staticmethod
+    def _validate_new_name(new_name: str) -> str:
+        normalized = (new_name or "").strip()
+        if not normalized or normalized in (".", ".."):
+            raise ApiError(422, "invalid_new_name", "新文件名非法", {"new_name": new_name})
+        if "/" in normalized or "\\" in normalized:
+            raise ApiError(422, "invalid_new_name", "新文件名不能包含路径分隔符", {"new_name": new_name})
+        if normalized.startswith("."):
+            raise ApiError(422, "invalid_new_name", "新文件名不能以点开头", {"new_name": new_name})
+        if any(ord(ch) < 32 for ch in normalized):
+            raise ApiError(422, "invalid_new_name", "新文件名包含非法控制字符", {"new_name": new_name})
+        if len(normalized) > 255:
+            raise ApiError(422, "invalid_new_name", "新文件名过长", {"new_name": new_name})
+        return normalized
+
+    @staticmethod
+    def _assert_within_allowed_roots(path: str) -> None:
+        assert_within_allowed_roots(Path(path), settings.media_import.browse_roots)
+
+    @staticmethod
+    def _build_retry_mutex_key(video_import_job_id: int, library_id: int, resolved_source: Path) -> str:
+        digest = hashlib.sha1(str(resolved_source).encode("utf-8")).hexdigest()
+        return f"video_import:retry:{library_id}:{digest}:{video_import_job_id}"
+
+    @staticmethod
     def _has_live_owner(job: VideoImportJob) -> bool:
         task_run = job.task_run
         if task_run is None or task_run.owner_pid is None:
@@ -321,19 +510,64 @@ class VideoImportJobService:
             return []
         return items if isinstance(items, list) else []
 
+    @staticmethod
+    def _entry_kind(item: dict[str, Any]) -> str:
+        # 历史记录可能没有 kind 字段，按 reason 回推分类，保证旧数据兼容。
+        kind = item.get("kind")
+        if kind:
+            return kind
+        return classify_failed_file_kind(item.get("reason", ""))
+
     @classmethod
     def _failed_file_resources(cls, job: VideoImportJob) -> list[FailedFileResource]:
-        resources = []
-        for item in cls._parse_failed_files(job):
-            if not isinstance(item, dict):
-                continue
-            kind = item.get("kind") or classify_failed_file_kind(item.get("reason", ""))
-            resources.append(
-                FailedFileResource(
-                    path=item.get("path", ""),
-                    reason=item.get("reason", ""),
-                    detail=item.get("detail", ""),
-                    kind=kind,
-                )
+        return [
+            FailedFileResource(
+                path=item.get("path", ""),
+                reason=item.get("reason", ""),
+                detail=item.get("detail", ""),
+                kind=cls._entry_kind(item),
             )
-        return resources
+            for item in cls._parse_failed_files(job)
+            if isinstance(item, dict)
+        ]
+
+    @classmethod
+    def _actionable_failed_paths(cls, job: VideoImportJob) -> set[str]:
+        return {
+            item.get("path", "")
+            for item in cls._parse_failed_files(job)
+            if isinstance(item, dict) and item.get("path") and cls._entry_kind(item) == FAILED_FILE_KIND_FILE
+        }
+
+    @classmethod
+    def _find_failed_entry(cls, job: VideoImportJob, path: str) -> dict[str, Any] | None:
+        for item in cls._parse_failed_files(job):
+            if isinstance(item, dict) and item.get("path") == path:
+                return item
+        return None
+
+    @classmethod
+    def _require_actionable_failed_entry(cls, job: VideoImportJob, path: str) -> dict[str, Any]:
+        entry = cls._find_failed_entry(job, path)
+        if entry is None:
+            raise ApiError(
+                403,
+                "file_not_in_failed_list",
+                "只能操作该导入作业失败列表中的文件",
+                {"path": path},
+            )
+        kind = cls._entry_kind(entry)
+        if kind != FAILED_FILE_KIND_FILE:
+            raise ApiError(
+                422,
+                "failed_file_not_actionable",
+                "该失败项不可执行删除/重命名/重导操作",
+                {"path": path, "kind": kind},
+            )
+        return entry
+
+    @staticmethod
+    def _save_failed_files(job: VideoImportJob, failure_items: list[dict[str, Any]]) -> None:
+        job.failed_files = json.dumps(failure_items, ensure_ascii=False)
+        job.updated_at = utc_now_for_db()
+        job.save()
