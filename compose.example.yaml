@@ -18,9 +18,13 @@ services:
       - ./docker-data/db:/data/db
       - ./docker-data/cache/assets:/data/cache/assets
       - ./docker-data/cache/gfriends:/data/cache/gfriends
+      # 抓取/解析的字幕文件，独立持久化避免容器重建丢失。
+      - ./docker-data/cache/subtitles:/data/cache/subtitles
       # 旧图像搜索索引目录；迁移到 qdrant 后，确认数据迁移完成即可清理
       - ./docker-data/image-search-index:/data/indexes
       - ./docker-data/logs:/data/logs
+      # 用户片段（ffmpeg 切出的独立 mp4）独立持久化；与来源媒体解耦，删媒体不删片段。
+      - ./docker-data/media-clips:/data/media-clips
 
       # 按实际情况 挂载由sakuramedia 管理的媒体目录、qb 实际下载目录已经需要导入的媒体目录.
       # 具体看文档说明
