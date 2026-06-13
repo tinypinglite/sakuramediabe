@@ -31,6 +31,10 @@
 - [catalog/actors.md](./catalog/actors.md): 演员目录、订阅和关联资源
 - [catalog/tags.md](./catalog/tags.md): 标签目录与标签下影片
 
+### Videos
+
+- [videos/README.md](./videos/README.md): 非 JAV 视频条目、人物、合集与就地导入
+
 ### Collections
 
 - [collections/playlists.md](./collections/playlists.md): 播放列表与影片归档
@@ -56,6 +60,7 @@
 
 ### Releases
 
+- [releases/2026-06-13-non-jav-videos-and-clips.md](./releases/2026-06-13-non-jav-videos-and-clips.md): 非 JAV 视频管理与视频片段收藏接口总览
 - [releases/2026-05-07-actor-year-movie-count.md](./releases/2026-05-07-actor-year-movie-count.md): 女优影片年份数量返回
 
 ### Deployment
@@ -86,6 +91,11 @@
 - `ranking sources`
 - `download clients`
 - `download tasks`
+- `video items`
+- `persons`
+- `video collections`
+- `media clips`
+- `clip collections`
 
 ## 通用认证说明
 
