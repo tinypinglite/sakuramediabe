@@ -956,6 +956,57 @@ def test_list_movies_supports_director_and_maker_exact_filters(client, account_u
     assert [item["movie_number"] for item in response.json()["items"]] == ["ABP-120"]
 
 
+def test_list_movies_supports_number_source_filter(client, account_user):
+    token = _login(client, username=account_user.username)
+    _create_movie("FC2-111111", "MovieFC1", title="FC2 Movie 1")
+    _create_movie("FC2-222222", "MovieFC2", title="FC2 Movie 2")
+    _create_movie("ABP-120", "MovieR1", title="Regular Movie 1")
+    _create_movie("SSNI-404", "MovieR2", title="Regular Movie 2")
+
+    auth = {"Authorization": f"Bearer {token}"}
+
+    fc2_response = client.get("/movies?number_source=fc2", headers=auth)
+    regular_response = client.get("/movies?number_source=regular", headers=auth)
+    all_response = client.get("/movies?number_source=all", headers=auth)
+    default_response = client.get("/movies", headers=auth)
+
+    assert fc2_response.status_code == 200
+    assert {item["movie_number"] for item in fc2_response.json()["items"]} == {
+        "FC2-111111",
+        "FC2-222222",
+    }
+    assert regular_response.status_code == 200
+    assert {item["movie_number"] for item in regular_response.json()["items"]} == {
+        "ABP-120",
+        "SSNI-404",
+    }
+    assert all_response.status_code == 200
+    assert {item["movie_number"] for item in all_response.json()["items"]} == {
+        "FC2-111111",
+        "FC2-222222",
+        "ABP-120",
+        "SSNI-404",
+    }
+    # 不传参数时与 all 等价，不限制番号来源。
+    assert {item["movie_number"] for item in default_response.json()["items"]} == {
+        "FC2-111111",
+        "FC2-222222",
+        "ABP-120",
+        "SSNI-404",
+    }
+
+
+def test_list_movies_rejects_invalid_number_source(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    response = client.get(
+        "/movies?number_source=unknown",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+
+
 def test_list_movies_rejects_blank_director_or_maker_filter(client, account_user):
     token = _login(client, username=account_user.username)
 

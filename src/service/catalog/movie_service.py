@@ -62,6 +62,7 @@ from src.schema.catalog.movies import (
     MovieDetailResource,
     MovieListItemResource,
     MovieListStatus,
+    MovieNumberSource,
     MovieSpecialTagFilter,
     TagMatchMode,
     MissavThumbnailResource,
@@ -128,6 +129,7 @@ class MovieService:
         series_id: int | None = None,
         director_name: str | None = None,
         maker_name: str | None = None,
+        number_source: MovieNumberSource = MovieNumberSource.ALL,
     ):
         """构建影片列表的基础筛选链路，供列表和计数查询复用。"""
         query = Movie.select()
@@ -178,6 +180,11 @@ class MovieService:
             filtered_query = filtered_query.where(Movie.director_name == director_name)
         if maker_name is not None:
             filtered_query = filtered_query.where(Movie.maker_name == maker_name)
+        if number_source == MovieNumberSource.FC2:
+            # 番号统一规范化为大写存储，FC2 影片以 "FC2" 前缀开头。
+            filtered_query = filtered_query.where(Movie.movie_number.startswith("FC2"))
+        elif number_source == MovieNumberSource.REGULAR:
+            filtered_query = filtered_query.where(~(Movie.movie_number.startswith("FC2")))
         return filtered_query
 
     @staticmethod
@@ -239,6 +246,7 @@ class MovieService:
         series_id: int | None = None,
         director_name: str | None = None,
         maker_name: str | None = None,
+        number_source: MovieNumberSource = MovieNumberSource.ALL,
     ):
         """列表查询统一在这里补齐封面图和 ``can_play`` 计算列。"""
         can_play_expression = cls._playable_exists_expression().alias("can_play")
@@ -255,6 +263,7 @@ class MovieService:
                 series_id,
                 director_name,
                 maker_name,
+                number_source,
             ).select(Movie, can_play_expression, is_4k_expression)
         )
         return query.order_by(*cls._build_movie_list_sort(sort, status))
@@ -614,6 +623,7 @@ class MovieService:
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         special_tag: MovieSpecialTagFilter | None = None,
+        number_source: MovieNumberSource = MovieNumberSource.ALL,
         sort: Optional[str] = None,
         director_name: str | None = None,
         maker_name: str | None = None,
@@ -632,6 +642,7 @@ class MovieService:
             None,
             director_name,
             maker_name,
+            number_source,
         ).count()
         movies = list(
             MovieService._movie_list_query(
@@ -646,6 +657,7 @@ class MovieService:
                 None,
                 director_name,
                 maker_name,
+                number_source,
             ).offset(start).limit(page_size)
         )
         return PageResponse[MovieListItemResource](

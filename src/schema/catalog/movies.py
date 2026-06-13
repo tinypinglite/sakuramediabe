@@ -44,6 +44,13 @@ class MovieSpecialTagFilter(str, Enum):
         return "VR"
 
 
+class MovieNumberSource(str, Enum):
+    # 按番号来源筛选：ALL 不限制，REGULAR 排除 FC2，FC2 仅 FC2（番号以 FC2 开头）。
+    ALL = "all"
+    REGULAR = "regular"
+    FC2 = "fc2"
+
+
 class MovieReviewSort(str, Enum):
     RECENTLY = "recently"
     HOTLY = "hotly"
