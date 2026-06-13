@@ -11,8 +11,8 @@
 
 - **片段是独立资产，与来源媒体解耦**。删除来源 `media` 不会删除片段：片段的 `media_id` 会被置空（`SET NULL`），但片段记录、产物文件以及 `movie_number` 番号快照都保留，片段仍可播放。
 - **区间精度**：用户按缩略图选点，粒度为 10 秒；`-c copy` 切点对齐关键帧，首尾可能偏移几秒。
-- **同步生成**：切片在创建请求内完成。为兜住单次耗时、规避接口超时，圈选区间时长不得超过配置 `media.media_clip_max_duration_seconds`（默认 900 秒）。
-- **去重幂等**：同一来源媒体的同一 `(media, start, end)` 区间只保留一条；重复创建返回已有片段（HTTP 200）。
+- **同步生成**：切片在创建请求内完成。圈选区间时长不得超过 `media.media_clip_max_duration_seconds`（默认 900 秒）；单次 ffmpeg 进程另有墙钟超时 `media.media_clip_ffmpeg_timeout_seconds`（默认 120 秒），坏文件/慢挂载导致卡死时会被杀进程并按失败处理（清理占位记录与半成品文件）。
+- **去重幂等**：同一来源媒体的同一 `(media, start, end)` 区间只保留一条；重复创建返回已有片段（HTTP 200）。该幂等仅在来源 `media` 存活期间有效——`media` 删除后片段 `media_id` 置空、成为不可变快照，此后已无入口对其再建同区间。
 - **产物存储**：片段文件存放在独立目录 `media.media_clip_root_path`（默认 `/data/media-clips`），建议作为独立 docker 卷映射到本地持久化，目录需被容器运行用户可写。
 
 ## 资源模型

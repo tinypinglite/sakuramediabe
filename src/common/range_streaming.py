@@ -4,14 +4,14 @@
 """
 
 import os
-from typing import BinaryIO
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 
-def _send_bytes_range_requests(file_obj: BinaryIO, start: int, end: int, chunk_size: int = 10_000):
-    with file_obj as stream:
+def _send_bytes_range_requests(file_path: str, start: int, end: int, chunk_size: int = 10_000):
+    # open 延迟到生成器真正被迭代时执行：未消费（如 HEAD）或上游异常都不会泄漏文件句柄。
+    with open(file_path, mode="rb") as stream:
         stream.seek(start)
         while (position := stream.tell()) <= end:
             read_size = min(chunk_size, end + 1 - position)
@@ -27,8 +27,16 @@ def _get_range_header(range_header: str, file_size: int) -> tuple[int, int]:
 
     try:
         start_text, end_text = range_header.replace("bytes=", "", 1).split("-", 1)
-        start = int(start_text) if start_text else 0
-        end = int(end_text) if end_text else file_size - 1
+        if start_text == "":
+            # 后缀 range：bytes=-N 表示文件最后 N 字节，超过文件大小则回退到整文件。
+            suffix_length = int(end_text)
+            if suffix_length <= 0:
+                raise _invalid_range()
+            start = max(file_size - suffix_length, 0)
+            end = file_size - 1
+        else:
+            start = int(start_text)
+            end = int(end_text) if end_text else file_size - 1
     except ValueError as exc:
         raise _invalid_range() from exc
 
@@ -63,7 +71,7 @@ def range_requests_response(request: Request, file_path: str, content_type: str)
         status_code = status.HTTP_206_PARTIAL_CONTENT
 
     return StreamingResponse(
-        _send_bytes_range_requests(open(file_path, mode="rb"), start, end),
+        _send_bytes_range_requests(file_path, start, end),
         headers=headers,
         status_code=status_code,
     )

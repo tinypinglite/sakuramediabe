@@ -109,8 +109,10 @@ class Media(BaseModel):
     )
     # 片段产物独立存储根目录，部署时单独挂卷映射到本地。
     media_clip_root_path: str = "/data/media-clips"
-    # 用户可圈选的片段最大时长（秒），同步切片用它兜住单次耗时、规避接口超时。
+    # 用户可圈选的片段最大时长（秒），仅约束区间长度，不等于 ffmpeg 进程墙钟时长。
     media_clip_max_duration_seconds: int = 900
+    # 单次 ffmpeg 切片的墙钟超时（秒）：兜住坏文件/慢挂载导致的进程卡死，超时即杀进程。
+    media_clip_ffmpeg_timeout_seconds: int = 120
 
 
 class MovieInfoTranslation(BaseModel):

@@ -8,11 +8,11 @@ import subprocess
 from pathlib import Path
 from typing import Sequence
 
-import ffmpy
 from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_clip_url, media_clip_root_path
+from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import require_record, resolve_sort, validate_page
 from src.config.config import settings
 from src.model import Image, Media, MediaClip, MediaThumbnail
@@ -127,12 +127,28 @@ class MediaClipService:
 
     @staticmethod
     def _cut_clip_file(source_path: Path, target_path: Path, start: int, end: int) -> None:
-        """ffmpeg 流复制切片：-ss/-to 放在输入端做关键帧快速定位，-c copy 不重编码。"""
-        ffmpeg = ffmpy.FFmpeg(
-            inputs={str(source_path): ["-ss", str(start), "-to", str(end)]},
-            outputs={str(target_path): ["-c", "copy", "-avoid_negative_ts", "make_zero", "-y"]},
-        )
-        ffmpeg.run(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        """ffmpeg 流复制切片：-ss/-to 放输入端做关键帧快速定位，-c copy 不重编码。
+
+        直接用 subprocess 执行而非 ffmpy，以便用 timeout 兜住坏文件/慢挂载导致的进程卡死；
+        超时会 kill 子进程干净回收，避免同步切片无限占住请求线程。
+        """
+        command = [
+            "ffmpeg",
+            "-ss", str(start), "-to", str(end), "-i", str(source_path),
+            "-c", "copy", "-avoid_negative_ts", "make_zero", "-y", str(target_path),
+        ]
+        try:
+            subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=settings.media.media_clip_ffmpeg_timeout_seconds,
+                check=True,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("clip_cut_timeout") from exc
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError("clip_cut_failed") from exc
         if not target_path.exists() or target_path.stat().st_size <= 0:
             raise RuntimeError("clip_output_empty")
 
@@ -177,7 +193,8 @@ class MediaClipService:
         if not source_path.exists() or not source_path.is_file():
             raise ApiError(404, "file_not_found", "媒体文件不存在", {"media_id": media.id})
 
-        movie_number = media.movie.movie_number
+        # 解耦后非 JAV 媒体 movie 为空，读外键原始列（None-safe）；下游 _clip_relative_path 已兜 None。
+        movie_number = media.movie_number
         # 先落库拿 id 作为文件名，天然避免跨媒体的文件名冲突。
         clip = MediaClip.create(
             media=media,
@@ -301,6 +318,8 @@ class MediaClipService:
     def update_clip(cls, clip_id: int, payload: MediaClipUpdateRequest) -> MediaClipResource:
         clip = cls._require_clip(clip_id)
         clip.title = payload.title
+        # 显式刷新更新时间：TimestampedMixin 不自动维护 updated_at，only 列表里也需有人赋值。
+        clip.updated_at = utc_now_for_db()
         clip.save(only=[MediaClip.title, MediaClip.updated_at])
         return cls.build_clip_resource(clip, cls._resolve_single_cover(clip))
 

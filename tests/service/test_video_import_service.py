@@ -116,3 +116,24 @@ def test_import_rejects_unsupported_file(video_import_tables, tmp_path):
     with pytest.raises(ApiError) as exc:
         VideoImportService().import_from_source(VideoImportRequest(source_path=file_path))
     assert exc.value.code == "import_source_unsupported"
+
+
+def test_import_dedupes_by_content_fingerprint(video_import_tables, tmp_path):
+    # 相同内容、不同路径/文件名 → 指纹相同 → 第二次按内容指纹去重跳过。
+    content = b"identical-video-content-payload-0123456789"
+    first = tmp_path / "a.mp4"
+    first.write_bytes(content)
+    nested = tmp_path / "sub"
+    nested.mkdir()
+    second = nested / "b.mp4"
+    second.write_bytes(content)
+
+    service = VideoImportService()
+    first_result = service.import_from_source(VideoImportRequest(source_path=str(first)))
+    assert first_result.created_count == 1
+
+    second_result = service.import_from_source(VideoImportRequest(source_path=str(second)))
+    assert second_result.created_count == 0
+    assert second_result.skipped_count == 1
+    assert VideoItem.select().count() == 1
+    assert Media.select().count() == 1

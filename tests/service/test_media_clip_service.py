@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -250,3 +251,63 @@ def test_update_clip_changes_title(clip_env):
 
     assert updated.title == "新标题"
     assert MediaClip.get_by_id(resource.clip_id).title == "新标题"
+
+
+def test_create_clip_for_non_jav_media(clip_env, tmp_path):
+    # clip_env 已建表并把 _cut_clip_file 换成写占位文件；另建一条非 JAV(video_item)媒体。
+    video_item = VideoItem.create(title="家庭录像")
+    source = tmp_path / "home.mp4"
+    source.write_bytes(b"home-video")
+    media = Media.create(video_item=video_item, path=str(source), valid=True)
+    thumbs = {}
+    for offset in (0, 10, 20):
+        rel = f"videos/{video_item.id}/media/fp/thumbnails/{offset}.webp"
+        image = Image.create(origin=rel, small=rel, medium=rel, large=rel)
+        thumbs[offset] = MediaThumbnail.create(media=media, image=image, offset=offset).id
+
+    resource, created = MediaClipService.create_clip(
+        media.id,
+        MediaClipCreateRequest(start_thumbnail_id=thumbs[0], end_thumbnail_id=thumbs[20]),
+    )
+
+    assert created is True
+    assert resource.movie_number is None
+    clip = MediaClip.get_by_id(resource.clip_id)
+    assert clip.movie_number is None
+    # 番号缺省时片段落到 _unknown/ 目录。
+    assert clip.file_path.startswith("_unknown/")
+    assert (Path(settings.media.media_clip_root_path) / clip.file_path).exists()
+
+
+def test_update_clip_refreshes_updated_at(clip_env, monkeypatch):
+    media = clip_env
+    resource, _ = MediaClipService.create_clip(
+        media.id,
+        MediaClipCreateRequest(
+            start_thumbnail_id=_thumb_id(media, 0),
+            end_thumbnail_id=_thumb_id(media, 10),
+        ),
+    )
+    created = MediaClip.get_by_id(resource.clip_id)
+    bumped = created.updated_at + timedelta(hours=1)
+    # TimestampedMixin 不自动维护 updated_at，update_clip 必须显式刷新。
+    monkeypatch.setattr(
+        "src.service.playback.media_clip_service.utc_now_for_db", lambda: bumped
+    )
+
+    MediaClipService.update_clip(resource.clip_id, MediaClipUpdateRequest(title="改"))
+
+    assert MediaClip.get_by_id(resource.clip_id).updated_at == bumped
+
+
+def test_cut_clip_file_raises_runtime_error_on_timeout(monkeypatch, tmp_path):
+    import subprocess
+
+    # ffmpeg 卡死：subprocess.run 抛 TimeoutExpired，应转成 RuntimeError 让上层清理半成品。
+    def _fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError, match="clip_cut_timeout"):
+        MediaClipService._cut_clip_file(tmp_path / "a.mp4", tmp_path / "b.mp4", 0, 10)

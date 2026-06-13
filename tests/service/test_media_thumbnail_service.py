@@ -793,3 +793,53 @@ def test_list_media_thumbnails_returns_sorted_resources(thumbnail_tables, tmp_pa
 
     assert [item.offset_seconds for item in items] == [10, 20]
     assert [item.thumbnail_id for item in items] == [2, 1]
+
+
+def test_generate_pending_thumbnails_supports_non_jav_media_and_marks_skipped(
+    thumbnail_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    from src.service.playback.media_thumbnail_service import MediaThumbnailService
+
+    # 非 JAV 媒体：只挂 video_item，movie 为空——修复前会因 media.movie 解引用 None 崩溃整轮。
+    video_item = VideoItem.create(title="家庭录像")
+    video_path = tmp_path / "home.mp4"
+    video_path.write_bytes(b"video")
+    media = Media.create(
+        video_item=video_item,
+        path=str(video_path),
+        content_fingerprint="fingerprint-nonjav",
+        valid=True,
+    )
+    image_root = tmp_path / "images"
+
+    def fake_generate(video_path, webp_dir, *, interval_seconds=10):
+        _write_webp_batch(webp_dir, [10, 20])
+        return None
+
+    monkeypatch.setattr(
+        MediaThumbnailService, "_generate_webp_with_pyav", staticmethod(fake_generate)
+    )
+    monkeypatch.setattr(
+        "src.service.playback.media_thumbnail_service.settings.media.import_image_root_path",
+        str(image_root),
+    )
+    monkeypatch.setattr(
+        "src.service.playback.media_thumbnail_service.settings.media.max_thumbnail_process_count",
+        1,
+    )
+
+    stats = MediaThumbnailService.generate_pending_thumbnails()
+    thumbnails = list(MediaThumbnail.select().order_by(MediaThumbnail.offset))
+
+    assert stats["successful_media"] == 1
+    assert stats["generated_thumbnails"] == 2
+    assert [t.offset for t in thumbnails] == [10, 20]
+    # 缩略图落在 videos/<video_item_id>/ 命名空间。
+    assert thumbnails[0].image.origin == (
+        f"videos/{video_item.id}/media/fingerprint-nonjav/thumbnails/10.webp"
+    )
+    # 非 JAV 缩略图不进图搜图，落 SKIPPED 终态而非长期滞留 PENDING。
+    assert all(
+        t.joytag_index_status == MediaThumbnail.JOYTAG_INDEX_STATUS_SKIPPED
+        for t in thumbnails
+    )

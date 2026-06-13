@@ -252,6 +252,12 @@ class MediaThumbnailService:
     def _persist_generated_files(cls, media: Media, webp_files: list[Path]) -> int:
         created_count = 0
         image_root = cls._image_root_path()
+        # 非 JAV 媒体的缩略图不进图像检索向量库，直接落 SKIPPED 终态；JAV 维持 PENDING 待索引。
+        initial_index_status = (
+            MediaThumbnail.JOYTAG_INDEX_STATUS_PENDING
+            if media.movie_number
+            else MediaThumbnail.JOYTAG_INDEX_STATUS_SKIPPED
+        )
         with get_database().atomic():
             for webp_file in webp_files:
                 offset = cls._parse_offset_seconds(webp_file)
@@ -269,7 +275,12 @@ class MediaThumbnailService:
                     medium=relative_path,
                     large=relative_path,
                 )
-                MediaThumbnail.create(media=media, image=image, offset=offset)
+                MediaThumbnail.create(
+                    media=media,
+                    image=image,
+                    offset=offset,
+                    joytag_index_status=initial_index_status,
+                )
                 created_count += 1
         return created_count
 
@@ -342,7 +353,8 @@ class MediaThumbnailService:
         logger.info(
             "Generating media thumbnails media_id={} movie_number={} video_path={}",
             media.id,
-            media.movie.movie_number,
+            # 解耦后非 JAV 媒体 movie 为空，读外键原始列（None-safe），避免解引用 None 崩溃整轮任务。
+            media.movie_number,
             video_path,
         )
         started_at = time.time()

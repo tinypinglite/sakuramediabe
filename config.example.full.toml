@@ -92,9 +92,11 @@ max_thumbnail_process_count = 4
 # 部署时建议作为独立 docker 卷映射到本地持久化，例如 -v ./media-clips:/data/media-clips，
 # 目录需被容器运行用户可写。
 media_clip_root_path = "/data/media-clips"
-# 用户可圈选的片段最大时长（秒）。同步切片在创建请求内完成，用该上限兜住单次耗时、
-# 规避接口超时；具体值需结合机器与磁盘实测调整。
+# 用户可圈选的片段最大时长（秒），仅约束圈选区间长度，不等于 ffmpeg 进程耗时。
 media_clip_max_duration_seconds = 900
+# 单次 ffmpeg 切片的墙钟超时（秒）。同步切片在创建请求内完成，用该上限兜住坏文件/慢挂载
+# 导致的进程卡死；超时会 kill 子进程干净回收，避免占住请求线程。
+media_clip_ffmpeg_timeout_seconds = 120
 
 [metadata]
 # JavDB API域名，不带协议头。

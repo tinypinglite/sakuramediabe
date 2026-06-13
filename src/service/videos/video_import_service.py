@@ -83,6 +83,7 @@ class VideoImportService:
         *,
         library: MediaLibrary | None,
         payload: VideoImportRequest,
+        fingerprint: str,
     ) -> int:
         # 探测分辨率/时长/编码信息（失败时返回空结果，由后续扫描任务补齐）。
         probe = self.media_metadata_probe_service.probe_file(file_path)
@@ -92,7 +93,6 @@ class VideoImportService:
             video_info=probe.video_info,
             has_subtitle=False,
         )
-        fingerprint = compute_content_fingerprint(file_path)
         file_size = file_path.stat().st_size
         with get_database().atomic():
             video = VideoItem.create(title=file_path.stem)
@@ -123,13 +123,21 @@ class VideoImportService:
         created_ids: List[int] = []
         skipped = 0
         for file_path in files:
-            # 路径唯一约束即去重口径：已登记过的文件跳过。
+            # 路径已登记：快速路径，免去计算指纹直接跳过。
             if Media.get_or_none(Media.path == str(file_path)) is not None:
                 skipped += 1
                 logger.info("Video import skipped already-indexed path={}", str(file_path))
                 continue
+            # 内容指纹去重：同一物理内容（拷贝/软链/换挂载点）即便路径不同也视为已导入。
+            fingerprint = compute_content_fingerprint(file_path)
+            if Media.get_or_none(Media.content_fingerprint == fingerprint) is not None:
+                skipped += 1
+                logger.info("Video import skipped duplicate fingerprint path={}", str(file_path))
+                continue
             created_ids.append(
-                self._create_video_for_file(file_path, library=library, payload=payload)
+                self._create_video_for_file(
+                    file_path, library=library, payload=payload, fingerprint=fingerprint
+                )
             )
         logger.info(
             "Video import finished source={} created={} skipped={}",

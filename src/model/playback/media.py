@@ -43,6 +43,13 @@ class Media(TimestampedMixin, BaseModel):
     special_tags = peewee.CharField(max_length=255, default="普通")
     valid = peewee.BooleanField(default=True)
 
+    def save(self, *args, **kwargs):
+        # 恰好其一不变量：一条 Media 必须归属 movie(JAV) 或 video_item(非 JAV) 之一，
+        # 不能两者都空或都非空。读外键原始列值判断，不触发关联加载。
+        if (self.movie_number is None) == (self.video_item_id is None):
+            raise ValueError("Media must belong to exactly one of movie / video_item")
+        return super().save(*args, **kwargs)
+
     class Meta:
         table_name = "media"
 
@@ -51,6 +58,8 @@ class MediaThumbnail(TimestampedMixin, BaseModel):
     JOYTAG_INDEX_STATUS_PENDING = 0
     JOYTAG_INDEX_STATUS_FAILED = 1
     JOYTAG_INDEX_STATUS_SUCCESS = 2
+    # 非 JAV 媒体的缩略图不参与图像检索向量索引，落明确终态避免长期滞留 PENDING。
+    JOYTAG_INDEX_STATUS_SKIPPED = 3
 
     media = peewee.ForeignKeyField(Media, backref="thumbnails", on_delete="CASCADE")
     image = peewee.ForeignKeyField(Image, backref="media_thumbnails", on_delete="CASCADE")
@@ -100,5 +109,6 @@ class MediaClip(TimestampedMixin, BaseModel):
 
     class Meta:
         table_name = "media_clip"
-        # 同一来源媒体的同一区间只保留一条，创建时按此去重幂等。
+        # 幂等去重仅在来源 media 存活期间有效：media 删除后被 SET NULL，
+        # NULL 不参与唯一约束，但此时已无入口对孤立片段再建同区间，故不影响实际。
         indexes = ((("media", "start_offset_seconds", "end_offset_seconds"), True),)

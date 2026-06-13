@@ -1,3 +1,5 @@
+import pytest
+
 from src.model import (
     Actor,
     BackgroundTaskRun,
@@ -114,6 +116,31 @@ def test_media_thumbnail_model_tracks_offset_and_joytag_status(test_db):
 
     assert thumbnail.offset == 60
     assert thumbnail.joytag_index_status == MediaThumbnail.JOYTAG_INDEX_STATUS_PENDING
+
+
+def test_media_requires_exactly_one_owner(test_db):
+    # 恰好其一不变量：Media 必须归属 movie 或 video_item 之一，不能两者都空或都非空。
+    models = [Image, MovieSeries, Movie, VideoItem, MediaLibrary, Media]
+    test_db.bind(models, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(models)
+
+    movie = Movie.create(javdb_id="javdb-001", movie_number="ABC-001", title="Movie 1")
+    video_item = VideoItem.create(title="家庭录像")
+
+    # 合法：仅归属 movie，或仅归属 video_item。
+    Media.create(movie=movie, path="/library/main/jav.mp4")
+    Media.create(video_item=video_item, path="/library/main/home.mp4")
+
+    # 非法：两者都空。
+    with pytest.raises(ValueError):
+        Media.create(path="/library/main/orphan.mp4")
+
+    # 非法：两者都非空。
+    with pytest.raises(ValueError):
+        Media.create(movie=movie, video_item=video_item, path="/library/main/both.mp4")
+
+    # 非法记录均未入库。
+    assert Media.select().count() == 2
 
 
 def test_media_point_model_requires_thumbnail_reference():
