@@ -14,8 +14,10 @@ from src.api.exception.errors import ApiError
 # 支持导入的视频文件后缀，作为浏览与导入扫描的共享唯一来源。
 SUPPORTED_VIDEO_EXTENSIONS = frozenset(
     {
+        ".avi",
         ".m2ts",
         ".mkv",
+        ".mov",
         ".mp4",
     }
 )

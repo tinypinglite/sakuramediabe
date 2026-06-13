@@ -81,6 +81,23 @@ def test_import_directory_creates_video_items_and_media(video_import_tables, tmp
     assert titles == ["alpha", "beta"]
 
 
+def test_import_supports_avi_and_mov(video_import_tables, tmp_path):
+    # 新增容器格式：.avi / .mov 应与 .mp4/.mkv 一样被识别并登记。
+    source = tmp_path / "clips"
+    source.mkdir()
+    _make_video_file(source, "clip.avi")
+    _make_video_file(source, "clip.mov")
+
+    result = VideoImportService().import_from_source(
+        VideoImportRequest(source_path=str(source))
+    )
+
+    assert result.created_count == 2
+    assert result.skipped_count == 0
+    titles = sorted(video.title for video in VideoItem.select())
+    assert titles == ["clip", "clip"]
+
+
 def test_import_single_file_skips_already_indexed(video_import_tables, tmp_path):
     file_path = _make_video_file(tmp_path, "solo.mp4")
     service = VideoImportService()
