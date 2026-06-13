@@ -15,9 +15,17 @@ from src.common import build_signed_clip_url, media_clip_root_path
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import require_record, resolve_sort, validate_page
 from src.config.config import settings
-from src.model import Image, Media, MediaClip, MediaThumbnail
+from src.model import (
+    ClipCollection,
+    ClipCollectionItem,
+    Image,
+    Media,
+    MediaClip,
+    MediaThumbnail,
+)
 from src.model.base import get_database
 from src.schema.catalog.actors import ImageResource
+from src.schema.common.clip_collections import ClipCollectionSummary
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.clips import (
     MediaClipCreateRequest,
@@ -291,10 +299,23 @@ class MediaClipService:
         clip = cls._require_clip(clip_id)
         cover_image = cls._resolve_single_cover(clip)
         preview_frames = cls._load_preview_frames(clip)
+        collections = cls._load_clip_collections(clip)
         return MediaClipDetailResource(
             **cls.clip_resource_fields(clip, cover_image),
             preview_frames=preview_frames,
+            collections=collections,
         )
+
+    @staticmethod
+    def _load_clip_collections(clip: MediaClip) -> list[ClipCollectionSummary]:
+        """该片段所属的合集（按名称排序），供前端「加入合集」选择器回显。"""
+        rows = (
+            ClipCollection.select(ClipCollection.id, ClipCollection.name)
+            .join(ClipCollectionItem)
+            .where(ClipCollectionItem.clip == clip.id)
+            .order_by(ClipCollection.name.asc(), ClipCollection.id.asc())
+        )
+        return [ClipCollectionSummary(id=row.id, name=row.name) for row in rows]
 
     @staticmethod
     def _load_preview_frames(clip: MediaClip) -> list[ImageResource]:

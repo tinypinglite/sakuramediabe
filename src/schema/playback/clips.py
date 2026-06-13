@@ -4,6 +4,7 @@ from pydantic import Field, field_validator
 
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+from src.schema.common.clip_collections import ClipCollectionSummary
 
 
 class MediaClipCreateRequest(SchemaModel):
@@ -52,3 +53,5 @@ class MediaClipResource(SchemaModel):
 class MediaClipDetailResource(MediaClipResource):
     # 区间内所有缩略图，供前端循环播放成动态预览。
     preview_frames: list[ImageResource] = []
+    # 该片段所属的合集，供前端「加入合集」选择器回显已勾选项。
+    collections: list[ClipCollectionSummary] = []

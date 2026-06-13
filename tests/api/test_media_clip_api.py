@@ -111,6 +111,8 @@ def test_list_and_detail_clip(client, account_user, tmp_path, clip_storage):
     assert detail.status_code == 200
     # 区间 [0, 20] 内缩略图为 0/10/20 三帧。
     assert len(detail.json()["preview_frames"]) == 3
+    # 未加入任何合集时 collections 为空数组（前端选择器据此回显勾选）。
+    assert detail.json()["collections"] == []
 
 
 def test_update_and_delete_clip(client, account_user, tmp_path, clip_storage):

@@ -197,6 +197,39 @@ def test_get_clip_detail_returns_preview_frames(clip_env):
     assert len(detail.preview_frames) == 3
 
 
+def test_get_clip_detail_returns_collections(clip_env):
+    media = clip_env
+    resource, _ = MediaClipService.create_clip(
+        media.id,
+        MediaClipCreateRequest(
+            start_thumbnail_id=_thumb_id(media, 0),
+            end_thumbnail_id=_thumb_id(media, 10),
+        ),
+    )
+    collection = ClipCollection.create(name="精选合集", description="")
+    ClipCollectionItem.create(collection=collection, clip=resource.clip_id, position=0)
+
+    detail = MediaClipService.get_clip_detail(resource.clip_id)
+
+    assert [summary.id for summary in detail.collections] == [collection.id]
+    assert detail.collections[0].name == "精选合集"
+
+
+def test_get_clip_detail_collections_empty_when_unassigned(clip_env):
+    media = clip_env
+    resource, _ = MediaClipService.create_clip(
+        media.id,
+        MediaClipCreateRequest(
+            start_thumbnail_id=_thumb_id(media, 0),
+            end_thumbnail_id=_thumb_id(media, 10),
+        ),
+    )
+
+    detail = MediaClipService.get_clip_detail(resource.clip_id)
+
+    assert detail.collections == []
+
+
 def test_delete_clip_removes_record_and_file(clip_env):
     media = clip_env
     resource, _ = MediaClipService.create_clip(
