@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Dict, List
 
-from peewee import Case, fn
+from peewee import Case, JOIN, fn
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
@@ -16,6 +16,7 @@ from src.model import (
     MediaProgress,
     MediaThumbnail,
     VideoItem,
+    get_database,
 )
 from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.movies import (
@@ -132,8 +133,11 @@ class VideoItemService:
         order_by = cls._build_sort(sort)
         base_query = cls._filtered_query(query=query)
         total = base_query.count()
+        # 列表查询一次 LEFT JOIN 预加载封面，避免 _to_list_item 逐行懒加载 cover_image（N+1）。
         videos = list(
-            base_query.order_by(*order_by)
+            base_query.select_extend(Image)
+            .join(Image, JOIN.LEFT_OUTER, on=(VideoItem.cover_image == Image.id))
+            .order_by(*order_by)
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
@@ -244,7 +248,8 @@ class VideoItemService:
 
     @classmethod
     def delete_video(cls, video_id: int) -> None:
-        # 延迟导入避免与 media_service 顶层依赖链形成循环。
+        # 延迟导入避免与 media_service / image_cleanup_service 顶层依赖链形成循环。
+        from src.service.catalog.image_cleanup_service import ImageCleanupService
         from src.service.playback.media_service import MediaService
 
         video = cls._require_video(video_id)
@@ -252,5 +257,12 @@ class VideoItemService:
         media_ids = [media.id for media in Media.select(Media.id).where(Media.video_item == video)]
         for media_id in media_ids:
             MediaService.delete_media(media_id)
-        # 剩余的合集关联均为非空外键，recursive 删除即可清理。
-        video.delete_instance(recursive=True)
+        # 封面 Image 为该视频独有（generate_cover 新建），随视频一并清理图片行与磁盘文件，避免孤儿。
+        cover_image = video.cover_image if video.cover_image_id is not None else None
+        obsolete_image_paths: set[str] = set()
+        with get_database().atomic():
+            # 剩余的合集关联均为非空外键，recursive 删除即可清理。
+            video.delete_instance(recursive=True)
+            if cover_image is not None:
+                obsolete_image_paths |= ImageCleanupService.delete_image_record_if_unused(cover_image)
+        ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)

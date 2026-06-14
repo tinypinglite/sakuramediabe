@@ -3,12 +3,12 @@
 from datetime import datetime
 from typing import Dict, List
 
-from peewee import fn
+from peewee import IntegrityError, JOIN, fn
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import require_record
-from src.model import VideoCollection, VideoCollectionItem, VideoItem
+from src.model import Image, VideoCollection, VideoCollectionItem, VideoItem
 from src.model.base import get_database
 from src.schema.catalog.actors import ImageResource
 from src.schema.videos.collections import (
@@ -17,7 +17,6 @@ from src.schema.videos.collections import (
     VideoCollectionResource,
     VideoCollectionUpdateRequest,
 )
-from src.schema.videos.items import VideoItemListItemResource
 from src.service.videos.video_item_service import VideoItemService
 
 
@@ -77,8 +76,9 @@ class VideoCollectionService:
     def _collection_cover(collection_id: int) -> ImageResource | None:
         """合集封面取按 position 排在最前的视频封面。"""
         first_item = (
-            VideoCollectionItem.select(VideoCollectionItem, VideoItem)
+            VideoCollectionItem.select(VideoCollectionItem, VideoItem, Image)
             .join(VideoItem)
+            .join(Image, JOIN.LEFT_OUTER, on=(VideoItem.cover_image == Image.id))
             .where(VideoCollectionItem.collection == collection_id)
             .order_by(VideoCollectionItem.position.asc(), VideoCollectionItem.id.asc())
             .first()
@@ -148,16 +148,17 @@ class VideoCollectionService:
     @classmethod
     def delete_collection(cls, collection_id: int) -> None:
         collection = cls._require_collection(collection_id)
-        # 仅删除合集与成员关联，视频条目本身保留。
-        collection.delete_instance(recursive=True)
+        # 仅删合集，成员关联 VideoCollectionItem 由外键 CASCADE 清理，视频条目本身保留。
+        collection.delete_instance()
 
     @classmethod
     def list_collection_items(cls, collection_id: int) -> List[VideoCollectionItemResource]:
         collection = cls._require_collection(collection_id)
         # 按 position 升序返回，前端据此顺序播放。
         links = list(
-            VideoCollectionItem.select(VideoCollectionItem, VideoItem)
+            VideoCollectionItem.select(VideoCollectionItem, VideoItem, Image)
             .join(VideoItem)
+            .join(Image, JOIN.LEFT_OUTER, on=(VideoItem.cover_image == Image.id))
             .where(VideoCollectionItem.collection == collection)
             .order_by(VideoCollectionItem.position.asc(), VideoCollectionItem.id.asc())
         )
@@ -187,20 +188,27 @@ class VideoCollectionService:
     def add_item(cls, collection_id: int, video_item_id: int) -> None:
         collection = cls._require_collection(collection_id)
         video = cls._require_video(video_item_id)
-        touched_at = cls._current_time()
         existing = VideoCollectionItem.get_or_none(
             VideoCollectionItem.collection == collection,
             VideoCollectionItem.video_item == video,
         )
-        if existing is None:
-            VideoCollectionItem.create(
-                collection=collection,
-                video_item=video,
-                position=cls._next_position(collection),
-                created_at=touched_at,
-                updated_at=touched_at,
-            )
-            cls._touch_collection(collection, touched_at)
+        if existing is not None:
+            return
+        touched_at = cls._current_time()
+        # 位置计算与插入纳入同一事务，避免并发追加时 _next_position 读到陈旧 MAX。
+        try:
+            with get_database().atomic():
+                VideoCollectionItem.create(
+                    collection=collection,
+                    video_item=video,
+                    position=cls._next_position(collection),
+                    created_at=touched_at,
+                    updated_at=touched_at,
+                )
+                cls._touch_collection(collection, touched_at)
+        except IntegrityError:
+            # 与上方去重判断并发：该视频已被加入（唯一约束 (collection, video_item) 命中），幂等返回。
+            return
 
     @classmethod
     def remove_item(cls, collection_id: int, item_id: int) -> None:

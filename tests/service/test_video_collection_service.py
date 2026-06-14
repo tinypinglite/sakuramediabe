@@ -56,6 +56,19 @@ def test_add_item_is_idempotent(collection_tables):
     assert VideoCollectionService.get_collection(collection.id).item_count == 1
 
 
+def test_add_item_idempotent_on_unique_race(collection_tables, monkeypatch):
+    collection = VideoCollectionService.create_collection(VideoCollectionCreateRequest(name="赛道"))
+    video = VideoItem.create(title="片")
+    VideoCollectionService.add_item(collection.id, video.id)
+
+    # 模拟并发：去重 get_or_none 漏看已存在成员，再次加入应命中唯一约束 (collection,video_item) 并幂等返回，不抛 500。
+    monkeypatch.setattr(VideoCollectionItem, "get_or_none", lambda *args, **kwargs: None)
+
+    VideoCollectionService.add_item(collection.id, video.id)
+
+    assert VideoCollectionItem.select().count() == 1
+
+
 def test_create_collection_rejects_duplicate_name(collection_tables):
     VideoCollectionService.create_collection(VideoCollectionCreateRequest(name="独一"))
     with pytest.raises(ApiError) as exc:

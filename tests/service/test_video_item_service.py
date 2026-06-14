@@ -87,3 +87,45 @@ def test_delete_video_cascades_media(video_tables):
 
     assert VideoItem.select().count() == 0
     assert Media.select().count() == 0
+
+
+def test_delete_video_cleans_up_cover_image(video_tables, tmp_path, monkeypatch):
+    # 把图片根目录指向临时目录，便于断言封面 webp 被物理删除。
+    monkeypatch.setattr(
+        "src.service.catalog.image_cleanup_service.ImageCleanupService.image_root_path",
+        classmethod(lambda cls: tmp_path),
+    )
+    cover_rel = "videos/1/cover/0.webp"
+    cover_file = tmp_path / cover_rel
+    cover_file.parent.mkdir(parents=True, exist_ok=True)
+    cover_file.write_bytes(b"cover")
+    image = Image.create(origin=cover_rel, small=cover_rel, medium=cover_rel, large=cover_rel)
+    video = VideoItem.create(title="带封面", cover_image=image)
+
+    VideoItemService.delete_video(video.id)
+
+    # 删视频后封面 Image 行与磁盘文件都不应残留。
+    assert VideoItem.select().count() == 0
+    assert Image.select().count() == 0
+    assert cover_file.exists() is False
+
+
+def test_list_videos_preloads_cover_without_n_plus_1(video_tables):
+    from playhouse.test_utils import count_queries
+
+    for index in range(5):
+        image = Image.create(
+            origin=f"c{index}.webp",
+            small=f"c{index}.webp",
+            medium=f"c{index}.webp",
+            large=f"c{index}.webp",
+        )
+        VideoItem.create(title=f"v{index}", cover_image=image)
+
+    with count_queries() as counter:
+        page = VideoItemService.list_videos(page=1, page_size=10)
+
+    assert len(page.items) == 5
+    assert all(item.cover_image is not None for item in page.items)
+    # 查询数固定（count + 预加载 select + media_stats），不随条目数线性增长；N+1 会退化成 3+5。
+    assert counter.count <= 4

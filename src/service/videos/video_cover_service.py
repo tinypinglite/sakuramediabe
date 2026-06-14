@@ -67,16 +67,27 @@ class VideoCoverService:
                 except Exception:
                     pass
 
-        image_root = MediaThumbnailService._image_root_path()
-        relative_path = cover_path.relative_to(image_root).as_posix()
-        with get_database().atomic():
-            image = Image.create(
-                origin=relative_path,
-                small=relative_path,
-                medium=relative_path,
-                large=relative_path,
+        # 封面落库同样是增益项：DB 写（建 Image 行、回写 cover_image）失败也只记日志返回 None，
+        # 绝不外抛——否则已成功搬运入库的视频会被导入主流程误判为失败文件。
+        try:
+            image_root = MediaThumbnailService._image_root_path()
+            relative_path = cover_path.relative_to(image_root).as_posix()
+            with get_database().atomic():
+                image = Image.create(
+                    origin=relative_path,
+                    small=relative_path,
+                    medium=relative_path,
+                    large=relative_path,
+                )
+                video.cover_image = image
+                video.save()
+        except Exception as exc:
+            logger.warning(
+                "Video cover persist failed video_id={} path={} detail={}",
+                video.id,
+                str(resolved_path),
+                exc,
             )
-            video.cover_image = image
-            video.save()
+            return None
         logger.info("Video cover generated video_id={} relative_path={}", video.id, relative_path)
         return image
