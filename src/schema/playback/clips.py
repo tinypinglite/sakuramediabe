@@ -13,13 +13,6 @@ class MediaClipCreateRequest(SchemaModel):
     end_thumbnail_id: int = Field(gt=0)
     title: str = ""
 
-    @field_validator("start_thumbnail_id", "end_thumbnail_id")
-    @classmethod
-    def validate_thumbnail_id(cls, value: int) -> int:
-        if value <= 0:
-            raise ValueError("thumbnail_id must be greater than 0")
-        return value
-
     @field_validator("title")
     @classmethod
     def normalize_title(cls, value: str) -> str:

@@ -4,7 +4,6 @@ from typing import Sequence
 
 import peewee
 from loguru import logger
-from src.api.exception.errors import ApiError
 from src.common.service_helpers import (
     require_record,
     resolve_sort,
@@ -274,10 +273,12 @@ class MediaService:
 
         ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
 
-        try:
-            get_qdrant_thumbnail_store().delete_by_media_id(media.id)
-        except Exception as exc:
-            logger.warning("Delete media vectors failed media_id={} detail={}", media.id, exc)
+        # 仅 JAV 媒体缩略图会进向量库；非 JAV 缩略图落 SKIPPED 从不入库，跳过空删省一次远端往返。
+        if media.movie_number:
+            try:
+                get_qdrant_thumbnail_store().delete_by_media_id(media.id)
+            except Exception as exc:
+                logger.warning("Delete media vectors failed media_id={} detail={}", media.id, exc)
 
     @classmethod
     def list_thumbnails(cls, media_id: int) -> list[MediaThumbnailResource]:
@@ -353,10 +354,19 @@ class MediaService:
         )
         # 失效媒体卡片需要展示影片横版与竖版封面，沿用影片卡片的关联加载逻辑。
         base_query, _thin_cover_alias = with_movie_card_relations(base_query)
+        # 非 JAV 失效媒体封面来自 VideoItem.cover_image，用别名再 LEFT JOIN 一张 Image 预加载，
+        # 避免 _to_invalid_media_resource 逐行懒加载 video_item.cover_image（N+1）。
+        video_cover_alias = Image.alias()
         base_query = (
-            base_query.select_extend(MediaLibrary)
+            base_query.select_extend(MediaLibrary, video_cover_alias)
             .switch(Media)
             .join(VideoItem, peewee.JOIN.LEFT_OUTER)
+            .join(
+                video_cover_alias,
+                peewee.JOIN.LEFT_OUTER,
+                on=(VideoItem.cover_image == video_cover_alias.id),
+                attr="cover_image",
+            )
             .switch(Media)
             .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
             .where(Media.valid == False)

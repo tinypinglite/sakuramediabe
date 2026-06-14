@@ -94,6 +94,35 @@ def test_create_clip_cuts_file_and_persists(clip_env, tmp_path):
     assert clip_path.exists()
 
 
+def test_create_clip_idempotent_on_unique_race(clip_env, monkeypatch):
+    media = clip_env
+    payload = MediaClipCreateRequest(
+        start_thumbnail_id=_thumb_id(media, 10),
+        end_thumbnail_id=_thumb_id(media, 30),
+    )
+    first, created = MediaClipService.create_clip(media.id, payload)
+    assert created is True
+
+    # 模拟并发：去重 get_or_none 第一次漏看已存在片段，逼出 create 撞唯一约束 (media,start,end)；
+    # 应被捕获并重查幂等返回，而非冒泡成 500。
+    original_get_or_none = MediaClip.get_or_none
+    state = {"calls": 0}
+
+    def _flaky_get_or_none(*args, **kwargs):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            return None
+        return original_get_or_none(*args, **kwargs)
+
+    monkeypatch.setattr(MediaClip, "get_or_none", _flaky_get_or_none)
+
+    second, created_again = MediaClipService.create_clip(media.id, payload)
+
+    assert created_again is False
+    assert second.clip_id == first.clip_id
+    assert MediaClip.select().count() == 1
+
+
 def test_create_clip_orders_offsets_regardless_of_input(clip_env):
     media = clip_env
     payload = MediaClipCreateRequest(

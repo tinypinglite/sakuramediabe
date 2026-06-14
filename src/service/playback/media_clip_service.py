@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Sequence
 
 from loguru import logger
+from peewee import IntegrityError
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_clip_url, media_clip_root_path
@@ -23,7 +24,6 @@ from src.model import (
     MediaClip,
     MediaThumbnail,
 )
-from src.model.base import get_database
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.clip_collections import ClipCollectionSummary
 from src.schema.common.pagination import PageResponse
@@ -204,16 +204,28 @@ class MediaClipService:
         # 解耦后非 JAV 媒体 movie 为空，读外键原始列（None-safe）；下游 _clip_relative_path 已兜 None。
         movie_number = media.movie_number
         # 先落库拿 id 作为文件名，天然避免跨媒体的文件名冲突。
-        clip = MediaClip.create(
-            media=media,
-            movie_number=movie_number,
-            start_offset_seconds=start,
-            end_offset_seconds=end,
-            title=payload.title,
-            file_path="",
-            file_size_bytes=0,
-            duration_seconds=0,
-        )
+        try:
+            clip = MediaClip.create(
+                media=media,
+                movie_number=movie_number,
+                start_offset_seconds=start,
+                end_offset_seconds=end,
+                title=payload.title,
+                file_path="",
+                file_size_bytes=0,
+                duration_seconds=0,
+            )
+        except IntegrityError:
+            # 与上方去重判断并发：判重到落库之间已出现同区间片段（唯一约束 (media,start,end) 命中），
+            # 重查并幂等返回已有片段，不重复切片，与 existing 分支语义一致。
+            existing = MediaClip.get_or_none(
+                MediaClip.media == media,
+                MediaClip.start_offset_seconds == start,
+                MediaClip.end_offset_seconds == end,
+            )
+            if existing is not None:
+                return cls.build_clip_resource(existing, cls._resolve_single_cover(existing)), False
+            raise
         relative_path = cls._clip_relative_path(movie_number, clip.id)
         target_path = media_clip_root_path() / relative_path
         try:
@@ -348,9 +360,8 @@ class MediaClipService:
     def delete_clip(cls, clip_id: int) -> None:
         clip = cls._require_clip(clip_id)
         target_path = media_clip_root_path() / clip.file_path if clip.file_path else None
-        with get_database().atomic():
-            # 依赖 DB 外键 CASCADE 自动清 ClipCollectionItem。
-            clip.delete_instance()
+        # 单条删除本身原子，依赖 DB 外键 CASCADE 自动清 ClipCollectionItem，无需再包事务。
+        clip.delete_instance()
         if target_path is not None:
             cls._unlink_clip_file(target_path)
 
