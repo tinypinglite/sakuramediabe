@@ -550,3 +550,36 @@ def test_recover_orphaned_jobs_skips_download_task_jobs(import_job_tables, tmp_p
 
     assert result["recovered_count"] == 0
     assert ImportJob.get_by_id(job.id).state == "running"
+
+
+def test_mark_import_failed_skips_terminal_job(import_job_tables, tmp_path):
+    # 统一带终态守卫：作业已是终态（failed/completed）时，_mark_import_failed 不再追加重复失败明细。
+    library = _create_library(tmp_path)
+    existing = [{"path": "/x/a.mp4", "reason": "media_import_failed", "detail": "boom", "kind": "file"}]
+    for terminal_state in ("failed", "completed"):
+        job = ImportJob.create(
+            source_path=str(tmp_path / "incoming"),
+            library=library,
+            state=terminal_state,
+            failed_count=1,
+            failed_files=json.dumps(existing, ensure_ascii=False),
+        )
+        MediaImportJobService._mark_import_failed(job.id, "late boom")
+        after = ImportJob.get_by_id(job.id)
+        assert after.state == terminal_state
+        assert json.loads(after.failed_files) == existing
+
+
+def test_mark_import_failed_marks_non_terminal_job(import_job_tables, tmp_path):
+    # 非终态作业（setup 阶段崩溃）仍兜底转 failed 并补一条引导失败明细。
+    library = _create_library(tmp_path)
+    job = ImportJob.create(
+        source_path=str(tmp_path / "incoming"),
+        library=library,
+        state="running",
+    )
+    MediaImportJobService._mark_import_failed(job.id, "bootstrap boom")
+    after = ImportJob.get_by_id(job.id)
+    assert after.state == "failed"
+    assert after.failed_count >= 1
+    assert len(json.loads(after.failed_files)) == 1

@@ -157,3 +157,62 @@ def test_recover_orphaned_jobs_marks_failed(video_import_job_tables, tmp_path):
     job_after = VideoImportJob.get_by_id(job.id)
     assert job_after.state == "failed"
     assert job_after.failed_count >= 1
+
+
+def test_retry_passes_through_collection_and_submit_order(video_import_job_tables, tmp_path, stub_runner_submit):
+    # 重导失败文件必须沿用原作业的合集与导入模式，且 submit 位置参数序列正确（collection_id 夹在 transfer_mode 与 only_files 之间）。
+    library = _create_library(tmp_path)
+    collection = VideoCollection.create(name="精选")
+    source_dir = tmp_path / "incoming"
+    source_dir.mkdir()
+    failed_path = str(source_dir / "a.mp4")
+    (source_dir / "a.mp4").write_bytes(b"x")
+    job = VideoImportJob.create(
+        source_path=str(source_dir),
+        library=library,
+        collection=collection,
+        state="failed",
+        transfer_mode="cleanup-source",
+        failed_count=1,
+        failed_files=json.dumps(
+            [{"path": failed_path, "reason": "media_import_failed", "detail": "boom", "kind": "file"}],
+            ensure_ascii=False,
+        ),
+    )
+
+    result = VideoImportJobService.retry_failed_files(job.id, [failed_path])
+
+    new_job = VideoImportJob.get_by_id(result.video_import_job_id)
+    assert new_job.collection_id == collection.id
+    assert new_job.transfer_mode == "cleanup-source"
+    assert len(stub_runner_submit) == 1
+    _job_id, args, _kwargs = stub_runner_submit[0]
+    assert args[-3] == "cleanup-source"
+    assert args[-2] == collection.id
+    assert args[-1] == [failed_path]
+
+
+def test_launch_import_compensates_when_submit_fails(video_import_job_tables, tmp_path, monkeypatch):
+    library = _create_library(tmp_path)
+    source_dir = tmp_path / "incoming"
+    source_dir.mkdir()
+
+    def _boom_submit(*args, **kwargs):
+        raise RuntimeError("queue down")
+
+    monkeypatch.setattr(DownloadImportRunner, "submit", staticmethod(_boom_submit))
+
+    with pytest.raises(ApiError) as exc_info:
+        VideoImportJobService.trigger_directory_import(library.id, str(source_dir))
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.code == "video_import_failed"
+    # 入队失败：作业落终态并补一条失败明细。
+    job = VideoImportJob.get(VideoImportJob.source_path == str(source_dir.resolve()))
+    assert job.state == "failed"
+    assert job.failed_count >= 1
+    assert len(json.loads(job.failed_files)) >= 1
+    # task_run 已回收并释放 mutex_key：相同源可再次触发而非 409。
+    monkeypatch.setattr(DownloadImportRunner, "submit", staticmethod(lambda *args, **kwargs: None))
+    retry = VideoImportJobService.trigger_directory_import(library.id, str(source_dir))
+    assert retry.status == "accepted"
