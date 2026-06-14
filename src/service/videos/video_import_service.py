@@ -167,7 +167,8 @@ class VideoImportService:
             has_subtitle=False,
         )
         # 先建 VideoItem 拿到 id，目标目录以 id 归类，便于与缩略图/封面落盘路径对齐。
-        video = VideoItem.create(title=file_path.stem)
+        # 发布时间取容器自身的 creation_time（probe 已解析为 UTC naive），读不到则留空。
+        video = VideoItem.create(title=file_path.stem, release_date=probe.creation_time)
         target_path: Path | None = None
         try:
             entity_directory = Path(library.root_path).expanduser() / "videos" / str(video.id)

@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from src.model import (
     VideoItem,
 )
 from src.model.base import database_proxy
+from src.service.playback.media_metadata_probe_service import MediaMetadataProbeResult
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.videos import VideoImportService
 from src.service.videos import video_import_service as video_import_module
@@ -241,3 +243,42 @@ def test_unsupported_single_file_marks_job_failed(video_import_tables, tmp_path)
     # 作业已落库并标记失败。
     job = VideoImportJob.get()
     assert job.state == "failed"
+
+
+class _FixedProbe:
+    """注入用 fake probe：固定返回指定 creation_time，其余字段留空。"""
+
+    def __init__(self, creation_time):
+        self._creation_time = creation_time
+
+    def probe_file(self, _file_path: Path) -> MediaMetadataProbeResult:
+        return MediaMetadataProbeResult(creation_time=self._creation_time)
+
+
+def test_import_writes_release_date_from_container_creation_time(video_import_tables, tmp_path):
+    library = _make_library(tmp_path)
+    source = tmp_path / "src"
+    source.mkdir()
+    _make_video_file(source, "alpha.mp4")
+
+    creation_time = datetime(2023, 1, 15, 10, 30)
+    service = VideoImportService(media_metadata_probe_service=_FixedProbe(creation_time))
+    job = service.import_from_source(str(source), library.id)
+
+    assert job.imported_count == 1
+    # 容器 creation_time 被写入 release_date（UTC naive）。
+    assert VideoItem.get().release_date == creation_time
+
+
+def test_import_leaves_release_date_empty_when_no_creation_time(video_import_tables, tmp_path):
+    library = _make_library(tmp_path)
+    source = tmp_path / "src"
+    source.mkdir()
+    _make_video_file(source, "alpha.mp4")
+
+    service = VideoImportService(media_metadata_probe_service=_FixedProbe(None))
+    job = service.import_from_source(str(source), library.id)
+
+    assert job.imported_count == 1
+    # 读不到 creation_time 时如实留空，不做 mtime 兜底。
+    assert VideoItem.get().release_date is None

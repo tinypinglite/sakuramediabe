@@ -1,8 +1,11 @@
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
+
+from src.common.runtime_time import parse_external_datetime
 
 try:
     import av
@@ -15,6 +18,8 @@ class MediaMetadataProbeResult:
     resolution: str | None = None
     duration_seconds: int = 0
     video_info: dict[str, Any] | None = None
+    # 容器自身携带的发布/创建时间（UTC naive），仅 videos 域导入消费；读不到则为 None。
+    creation_time: datetime | None = None
 
 
 class MediaMetadataProbeService:
@@ -224,6 +229,28 @@ class MediaMetadataProbeService:
 
         return 0
 
+    @staticmethod
+    def _resolve_creation_time(*metadata_sources: Any) -> datetime | None:
+        """从容器/视频流 metadata 的 creation_time 解析发布时间，按入参优先级取首个成功值。
+
+        外部文件的时间字符串格式不可控，单个来源解析失败仅记 debug 并跳到下一来源，
+        最终读不到/全部非法时如实返回 None；本方法保证不抛异常，以免污染 probe 的其它字段。
+        """
+        for metadata in metadata_sources:
+            if not isinstance(metadata, dict):
+                continue
+            raw_value = metadata.get("creation_time")
+            if raw_value is None or raw_value == "":
+                continue
+            try:
+                creation_time = parse_external_datetime(raw_value)
+            except (ValueError, TypeError) as exc:
+                logger.debug("Probe creation_time parse failed value={} detail={}", raw_value, exc)
+                continue
+            if creation_time is not None:
+                return creation_time
+        return None
+
     @classmethod
     def _build_container_info(
         cls,
@@ -263,6 +290,11 @@ class MediaMetadataProbeService:
             stream = container.streams.video[0]
             resolution = cls._resolve_stream_dimensions(stream)
             duration_seconds = cls._resolve_duration_seconds(container, stream)
+            # 容器 metadata 优先，其次视频流 metadata；二者都没有则发布时间留空。
+            creation_time = cls._resolve_creation_time(
+                getattr(container, "metadata", None),
+                getattr(stream, "metadata", None),
+            )
             file_size_bytes = path.stat().st_size
             video_info = {
                 "container": cls._build_container_info(
@@ -280,6 +312,7 @@ class MediaMetadataProbeService:
                 resolution=resolution,
                 duration_seconds=duration_seconds,
                 video_info=video_info,
+                creation_time=creation_time,
             )
         except Exception as exc:
             logger.warning("Media metadata probe failed path={} detail={}", str(path), exc)

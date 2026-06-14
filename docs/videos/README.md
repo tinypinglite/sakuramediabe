@@ -56,6 +56,7 @@
 - **文件搬运**：与 JAV 共用 `src/service/transfers/file_transfer.py` 的 `transfer_file`——`auto` 硬链接优先、失败回退复制；`cleanup-source` 复制后删除源文件（禁止作用于任一媒体库目录内，触发时即拒绝）。文件落入 `library_root/videos/<video_item_id>/<timestamp>/<filename>`。
 - **媒体库归属**：`library_id` 必填，每条 `Media.library` 指向该库。
 - **首帧封面**：导入每个视频时由 `VideoCoverService` 读取第 0 帧生成 `cover_image`；失败仅记日志、不阻断导入。
+- **发布时间**：导入时由 `MediaMetadataProbeService` 从视频容器自身的 `creation_time` 元数据（容器优先、其次视频流）解析为 `release_date`；读不到或解析失败则留空，不用文件 mtime 兜底。
 - **缩略图接手**：落库后 `ResourceTaskStateService.reset_for_requeue(...)` 置缩略图任务为待处理，由 `generate-media-thumbnails` 后台补齐。
 - **去重**：先按 `Media.path` 命中跳过，再按内容指纹（`src/common/content_fingerprint.py`）跳过；探测复用 `MediaMetadataProbeService`。
 - 后台执行复用 `DownloadImportRunner` 线程池 + `ActivityService.run_task`，触发防重依赖 `BackgroundTaskRun.mutex_key`；启动时 `recover_orphaned_jobs` 回收中断作业。
