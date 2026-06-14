@@ -152,15 +152,35 @@ class VideoCollectionService:
         collection.delete_instance()
 
     @classmethod
-    def list_collection_items(cls, collection_id: int) -> List[VideoCollectionItemResource]:
+    def list_collection_items(
+        cls, collection_id: int, sort: str | None = None
+    ) -> List[VideoCollectionItemResource]:
         collection = cls._require_collection(collection_id)
-        # 按 position 升序返回，前端据此顺序播放。
+        first_media, first_media_id = VideoItemService._first_media_alias()
+        # 默认 position 升序（合集手动顺序，前端据此顺序播放）；另支持入库时间/标题/时长/文件大小排序。
+        order_by = VideoItemService._build_video_order(
+            sort,
+            first_media=first_media,
+            default_sort="position:asc",
+            extra_columns={"position": VideoCollectionItem.position},
+            tie_breaker=VideoCollectionItem.id,
+        )
+        # 一次 LEFT JOIN 预加载封面与第一条媒体时长/大小，既供排序也供展示。
         links = list(
-            VideoCollectionItem.select(VideoCollectionItem, VideoItem, Image)
+            VideoCollectionItem.select(
+                VideoCollectionItem,
+                VideoItem,
+                Image,
+                fn.COALESCE(first_media.duration_seconds, 0).alias("first_duration_seconds"),
+                fn.COALESCE(first_media.file_size_bytes, 0).alias("first_file_size_bytes"),
+            )
             .join(VideoItem)
             .join(Image, JOIN.LEFT_OUTER, on=(VideoItem.cover_image == Image.id))
+            .switch(VideoItem)
+            .join(first_media_id, JOIN.LEFT_OUTER, on=(first_media_id.c.owner_id == VideoItem.id))
+            .join(first_media, JOIN.LEFT_OUTER, on=(first_media.id == first_media_id.c.first_media_id))
             .where(VideoCollectionItem.collection == collection)
-            .order_by(VideoCollectionItem.position.asc(), VideoCollectionItem.id.asc())
+            .order_by(*order_by)
         )
         stats = VideoItemService._media_stats([link.video_item_id for link in links])
         items: List[VideoCollectionItemResource] = []
@@ -170,7 +190,13 @@ class VideoCollectionService:
                 VideoCollectionItemResource(
                     item_id=link.id,
                     position=link.position,
-                    video=VideoItemService._to_list_item(link.video_item, media_count, can_play),
+                    video=VideoItemService._to_list_item(
+                        link.video_item,
+                        media_count,
+                        can_play,
+                        duration_seconds=link.first_duration_seconds,
+                        file_size_bytes=link.first_file_size_bytes,
+                    ),
                 )
             )
         return items

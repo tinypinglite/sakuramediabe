@@ -1,6 +1,6 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.videos.collections import (
@@ -47,8 +47,8 @@ def delete_collection(collection_id: int):
 
 
 @router.get("/{collection_id}/items", response_model=List[VideoCollectionItemResource])
-def list_collection_items(collection_id: int):
-    return VideoCollectionService.list_collection_items(collection_id)
+def list_collection_items(collection_id: int, sort: str | None = Query(default=None)):
+    return VideoCollectionService.list_collection_items(collection_id, sort=sort)
 
 
 @router.post("/{collection_id}/items", status_code=status.HTTP_204_NO_CONTENT)

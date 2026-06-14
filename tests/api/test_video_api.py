@@ -122,6 +122,59 @@ def test_video_collection_reorder_rejects_incomplete_item_set(client, account_us
     assert response.status_code == 422
 
 
+def test_video_list_sort_by_title_and_exposes_media_fields(client, account_user):
+    token = _login(client, username=account_user.username)
+    headers = _headers(token)
+
+    client.post("/videos", json={"title": "banana"}, headers=headers)
+    client.post("/videos", json={"title": "apple"}, headers=headers)
+
+    listed = client.get("/videos?sort=title:asc", headers=headers)
+    assert listed.status_code == 200
+    items = listed.json()["items"]
+    assert [it["title"] for it in items] == ["apple", "banana"]
+    # 列表项暴露时长/文件大小字段（无媒体时为 0）。
+    assert items[0]["duration_seconds"] == 0
+    assert items[0]["file_size_bytes"] == 0
+
+
+def test_video_list_rejects_removed_release_date_sort(client, account_user):
+    token = _login(client, username=account_user.username)
+    headers = _headers(token)
+    client.post("/videos", json={"title": "x"}, headers=headers)
+
+    # 发布时间排序已移除。
+    resp = client.get("/videos?sort=release_date:desc", headers=headers)
+    assert resp.status_code == 422
+
+
+def test_collection_items_accept_sort_param(client, account_user):
+    token = _login(client, username=account_user.username)
+    headers = _headers(token)
+
+    collection = client.post("/video-collections", json={"name": "S"}, headers=headers).json()
+    for title in ["banana", "apple"]:
+        video = client.post("/videos", json={"title": title}, headers=headers).json()
+        client.post(
+            f"/video-collections/{collection['id']}/items",
+            json={"video_item_id": video["id"]},
+            headers=headers,
+        )
+
+    # 按标题升序覆盖默认 position 顺序，且成员 video 暴露时长/大小字段。
+    items = client.get(
+        f"/video-collections/{collection['id']}/items?sort=title:asc", headers=headers
+    ).json()
+    assert [it["video"]["title"] for it in items] == ["apple", "banana"]
+    assert all("duration_seconds" in it["video"] for it in items)
+
+    # 非法排序返回 422。
+    bad = client.get(
+        f"/video-collections/{collection['id']}/items?sort=release_date:desc", headers=headers
+    )
+    assert bad.status_code == 422
+
+
 def test_videos_routes_require_authentication(client):
     assert client.get("/videos").status_code == 401
     assert client.get("/video-collections").status_code == 401

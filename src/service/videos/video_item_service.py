@@ -32,14 +32,6 @@ from src.schema.videos.items import (
     VideoItemUpdateRequest,
 )
 
-# 视频条目列表允许的排序字段。
-_VIDEO_SORT_FIELDS = {
-    "created_at": VideoItem.created_at,
-    "release_date": VideoItem.release_date,
-    "title": VideoItem.title,
-}
-
-
 class VideoItemService:
     @staticmethod
     def _current_time() -> datetime:
@@ -55,19 +47,56 @@ class VideoItemService:
             error_details={"video_item_id": video_id},
         )
 
+    @staticmethod
+    def _first_media_alias():
+        """构造取「条目第一条媒体」的连接素材：每条目 MIN(Media.id) 分组子查询 + Media 别名。
+
+        返回 (first_media 别名, first_media_id 子查询)，两者配合 LEFT JOIN 后，
+        first_media 即每个条目按 Media.id 升序的第一条媒体，其时长/大小同时供排序与展示。
+        """
+        first_media_id = Media.select(
+            Media.video_item.alias("owner_id"),
+            fn.MIN(Media.id).alias("first_media_id"),
+        ).group_by(Media.video_item)
+        return Media.alias(), first_media_id
+
     @classmethod
-    def _build_sort(cls, sort: str | None):
-        normalized = (sort or "created_at:desc").strip().lower()
+    def _build_video_order(
+        cls,
+        sort: str | None,
+        *,
+        first_media,
+        default_sort: str,
+        extra_columns: dict | None = None,
+        tie_breaker=None,
+    ):
+        """解析 `field:direction` 排序，返回 [主排序, 次序稳定项]。
+
+        - created_at / title 取 VideoItem 自身列；
+        - duration / file_size 取第一条媒体的时长 / 文件大小，无媒体时按 0 参与排序
+          （COALESCE 兜底，保证 SQLite 与 PostgreSQL 排序行为一致）；
+        - extra_columns 注入域特有字段（合集的 position）。
+        """
+        columns = {
+            "created_at": VideoItem.created_at,
+            "title": VideoItem.title,
+            "duration": fn.COALESCE(first_media.duration_seconds, 0),
+            "file_size": fn.COALESCE(first_media.file_size_bytes, 0),
+        }
+        if extra_columns:
+            columns.update(extra_columns)
+        normalized = (sort or default_sort).strip().lower()
         try:
             field_name, direction = normalized.split(":", 1)
         except ValueError as exc:
             raise ApiError(422, "invalid_video_filter", "Invalid video sort", {"sort": sort}) from exc
-        if field_name not in _VIDEO_SORT_FIELDS or direction not in ("asc", "desc"):
+        if field_name not in columns or direction not in ("asc", "desc"):
             raise ApiError(422, "invalid_video_filter", "Invalid video sort", {"sort": sort})
-        sort_field = _VIDEO_SORT_FIELDS[field_name]
-        ordered = sort_field.asc() if direction == "asc" else sort_field.desc()
-        tie_breaker = VideoItem.id.asc() if direction == "asc" else VideoItem.id.desc()
-        return [ordered, tie_breaker]
+        is_asc = direction == "asc"
+        ordered = columns[field_name].asc() if is_asc else columns[field_name].desc()
+        breaker = VideoItem.id if tie_breaker is None else tie_breaker
+        tie = breaker.asc() if is_asc else breaker.desc()
+        return [ordered, tie]
 
     @classmethod
     def _filtered_query(
@@ -105,7 +134,15 @@ class VideoItemService:
         return stats
 
     @classmethod
-    def _to_list_item(cls, video: VideoItem, media_count: int, can_play: bool) -> VideoItemListItemResource:
+    def _to_list_item(
+        cls,
+        video: VideoItem,
+        media_count: int,
+        can_play: bool,
+        *,
+        duration_seconds: int = 0,
+        file_size_bytes: int = 0,
+    ) -> VideoItemListItemResource:
         return VideoItemListItemResource(
             id=video.id,
             title=video.title,
@@ -114,6 +151,8 @@ class VideoItemService:
             if video.cover_image_id is not None
             else None,
             release_date=video.release_date,
+            duration_seconds=duration_seconds,
+            file_size_bytes=file_size_bytes,
             media_count=media_count,
             can_play=can_play,
             created_at=video.created_at,
@@ -130,20 +169,36 @@ class VideoItemService:
         page_size: int = 20,
     ) -> PageResponse[VideoItemListItemResource]:
         validate_page(page, page_size, error_code="invalid_video_filter")
-        order_by = cls._build_sort(sort)
         base_query = cls._filtered_query(query=query)
         total = base_query.count()
-        # 列表查询一次 LEFT JOIN 预加载封面，避免 _to_list_item 逐行懒加载 cover_image（N+1）。
+        first_media, first_media_id = cls._first_media_alias()
+        order_by = cls._build_video_order(
+            sort, first_media=first_media, default_sort="created_at:desc"
+        )
+        # 一次 LEFT JOIN 预加载封面与「第一条媒体」的时长/大小：既供排序也供展示，
+        # 避免 _to_list_item 逐行懒加载 cover_image（N+1）与额外的聚合查询。
         videos = list(
-            base_query.select_extend(Image)
+            base_query.select_extend(
+                Image,
+                fn.COALESCE(first_media.duration_seconds, 0).alias("first_duration_seconds"),
+                fn.COALESCE(first_media.file_size_bytes, 0).alias("first_file_size_bytes"),
+            )
             .join(Image, JOIN.LEFT_OUTER, on=(VideoItem.cover_image == Image.id))
+            .switch(VideoItem)
+            .join(first_media_id, JOIN.LEFT_OUTER, on=(first_media_id.c.owner_id == VideoItem.id))
+            .join(first_media, JOIN.LEFT_OUTER, on=(first_media.id == first_media_id.c.first_media_id))
             .order_by(*order_by)
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
         stats = cls._media_stats([video.id for video in videos])
         items = [
-            cls._to_list_item(video, *stats.get(video.id, (0, False)))
+            cls._to_list_item(
+                video,
+                *stats.get(video.id, (0, False)),
+                duration_seconds=video.first_duration_seconds,
+                file_size_bytes=video.first_file_size_bytes,
+            )
             for video in videos
         ]
         return PageResponse[VideoItemListItemResource](
@@ -206,6 +261,8 @@ class VideoItemService:
         media_items = cls._media_items(video)
         stats_media_count = len(media_items)
         can_play = any(media.valid for media in media_items)
+        # 时长/大小取第一条媒体（media_items 已按 Media.id 升序），无媒体时为 0。
+        first_media = media_items[0] if media_items else None
         return VideoItemDetailResource(
             id=video.id,
             title=video.title,
@@ -214,6 +271,8 @@ class VideoItemService:
             if video.cover_image_id is not None
             else None,
             release_date=video.release_date,
+            duration_seconds=first_media.duration_seconds if first_media else 0,
+            file_size_bytes=first_media.file_size_bytes if first_media else 0,
             media_count=stats_media_count,
             can_play=can_play,
             created_at=video.created_at,

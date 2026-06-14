@@ -14,6 +14,9 @@ class VideoItemListItemResource(SchemaModel):
     summary: str = ""
     cover_image: ImageResource | None = None
     release_date: datetime | None = None
+    # 时长 / 文件大小取该条目第一条媒体（Media.id 最小），无媒体时为 0。
+    duration_seconds: int = 0
+    file_size_bytes: int = 0
     media_count: int = 0
     can_play: bool = False
     created_at: datetime

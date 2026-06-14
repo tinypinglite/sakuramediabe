@@ -96,3 +96,44 @@ def test_update_collection_renames(collection_tables):
     )
     assert updated.name == "新名"
     assert updated.description == "描述"
+
+
+def test_list_collection_items_default_keeps_position_order(collection_tables):
+    collection = VideoCollectionService.create_collection(VideoCollectionCreateRequest(name="C"))
+    a = VideoItem.create(title="A")
+    b = VideoItem.create(title="B")
+    VideoCollectionService.add_item(collection.id, a.id)
+    VideoCollectionService.add_item(collection.id, b.id)
+
+    items = VideoCollectionService.list_collection_items(collection.id)
+
+    # 不传 sort 默认按手动 position 升序。
+    assert [it.video.id for it in items] == [a.id, b.id]
+    assert [it.position for it in items] == [0, 1]
+
+
+def test_list_collection_items_sort_by_duration_overrides_position(collection_tables):
+    collection = VideoCollectionService.create_collection(VideoCollectionCreateRequest(name="C"))
+    a = VideoItem.create(title="A")
+    Media.create(video_item=a, path="/lib/a0.mp4", valid=True, content_fingerprint="fa0", duration_seconds=100, file_size_bytes=50)
+    Media.create(video_item=a, path="/lib/a1.mp4", valid=True, content_fingerprint="fa1", duration_seconds=999, file_size_bytes=9999)
+    b = VideoItem.create(title="B")
+    Media.create(video_item=b, path="/lib/b0.mp4", valid=True, content_fingerprint="fb0", duration_seconds=200, file_size_bytes=20)
+    VideoCollectionService.add_item(collection.id, a.id)  # position 0
+    VideoCollectionService.add_item(collection.id, b.id)  # position 1
+
+    items = VideoCollectionService.list_collection_items(collection.id, sort="duration:desc")
+
+    # 第一条媒体：B(200) 在 A(100) 前，覆盖 position 顺序（而非取 A 的最大值 999）。
+    assert [it.video.id for it in items] == [b.id, a.id]
+    by_id = {it.video.id: it.video for it in items}
+    assert by_id[a.id].duration_seconds == 100
+    assert by_id[a.id].file_size_bytes == 50
+    assert by_id[b.id].duration_seconds == 200
+
+
+def test_list_collection_items_rejects_invalid_sort(collection_tables):
+    collection = VideoCollectionService.create_collection(VideoCollectionCreateRequest(name="C"))
+    with pytest.raises(ApiError) as exc:
+        VideoCollectionService.list_collection_items(collection.id, sort="release_date:desc")
+    assert exc.value.code == "invalid_video_filter"

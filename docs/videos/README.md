@@ -32,7 +32,7 @@
 
 ### 视频条目 `/videos`
 
-- `GET /videos`：分页列表，支持 `query`、`sort`（`created_at|release_date|title` + `:asc|:desc`）。
+- `GET /videos`：分页列表，支持 `query`、`sort`（`created_at|title|duration|file_size` + `:asc|:desc`，默认 `created_at:desc`）。`duration`/`file_size` 取该条目第一条媒体（`Media.id` 最小）的时长/文件大小，无媒体按 0 参与排序。列表项额外返回 `duration_seconds`、`file_size_bytes`（同样取第一条媒体，无媒体为 0）。
 - `POST /videos`：创建，body 含 `title`、`summary`、`release_date`。
 - `GET /videos/{video_id}`：详情，含 `media_items`（复用影片媒体资源结构，含播放进度与时刻、签名播放地址）。
 - `PATCH /videos/{video_id}`：局部更新（`title`、`summary`、`release_date`）。
@@ -41,7 +41,7 @@
 ### 合集 `/video-collections`
 
 - `GET /video-collections`、`POST`、`GET/PATCH/DELETE /{collection_id}`。
-- `GET /{collection_id}/items`：按 `position` 升序返回成员，供顺序播放。
+- `GET /{collection_id}/items`：返回成员，支持 `sort`（`position|created_at|title|duration|file_size` + `:asc|:desc`，默认 `position:asc`）。默认仍按手动 `position` 升序供顺序播放；`duration`/`file_size` 取成员第一条媒体的时长/文件大小，成员 `video` 也返回 `duration_seconds`、`file_size_bytes`。
 - `POST /{collection_id}/items`（body `video_item_id`，追加到末尾）、`DELETE /{collection_id}/items/{item_id}`。
 - `POST /{collection_id}/items/reorder`（body `ordered_item_ids`）：按给定顺序重写 `position`，要求恰好覆盖全部成员，否则 422。
 
