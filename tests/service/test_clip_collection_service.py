@@ -91,6 +91,20 @@ def test_create_collection_and_uniqueness(collection_env):
     assert exc.value.code == "clip_collection_name_conflict"
 
 
+def test_add_clip_idempotent_on_unique_race(collection_env, monkeypatch):
+    env = collection_env
+    collection = ClipCollectionService.create_collection(ClipCollectionCreateRequest(name="赛道"))
+    clip_id = _create_clip(env["media_a"], 0, 10)
+    ClipCollectionService.add_clip(collection.id, clip_id)
+
+    # 模拟并发：去重 get_or_none 漏看已存在成员，再次加入应命中唯一约束 (collection,clip) 并幂等返回，不抛 500。
+    monkeypatch.setattr(ClipCollectionItem, "get_or_none", lambda *args, **kwargs: None)
+
+    ClipCollectionService.add_clip(collection.id, clip_id)
+
+    assert ClipCollectionService.list_collection_clips(collection.id).total == 1
+
+
 def test_add_clip_appends_in_order_across_movies(collection_env):
     env = collection_env
     collection = ClipCollectionService.create_collection(ClipCollectionCreateRequest(name="c1"))

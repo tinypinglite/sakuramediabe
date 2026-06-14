@@ -8,7 +8,7 @@
 from datetime import datetime
 from typing import Dict, List
 
-from peewee import fn
+from peewee import IntegrityError, fn
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
@@ -165,8 +165,8 @@ class ClipCollectionService:
     @classmethod
     def delete_collection(cls, collection_id: int) -> None:
         collection = cls._require_collection(collection_id)
-        # 仅删合集与成员关系（ClipCollectionItem 由外键 CASCADE 清理），不动片段本体。
-        collection.delete_instance(recursive=True)
+        # 仅删合集，成员关系 ClipCollectionItem 由外键 CASCADE 清理，不动片段本体。
+        collection.delete_instance()
 
     @classmethod
     def list_collection_clips(
@@ -216,21 +216,25 @@ class ClipCollectionService:
         if existing is not None:
             return
         touched_at = cls._current_time()
-        with get_database().atomic():
-            next_position = (
-                ClipCollectionItem.select(fn.COALESCE(fn.MAX(ClipCollectionItem.position), -1))
-                .where(ClipCollectionItem.collection == collection)
-                .scalar()
-            ) + 1
-            ClipCollectionItem.create(
-                collection=collection,
-                clip=clip,
-                position=next_position,
-                created_at=touched_at,
-                updated_at=touched_at,
-            )
-            collection.updated_at = touched_at
-            collection.save(only=[ClipCollection.updated_at])
+        try:
+            with get_database().atomic():
+                next_position = (
+                    ClipCollectionItem.select(fn.COALESCE(fn.MAX(ClipCollectionItem.position), -1))
+                    .where(ClipCollectionItem.collection == collection)
+                    .scalar()
+                ) + 1
+                ClipCollectionItem.create(
+                    collection=collection,
+                    clip=clip,
+                    position=next_position,
+                    created_at=touched_at,
+                    updated_at=touched_at,
+                )
+                collection.updated_at = touched_at
+                collection.save(only=[ClipCollection.updated_at])
+        except IntegrityError:
+            # 与上方去重判断并发：该片段已被加入（唯一约束 (collection, clip) 命中），幂等返回。
+            return
 
     @classmethod
     def remove_clip(cls, collection_id: int, clip_id: int) -> None:
