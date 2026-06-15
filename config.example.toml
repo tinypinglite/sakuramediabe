@@ -20,8 +20,9 @@ username = "account"
 password = "account"
 
 
-# JWT 签名密钥，必须改成你自己的随机字符串！！！建议长度不少于32个字符，否则可能存在安全风险。
-secret_key = "replace-with-a-random-secret-key"
+# JWT 签名密钥。留空即可：首次启动会自动生成随机密钥并写回本配置文件，之后保持不变。
+# 如需自定义，可填一个长度不少于 32 字符的随机字符串。
+secret_key = ""
 
 
 [media]

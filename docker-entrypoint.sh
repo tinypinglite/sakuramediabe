@@ -34,16 +34,10 @@ bootstrap_data_dirs() {
         "${DATA_ROOT}/config" \
         "${DATA_ROOT}/db" \
         "${DATA_ROOT}/cache/assets" \
+        "${DATA_ROOT}/cache/subtitles" \
         "${DATA_ROOT}/cache/gfriends" \
-        "${DATA_ROOT}/indexes" \
+        "${DATA_ROOT}/media-clips" \
         "${DATA_ROOT}/logs"
-
-    if [ ! -f "${DATA_ROOT}/config/config.toml" ]; then
-        echo "Error: missing required config file ${DATA_ROOT}/config/config.toml" >&2
-        echo "Create it from config.example.toml before starting the container." >&2
-        exit 1
-    fi
-
 }
 
 run_database_migrations() {

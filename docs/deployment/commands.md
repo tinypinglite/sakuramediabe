@@ -22,7 +22,7 @@ docker build --target obfuscated -t sakuramediabe:obfuscated .
 
 - 混淆镜像使用 PyArmor-only 方案，不引入授权 secret、Cython 或 Nuitka。
 - 混淆目标保留与普通镜像一致的运行入口，容器启动时仍会先执行 `migrate`，再执行 `initdb`。
-- 容器启动依赖挂载 `/data/config/config.toml`，发布镜像不会内置本地配置文件。
+- `/data/config/config.toml` 为可选：缺失或为空时容器走默认值启动，并在首启写入一份含全部配置项默认值的完整 `config.toml`（其中 `secret_key`、`file_signature_secret` 自动生成随机值）到该路径，之后保持稳定；已有内容的配置文件只补缺失的鉴权密钥、保留其余配置。发布镜像不会内置本地配置文件。
 - GitHub Release 触发的 Docker Hub 正式发布也会构建 `obfuscated` target。
 - 该方案用于提高发布镜像源码逆向成本，不等同于不可破解的代码保护。
 

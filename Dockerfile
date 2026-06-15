@@ -55,7 +55,7 @@ RUN chmod +x /docker-entrypoint.sh \
 
 COPY supervisord.conf /etc/supervisor/supervisord.conf
 # 主服务只保留自身运行所需的数据目录，JoyTag 模型目录由独立推理服务管理。
-VOLUME ["/data/db", "/data/cache/assets", "/data/cache/gfriends", "/data/cache/subtitles", "/data/indexes", "/data/media-clips", "/data/logs", "/data/config"]
+VOLUME ["/data"]
 EXPOSE 8000 9001
 ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["start"]

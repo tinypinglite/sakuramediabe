@@ -54,8 +54,9 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
     assert settings.scheduler.ranking_sync_cron == "45 1 * * *"
     assert settings.scheduler.hot_review_sync_cron == "20 1 * * *"
     assert settings.logging.level == "INFO"
-    assert isinstance(settings.auth.file_signature_secret, str)
-    assert settings.auth.file_signature_secret
+    # secret_key / file_signature_secret 默认是空哨兵，由 ensure_runtime_secrets() 首启自举生成。
+    assert settings.auth.secret_key == ""
+    assert settings.auth.file_signature_secret == ""
     assert settings.metadata.gfriends_filetree_url == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
     assert settings.metadata.gfriends_cdn_base_url == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
     assert settings.metadata.gfriends_filetree_cache_path == "/data/cache/gfriends/gfriends-filetree.json"
@@ -156,13 +157,12 @@ def test_metadata_proxy_takes_priority_over_legacy_dmm_proxy():
     assert metadata.normalized_dmm_proxy == "http://127.0.0.1:7890"
 
 
-def test_auth_generates_random_file_signature_secret_by_default():
-    first_auth = Auth()
-    second_auth = Auth()
+def test_auth_secrets_default_to_empty_sentinel():
+    # 密钥默认是空哨兵，不再每次构造随机生成；实际随机值由 ensure_runtime_secrets() 首启自举写盘。
+    auth = Auth()
 
-    assert first_auth.file_signature_secret
-    assert second_auth.file_signature_secret
-    assert first_auth.file_signature_secret != second_auth.file_signature_secret
+    assert auth.secret_key == ""
+    assert auth.file_signature_secret == ""
 
 
 def test_settings_ignore_legacy_file_signature_expire_config(tmp_path, monkeypatch):
@@ -384,7 +384,8 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
         persisted = toml.loads(config_path.read_text(encoding="utf-8"))
         assert persisted["indexer_settings"]["type"] == "jackett"
         assert persisted["indexer_settings"]["api_key"] == "updated-secret-key"
-        assert "file_signature_secret" not in persisted["auth"]
+        # file_signature_secret 现在是正常持久化字段，update_settings 会原样写盘。
+        assert persisted["auth"]["file_signature_secret"] == current_file_signature_secret
         expected_scheduler = {
             "enabled": True,
             "log_dir": "./logs/tasks",

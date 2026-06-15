@@ -23,8 +23,8 @@ url = ""
 username = "account"
 # 默认登录密码。
 password = "account"
-# JWT 签名密钥，必须改成你自己的随机字符串。
-secret_key = "replace-with-a-random-secret-key"
+# JWT 签名密钥。留空即可：首次启动会自动生成随机密钥并写回本配置文件，之后保持不变。
+secret_key = ""
 # JWT 签名算法。
 algorithm = "HS256"
 # Access Token 过期时间，单位：分钟。

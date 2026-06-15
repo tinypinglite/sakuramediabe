@@ -50,7 +50,7 @@ from src.api.routers.videos.collections import router as video_collections_route
 from src.api.routers.videos.imports import router as video_imports_router
 from src.api.routers.videos.items import router as videos_router
 from src.common.database import ensure_database_ready
-from src.config.config import settings
+from src.config.config import ensure_runtime_config, settings
 from src.start.recovery import recover_interrupted_tasks
 
 
@@ -58,6 +58,8 @@ def _create_lifespan():
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         logging.getLogger(__name__).info("Starting FastAPI runtime jobs")
+        # 服务对外前确保运行配置就绪：缺失/空文件写入全量默认配置，并自举鉴权密钥落盘。
+        ensure_runtime_config()
         ensure_database_ready()
         # 容器入口已经在启动前完成 schema 升级，这里只负责运行时恢复逻辑。
         recover_interrupted_tasks(

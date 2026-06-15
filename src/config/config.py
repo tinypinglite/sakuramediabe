@@ -46,11 +46,13 @@ class Database(BaseModel):
 class Auth(BaseModel):
     username: str = "account"
     password: str = "account"
-    secret_key: str = "98765432178965437"
+    # 空字符串作为“未初始化”哨兵：首次启动由 ensure_runtime_secrets() 生成随机值并落盘。
+    secret_key: str = ""
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24 * 30
     refresh_token_expire_minutes: int = 60 * 24 * 7
-    file_signature_secret: str = Field(default_factory=lambda: secrets.token_urlsafe(32))
+    # 同样首启自举并持久化；不再每次启动随机生成，避免重启后既有签名 URL 全部失效。
+    file_signature_secret: str = ""
 
 
 class Media(BaseModel):
@@ -231,10 +233,18 @@ class Qdrant(BaseModel):
     api_key: str = ""
 
 
-if Path('/data/config/config.toml').exists():
-    SETTINGS_TOML_PATH = Path('/data/config/config.toml')
+_DATA_CONFIG_PATH = Path('/data/config/config.toml')
+if _DATA_CONFIG_PATH.exists():
+    SETTINGS_TOML_PATH = _DATA_CONFIG_PATH
+elif Path('/data').is_dir():
+    # 容器内：/data 已挂载（entrypoint 会 mkdir -p /data/config）但配置文件缺失，
+    # 仍以 /data/config/config.toml 为目标——缺文件时走纯默认值，再由 ensure_runtime_secrets() 自举写入。
+    # 不回退到仓库内 config.toml，避免容器误读开发者本地配置。
+    logger.warning("No config.toml at /data/config/config.toml; will bootstrap defaults and write secrets there.")
+    SETTINGS_TOML_PATH = _DATA_CONFIG_PATH
 else:
-    logger.warning("No config.toml found at /data/config/config.toml, using default config.toml path.")
+    # 本地开发：无 /data 目录，回退到仓库内 config.toml。
+    logger.warning("No /data directory found, using repository config.toml path.")
     SETTINGS_TOML_PATH = pathlib.Path(__file__).parent / "config.toml"
 
 
@@ -324,11 +334,8 @@ def refresh_runtime_settings(new_settings: Settings) -> None:
 
 
 def _build_persistable_settings(settings_to_persist: Settings) -> dict[str, Any]:
-    serializable_settings = json.loads(settings_to_persist.model_dump_json())
-    auth_settings = serializable_settings.get("auth")
-    if isinstance(auth_settings, dict):
-        auth_settings.pop("file_signature_secret", None)
-    return serializable_settings
+    # file_signature_secret 现在是首启自举的持久化字段，正常写盘，不再排除。
+    return json.loads(settings_to_persist.model_dump_json())
 
 
 def update_settings(new_settings: Settings) -> bool:
@@ -337,4 +344,62 @@ def update_settings(new_settings: Settings) -> bool:
     with open(settings_path, "w", encoding="utf-8") as file:
         file.write(toml.dumps(serializable_settings))
     refresh_runtime_settings(new_settings)
+    return True
+
+
+# 视为“未初始化/不安全”的 secret_key 值：空、示例占位、历史硬编码默认值，命中即重新生成。
+_INSECURE_SECRET_KEYS = {"", "replace-with-a-random-secret-key", "98765432178965437"}
+
+
+def _ensure_auth_secrets() -> dict[str, str]:
+    """把缺失/不安全的鉴权密钥生成随机值并写回内存全局 settings，返回本次生成的字段。"""
+    updates: dict[str, str] = {}
+    if settings.auth.secret_key in _INSECURE_SECRET_KEYS:
+        updates["secret_key"] = secrets.token_urlsafe(48)
+    if not settings.auth.file_signature_secret:
+        updates["file_signature_secret"] = secrets.token_urlsafe(32)
+    for field_name, value in updates.items():
+        setattr(settings.auth, field_name, value)
+    return updates
+
+
+def ensure_runtime_config() -> bool:
+    """首次启动自举运行配置。
+
+    - 始终先确保鉴权密钥就绪（secret_key 空/占位/旧硬编码、file_signature_secret 为空时生成随机值），
+      并写回内存全局 settings。
+    - 目标 config.toml 缺失或为空时，写入一份含全部配置项默认值（含已生成密钥）的完整文件。
+    - 目标 config.toml 已有内容时，仅以“只补 [auth] 两键”的方式 surgical 持久化密钥，保留其余配置。
+    仅当确有写盘时返回 True，幂等。
+    """
+    secret_updates = _ensure_auth_secrets()
+
+    settings_path = Path(Settings.model_config["toml_file"])
+    # 文件缺失或内容为空白，都视为需要写入一份完整默认配置。
+    file_missing_or_empty = (
+        not settings_path.exists()
+        or not settings_path.read_text(encoding="utf-8").strip()
+    )
+
+    if file_missing_or_empty:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        # 目标文件缺失/为空时写入全量默认配置：以 Settings()（此刻读取缺失/空源即得默认值）为基准，
+        # 叠加已生成的密钥后整体落盘，与运行进程内存中的密钥保持一致。
+        default_settings = Settings()
+        default_settings.auth.secret_key = settings.auth.secret_key
+        default_settings.auth.file_signature_secret = settings.auth.file_signature_secret
+        serializable_settings = _build_persistable_settings(default_settings)
+        with open(settings_path, "w", encoding="utf-8") as file:
+            file.write(toml.dumps(serializable_settings))
+        logger.info("Bootstrapped full default config with generated secrets at {}", settings_path)
+        return True
+
+    # 文件已有内容：仅在密钥有变更时 surgical 落盘，避免 model_dump 丢弃模型外字段。
+    if not secret_updates:
+        return False
+    existing_config: dict[str, Any] = toml.load(settings_path)
+    existing_config.setdefault("auth", {}).update(secret_updates)
+    with open(settings_path, "w", encoding="utf-8") as file:
+        file.write(toml.dumps(existing_config))
+    logger.info("Persisted generated auth secrets: {}", ", ".join(sorted(secret_updates)))
     return True

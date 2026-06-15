@@ -32,7 +32,13 @@ def _build_fake_bin(bin_dir: Path) -> None:
     )
 
 
-def _run_entrypoint(tmp_path: Path, *, fail_migrate: bool = False, args: list[str] | None = None):
+def _run_entrypoint(
+    tmp_path: Path,
+    *,
+    fail_migrate: bool = False,
+    args: list[str] | None = None,
+    create_config: bool = True,
+):
     repo_root = Path(__file__).resolve().parents[2]
     script_path = repo_root / "docker-entrypoint.sh"
     data_root = tmp_path / "data"
@@ -41,7 +47,8 @@ def _run_entrypoint(tmp_path: Path, *, fail_migrate: bool = False, args: list[st
     app_root = tmp_path / "app"
 
     (data_root / "config").mkdir(parents=True, exist_ok=True)
-    (data_root / "config" / "config.toml").write_text("", encoding="utf-8")
+    if create_config:
+        (data_root / "config" / "config.toml").write_text("", encoding="utf-8")
     bin_dir.mkdir(parents=True, exist_ok=True)
     app_root.mkdir(parents=True, exist_ok=True)
     _build_fake_bin(bin_dir)
@@ -88,6 +95,18 @@ def test_docker_entrypoint_stops_when_migration_fails(tmp_path):
     assert "Starting supervisor..." not in result.stdout
     assert len(lines) == 1
     assert lines[0].startswith("su:")
+
+
+def test_docker_entrypoint_starts_without_config_file(tmp_path):
+    # config.toml 不再强制存在：缺失时入口脚本仍应正常走 migrate -> initdb -> supervisor。
+    result, lines = _run_entrypoint(tmp_path, create_config=False)
+
+    assert result.returncode == 0, result.stderr
+    assert "Starting supervisor..." in result.stdout
+    assert len(lines) == 3
+    assert "-m src.start.commands migrate" in lines[0]
+    assert "-m src.start.commands initdb" in lines[1]
+    assert lines[2].startswith("supervisord:")
 
 
 def test_docker_entrypoint_passthrough_for_non_start_commands(tmp_path):

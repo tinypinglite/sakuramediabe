@@ -230,8 +230,11 @@ def initdb():
     """
     初始化数据库
     """
+    from src.config.config import ensure_runtime_config
     from src.start.initdb import initdb
 
+    # 容器首启在 API 启动前先把全量默认配置与生成密钥落盘到目标 config.toml，后续进程读到稳定值。
+    ensure_runtime_config()
     initdb()
 
 
