@@ -237,6 +237,29 @@ def test_activity_service_creates_deduplicated_media_reminder(test_db):
     assert "A片" not in notification.content
 
 
+def test_activity_service_creates_ranking_account_error_notification(test_db):
+    models = [BackgroundTaskRun, SystemNotification, SystemEvent]
+    test_db.bind(models, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(models)
+
+    task_run = ActivityService.create_task_run(
+        task_key="ranking_sync",
+        trigger_type="scheduled",
+        state="running",
+    )
+
+    notification = ActivityService.create_ranking_account_error_notification(
+        related_task_run_id=task_run.id,
+    )
+
+    assert notification is not None
+    assert notification.category == "warning"
+    assert notification.title == "JavDB 账号登录失败"
+    assert "javdb_username" in notification.content
+    assert notification.related_task_run_id == task_run.id
+    assert SystemNotification.select().count() == 1
+
+
 def test_activity_service_bootstrap_aggregates_notifications_tasks_and_cursor(test_db):
     models = [BackgroundTaskRun, SystemNotification, SystemEvent]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)

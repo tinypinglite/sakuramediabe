@@ -132,6 +132,9 @@ MovieDescTranslation = MovieInfoTranslation
 
 class Metadata(BaseModel):
     javdb_host: str = "jdforrepam.com"
+    # JavDB 账号，用于抓取需登录的榜单（年度 / 全部 / 片源类型 TOP250）；留空则不抓这些榜单。
+    javdb_username: str | None = None
+    javdb_password: str | None = None
     proxy: str | None = None
     # 兼容旧配置项：新版本统一使用 proxy，dmm_proxy 仅在 proxy 为空时作为读取回退。
     dmm_proxy: str | None = Field(default=None, exclude=True)
@@ -140,6 +143,14 @@ class Metadata(BaseModel):
     gfriends_filetree_cache_path: str = "/data/cache/gfriends/gfriends-filetree.json"
     gfriends_filetree_cache_ttl_hours: int = 24 * 7
     import_metadata_max_workers: int = 3
+
+    @property
+    def javdb_account_configured(self) -> bool:
+        # 账号与密码都非空白才视为已配置，决定是否抓取需登录的 TOP250 榜单。
+        return bool(
+            (self.javdb_username or "").strip()
+            and (self.javdb_password or "").strip()
+        )
 
     @property
     def normalized_proxy(self) -> str | None:

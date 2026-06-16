@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import uuid
 from datetime import date
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlencode
@@ -10,7 +11,7 @@ from urllib.parse import quote, urlencode
 from loguru import logger
 
 from .utils import normalize_movie_number
-from .exceptions import MetadataNotFoundError, MetadataRequestError
+from .exceptions import JavdbAuthError, MetadataNotFoundError, MetadataRequestError
 from .http_client import MetadataRequestClient
 from .models import (
     JavdbMovieActorResource,
@@ -43,6 +44,27 @@ class JavdbProvider(MetadataRequestClient):
     API_PATH_HOT_REVIEWS = "/api/v1/reviews/hotly"
     API_PATH_RANKINGS = "/api/v1/rankings"
     API_PATH_RANKINGS_PLAYBACK = "/api/v1/rankings/playback"
+    API_PATH_SESSIONS = "/api/v1/sessions"
+    API_PATH_MOVIES_TOP = "/api/v1/movies/top"
+
+    # TOP250：每页 50 条，5 页满 250。
+    TOP250_PAGE_LIMIT = 50
+    TOP250_MAX_PAGES = 5
+    SUPPORTED_TOP_TYPES = {"all", "year", "video_type"}
+
+    # 登录所需的固定设备指纹，与官方 App 抓包一致，不要改动。
+    DEVICE = {
+        "device_name": "meizu16sPro",
+        "device_model": "meizu/16s Pro",
+        "platform": "android",
+        "system_version": "9",
+        "app_channel": "official",
+        "app_version": "official",
+        "app_version_number": "1.9.29",
+    }
+    # 派生 device_uuid 的固定命名空间（沿用原硬编码值作为种子）：
+    # device_uuid 按账号 uuid5 派生，做到同账号稳定、跨账号唯一，避免全网共用一个设备标识。
+    DEVICE_UUID_NAMESPACE = uuid.UUID("5374dc5e-0f98-5235-9845-76cbc0ced71f")
 
     API_PARAMS_ACTOR_MOVIES = {
         "sort_by": "release",
@@ -91,14 +113,25 @@ class JavdbProvider(MetadataRequestClient):
         host: str,
         *,
         proxy: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
     ):
         MetadataRequestClient.__init__(
             self,
             proxy=proxy,
         )
         self.host = host
+        self.username = username
+        self.password = password
+        # 登录态懒加载：token 在首次抓需登录榜单时获取，本实例只登录一次。
+        self._token: Optional[str] = None
+        self._login_failed = False
         logger.info(
-            "JavdbProvider initialized host={} proxy_enabled={}", host, bool(proxy))
+            "JavdbProvider initialized host={} proxy_enabled={} account_configured={}",
+            host,
+            bool(proxy),
+            bool(username and password),
+        )
 
     def _normalize_image_url(self, url: Optional[str]) -> Optional[str]:
         if not url:
@@ -521,6 +554,114 @@ class JavdbProvider(MetadataRequestClient):
             "Javdb get_rank_numbers success video_type={} period={} count={}",
             video_type,
             period,
+            len(numbers),
+        )
+        return numbers
+
+    def _device_payload(self) -> Dict[str, str]:
+        # device_uuid 按账号确定性派生：同账号每次登录一致，不同账号互不相同。
+        device_uuid = str(uuid.uuid5(self.DEVICE_UUID_NAMESPACE, self.username or ""))
+        return {"device_uuid": device_uuid, **self.DEVICE}
+
+    def _ensure_logged_in(self) -> str:
+        # 懒登录：已有 token 直接复用；本实例曾登录失败则不再重试，避免触发风控/锁号。
+        if self._token:
+            return self._token
+        if self._login_failed:
+            raise JavdbAuthError("login already failed for this provider instance")
+        if not (self.username and self.password):
+            self._login_failed = True
+            raise JavdbAuthError("javdb account is not configured")
+
+        url = self._build_api_url(path=self.API_PATH_SESSIONS)
+        payload = {
+            "username": self.username,
+            "password": self.password,
+            **self._device_payload(),
+        }
+        # 登录额外头：服务端虽声明 multipart，但接受 form-urlencoded 提交。
+        headers = {
+            "user-agent": "Dart/3.5 (dart:io)",
+            "Content-Type": "multipart/form-data",
+        }
+        try:
+            body = self.request_json("POST", url, data=payload, headers=headers)
+        except MetadataRequestError as exc:
+            self._login_failed = True
+            raise JavdbAuthError(str(exc)) from exc
+
+        token = (body.get("data") or {}).get("token")
+        if not token:
+            self._login_failed = True
+            message = body.get("message") or "login response missing token"
+            logger.warning("Javdb login failed detail={}", message)
+            raise JavdbAuthError(message)
+
+        self._token = token
+        logger.info("Javdb login success token_len={}", len(token))
+        return token
+
+    def get_top_numbers(
+        self,
+        top_type: str,
+        type_value: str = "",
+        max_pages: Optional[int] = None,
+    ) -> List[str]:
+        # 需登录的 TOP250 榜：type=all/year/video_type，分页抓取最多 max_pages 页。
+        if top_type not in self.SUPPORTED_TOP_TYPES:
+            raise ValueError(f"unsupported top_type: {top_type}")
+        page_count = self.TOP250_MAX_PAGES if max_pages is None else max_pages
+
+        token = self._ensure_logged_in()
+        numbers: List[str] = []
+        for page in range(1, page_count + 1):
+            url = self._build_api_url(
+                path=self.API_PATH_MOVIES_TOP,
+                query_params={
+                    "start_rank": 1,
+                    "type": top_type,
+                    "type_value": type_value,
+                    "ignore_watched": "false",
+                    "page": page,
+                    "limit": self.TOP250_PAGE_LIMIT,
+                },
+            )
+            payload = self.request_json(
+                "GET", url, headers={"authorization": f"Bearer {token}"})
+            if payload.get("success") != 1:
+                detail = payload.get(
+                    "message") or f"unexpected success={payload.get('success')}"
+                logger.warning(
+                    "Javdb top request returned unsuccessful payload top_type={} type_value={} page={} detail={}",
+                    top_type,
+                    type_value,
+                    page,
+                    detail,
+                )
+                raise MetadataRequestError("GET", url, detail)
+
+            data = payload.get("data")
+            movies = data.get("movies") if isinstance(data, dict) else None
+            if not isinstance(movies, list):
+                detail = "missing data.movies"
+                logger.warning(
+                    "Javdb top payload missing movies top_type={} type_value={} page={}",
+                    top_type,
+                    type_value,
+                    page,
+                )
+                raise MetadataRequestError("GET", url, detail)
+            if not movies:
+                # 空页即到底，停止翻页。
+                break
+            for movie in movies:
+                number = movie.get("number")
+                if number:
+                    numbers.append(number)
+        logger.debug(
+            "Javdb get_top_numbers success top_type={} type_value={} count={}",
+            top_type,
+            type_value,
             len(numbers),
         )
         return numbers

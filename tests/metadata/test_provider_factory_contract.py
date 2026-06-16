@@ -75,6 +75,16 @@ def test_build_javdb_provider_routes_site_proxy(
     assert provider.provider.proxy == expected_provider_proxy
 
 
+def test_build_javdb_provider_passes_account_credentials(monkeypatch):
+    monkeypatch.setattr(settings.metadata, "javdb_username", "user@example.com")
+    monkeypatch.setattr(settings.metadata, "javdb_password", "secret")
+
+    provider = build_javdb_provider()
+
+    assert provider.provider.username == "user@example.com"
+    assert provider.provider.password == "secret"
+
+
 def test_build_missav_providers_pass_site_proxy(monkeypatch):
     monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
     monkeypatch.setattr(settings.metadata, "dmm_proxy", None)

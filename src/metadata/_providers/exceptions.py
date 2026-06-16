@@ -17,6 +17,14 @@ class MetadataRequestError(MetadataProviderError):
         super().__init__(f"metadata request failed: {method} {url} ({detail})")
 
 
+class JavdbAuthError(MetadataProviderError):
+    """JavDB 账号登录失败：用于区分“登录失败”与普通抓取失败。"""
+
+    def __init__(self, detail: str | None = None):
+        self.detail = detail or "javdb account login failed"
+        super().__init__(f"javdb auth failed: {self.detail}")
+
+
 class MetadataProviderUnavailable(MetadataProviderError):
     def __init__(self, provider: str, detail: str | None = None):
         self.provider = provider

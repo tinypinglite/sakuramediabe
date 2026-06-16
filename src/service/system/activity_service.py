@@ -1025,3 +1025,18 @@ class ActivityService:
             related_resource_id=related_resource_id if isinstance(related_resource_id, int) else None,
         )
         return cls._notification_resource(notification)
+
+    @classmethod
+    def create_ranking_account_error_notification(
+        cls,
+        *,
+        related_task_run_id: int | None = None,
+    ) -> NotificationResource:
+        # 排行榜同步时 JavDB 账号登录失败：提示用户检查凭据，属可修复的配置问题，用 warning。
+        notification = cls._create_notification(
+            category="warning",
+            title="JavDB 账号登录失败",
+            content="无法登录 JavDB 账号，已跳过需登录的 TOP250 榜单同步，请检查 config.toml 中的 javdb_username / javdb_password。",
+            related_task_run_id=related_task_run_id,
+        )
+        return cls._notification_resource(notification)

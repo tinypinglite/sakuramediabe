@@ -11,6 +11,8 @@ from src.start.commands import main
 
 
 class _FakeReporter:
+    task_run_id = 1
+
     def progress_callback(self, _payload):
         return None
 
@@ -582,7 +584,7 @@ def test_run_job_ensures_database_and_calls_activity_service(monkeypatch):
     job_def = JOB_REGISTRY_BY_KEY["ranking_sync"]
     monkeypatch.setattr(
         "src.scheduler.registry.RankingSyncService.sync_all_rankings",
-        lambda self, progress_callback=None: {
+        lambda self, progress_callback=None, task_run_id=None: {
             "total_targets": 12, "success_targets": 12, "failed_targets": 0,
             "fetched_numbers": 240, "imported_movies": 230, "skipped_movies": 10, "stored_items": 230,
         },
@@ -759,7 +761,7 @@ def test_run_job_recovers_task_runs_for_job_without_business_recovery(monkeypatc
     recovered_payload = _mock_recover_interrupted_task_runs(monkeypatch, recovered_task_runs=[object()])
     monkeypatch.setattr(
         "src.scheduler.registry.RankingSyncService.sync_all_rankings",
-        lambda self, progress_callback=None: {
+        lambda self, progress_callback=None, task_run_id=None: {
             "total_targets": 1,
             "success_targets": 1,
             "failed_targets": 0,

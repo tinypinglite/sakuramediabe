@@ -96,6 +96,8 @@ def build_javdb_provider(*, use_metadata_proxy: bool = False) -> GfriendsAvatarJ
     provider = JavdbProvider(
         host=settings.metadata.javdb_host,
         proxy=provider_proxy,
+        username=settings.metadata.javdb_username,
+        password=settings.metadata.javdb_password,
     )
     return GfriendsAvatarJavdbProvider(
         provider=provider,

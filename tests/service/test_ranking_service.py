@@ -1,8 +1,12 @@
 from datetime import datetime
 
 from src.api.exception.errors import ApiError
+from src.common.runtime_time import runtime_now
+from src.config.config import settings
+from src.metadata._providers.exceptions import JavdbAuthError
 from src.model import Image, Media, Movie, RankingItem
 from src.service.discovery.ranking_service import RankingCatalogService, RankingSyncService
+from src.service.system import ActivityService
 
 
 def _create_movie(movie_number: str, javdb_id: str, **kwargs):
@@ -19,13 +23,20 @@ class FakeRankingProvider:
     def __init__(self):
         self.rankings: dict[tuple[str, str], list[str]] = {}
         self.playback: dict[tuple[str, str], list[str]] = {}
+        self.top: dict[tuple[str, str], list[str]] = {}
         self.details: dict[str, dict] = {}
+        # 记录 top 抓取调用，便于断言历史年份是否被跳过；以及模拟登录失败。
+        self.top_calls: list[tuple[str, str]] = []
+        self.top_auth_error = False
 
     def set_ranking(self, video_type: str, period: str, numbers: list[str]) -> None:
         self.rankings[(video_type, period)] = numbers
 
     def set_playback(self, filter_by: str, period: str, numbers: list[str]) -> None:
         self.playback[(filter_by, period)] = numbers
+
+    def set_top(self, top_type: str, type_value: str, numbers: list[str]) -> None:
+        self.top[(top_type, type_value)] = numbers
 
     def set_detail(self, movie_number: str, javdb_id: str) -> None:
         self.details[movie_number] = {
@@ -39,6 +50,12 @@ class FakeRankingProvider:
 
     def get_playback_rank_numbers(self, filter_by: str = "all", period: str = "daily") -> list[str]:
         return list(self.playback.get((filter_by, period), []))
+
+    def get_top_numbers(self, top_type: str, type_value: str = "", max_pages=None) -> list[str]:
+        self.top_calls.append((top_type, type_value))
+        if self.top_auth_error:
+            raise JavdbAuthError("fake login failed")
+        return list(self.top.get((top_type, type_value), []))
 
     def get_movie_by_number(self, movie_number: str) -> dict:
         return self.details[movie_number]
@@ -414,8 +431,11 @@ def test_ranking_sync_service_sync_board_period_supports_playback_boards(app):
     ] == ["ABP-102"]
 
 
-def test_ranking_sync_service_sync_all_rankings_includes_playback_and_missav_targets(app):
-    # javdb 普通 3 榜 + 播放 2 榜，各 3 个周期，加上 missav 1 榜 3 个周期，共 18 个目标。
+def test_ranking_sync_service_sync_all_rankings_includes_playback_and_missav_targets(app, monkeypatch):
+    # 未配账号时 top250 被排除：javdb 普通 3 榜 + 播放 2 榜各 3 周期，加 missav 1 榜 3 周期 = 18。
+    monkeypatch.setattr(settings.metadata, "javdb_username", None)
+    monkeypatch.setattr(settings.metadata, "javdb_password", None)
+
     javdb_provider = FakeRankingProvider()
     javdb_provider.set_ranking("0", "daily", ["ABP-001"])
     javdb_provider.set_playback("all", "daily", ["ABP-003"])
@@ -436,10 +456,119 @@ def test_ranking_sync_service_sync_all_rankings_includes_playback_and_missav_tar
     assert stats["total_targets"] == 18
     assert stats["success_targets"] == 18
     assert stats["failed_targets"] == 0
-    # 播放榜也随整体同步入库。
+    # 未配账号：top250 从不抓取。
+    assert javdb_provider.top_calls == []
+    assert RankingItem.select().where(RankingItem.board_key == "top250").count() == 0
+    # 播放榜随整体同步入库。
     assert (
         RankingItem.select()
         .where(RankingItem.board_key.in_(["playback_all", "playback_high_score"]))
         .count()
         == 1
     )
+
+
+def test_ranking_sync_service_sync_board_period_supports_top250(app):
+    # top250 走 /api/v1/movies/top：all 子榜与年度榜各自按 period 入库。
+    javdb_provider = FakeRankingProvider()
+    javdb_provider.set_top("all", "", ["TOP-001", "TOP-002"])
+    javdb_provider.set_top("year", "2024", ["YR-001"])
+    javdb_provider.set_detail("TOP-001", "MovieTop1")
+    javdb_provider.set_detail("TOP-002", "MovieTop2")
+    javdb_provider.set_detail("YR-001", "MovieYr1")
+    service = RankingSyncService(
+        import_service=FakeCatalogImportService(),
+        providers={"javdb": javdb_provider},
+    )
+
+    all_stats = service.sync_board_period("javdb", "top250", "all")
+    year_stats = service.sync_board_period("javdb", "top250", "2024")
+
+    assert all_stats["stored_items"] == 2
+    assert year_stats["stored_items"] == 1
+    assert ("all", "") in javdb_provider.top_calls
+    assert ("year", "2024") in javdb_provider.top_calls
+    assert [
+        item.movie_number
+        for item in RankingItem.select()
+        .where(RankingItem.board_key == "top250", RankingItem.period == "all")
+        .order_by(RankingItem.rank.asc())
+    ] == ["TOP-001", "TOP-002"]
+    assert [
+        item.movie_number
+        for item in RankingItem.select()
+        .where(RankingItem.board_key == "top250", RankingItem.period == "2024")
+    ] == ["YR-001"]
+
+
+def test_sync_all_rankings_top250_skips_existing_historical_year(app, monkeypatch):
+    # 已配账号：当前年与固定子榜每次抓，历史年份库里已有则跳过。
+    monkeypatch.setattr(settings.metadata, "javdb_username", "user@example.com")
+    monkeypatch.setattr(settings.metadata, "javdb_password", "secret")
+    current_year = str(runtime_now().year)
+
+    # 预置一条历史年份(2020)的 top250 数据，验证不再重抓。
+    seeded_movie = _create_movie("OLD-2020", "MovieOld2020")
+    RankingItem.create(
+        source_key="javdb",
+        board_key="top250",
+        period="2020",
+        rank=1,
+        movie_number=seeded_movie.movie_number,
+        movie=seeded_movie,
+    )
+
+    javdb_provider = FakeRankingProvider()  # 所有 top 子榜默认返回空，专注于“调用与否”
+    missav_provider = FakeMissavRankingProvider()
+    service = RankingSyncService(
+        import_service=FakeCatalogImportService(),
+        providers={"javdb": javdb_provider, "missav": missav_provider},
+    )
+
+    service.sync_all_rankings()
+
+    # 固定子榜 + 当前年被抓取，历史年份 2020 因已有数据被跳过。
+    assert ("all", "") in javdb_provider.top_calls
+    assert ("video_type", "0") in javdb_provider.top_calls
+    assert ("year", current_year) in javdb_provider.top_calls
+    assert ("year", "2020") not in javdb_provider.top_calls
+    # 预置的 2020 数据原样保留。
+    assert (
+        RankingItem.select()
+        .where(RankingItem.board_key == "top250", RankingItem.period == "2020")
+        .count()
+        == 1
+    )
+
+
+def test_sync_all_rankings_notifies_once_on_top250_login_failure(app, monkeypatch):
+    # 已配账号但登录失败：只发一条通知、top250 全部跳过、不计入 failed_targets。
+    monkeypatch.setattr(settings.metadata, "javdb_username", "user@example.com")
+    monkeypatch.setattr(settings.metadata, "javdb_password", "secret")
+
+    notify_calls = {"count": 0, "task_run_id": "unset"}
+
+    def _fake_notify(cls, *, related_task_run_id=None):
+        notify_calls["count"] += 1
+        notify_calls["task_run_id"] = related_task_run_id
+
+    monkeypatch.setattr(
+        ActivityService,
+        "create_ranking_account_error_notification",
+        classmethod(_fake_notify),
+    )
+
+    javdb_provider = FakeRankingProvider()
+    javdb_provider.top_auth_error = True
+    missav_provider = FakeMissavRankingProvider()
+    service = RankingSyncService(
+        import_service=FakeCatalogImportService(),
+        providers={"javdb": javdb_provider, "missav": missav_provider},
+    )
+
+    stats = service.sync_all_rankings(task_run_id=7)
+
+    assert notify_calls["count"] == 1  # 多个 top250 目标登录失败，只发一次
+    assert notify_calls["task_run_id"] == 7
+    assert stats["failed_targets"] == 0  # 登录失败不计入 failed_targets
+    assert RankingItem.select().where(RankingItem.board_key == "top250").count() == 0

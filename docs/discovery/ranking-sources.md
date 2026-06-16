@@ -16,9 +16,13 @@
 - `missav` 仅抓取榜单第一页的番号，不翻页
 - `missav` 只提供榜单番号，影片详情字段仍统一以 JavDB 数据为准
 - 当前开放来源：
-  - `javdb`：播放榜 `playback_all`（热播）/ `playback_high_score`（高评分），常规榜 `censored` / `uncensored` / `fc2`
+  - `javdb`：播放榜 `playback_all`（热播）/ `playback_high_score`（高评分），常规榜 `censored` / `uncensored` / `fc2`，TOP250 榜 `top250`
   - `missav`：综合榜 `all`
-- 两个来源都支持 `daily` / `weekly` / `monthly`
+- `daily` / `weekly` / `monthly` 适用于播放榜、常规榜与 missav；`top250` 的 period 维度不同（见下）
+- `javdb` 的 `top250` 需要登录：依赖 `[metadata]` 的 `javdb_username` / `javdb_password`：
+  - 该 board 在 API 列表中**始终可见**，与是否配置账号无关
+  - 同步时未配置账号则整 board 跳过抓取（不报错、不发通知、不清空已有数据）
+  - 已配置账号但登录失败时跳过 `top250` 并在通知中心发一条 `warning`（每次同步只发一条）
 
 ## 来源与榜单约定
 
@@ -29,9 +33,12 @@
 | `javdb` | JavDB | `censored` | 有码 | `daily` / `weekly` / `monthly` |
 | `javdb` | JavDB | `uncensored` | 无码 | `daily` / `weekly` / `monthly` |
 | `javdb` | JavDB | `fc2` | FC2 | `daily` / `weekly` / `monthly` |
+| `javdb` | JavDB | `top250` | TOP250 | `all` / `uncensored` / `censored` / `fc2` / 年份（`2008`~当前年） |
 | `missav` | MissAV | `all` | 综合 | `daily` / `weekly` / `monthly` |
 
-> `playback_all` / `playback_high_score` 为 JavDB 播放榜，`provider_raw_key` 对应播放榜接口的 `filter_by`（`all` / `high_score`）。
+> `playback_all` / `playback_high_score` 为免登录的 JavDB 播放榜，`provider_raw_key` 对应播放榜接口的 `filter_by`（`all` / `high_score`）。
+>
+> `top250`（需登录）用 `period` 编码不同子榜：`all`（全部）/ `uncensored`（无码）/ `censored`（有码）/ `fc2`，以及 `2008` 到当前年的逐年年度榜（年份维度逐年滚动）。抓取策略：固定子榜与**当前年**每次同步都抓；**历史年份抓一次**，库中已有该年数据则不再每天重抓。
 
 ## 端点总览
 

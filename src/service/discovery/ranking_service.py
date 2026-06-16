@@ -7,7 +7,10 @@ import peewee
 from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
+from src.common.runtime_time import runtime_now
 from src.common.service_helpers import with_movie_card_relations
+from src.config.config import settings
+from src.metadata._providers.exceptions import JavdbAuthError
 from src.metadata._providers.javdb import JavdbProvider
 from src.metadata._providers.missav import MissavRankingProvider
 from src.model import Media, Movie, RankingItem, get_database
@@ -28,8 +31,11 @@ class RankingBoardDefinition:
     provider_raw_key: str
     supported_periods: tuple[str, ...]
     default_period: str | None = None
-    # 为 True 表示该榜单走 JavDB 播放榜接口（/api/v1/rankings/playback），仅用于抓取分发。
-    is_playback: bool = False
+    # 抓取方式，决定走 JavDB 哪个接口；仅用于抓取分发，不影响 list_boards/list_sources。
+    #   rankings -> /api/v1/rankings（免登录，type=0/1/3）
+    #   playback -> /api/v1/rankings/playback（免登录，filter_by=all/high_score）
+    #   top250   -> /api/v1/movies/top（需登录，period 编码 all/uncensored/censored/fc2/年份）
+    fetch_kind: str = "rankings"
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,44 @@ class RankingSourceDefinition:
         return None
 
 
+# TOP250（需登录）：board 固定为 top250，period 编码不同子榜——
+# 固定子榜 all/无码/有码/FC2，外加 2008 至当前年的逐年年度榜。
+TOP250_FIXED_PERIODS = ("all", "uncensored", "censored", "fc2")
+TOP250_START_YEAR = 2008
+# 固定子榜 period -> playback 接口的 (type, type_value)；年份 period 走 type=year。
+_TOP250_VIDEO_TYPE_BY_PERIOD = {"censored": "0", "uncensored": "1", "fc2": "3"}
+
+
+def _current_year() -> int:
+    return runtime_now().year
+
+
+def _top250_year_periods() -> tuple[str, ...]:
+    # 当前年在前，回溯到起始年；逐年滚动，无需每年改代码。
+    return tuple(str(year) for year in range(_current_year(), TOP250_START_YEAR - 1, -1))
+
+
+def board_supported_periods(board: RankingBoardDefinition) -> tuple[str, ...]:
+    # top250 的年份维度是动态的，其余 board 直接用静态 supported_periods。
+    if board.fetch_kind == "top250":
+        return tuple(board.supported_periods) + _top250_year_periods()
+    return board.supported_periods
+
+
+def top250_type_for_period(period: str) -> tuple[str, str]:
+    # 把 top250 的 period 映射成 /api/v1/movies/top 的 (type, type_value)。
+    if period == "all":
+        return ("all", "")
+    if period in _TOP250_VIDEO_TYPE_BY_PERIOD:
+        return ("video_type", _TOP250_VIDEO_TYPE_BY_PERIOD[period])
+    return ("year", period)
+
+
+def _is_top250_historical_year(period: str) -> bool:
+    # 历史年份（非当前年）：抓一次即可，库里已有就不再每天重抓。
+    return period.isdigit() and int(period) < _current_year()
+
+
 JAVDB_SOURCE = RankingSourceDefinition(
     key="javdb",
     name="JavDB",
@@ -56,7 +100,7 @@ JAVDB_SOURCE = RankingSourceDefinition(
             provider_raw_key="all",
             supported_periods=("daily", "weekly", "monthly"),
             default_period="daily",
-            is_playback=True,
+            fetch_kind="playback",
         ),
         RankingBoardDefinition(
             key="playback_high_score",
@@ -64,7 +108,7 @@ JAVDB_SOURCE = RankingSourceDefinition(
             provider_raw_key="high_score",
             supported_periods=("daily", "weekly", "monthly"),
             default_period="daily",
-            is_playback=True,
+            fetch_kind="playback",
         ),
         RankingBoardDefinition(
             key="censored",
@@ -86,6 +130,16 @@ JAVDB_SOURCE = RankingSourceDefinition(
             provider_raw_key="3",
             supported_periods=("daily", "weekly", "monthly"),
             default_period="daily",
+        ),
+        # TOP250（需登录）排最后：首次历史回填量大，避免阻塞上面更轻量、更新更频繁的榜单。
+        # period 维度由 board_supported_periods 动态补充年份；provider_raw_key 不使用。
+        RankingBoardDefinition(
+            key="top250",
+            name="TOP250",
+            provider_raw_key="",
+            supported_periods=TOP250_FIXED_PERIODS,
+            default_period="all",
+            fetch_kind="top250",
         ),
     ),
 )
@@ -139,7 +193,8 @@ class RankingCatalogService:
     @staticmethod
     def _resolve_period(board: RankingBoardDefinition, period: str | None) -> str:
         normalized_period = (period or "").strip().lower()
-        if board.supported_periods:
+        supported_periods = board_supported_periods(board)
+        if supported_periods:
             if not normalized_period:
                 raise ApiError(
                     422,
@@ -147,14 +202,14 @@ class RankingCatalogService:
                     "period is required for this board",
                     {"period": period},
                 )
-            if normalized_period not in board.supported_periods:
+            if normalized_period not in supported_periods:
                 raise ApiError(
                     422,
                     "invalid_ranking_period",
                     "period is not supported",
                     {
                         "period": period,
-                        "supported_periods": list(board.supported_periods),
+                        "supported_periods": list(supported_periods),
                     },
                 )
             return normalized_period
@@ -182,7 +237,7 @@ class RankingCatalogService:
                 source_key=source.key,
                 board_key=board.key,
                 name=board.name,
-                supported_periods=list(board.supported_periods),
+                supported_periods=list(board_supported_periods(board)),
                 default_period=board.default_period,
             )
             for board in source.boards
@@ -315,8 +370,11 @@ class RankingSyncService:
     ) -> list[str]:
         if source_key == "javdb":
             provider = self._provider_for_source("javdb")
-            # 播放榜走 playback 接口，其余沿用 rankings 接口。
-            if board.is_playback:
+            # 按 fetch_kind 分发到不同 JavDB 接口。
+            if board.fetch_kind == "top250":
+                top_type, type_value = top250_type_for_period(period)
+                return provider.get_top_numbers(top_type=top_type, type_value=type_value)
+            if board.fetch_kind == "playback":
                 return provider.get_playback_rank_numbers(
                     filter_by=board.provider_raw_key,
                     period=period,
@@ -425,9 +483,50 @@ class RankingSyncService:
             return
         progress_callback(payload)
 
-    def sync_all_rankings(self, progress_callback=None) -> dict[str, int]:
+    @staticmethod
+    def _scope_has_items(source_key: str, board_key: str, period: str) -> bool:
+        return (
+            RankingItem.select()
+            .where(
+                RankingItem.source_key == source_key,
+                RankingItem.board_key == board_key,
+                RankingItem.period == period,
+            )
+            .exists()
+        )
+
+    @classmethod
+    def _iter_sync_targets(
+        cls,
+    ) -> list[tuple[RankingSourceDefinition, RankingBoardDefinition, str]]:
+        # 收敛出本次真正要同步的目标，应用两条策略：
+        #   1) top250 需登录：未配账号则整 board 跳过；
+        #   2) top250 历史年份抓一次：库里已有数据就不再每天重抓（当前年与固定子榜照常抓）。
+        account_configured = settings.metadata.javdb_account_configured
+        targets: list[tuple[RankingSourceDefinition, RankingBoardDefinition, str]] = []
+        for source in RANKING_SOURCES.values():
+            for board in source.boards:
+                requires_account = board.fetch_kind == "top250"
+                if requires_account and not account_configured:
+                    continue
+                for period in board_supported_periods(board) or ("",):
+                    if (
+                        board.fetch_kind == "top250"
+                        and _is_top250_historical_year(period)
+                        and cls._scope_has_items(source.key, board.key, period)
+                    ):
+                        continue
+                    targets.append((source, board, period))
+        return targets
+
+    def sync_all_rankings(
+        self,
+        progress_callback=None,
+        task_run_id: int | None = None,
+    ) -> dict[str, int]:
+        targets = self._iter_sync_targets()
         stats = {
-            "total_targets": 0,
+            "total_targets": len(targets),
             "success_targets": 0,
             "failed_targets": 0,
             "fetched_numbers": 0,
@@ -435,12 +534,10 @@ class RankingSyncService:
             "skipped_movies": 0,
             "stored_items": 0,
         }
-        total_targets = sum(
-            len(board.supported_periods or ("",))
-            for source in RANKING_SOURCES.values()
-            for board in source.boards
-        )
+        total_targets = len(targets)
         completed_targets = 0
+        # 登录失败只发一次通知，并跳过其余需登录的目标。
+        account_login_notified = False
         self._emit_progress(
             progress_callback,
             current=0,
@@ -448,46 +545,76 @@ class RankingSyncService:
             text="开始同步排行榜",
             summary_patch=stats,
         )
-        for source in RANKING_SOURCES.values():
-            for board in source.boards:
-                periods = board.supported_periods or ("",)
-                for period in periods:
-                    stats["total_targets"] += 1
-                    try:
-                        target_stats = self.sync_board_period(
-                            source_key=source.key,
-                            board_key=board.key,
-                            period=period,
-                        )
-                    except Exception as exc:
-                        stats["failed_targets"] += 1
-                        logger.warning(
-                            "Ranking sync target failed source_key={} board_key={} period={} detail={}",
-                            source.key,
-                            board.key,
-                            period,
-                            exc,
-                        )
-                        completed_targets += 1
-                        self._emit_progress(
-                            progress_callback,
-                            current=completed_targets,
-                            total=total_targets,
-                            text=f"排行榜同步失败 {source.name}-{board.name}-{period}",
-                            summary_patch=stats,
-                        )
-                        continue
-                    stats["success_targets"] += 1
-                    stats["fetched_numbers"] += int(target_stats["fetched_numbers"])
-                    stats["imported_movies"] += int(target_stats["imported_movies"])
-                    stats["skipped_movies"] += int(target_stats["skipped_movies"])
-                    stats["stored_items"] += int(target_stats["stored_items"])
-                    completed_targets += 1
-                    self._emit_progress(
-                        progress_callback,
-                        current=completed_targets,
-                        total=total_targets,
-                        text=f"已同步 {source.name}-{board.name}-{period}",
-                        summary_patch=stats,
-                    )
+        for source, board, period in targets:
+            try:
+                target_stats = self.sync_board_period(
+                    source_key=source.key,
+                    board_key=board.key,
+                    period=period,
+                )
+            except JavdbAuthError as exc:
+                # 登录失败：仅记日志、发一次通知、跳过该目标，不计入 failed_targets，
+                # 避免触发额外的“已完成但有失败”自动 warning，保证只有一条通知。
+                logger.warning(
+                    "Ranking sync skipped due to javdb auth failure board_key={} period={} detail={}",
+                    board.key,
+                    period,
+                    exc,
+                )
+                if not account_login_notified:
+                    account_login_notified = True
+                    self._notify_account_login_failed(task_run_id)
+                completed_targets += 1
+                self._emit_progress(
+                    progress_callback,
+                    current=completed_targets,
+                    total=total_targets,
+                    text=f"JavDB 账号登录失败，跳过 {source.name}-{board.name}-{period}",
+                    summary_patch=stats,
+                )
+                continue
+            except Exception as exc:
+                stats["failed_targets"] += 1
+                logger.warning(
+                    "Ranking sync target failed source_key={} board_key={} period={} detail={}",
+                    source.key,
+                    board.key,
+                    period,
+                    exc,
+                )
+                completed_targets += 1
+                self._emit_progress(
+                    progress_callback,
+                    current=completed_targets,
+                    total=total_targets,
+                    text=f"排行榜同步失败 {source.name}-{board.name}-{period}",
+                    summary_patch=stats,
+                )
+                continue
+            stats["success_targets"] += 1
+            stats["fetched_numbers"] += int(target_stats["fetched_numbers"])
+            stats["imported_movies"] += int(target_stats["imported_movies"])
+            stats["skipped_movies"] += int(target_stats["skipped_movies"])
+            stats["stored_items"] += int(target_stats["stored_items"])
+            completed_targets += 1
+            self._emit_progress(
+                progress_callback,
+                current=completed_targets,
+                total=total_targets,
+                text=f"已同步 {source.name}-{board.name}-{period}",
+                summary_patch=stats,
+            )
         return stats
+
+    @staticmethod
+    def _notify_account_login_failed(task_run_id: int | None) -> None:
+        # 延迟导入，避免 discovery 与 system service 的循环依赖。
+        from src.service.system import ActivityService
+
+        try:
+            ActivityService.create_ranking_account_error_notification(
+                related_task_run_id=task_run_id,
+            )
+        except Exception as exc:
+            # 通知失败不应影响主同步流程。
+            logger.warning("Create ranking account error notification failed detail={}", exc)

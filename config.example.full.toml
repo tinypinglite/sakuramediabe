@@ -101,6 +101,9 @@ media_clip_ffmpeg_timeout_seconds = 120
 [metadata]
 # JavDB API域名，不带协议头。
 javdb_host = "jdforrepam.com"
+# JavDB 账号，用于抓取需登录的榜单（年度 / 全部 / 片源类型 TOP250）；留空则不抓这些榜单。
+javdb_username = ""
+javdb_password = ""
 # DMM、MissAV 与 GFriends 共用的代理地址；JavDB 默认直连。不需要代理时留空。
 # 示例：http://192.168.1.1:7890 仅支持 http 代理；DMM 通常需要可访问日本站点的代理。
 proxy = ""

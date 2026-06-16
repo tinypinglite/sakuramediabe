@@ -1,3 +1,4 @@
+from src.common.runtime_time import runtime_now
 from src.model import Image, Media, Movie, RankingItem
 
 
@@ -54,43 +55,37 @@ def test_list_ranking_sources_and_boards(client, account_user):
     ]
 
     assert boards_response.status_code == 200
-    assert boards_response.json() == [
-        {
-            "source_key": "javdb",
-            "board_key": "playback_all",
-            "name": "热播",
-            "supported_periods": ["daily", "weekly", "monthly"],
-            "default_period": "daily",
-        },
-        {
-            "source_key": "javdb",
-            "board_key": "playback_high_score",
-            "name": "高评分",
-            "supported_periods": ["daily", "weekly", "monthly"],
-            "default_period": "daily",
-        },
-        {
-            "source_key": "javdb",
-            "board_key": "censored",
-            "name": "有码",
-            "supported_periods": ["daily", "weekly", "monthly"],
-            "default_period": "daily",
-        },
-        {
-            "source_key": "javdb",
-            "board_key": "uncensored",
-            "name": "无码",
-            "supported_periods": ["daily", "weekly", "monthly"],
-            "default_period": "daily",
-        },
-        {
-            "source_key": "javdb",
-            "board_key": "fc2",
-            "name": "FC2",
-            "supported_periods": ["daily", "weekly", "monthly"],
-            "default_period": "daily",
-        },
+    boards = boards_response.json()
+    # board 顺序固定：播放榜在前、常规榜居中、top250 最后。
+    assert [b["board_key"] for b in boards] == [
+        "playback_all",
+        "playback_high_score",
+        "censored",
+        "uncensored",
+        "fc2",
+        "top250",
     ]
+    # 非 top250 的 board 周期是静态的，逐一精确校验。
+    non_top250 = {b["board_key"]: b for b in boards if b["board_key"] != "top250"}
+    assert non_top250["playback_all"] == {
+        "source_key": "javdb",
+        "board_key": "playback_all",
+        "name": "热播",
+        "supported_periods": ["daily", "weekly", "monthly"],
+        "default_period": "daily",
+    }
+    assert non_top250["playback_high_score"]["name"] == "高评分"
+    assert non_top250["censored"]["name"] == "有码"
+    assert non_top250["uncensored"]["name"] == "无码"
+    assert non_top250["fc2"]["name"] == "FC2"
+    for board_key in ("playback_high_score", "censored", "uncensored", "fc2"):
+        assert non_top250[board_key]["supported_periods"] == ["daily", "weekly", "monthly"]
+    # top250 的年份维度动态滚动，只校验固定子榜在前、含当前年、默认 all。
+    top250 = next(b for b in boards if b["board_key"] == "top250")
+    assert top250["name"] == "TOP250"
+    assert top250["default_period"] == "all"
+    assert top250["supported_periods"][:4] == ["all", "uncensored", "censored", "fc2"]
+    assert str(runtime_now().year) in top250["supported_periods"]
 
     missav_boards_response = client.get(
         "/ranking-sources/missav/boards",

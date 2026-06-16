@@ -161,6 +161,7 @@ JOB_REGISTRY: list[JobDefinition] = [
         cron_setting="ranking_sync_cron",
         service_factory=lambda reporter: RankingSyncService().sync_all_rankings(
             progress_callback=reporter.progress_callback,
+            task_run_id=reporter.task_run_id,
         ),
         format_stats=_build_stats_formatter(
             "ranking sync finished:",
