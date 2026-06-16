@@ -28,6 +28,8 @@ class RankingBoardDefinition:
     provider_raw_key: str
     supported_periods: tuple[str, ...]
     default_period: str | None = None
+    # 为 True 表示该榜单走 JavDB 播放榜接口（/api/v1/rankings/playback），仅用于抓取分发。
+    is_playback: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,23 @@ JAVDB_SOURCE = RankingSourceDefinition(
     key="javdb",
     name="JavDB",
     boards=(
+        # 播放榜排在最前，使整体同步优先抓取；provider_raw_key 对应 playback 接口的 filter_by。
+        RankingBoardDefinition(
+            key="playback_all",
+            name="热播",
+            provider_raw_key="all",
+            supported_periods=("daily", "weekly", "monthly"),
+            default_period="daily",
+            is_playback=True,
+        ),
+        RankingBoardDefinition(
+            key="playback_high_score",
+            name="高评分",
+            provider_raw_key="high_score",
+            supported_periods=("daily", "weekly", "monthly"),
+            default_period="daily",
+            is_playback=True,
+        ),
         RankingBoardDefinition(
             key="censored",
             name="有码",
@@ -296,6 +315,12 @@ class RankingSyncService:
     ) -> list[str]:
         if source_key == "javdb":
             provider = self._provider_for_source("javdb")
+            # 播放榜走 playback 接口，其余沿用 rankings 接口。
+            if board.is_playback:
+                return provider.get_playback_rank_numbers(
+                    filter_by=board.provider_raw_key,
+                    period=period,
+                )
             return provider.get_rank_numbers(
                 video_type=board.provider_raw_key,
                 period=period,

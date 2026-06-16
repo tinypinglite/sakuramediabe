@@ -32,6 +32,8 @@ def _parse_date(value: Optional[str]) -> Optional[date]:
 class JavdbProvider(MetadataRequestClient):
     SUPPORTED_RANK_VIDEO_TYPES = {"0", "1", "3"}
     SUPPORTED_RANK_PERIODS = {"daily", "weekly", "monthly"}
+    # 播放榜筛选：all=热播，high_score=高评分。
+    SUPPORTED_PLAYBACK_FILTERS = {"all", "high_score"}
     SUPPORTED_HOT_REVIEW_PERIODS = {
         "weekly", "all", "quarterly", "monthly", "yearly"}
     API_PATH_MOVIES_TAGS = "/api/v1/movies/tags"
@@ -40,6 +42,7 @@ class JavdbProvider(MetadataRequestClient):
     API_PATH_MOVIE_REVIEWS = "/api/v1/movies/{javdb_id}/reviews"
     API_PATH_HOT_REVIEWS = "/api/v1/reviews/hotly"
     API_PATH_RANKINGS = "/api/v1/rankings"
+    API_PATH_RANKINGS_PLAYBACK = "/api/v1/rankings/playback"
 
     API_PARAMS_ACTOR_MOVIES = {
         "sort_by": "release",
@@ -517,6 +520,56 @@ class JavdbProvider(MetadataRequestClient):
         logger.debug(
             "Javdb get_rank_numbers success video_type={} period={} count={}",
             video_type,
+            period,
+            len(numbers),
+        )
+        return numbers
+
+    def get_playback_rank_numbers(self, filter_by: str = "all", period: str = "daily") -> List[str]:
+        # 播放榜：filter_by=all(热播)/high_score(高评分)。
+        if filter_by not in self.SUPPORTED_PLAYBACK_FILTERS:
+            raise ValueError(f"unsupported filter_by: {filter_by}")
+        if period not in self.SUPPORTED_RANK_PERIODS:
+            raise ValueError(f"unsupported period: {period}")
+
+        url = self._build_api_url(
+            path=self.API_PATH_RANKINGS_PLAYBACK,
+            query_params={"filter_by": filter_by, "period": period},
+        )
+        logger.debug(
+            "Javdb fetch playback rank filter_by={} period={} url={}", filter_by, period, url)
+        payload = self.request_json("GET", url)
+        # playback 响应与 /api/v1/rankings 同构，带 success 包络，先校验再取 movies。
+        if payload.get("success") != 1:
+            detail = payload.get(
+                "message") or f"unexpected success={payload.get('success')}"
+            logger.warning(
+                "Javdb playback rank request returned unsuccessful payload filter_by={} period={} detail={}",
+                filter_by,
+                period,
+                detail,
+            )
+            raise MetadataRequestError("GET", url, detail)
+
+        data = payload.get("data")
+        movies = data.get("movies") if isinstance(data, dict) else None
+        if not isinstance(movies, list):
+            detail = "missing data.movies"
+            logger.warning(
+                "Javdb playback rank payload missing movies filter_by={} period={}",
+                filter_by,
+                period,
+            )
+            raise MetadataRequestError("GET", url, detail)
+
+        numbers: List[str] = []
+        for movie in movies:
+            number = movie.get("number")
+            if number:
+                numbers.append(number)
+        logger.debug(
+            "Javdb get_playback_rank_numbers success filter_by={} period={} count={}",
+            filter_by,
             period,
             len(numbers),
         )

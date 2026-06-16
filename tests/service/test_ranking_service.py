@@ -18,10 +18,14 @@ def _create_movie(movie_number: str, javdb_id: str, **kwargs):
 class FakeRankingProvider:
     def __init__(self):
         self.rankings: dict[tuple[str, str], list[str]] = {}
+        self.playback: dict[tuple[str, str], list[str]] = {}
         self.details: dict[str, dict] = {}
 
     def set_ranking(self, video_type: str, period: str, numbers: list[str]) -> None:
         self.rankings[(video_type, period)] = numbers
+
+    def set_playback(self, filter_by: str, period: str, numbers: list[str]) -> None:
+        self.playback[(filter_by, period)] = numbers
 
     def set_detail(self, movie_number: str, javdb_id: str) -> None:
         self.details[movie_number] = {
@@ -32,6 +36,9 @@ class FakeRankingProvider:
 
     def get_rank_numbers(self, video_type: str, period: str = "daily") -> list[str]:
         return list(self.rankings.get((video_type, period), []))
+
+    def get_playback_rank_numbers(self, filter_by: str = "all", period: str = "daily") -> list[str]:
+        return list(self.playback.get((filter_by, period), []))
 
     def get_movie_by_number(self, movie_number: str) -> dict:
         return self.details[movie_number]
@@ -378,23 +385,45 @@ def test_ranking_catalog_service_validates_period(app):
     assert with_error.code == "invalid_ranking_period"
 
 
-def test_ranking_sync_service_sync_all_rankings_includes_missav_targets(app):
+def test_ranking_sync_service_sync_board_period_supports_playback_boards(app):
+    # 播放榜走 playback 接口入库，与普通 javdb 榜单一致的删旧插新语义。
+    javdb_provider = FakeRankingProvider()
+    javdb_provider.set_playback("all", "daily", ["ABP-101"])
+    javdb_provider.set_playback("high_score", "daily", ["ABP-102"])
+    javdb_provider.set_detail("ABP-101", "MoviePlay101")
+    javdb_provider.set_detail("ABP-102", "MoviePlay102")
+    service = RankingSyncService(
+        import_service=FakeCatalogImportService(),
+        providers={"javdb": javdb_provider},
+    )
+
+    all_stats = service.sync_board_period("javdb", "playback_all", "daily")
+    high_stats = service.sync_board_period("javdb", "playback_high_score", "daily")
+
+    assert all_stats["stored_items"] == 1
+    assert high_stats["stored_items"] == 1
+    assert [
+        item.movie_number
+        for item in RankingItem.select()
+        .where(RankingItem.board_key == "playback_all", RankingItem.period == "daily")
+    ] == ["ABP-101"]
+    assert [
+        item.movie_number
+        for item in RankingItem.select()
+        .where(RankingItem.board_key == "playback_high_score", RankingItem.period == "daily")
+    ] == ["ABP-102"]
+
+
+def test_ranking_sync_service_sync_all_rankings_includes_playback_and_missav_targets(app):
+    # javdb 普通 3 榜 + 播放 2 榜，各 3 个周期，加上 missav 1 榜 3 个周期，共 18 个目标。
     javdb_provider = FakeRankingProvider()
     javdb_provider.set_ranking("0", "daily", ["ABP-001"])
-    javdb_provider.set_ranking("0", "weekly", [])
-    javdb_provider.set_ranking("0", "monthly", [])
-    javdb_provider.set_ranking("1", "daily", [])
-    javdb_provider.set_ranking("1", "weekly", [])
-    javdb_provider.set_ranking("1", "monthly", [])
-    javdb_provider.set_ranking("3", "daily", [])
-    javdb_provider.set_ranking("3", "weekly", [])
-    javdb_provider.set_ranking("3", "monthly", [])
+    javdb_provider.set_playback("all", "daily", ["ABP-003"])
     javdb_provider.set_detail("ABP-001", "MovieA1")
+    javdb_provider.set_detail("ABP-003", "MovieA3")
 
     missav_provider = FakeMissavRankingProvider()
     missav_provider.set_ranking("daily", ["ABP-002"])
-    missav_provider.set_ranking("weekly", [])
-    missav_provider.set_ranking("monthly", [])
     javdb_provider.set_detail("ABP-002", "MovieA2")
 
     service = RankingSyncService(
@@ -404,6 +433,13 @@ def test_ranking_sync_service_sync_all_rankings_includes_missav_targets(app):
 
     stats = service.sync_all_rankings()
 
-    assert stats["total_targets"] == 12
-    assert stats["success_targets"] == 12
+    assert stats["total_targets"] == 18
+    assert stats["success_targets"] == 18
     assert stats["failed_targets"] == 0
+    # 播放榜也随整体同步入库。
+    assert (
+        RankingItem.select()
+        .where(RankingItem.board_key.in_(["playback_all", "playback_high_score"]))
+        .count()
+        == 1
+    )

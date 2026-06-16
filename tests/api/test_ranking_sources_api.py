@@ -57,6 +57,20 @@ def test_list_ranking_sources_and_boards(client, account_user):
     assert boards_response.json() == [
         {
             "source_key": "javdb",
+            "board_key": "playback_all",
+            "name": "热播",
+            "supported_periods": ["daily", "weekly", "monthly"],
+            "default_period": "daily",
+        },
+        {
+            "source_key": "javdb",
+            "board_key": "playback_high_score",
+            "name": "高评分",
+            "supported_periods": ["daily", "weekly", "monthly"],
+            "default_period": "daily",
+        },
+        {
+            "source_key": "javdb",
             "board_key": "censored",
             "name": "有码",
             "supported_periods": ["daily", "weekly", "monthly"],

@@ -16,7 +16,7 @@
 - `missav` 仅抓取榜单第一页的番号，不翻页
 - `missav` 只提供榜单番号，影片详情字段仍统一以 JavDB 数据为准
 - 当前开放来源：
-  - `javdb`：常规榜 `censored` / `uncensored` / `fc2`
+  - `javdb`：播放榜 `playback_all`（热播）/ `playback_high_score`（高评分），常规榜 `censored` / `uncensored` / `fc2`
   - `missav`：综合榜 `all`
 - 两个来源都支持 `daily` / `weekly` / `monthly`
 
@@ -24,10 +24,14 @@
 
 | source_key | 来源名 | board_key | 榜单名 | period |
 |---|---|---|---|---|
+| `javdb` | JavDB | `playback_all` | 热播 | `daily` / `weekly` / `monthly` |
+| `javdb` | JavDB | `playback_high_score` | 高评分 | `daily` / `weekly` / `monthly` |
 | `javdb` | JavDB | `censored` | 有码 | `daily` / `weekly` / `monthly` |
 | `javdb` | JavDB | `uncensored` | 无码 | `daily` / `weekly` / `monthly` |
 | `javdb` | JavDB | `fc2` | FC2 | `daily` / `weekly` / `monthly` |
 | `missav` | MissAV | `all` | 综合 | `daily` / `weekly` / `monthly` |
+
+> `playback_all` / `playback_high_score` 为 JavDB 播放榜，`provider_raw_key` 对应播放榜接口的 `filter_by`（`all` / `high_score`）。
 
 ## 端点总览
 
