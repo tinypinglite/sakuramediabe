@@ -25,6 +25,7 @@ from src.metadata._providers.dmm import DmmProvider
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import Actor, Image, MediaThumbnail, Movie, MovieActor, MoviePlotImage, MovieSeries, MovieTag, Tag, get_database
+from src.metadata._providers.exceptions import MetadataRequestError
 from src.metadata._providers.models import JavdbMovieActorResource, JavdbMovieDetailResource
 from src.service.catalog.image_cleanup_service import ImageCleanupService
 from src.service.catalog.movie_collection_service import MovieCollectionService
@@ -67,6 +68,9 @@ class CatalogImportService:
     IMAGE_DOWNLOAD_MAX_RETRIES = 6
     # 图片下载超时秒数
     IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 30
+    # DMM 简介为次要补充：连续请求失败到达该阈值即判定 DMM 当前不可用，
+    # 本 service 实例后续直接跳过抓取，避免每部影片都重复走超时+重试拖慢同步。
+    DMM_UNAVAILABLE_FAILURE_THRESHOLD = 3
 
     def __init__(
         self,
@@ -81,6 +85,9 @@ class CatalogImportService:
         self.image_downloader = image_downloader or self._download_image
         self.persist_lock = persist_lock
         self.dmm_provider = dmm_provider or self._build_dmm_provider()
+        # DMM 熔断状态：连续连通性失败计数与是否已判定不可用（仅在本实例生命周期内有效）。
+        self._dmm_request_failures = 0
+        self._dmm_circuit_open = False
 
     @staticmethod
     def _build_dmm_provider() -> DmmProvider:
@@ -590,6 +597,10 @@ class CatalogImportService:
                 self._cleanup_prepared_image_files(prepared_files)
 
     def sync_movie_desc(self, movie: Movie) -> bool:
+        # DMM 已在本实例生命周期内判定不可用：直接跳过，不再发起请求，
+        # 影片描述状态保持原样，留待后续 sync-movie-desc 任务在网络恢复后补抓。
+        if self._dmm_circuit_open:
+            return False
         lock_context = self.persist_lock or nullcontext()
         try:
             with lock_context:
@@ -597,8 +608,22 @@ class CatalogImportService:
             movie_desc = self.dmm_provider.get_movie_desc(movie.movie_number)
             with lock_context:
                 self._mark_movie_desc_fetch_succeeded(movie, movie_desc)
+            # 成功一次即清零连续失败计数。
+            self._dmm_request_failures = 0
             return True
         except Exception as exc:
+            # 仅 MetadataRequestError（连通性失败、已重试耗尽）计入熔断；番号不存在等业务性
+            # 失败说明 DMM 仍可用，不计数并清零，避免把正常的“无简介”误判成不可用。
+            if isinstance(exc, MetadataRequestError):
+                self._dmm_request_failures += 1
+                if self._dmm_request_failures >= self.DMM_UNAVAILABLE_FAILURE_THRESHOLD:
+                    self._dmm_circuit_open = True
+                    logger.warning(
+                        "DMM marked unavailable after {} consecutive request failures, skip desc sync for the rest of this run",
+                        self._dmm_request_failures,
+                    )
+            else:
+                self._dmm_request_failures = 0
             # DMM 已明确确认不存在该番号时，直接标记为终态失败，避免后续自动任务反复重试。
             is_terminal = False
             with lock_context:

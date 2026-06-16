@@ -1,4 +1,4 @@
-from src.metadata.provider import MetadataNotFoundError
+from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Movie, ResourceTaskState
 from src.service.catalog.catalog_import_service import CatalogImportService
 from src.service.catalog.movie_desc_sync_service import MovieDescSyncService
@@ -14,6 +14,25 @@ class FakeDmmProvider:
         if movie_number in self.failures:
             raise self.failures[movie_number]
         return self.desc_by_number[movie_number]
+
+
+class CountingDmmProvider:
+    """按预设结果序列逐次返回，并记录每次被调用的番号，用于校验熔断跳过。"""
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def get_movie_desc(self, movie_number: str) -> str:
+        self.calls.append(movie_number)
+        outcome = self.results.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _request_error():
+    return MetadataRequestError("GET", "https://www.dmm.co.jp", "SSL EOF")
 
 
 def _create_movie(movie_number: str, javdb_id: str, **kwargs):
@@ -146,6 +165,61 @@ def test_movie_desc_sync_service_retries_non_terminal_missing_description_failur
 
     assert stats["candidate_movies"] == 1
     assert stats["failed_movies"] == 1
+
+
+def test_sync_movie_desc_opens_circuit_after_consecutive_request_errors(app):
+    threshold = CatalogImportService.DMM_UNAVAILABLE_FAILURE_THRESHOLD
+    movies = [
+        _create_movie(f"DMM-10{i}", f"MovieDmm1{i}", desc="")
+        for i in range(threshold + 2)
+    ]
+    # 仅提供 threshold 个连通性失败结果：达阈值熔断后不应再调用 provider。
+    provider = CountingDmmProvider([_request_error() for _ in range(threshold)])
+    service = CatalogImportService(dmm_provider=provider)
+
+    for movie in movies[:threshold]:
+        assert service.sync_movie_desc(movie) is False
+    assert service._dmm_circuit_open is True
+
+    # 熔断后剩余影片直接跳过，provider 调用次数仍等于阈值。
+    for movie in movies[threshold:]:
+        assert service.sync_movie_desc(movie) is False
+    assert len(provider.calls) == threshold
+
+
+def test_sync_movie_desc_not_found_does_not_open_circuit(app):
+    movies = [_create_movie(f"DMM-20{i}", f"MovieDmm2{i}", desc="") for i in range(5)]
+    provider = CountingDmmProvider(
+        [MetadataNotFoundError("movie_desc", movie.movie_number) for movie in movies]
+    )
+    service = CatalogImportService(dmm_provider=provider)
+
+    for movie in movies:
+        assert service.sync_movie_desc(movie) is False
+    # 番号不存在属业务性失败，DMM 仍可用，不应熔断，且每部都实际请求。
+    assert service._dmm_circuit_open is False
+    assert len(provider.calls) == len(movies)
+
+
+def test_sync_movie_desc_success_resets_failure_counter(app):
+    m1 = _create_movie("DMM-301", "MovieDmm31", desc="")
+    m2 = _create_movie("DMM-302", "MovieDmm32", desc="")
+    m3 = _create_movie("DMM-303", "MovieDmm33", desc="")
+    m4 = _create_movie("DMM-304", "MovieDmm34", desc="")
+    provider = CountingDmmProvider(
+        [_request_error(), _request_error(), "ok desc", _request_error()]
+    )
+    service = CatalogImportService(dmm_provider=provider)
+
+    service.sync_movie_desc(m1)
+    service.sync_movie_desc(m2)
+    assert service._dmm_request_failures == 2
+    # 成功一次清零连续失败计数，避免跨越非连续失败误判不可用。
+    assert service.sync_movie_desc(m3) is True
+    assert service._dmm_request_failures == 0
+    service.sync_movie_desc(m4)
+    assert service._dmm_request_failures == 1
+    assert service._dmm_circuit_open is False
 
 
 def test_recover_interrupted_running_movies_marks_running_as_failed(app):
