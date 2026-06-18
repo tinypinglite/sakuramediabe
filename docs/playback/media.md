@@ -730,6 +730,7 @@ Content-Type: application/json
 
 - 返回结果按 `offset_seconds` 升序排列
 - `image.origin`、`image.small`、`image.medium`、`image.large` 均为已签名的图片访问相对路径
+- `width`、`height` 为缩略图像素尺寸，等于所属媒体分辨率（缩略图按视频原始帧无缩放生成，整组一致）；媒体未探测出分辨率时为 `null`
 
 ### Example Request
 
@@ -752,7 +753,9 @@ Authorization: Bearer <token>
       "small": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/10.webp?expires=1700000900&signature=<signature>",
       "medium": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/10.webp?expires=1700000900&signature=<signature>",
       "large": "/files/images/movies/ABC-008/media/fingerprint-1/thumbnails/10.webp?expires=1700000900&signature=<signature>"
-    }
+    },
+    "width": 1280,
+    "height": 720
   }
 ]
 ```

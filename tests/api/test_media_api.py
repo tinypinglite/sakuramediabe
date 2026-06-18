@@ -210,7 +210,12 @@ def test_check_media_validity_returns_not_found_for_missing_media(client, accoun
 def test_list_media_thumbnails_returns_expected_payload(client, account_user):
     token = _login(client, username=account_user.username)
     movie = _create_movie("ABC-008", "MovieA8", title="Movie 8")
-    media = Media.create(movie=movie, path="/library/main/abc-008.mp4", valid=True)
+    media = Media.create(
+        movie=movie,
+        path="/library/main/abc-008.mp4",
+        valid=True,
+        resolution="1280x720",
+    )
     second_image = Image.create(
         origin="movies/ABC-008/media/fingerprint-1/thumbnails/20.webp",
         small="movies/ABC-008/media/fingerprint-1/thumbnails/20.webp",
@@ -242,6 +247,9 @@ def test_list_media_thumbnails_returns_expected_payload(client, account_user):
     assert payload[0]["image"]["small"].startswith("/files/images/")
     assert payload[0]["image"]["medium"].startswith("/files/images/")
     assert payload[0]["image"]["large"].startswith("/files/images/")
+    # 缩略图无缩放，尺寸复用所属媒体分辨率，整组一致。
+    assert [item["width"] for item in payload] == [1280, 1280]
+    assert [item["height"] for item in payload] == [720, 720]
 
 
 def test_list_media_thumbnails_returns_expected_errors(client, account_user):

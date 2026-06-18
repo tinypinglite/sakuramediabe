@@ -795,6 +795,53 @@ def test_list_media_thumbnails_returns_sorted_resources(thumbnail_tables, tmp_pa
     assert [item.thumbnail_id for item in items] == [2, 1]
 
 
+def test_list_media_thumbnails_reuses_media_resolution_as_dimensions(
+    thumbnail_tables, tmp_path
+):
+    from src.service.playback.media_thumbnail_service import MediaThumbnailService
+
+    # 缩略图无缩放、整组共享所属媒体分辨率：宽高直接由 media.resolution 解析复用。
+    media = _create_media(tmp_path, need_thumbnail_generation=False)
+    media.resolution = "1920x1080"
+    media.save()
+    image = Image.create(
+        origin="movies/ABC-001/media/abc123/thumbnails/10.webp",
+        small="movies/ABC-001/media/abc123/thumbnails/10.webp",
+        medium="movies/ABC-001/media/abc123/thumbnails/10.webp",
+        large="movies/ABC-001/media/abc123/thumbnails/10.webp",
+    )
+    MediaThumbnail.create(media=media, image=image, offset=10)
+
+    items = MediaThumbnailService.list_media_thumbnails(media.id)
+
+    assert len(items) == 1
+    assert items[0].width == 1920
+    assert items[0].height == 1080
+
+
+def test_list_media_thumbnails_returns_null_dimensions_when_resolution_missing(
+    thumbnail_tables, tmp_path
+):
+    from src.service.playback.media_thumbnail_service import MediaThumbnailService
+
+    # 媒体未探测出分辨率时宽高回退为 None，不影响缩略图列表本身。
+    media = _create_media(tmp_path, need_thumbnail_generation=False)
+    assert media.resolution is None
+    image = Image.create(
+        origin="movies/ABC-001/media/abc123/thumbnails/10.webp",
+        small="movies/ABC-001/media/abc123/thumbnails/10.webp",
+        medium="movies/ABC-001/media/abc123/thumbnails/10.webp",
+        large="movies/ABC-001/media/abc123/thumbnails/10.webp",
+    )
+    MediaThumbnail.create(media=media, image=image, offset=10)
+
+    items = MediaThumbnailService.list_media_thumbnails(media.id)
+
+    assert len(items) == 1
+    assert items[0].width is None
+    assert items[0].height is None
+
+
 def test_generate_pending_thumbnails_supports_non_jav_media_and_marks_skipped(
     thumbnail_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
 ):

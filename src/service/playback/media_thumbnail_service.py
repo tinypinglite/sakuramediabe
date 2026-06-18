@@ -19,6 +19,19 @@ from src.service.system.activity_service import ActivityService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 
 
+def _parse_resolution(resolution: str | None) -> tuple[int | None, int | None]:
+    # 媒体分辨率为固定 "宽x高" 字符串（探测时由 stream 宽高规范生成），解析成整数对供缩略图复用。
+    if not resolution:
+        return None, None
+    parts = resolution.lower().split("x")
+    if len(parts) != 2:
+        return None, None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None, None
+
+
 class MediaThumbnailService:
     TASK_KEY = "media_thumbnail_generation"
     THUMBNAIL_MAX_RETRIES = 2
@@ -519,6 +532,9 @@ class MediaThumbnailService:
 
     @staticmethod
     def list_media_thumbnails(media_id: int) -> list[MediaThumbnailResource]:
+        # 缩略图无缩放、整组共享所属媒体分辨率，先查一次 media 拿宽高，未探测出分辨率则为 None。
+        media = Media.get_or_none(Media.id == media_id)
+        width, height = _parse_resolution(media.resolution if media else None)
         query = (
             MediaThumbnail.select(MediaThumbnail, Image)
             .join(Image)
@@ -531,6 +547,8 @@ class MediaThumbnailService:
                 media_id=thumbnail.media_id,
                 offset_seconds=thumbnail.offset,
                 image=ImageResource.from_attributes_model(thumbnail.image),
+                width=width,
+                height=height,
             )
             for thumbnail in query
         ]

@@ -68,6 +68,9 @@ class MediaThumbnailResource(SchemaModel):
     media_id: int
     offset_seconds: int
     image: ImageResource
+    # 缩略图按视频原始帧尺寸落盘、无缩放，尺寸恒等于所属媒体分辨率；未探测出分辨率时为 None。
+    width: int | None = None
+    height: int | None = None
 
 
 class InvalidMediaResource(SchemaModel):
