@@ -15,15 +15,26 @@ class VideoCollectionResource(SchemaModel):
     item_count: int = 0
     # 合集封面取按顺序排在最前的视频封面；空合集或来源缺失时为空。
     cover_image: ImageResource | None = None
+    # 合集 HLS 清单签名 URL（12 小时有效），供前端 media_kit 一次性加载全集；空合集为空。
+    playlist_url: str | None = None
     created_at: datetime
     updated_at: datetime
 
     @classmethod
     def from_collection(
-        cls, collection, item_count: int = 0, cover_image: ImageResource | None = None
+        cls,
+        collection,
+        item_count: int = 0,
+        cover_image: ImageResource | None = None,
+        playlist_url: str | None = None,
     ) -> "VideoCollectionResource":
         return cls.from_peewee_model(
-            collection, extra={"item_count": item_count, "cover_image": cover_image}
+            collection,
+            extra={
+                "item_count": item_count,
+                "cover_image": cover_image,
+                "playlist_url": playlist_url,
+            },
         )
 
 
@@ -76,3 +87,16 @@ class VideoCollectionItemAddRequest(SchemaModel):
 class VideoCollectionReorderRequest(SchemaModel):
     # 按目标顺序给出合集成员 item_id 列表，service 据此重写 position。
     ordered_item_ids: List[int] = Field(min_length=1)
+
+
+class VideoCollectionThumbnailResource(SchemaModel):
+    collection_id: int
+    # 来源 Media（成员的 first_media），供前端联动定位（点击缩略图回跳到对应成员）。
+    media_id: int
+    thumbnail_id: int
+    # 合集时间轴上的秒数 = 前序所有成员 first_media duration 之和 + 该缩略图在成员内的相对秒数。
+    offset_seconds: int
+    image: ImageResource
+    # 宽高沿用所属源媒体分辨率（同 MediaThumbnailResource 语义），未探测出时为 None。
+    width: int | None = None
+    height: int | None = None

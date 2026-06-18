@@ -1,13 +1,17 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, Response, status
+from fastapi.responses import PlainTextResponse
 
+from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
+from src.common import verify_clip_collection_playlist_signature
 from src.schema.collections.clips import (
     ClipCollectionClipItemResource,
     ClipCollectionCreateRequest,
     ClipCollectionResource,
     ClipCollectionSetClipsRequest,
+    ClipCollectionThumbnailResource,
     ClipCollectionUpdateRequest,
 )
 from src.schema.common.pagination import PageResponse
@@ -93,3 +97,34 @@ def set_clip_collection_clips(
 ):
     ClipCollectionService.set_clips(collection_id, payload.clip_ids)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{collection_id}/playlist.m3u8")
+def get_clip_collection_playlist(
+    collection_id: int,
+    expires: int | None = None,
+    signature: str | None = None,
+):
+    # 与 stream 接口模式一致：m3u8 走签名 URL，不挂全局账号鉴权（前端 media_kit 不带 Cookie）。
+    if expires is None or not signature:
+        raise ApiError(403, "file_signature_invalid", "文件签名无效")
+
+    verify_clip_collection_playlist_signature(collection_id, expires, signature)
+    content = ClipCollectionService.build_playlist(collection_id)
+    # HLS 规范 MIME；显式不缓存避免合集成员变更后客户端继续读旧清单。
+    return PlainTextResponse(
+        content,
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.get(
+    "/{collection_id}/thumbnails",
+    response_model=List[ClipCollectionThumbnailResource],
+)
+def list_clip_collection_thumbnails(
+    collection_id: int,
+    current_user=Depends(get_current_user),
+):
+    return ClipCollectionService.list_collection_thumbnails(collection_id)

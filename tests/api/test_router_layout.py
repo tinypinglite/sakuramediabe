@@ -161,12 +161,20 @@ def test_tags_router_uses_auth_and_db_dependencies():
 
 
 def test_videos_routers_use_auth_and_db_dependencies():
-    for module in (video_items, video_collections, video_imports):
+    # video_collections 把 get_current_user 下沉到端点级，给 /playlist.m3u8 走签名 URL 留口；
+    # 其他视频路由仍在 router 层挂账号鉴权（默认全员需登录）。
+    for module in (video_items, video_imports):
         dependency_targets = {
             dependency.dependency for dependency in module.router.dependencies
         }
         assert deps.db_deps in dependency_targets
         assert deps.get_current_user in dependency_targets
+
+    video_collections_targets = {
+        dependency.dependency for dependency in video_collections.router.dependencies
+    }
+    assert deps.db_deps in video_collections_targets
+    assert deps.get_current_user not in video_collections_targets
 
 
 def test_create_app_registers_videos_routes():

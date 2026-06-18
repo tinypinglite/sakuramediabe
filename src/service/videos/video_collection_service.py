@@ -6,7 +6,10 @@ from typing import Dict, List
 from peewee import IntegrityError, JOIN, fn
 
 from src.api.exception.errors import ApiError
-from src.common import build_signed_media_url
+from src.common import (
+    build_signed_media_url,
+    build_signed_video_collection_playlist_url,
+)
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import require_record, validate_page
 from src.model import Image, VideoCollection, VideoCollectionItem, VideoItem
@@ -17,8 +20,10 @@ from src.schema.videos.collections import (
     VideoCollectionCreateRequest,
     VideoCollectionItemResource,
     VideoCollectionResource,
+    VideoCollectionThumbnailResource,
     VideoCollectionUpdateRequest,
 )
+from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.videos.video_item_service import VideoItemService
 
 
@@ -107,6 +112,12 @@ class VideoCollectionService:
                 collection,
                 item_count=counts.get(collection.id, 0),
                 cover_image=cls._collection_cover(collection.id) if counts.get(collection.id, 0) else None,
+                # 空合集 m3u8 接口会 404，因此不下发 URL，前端据此隐藏播放器入口。
+                playlist_url=(
+                    build_signed_video_collection_playlist_url(collection.id)
+                    if counts.get(collection.id, 0)
+                    else None
+                ),
             )
             for collection in collections
         ]
@@ -120,6 +131,9 @@ class VideoCollectionService:
             collection,
             item_count=item_count,
             cover_image=cls._collection_cover(collection.id) if item_count else None,
+            playlist_url=(
+                build_signed_video_collection_playlist_url(collection.id) if item_count else None
+            ),
         )
 
     @classmethod
@@ -309,6 +323,103 @@ class VideoCollectionService:
         )
         if deleted:
             cls._touch_collection(collection, cls._current_time())
+
+    @classmethod
+    def _ordered_first_media_rows(cls, collection: VideoCollection) -> List[tuple[int, int]]:
+        """按 position 升序拿到合集所有成员的 (first_media_id, duration_seconds)。
+
+        无 first_media 的成员（成员未挂任何 Media）跳过，不计入累加 base 也不参与 m3u8。
+        """
+        first_media, first_media_id = VideoItemService._first_media_alias()
+        rows = list(
+            VideoCollectionItem.select(
+                VideoCollectionItem,
+                fn.COALESCE(first_media.id, 0).alias("play_media_id"),
+                fn.COALESCE(first_media.duration_seconds, 0).alias("first_duration_seconds"),
+            )
+            .join(
+                first_media_id,
+                JOIN.LEFT_OUTER,
+                on=(first_media_id.c.owner_id == VideoCollectionItem.video_item),
+            )
+            .join(
+                first_media,
+                JOIN.LEFT_OUTER,
+                on=(first_media.id == first_media_id.c.first_media_id),
+            )
+            .where(VideoCollectionItem.collection == collection)
+            .order_by(VideoCollectionItem.position.asc(), VideoCollectionItem.id.asc())
+        )
+        return [
+            (row.play_media_id, row.first_duration_seconds)
+            for row in rows
+            if row.play_media_id
+        ]
+
+    @classmethod
+    def build_playlist(cls, collection_id: int) -> str:
+        """组装合集 HLS VOD 清单：每个成员 first_media 一段 EXTINF，跨成员插入 DISCONTINUITY。
+
+        ``first_media_id`` 为空或 ``duration_seconds`` 为 0 的成员视为不可播分片直接跳过；
+        过滤后无合法分片抛 404，与 ClipCollectionService 行为一致。
+        """
+        collection = cls._require_collection(collection_id)
+        segments = [
+            (media_id, duration_seconds)
+            for media_id, duration_seconds in cls._ordered_first_media_rows(collection)
+            if duration_seconds > 0
+        ]
+        if not segments:
+            raise ApiError(
+                404,
+                "video_collection_empty",
+                "Video collection has no playable items",
+                {"collection_id": collection_id},
+            )
+        target_duration = max(duration for _, duration in segments)
+        lines = [
+            "#EXTM3U",
+            "#EXT-X-VERSION:3",
+            "#EXT-X-PLAYLIST-TYPE:VOD",
+            f"#EXT-X-TARGETDURATION:{target_duration}",
+            "#EXT-X-MEDIA-SEQUENCE:0",
+        ]
+        for index, (media_id, duration_seconds) in enumerate(segments):
+            if index > 0:
+                # 视频合集成员来源参差不齐（编码/分辨率/帧率可能不同），DISCONTINUITY 强制 decoder 重启。
+                lines.append("#EXT-X-DISCONTINUITY")
+            lines.append(f"#EXTINF:{duration_seconds}.0,")
+            lines.append(build_signed_media_url(media_id))
+        lines.append("#EXT-X-ENDLIST")
+        return "\n".join(lines) + "\n"
+
+    @classmethod
+    def list_collection_thumbnails(
+        cls, collection_id: int
+    ) -> List[VideoCollectionThumbnailResource]:
+        """按合集时间轴串起所有成员 first_media 的缩略图：base + 成员内偏移。
+
+        与 ``build_playlist`` 共用 ``_ordered_first_media_rows`` 视图：
+        缩略图轴与播放轴严格同源，跳过的成员保持一致。
+        """
+        collection = cls._require_collection(collection_id)
+        results: List[VideoCollectionThumbnailResource] = []
+        base_offset = 0
+        for media_id, duration_seconds in cls._ordered_first_media_rows(collection):
+            for thumbnail in MediaThumbnailService.list_media_thumbnails(media_id):
+                results.append(
+                    VideoCollectionThumbnailResource(
+                        collection_id=collection_id,
+                        media_id=media_id,
+                        thumbnail_id=thumbnail.thumbnail_id,
+                        offset_seconds=base_offset + thumbnail.offset_seconds,
+                        image=thumbnail.image,
+                        width=thumbnail.width,
+                        height=thumbnail.height,
+                    )
+                )
+            base_offset += max(duration_seconds, 0)
+        return results
 
     @classmethod
     def reorder_items(cls, collection_id: int, ordered_item_ids: List[int]) -> List[VideoCollectionItemResource]:

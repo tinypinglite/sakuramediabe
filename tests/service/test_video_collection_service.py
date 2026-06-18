@@ -6,6 +6,7 @@ from src.model import (
     Image,
     Media,
     MediaLibrary,
+    MediaThumbnail,
     Movie,
     MovieSeries,
     VideoCollection,
@@ -29,9 +30,29 @@ _MODELS = [
     VideoCollectionItem,
     MediaLibrary,
     Media,
+    MediaThumbnail,
     BackgroundTaskRun,
     VideoImportJob,
 ]
+
+
+def _add_playable_item(title: str, duration_seconds: int, thumb_offsets=()):
+    """落库一条带 Media + 若干 MediaThumbnail 的 VideoItem，用于 m3u8 / thumbnails 路径覆盖。"""
+    item = VideoItem.create(title=title)
+    media = Media.create(
+        video_item=item,
+        path=f"/lib/{title}.mp4",
+        valid=True,
+        content_fingerprint=f"fp-{title}",
+        duration_seconds=duration_seconds,
+        file_size_bytes=64,
+        resolution="1280x720",
+    )
+    for offset in thumb_offsets:
+        path = f"videos/{item.id}/media/fp/thumbnails/{offset}.webp"
+        image = Image.create(origin=path, small=path, medium=path, large=path)
+        MediaThumbnail.create(media=media, image=image, offset=offset)
+    return item, media
 
 
 @pytest.fixture()
@@ -195,3 +216,59 @@ def test_list_collection_items_include_play_url(collection_tables):
     without_by_id = {it.video.id: it for it in without.items}
     assert without_by_id[playable.id].first_media_id == media.id
     assert without_by_id[no_media.id].first_media_id is None
+
+
+def test_build_playlist_skips_members_without_media(collection_tables):
+    collection = VideoCollectionService.create_collection(
+        VideoCollectionCreateRequest(name="m3u8")
+    )
+    no_media = VideoItem.create(title="无媒体")
+    item_a, media_a = _add_playable_item("A", duration_seconds=10)
+    item_b, media_b = _add_playable_item("B", duration_seconds=25)
+    for vid in (no_media.id, item_a.id, item_b.id):
+        VideoCollectionService.add_item(collection.id, vid)
+
+    body = VideoCollectionService.build_playlist(collection.id)
+    lines = body.splitlines()
+    # 无媒体成员被跳过：只有两段 EXTINF + 一个 DISCONTINUITY。
+    assert sum(1 for line in lines if line.startswith("#EXTINF:")) == 2
+    assert sum(1 for line in lines if line == "#EXT-X-DISCONTINUITY") == 1
+    assert lines[-1] == "#EXT-X-ENDLIST"
+    # TARGETDURATION 取最大成员时长，向上取整等于 25。
+    assert "#EXT-X-TARGETDURATION:25" in lines
+    assert f"/media/{media_a.id}/stream?expires=" in body
+    assert f"/media/{media_b.id}/stream?expires=" in body
+
+
+def test_build_playlist_empty_collection_raises_404(collection_tables):
+    collection = VideoCollectionService.create_collection(
+        VideoCollectionCreateRequest(name="empty")
+    )
+    with pytest.raises(ApiError) as exc_info:
+        VideoCollectionService.build_playlist(collection.id)
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.code == "video_collection_empty"
+
+
+def test_list_collection_thumbnails_accumulates_offsets(collection_tables):
+    collection = VideoCollectionService.create_collection(
+        VideoCollectionCreateRequest(name="thumbs")
+    )
+    # 成员 A：10s + 缩略图 0,10；成员 B：20s + 缩略图 0,10,20。
+    item_a, media_a = _add_playable_item("A", duration_seconds=10, thumb_offsets=(0, 10))
+    item_b, media_b = _add_playable_item("B", duration_seconds=20, thumb_offsets=(0, 10, 20))
+    VideoCollectionService.add_item(collection.id, item_a.id)
+    VideoCollectionService.add_item(collection.id, item_b.id)
+
+    thumbnails = VideoCollectionService.list_collection_thumbnails(collection.id)
+    offsets = [(thumb.media_id, thumb.offset_seconds) for thumb in thumbnails]
+    # 成员 A 贡献 0,10；成员 B base=10 → 10,20,30。
+    assert offsets == [
+        (media_a.id, 0),
+        (media_a.id, 10),
+        (media_b.id, 10),
+        (media_b.id, 20),
+        (media_b.id, 30),
+    ]
+    # 宽高沿用所属 Media 分辨率（1280x720）。
+    assert all(thumb.width == 1280 and thumb.height == 720 for thumb in thumbnails)

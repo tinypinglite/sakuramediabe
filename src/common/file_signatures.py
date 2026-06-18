@@ -12,6 +12,8 @@ IMAGE_FILE_ROUTE_PREFIX = "/files/images"
 MEDIA_STREAM_ROUTE_PREFIX = "/media"
 MEDIA_CLIP_STREAM_ROUTE_PREFIX = "/media-clips"
 SUBTITLE_FILE_ROUTE_PREFIX = "/files/subtitles"
+CLIP_COLLECTION_PLAYLIST_ROUTE_PREFIX = "/clip-collections"
+VIDEO_COLLECTION_PLAYLIST_ROUTE_PREFIX = "/video-collections"
 FILE_SIGNATURE_EXPIRE_SECONDS = 12 * 60 * 60
 
 
@@ -202,3 +204,62 @@ def resolve_subtitle_file_path(subtitle_id: int) -> Path:
         raise ApiError(404, "subtitle_not_found", "字幕不存在")
 
     return ensure_movie_subtitle_path(subtitle.movie, subtitle.file_path)
+
+
+def _build_clip_collection_playlist_signature(collection_id: int, expires: int) -> str:
+    signature_payload = f"clip-collection-playlist:{collection_id}:{expires}"
+    return hmac.new(
+        settings.auth.file_signature_secret.encode("utf-8"),
+        signature_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def build_signed_clip_collection_playlist_url(collection_id: int) -> str:
+    # 合集 m3u8 清单与其它资源共用固定有效期；分片 URL 各自签名，互不影响。
+    expires = _now_timestamp() + FILE_SIGNATURE_EXPIRE_SECONDS
+    signature = _build_clip_collection_playlist_signature(collection_id, expires)
+    return (
+        f"{CLIP_COLLECTION_PLAYLIST_ROUTE_PREFIX}/{collection_id}/playlist.m3u8"
+        f"?expires={expires}&signature={signature}"
+    )
+
+
+def verify_clip_collection_playlist_signature(
+    collection_id: int, expires: int, signature: str
+) -> None:
+    if expires <= _now_timestamp():
+        raise ApiError(403, "file_signature_expired", "文件签名已过期")
+
+    expected_signature = _build_clip_collection_playlist_signature(collection_id, expires)
+    if not hmac.compare_digest(expected_signature, signature):
+        raise ApiError(403, "file_signature_invalid", "文件签名无效")
+
+
+def _build_video_collection_playlist_signature(collection_id: int, expires: int) -> str:
+    signature_payload = f"video-collection-playlist:{collection_id}:{expires}"
+    return hmac.new(
+        settings.auth.file_signature_secret.encode("utf-8"),
+        signature_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def build_signed_video_collection_playlist_url(collection_id: int) -> str:
+    expires = _now_timestamp() + FILE_SIGNATURE_EXPIRE_SECONDS
+    signature = _build_video_collection_playlist_signature(collection_id, expires)
+    return (
+        f"{VIDEO_COLLECTION_PLAYLIST_ROUTE_PREFIX}/{collection_id}/playlist.m3u8"
+        f"?expires={expires}&signature={signature}"
+    )
+
+
+def verify_video_collection_playlist_signature(
+    collection_id: int, expires: int, signature: str
+) -> None:
+    if expires <= _now_timestamp():
+        raise ApiError(403, "file_signature_expired", "文件签名已过期")
+
+    expected_signature = _build_video_collection_playlist_signature(collection_id, expires)
+    if not hmac.compare_digest(expected_signature, signature):
+        raise ApiError(403, "file_signature_invalid", "文件签名无效")

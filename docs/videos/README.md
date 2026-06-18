@@ -40,10 +40,12 @@
 
 ### 合集 `/video-collections`
 
-- `GET /video-collections`、`POST`、`GET/PATCH/DELETE /{collection_id}`。
+- `GET /video-collections`、`POST`、`GET/PATCH/DELETE /{collection_id}`。`VideoCollectionResource` 增字段 `playlist_url`：合集 HLS 清单的签名 URL（12 小时有效），空合集为 `null`。
 - `GET /{collection_id}/items`：分页返回成员（`PageResponse`，含 `items`、`page`、`page_size`、`total`），`page` 默认 `1`、`page_size` 默认 `20`（上限 100，越界 422）；万级成员合集不再一次性全返。支持 `sort`（`position|created_at|title|duration|file_size` + `:asc|:desc`，默认 `position:asc`）。默认仍按手动 `position` 升序供顺序播放；`duration`/`file_size` 取成员第一条媒体的时长/文件大小，成员 `video` 也返回 `duration_seconds`、`file_size_bytes`。`include_play_url=true` 时为每个成员内联「首个媒体（`Media.id` 最小）」的签名播放地址 `play_url`（无媒体成员为 `null`），供连播页直接组装播放列表，免逐集拉详情；默认 `false` 不生成，省去签名开销。
 - `POST /{collection_id}/items`（body `video_item_id`，追加到末尾）、`DELETE /{collection_id}/items/{item_id}`。
 - `POST /{collection_id}/items/reorder`（body `ordered_item_ids`）：按给定顺序重写 `position`，要求恰好覆盖全部成员，否则 422。
+- `GET /{collection_id}/playlist.m3u8?expires=...&signature=...`：**走签名 URL，无账号鉴权**。返回 `application/vnd.apple.mpegurl` 的 HLS VOD 清单，把合集成员的「首个媒体（`Media.id` 最小）」按 `position` 顺序拼成单一虚拟视频，跨成员恒插入 `#EXT-X-DISCONTINUITY`。前端 Flutter `media_kit` 直接加载即得到「同一个视频」的总时长 + 跨成员 seek。无 `first_media_id` 或 `duration_seconds` 为 0 的成员自动跳过；过滤后无可播分片返回 `404 video_collection_empty`。签名通过 `VideoCollectionResource.playlist_url` 内联下发，无需自拼。
+- `GET /{collection_id}/thumbnails`：把合集时间轴上所有成员 `first_media` 的缩略图按 `offset_seconds` 拍平（`offset_seconds = sum(前序成员 duration_seconds) + 成员内 offset`），与 `playlist.m3u8` 同源排序。返回字段 `collection_id` / `media_id` / `thumbnail_id` / `offset_seconds` / `image` / `width` / `height`。需 Bearer Token，不分页。前端在播放器右侧 hover 时二分定位预览帧。
 
 ### 导入 `/video-imports`
 

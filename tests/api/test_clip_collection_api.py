@@ -1,5 +1,6 @@
 import pytest
 
+from src.common import build_signed_clip_collection_playlist_url
 from src.config.config import settings
 from src.model import Image, Media, MediaThumbnail, Movie
 from src.service.playback.media_clip_service import MediaClipService
@@ -114,3 +115,124 @@ def test_delete_collection(client, account_user):
     deleted = client.delete(f"/clip-collections/{collection_id}", headers=_auth(token))
     assert deleted.status_code == 204
     assert client.get(f"/clip-collections/{collection_id}", headers=_auth(token)).status_code == 404
+
+
+def test_collection_resource_carries_playlist_url(client, account_user, tmp_path, clip_storage):
+    token = _login(client, username=account_user.username)
+    media = _create_media(tmp_path, "ABC-100")
+    clip = _make_clip(client, token, media, 0, 20)
+    collection_id = client.post(
+        "/clip-collections", json={"name": "p"}, headers=_auth(token)
+    ).json()["id"]
+
+    # 空合集不下发 playlist_url，避免前端拉到 404 m3u8。
+    empty_detail = client.get(
+        f"/clip-collections/{collection_id}", headers=_auth(token)
+    ).json()
+    assert empty_detail["playlist_url"] is None
+
+    client.put(
+        f"/clip-collections/{collection_id}/clips/{clip}", headers=_auth(token)
+    )
+    detail = client.get(
+        f"/clip-collections/{collection_id}", headers=_auth(token)
+    ).json()
+    assert detail["playlist_url"] is not None
+    assert detail["playlist_url"].startswith(
+        f"/clip-collections/{collection_id}/playlist.m3u8?"
+    )
+
+
+def test_playlist_m3u8_signature_required(client, account_user):
+    token = _login(client, username=account_user.username)
+    collection_id = client.post(
+        "/clip-collections", json={"name": "sign"}, headers=_auth(token)
+    ).json()["id"]
+
+    # m3u8 端点本身不依赖账号 Cookie，仅靠签名 URL 校验；缺签名直接 403。
+    no_sig = client.get(f"/clip-collections/{collection_id}/playlist.m3u8")
+    assert no_sig.status_code == 403
+
+    bad_sig = client.get(
+        f"/clip-collections/{collection_id}/playlist.m3u8",
+        params={"expires": 1700000000 + 3600, "signature": "deadbeef"},
+    )
+    assert bad_sig.status_code == 403
+
+
+def test_playlist_m3u8_empty_collection_returns_404(client, account_user):
+    token = _login(client, username=account_user.username)
+    collection_id = client.post(
+        "/clip-collections", json={"name": "empty"}, headers=_auth(token)
+    ).json()["id"]
+
+    signed_url = build_signed_clip_collection_playlist_url(collection_id)
+    response = client.get(signed_url)
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "clip_collection_empty"
+
+
+def test_playlist_m3u8_contains_signed_clip_segments(
+    client, account_user, tmp_path, clip_storage
+):
+    token = _login(client, username=account_user.username)
+    media_a = _create_media(tmp_path, "ABC-201")
+    media_b = _create_media(tmp_path, "ABC-202")
+    clip_a = _make_clip(client, token, media_a, 0, 10)
+    clip_b = _make_clip(client, token, media_b, 10, 30)
+    collection_id = client.post(
+        "/clip-collections", json={"name": "play"}, headers=_auth(token)
+    ).json()["id"]
+    client.put(f"/clip-collections/{collection_id}/clips/{clip_a}", headers=_auth(token))
+    client.put(f"/clip-collections/{collection_id}/clips/{clip_b}", headers=_auth(token))
+
+    signed_url = build_signed_clip_collection_playlist_url(collection_id)
+    response = client.get(signed_url)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/vnd.apple.mpegurl")
+    body = response.text
+
+    # 头部约束：VOD + ENDLIST + DISCONTINUITY；两个片段两段 EXTINF。
+    assert body.startswith("#EXTM3U\n")
+    assert "#EXT-X-PLAYLIST-TYPE:VOD" in body
+    assert "#EXT-X-ENDLIST" in body
+    assert body.count("#EXTINF:") == 2
+    assert body.count("#EXT-X-DISCONTINUITY") == 1
+    # 分片 URL 复用 build_signed_clip_url，路径与签名串一致。
+    assert f"/media-clips/{clip_a}/stream?expires=" in body
+    assert f"/media-clips/{clip_b}/stream?expires=" in body
+
+
+def test_collection_thumbnails_offset_accumulates_across_clips(
+    client, account_user, tmp_path, clip_storage
+):
+    token = _login(client, username=account_user.username)
+    media = _create_media(tmp_path, "ABC-300")
+    # 同源切两个区间：[0,10] 与 [10,30]，缩略图在源轴上分别覆盖 {0,10} 与 {10,20,30}。
+    clip_a = _make_clip(client, token, media, 0, 10)
+    clip_b = _make_clip(client, token, media, 10, 30)
+    collection_id = client.post(
+        "/clip-collections", json={"name": "thumb"}, headers=_auth(token)
+    ).json()["id"]
+    client.put(f"/clip-collections/{collection_id}/clips/{clip_a}", headers=_auth(token))
+    client.put(f"/clip-collections/{collection_id}/clips/{clip_b}", headers=_auth(token))
+
+    listed = client.get(
+        f"/clip-collections/{collection_id}/thumbnails", headers=_auth(token)
+    )
+    assert listed.status_code == 200
+    payload = listed.json()
+    offsets = [(item["clip_id"], item["offset_seconds"]) for item in payload]
+
+    # clip_a 区间 [0,10] 内缩略图：源 0,10 → 片段相对 0,10。
+    # clip_b 区间 [10,30] 内缩略图：源 10,20,30 → 片段相对 0,10,20；
+    # 叠加前序 clip_a duration=10 后合集时间轴为 10,20,30。
+    assert offsets == [
+        (clip_a, 0),
+        (clip_a, 10),
+        (clip_b, 10),
+        (clip_b, 20),
+        (clip_b, 30),
+    ]
+    assert all(item["image"]["origin"] for item in payload)
+    assert all("width" in item and "height" in item for item in payload)

@@ -1,17 +1,21 @@
 from .file_signatures import (
+    build_signed_clip_collection_playlist_url,
     build_signed_clip_url,
     build_signed_image_url,
     build_signed_media_url,
     build_signed_subtitle_url,
+    build_signed_video_collection_playlist_url,
     media_clip_root_path,
     resolve_image_file_path,
     resolve_media_clip_file_path,
     resolve_media_file_path,
     resolve_subtitle_file_path,
+    verify_clip_collection_playlist_signature,
     verify_clip_signature,
     verify_image_signature,
     verify_media_signature,
     verify_subtitle_signature,
+    verify_video_collection_playlist_signature,
 )
 from .logging import configure_logging, get_logging_level_name
 from .movie_numbers import (
@@ -32,10 +36,12 @@ from .runtime_time import (
 )
 
 __all__ = [
+    "build_signed_clip_collection_playlist_url",
     "build_signed_clip_url",
     "build_signed_image_url",
     "build_signed_media_url",
     "build_signed_subtitle_url",
+    "build_signed_video_collection_playlist_url",
     "media_clip_root_path",
     "configure_logging",
     "get_logging_level_name",
@@ -55,8 +61,10 @@ __all__ = [
     "to_db_utc_naive",
     "to_runtime_local_naive",
     "utc_now_for_db",
+    "verify_clip_collection_playlist_signature",
     "verify_clip_signature",
     "verify_image_signature",
     "verify_media_signature",
     "verify_subtitle_signature",
+    "verify_video_collection_playlist_signature",
 ]

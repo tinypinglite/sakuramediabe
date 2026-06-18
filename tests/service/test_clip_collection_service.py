@@ -201,3 +201,60 @@ def test_collection_cover_is_first_clip_cover(collection_env):
     target = next(item for item in resources if item.id == collection.id)
     assert target.clip_count == 1
     assert target.cover_image is not None
+
+
+def test_build_playlist_text_structure(collection_env):
+    env = collection_env
+    collection = ClipCollectionService.create_collection(
+        ClipCollectionCreateRequest(name="m3u8")
+    )
+    clip_a = _create_clip(env["media_a"], 0, 10)
+    clip_b = _create_clip(env["media_b"], 10, 30)
+    ClipCollectionService.add_clip(collection.id, clip_a)
+    ClipCollectionService.add_clip(collection.id, clip_b)
+
+    body = ClipCollectionService.build_playlist(collection.id)
+    lines = body.splitlines()
+    # 头部 5 行恒定：标识 + 版本 + VOD + TARGETDURATION + MEDIA-SEQUENCE。
+    assert lines[0] == "#EXTM3U"
+    assert lines[1] == "#EXT-X-VERSION:3"
+    assert lines[2] == "#EXT-X-PLAYLIST-TYPE:VOD"
+    assert lines[3].startswith("#EXT-X-TARGETDURATION:")
+    assert lines[4] == "#EXT-X-MEDIA-SEQUENCE:0"
+    # 两段 EXTINF + 一个 DISCONTINUITY + ENDLIST。
+    assert sum(1 for line in lines if line.startswith("#EXTINF:")) == 2
+    assert sum(1 for line in lines if line == "#EXT-X-DISCONTINUITY") == 1
+    assert lines[-1] == "#EXT-X-ENDLIST"
+
+
+def test_build_playlist_empty_collection_raises_404(collection_env):
+    collection = ClipCollectionService.create_collection(
+        ClipCollectionCreateRequest(name="empty")
+    )
+    with pytest.raises(ApiError) as exc_info:
+        ClipCollectionService.build_playlist(collection.id)
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.code == "clip_collection_empty"
+
+
+def test_list_collection_thumbnails_accumulates_offsets(collection_env):
+    env = collection_env
+    collection = ClipCollectionService.create_collection(
+        ClipCollectionCreateRequest(name="thumbs")
+    )
+    # 同源切两个相邻区间，便于断言累加：clip_a duration=10、clip_b duration=20。
+    clip_a = _create_clip(env["media_a"], 0, 10)
+    clip_b = _create_clip(env["media_a"], 10, 30)
+    ClipCollectionService.add_clip(collection.id, clip_a)
+    ClipCollectionService.add_clip(collection.id, clip_b)
+
+    thumbnails = ClipCollectionService.list_collection_thumbnails(collection.id)
+    offsets = [(thumb.clip_id, thumb.offset_seconds) for thumb in thumbnails]
+    # 源缩略图 {0,10,20,30}：clip_a 命中 0,10 → 合集 0,10；clip_b 命中 10,20,30 → 合集 10,20,30。
+    assert offsets == [
+        (clip_a, 0),
+        (clip_a, 10),
+        (clip_b, 10),
+        (clip_b, 20),
+        (clip_b, 30),
+    ]
