@@ -35,6 +35,10 @@ class VideoCollectionItemResource(SchemaModel):
     # 连播页所需「首个媒体」（Media.id 升序）的签名播放地址；仅在 include_play_url=True
     # 时填充，成员无媒体时为 None。供前端直接组装播放列表，免逐集拉详情（N+1）。
     play_url: str | None = None
+    # 「首个媒体」（Media.id 升序）的 id，成员无媒体时为 None。供连播页右侧「整部合集」关键帧
+    # 面板按此调 GET /media/{id}/thumbnails 拉该集关键帧；与 play_url 同源、恒返回（不依赖
+    # include_play_url）。
+    first_media_id: int | None = None
 
 
 class VideoCollectionCreateRequest(SchemaModel):

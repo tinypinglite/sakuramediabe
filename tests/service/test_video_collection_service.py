@@ -185,7 +185,13 @@ def test_list_collection_items_include_play_url(collection_tables):
     assert by_id[playable.id].play_url is not None
     assert f"/media/{media.id}/" in by_id[playable.id].play_url
     assert by_id[no_media.id].play_url is None
+    # first_media_id 与 play_url 同源：有媒体成员回首个媒体 id，无媒体成员为 None。
+    assert by_id[playable.id].first_media_id == media.id
+    assert by_id[no_media.id].first_media_id is None
 
-    # 不传 include_play_url 时不生成地址（默认行为，省去签名开销）。
+    # 不传 include_play_url 时不生成地址（默认行为，省去签名开销）；但 first_media_id 恒返回。
     without = VideoCollectionService.list_collection_items(collection.id)
     assert all(it.play_url is None for it in without.items)
+    without_by_id = {it.video.id: it for it in without.items}
+    assert without_by_id[playable.id].first_media_id == media.id
+    assert without_by_id[no_media.id].first_media_id is None
