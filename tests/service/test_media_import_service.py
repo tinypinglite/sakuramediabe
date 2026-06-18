@@ -1537,6 +1537,26 @@ def test_import_media_keeps_non_vr_multi_file_as_separate_media(
     assert {media.storage_mode for media in Media.select()} <= {"copy", "hardlink"}
 
 
+def test_group_needs_multi_part_merge_matches_fc2_number_case_insensitively(tmp_path):
+    from src.service.transfers.media_import_service import ScannedSourceFile
+
+    service = MediaImportService(
+        provider=FakeJavdbProvider({}),
+        image_downloader=_fake_downloader,
+    )
+
+    def _scanned(name: str) -> ScannedSourceFile:
+        return ScannedSourceFile(path=tmp_path / name, content_fingerprint="fp")
+
+    # FC2 番号无论大小写都按多分段方式合并
+    assert service._group_needs_multi_part_merge("FC2-1234567", [_scanned("a.mp4")]) is True
+    assert service._group_needs_multi_part_merge("fc2-ppv-123", [_scanned("a.mp4")]) is True
+    # 含 VR 仍命中
+    assert service._group_needs_multi_part_merge("SIVR-001", [_scanned("a.mp4")]) is True
+    # 既非 FC2 也无 VR 字样则不合并
+    assert service._group_needs_multi_part_merge("ABP-123", [_scanned("a.mp4")]) is False
+
+
 def test_group_content_fingerprint_changes_when_fragment_order_changes(import_tables, tmp_path):
     first = tmp_path / "SIVR-001-part1.mp4"
     second = tmp_path / "SIVR-001-part2.mp4"
@@ -1650,7 +1670,7 @@ def test_import_media_marks_group_failed_when_vr_merge_raises(
     assert job.imported_count == 0
     assert job.failed_count == 1
     assert Media.select().count() == 0
-    assert any(item["reason"] == "vr_media_merge_failed" for item in _read_failed_files(job))
+    assert any(item["reason"] == "multi_part_merge_failed" for item in _read_failed_files(job))
 
 
 def test_import_media_only_files_imports_subset_and_ignores_others(

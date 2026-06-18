@@ -145,9 +145,9 @@
 | `image_download_failed` | file | 图片下载失败：影片封面/海报下载失败 |
 | `metadata_upsert_failed` | file | 元数据入库失败：影片信息写入数据库失败 |
 | `media_import_failed` | file | 文件导入失败：单个媒体文件搬运/落库异常 |
-| `vr_media_merge_failed` | file | VR 合并失败：VR 影片多分段合并出错 |
+| `multi_part_merge_failed` | file | 多分段合并失败：多个分段文件合并为同一影片时出错 |
 | `file_too_small` | skipped | 文件过小：低于最小体积阈值，按样本/残片跳过 |
-| `merge_subtitle_skipped_multiple_sidecars` | warning | 字幕未合并：VR 合并时发现多个外挂字幕，未自动合并 |
+| `merge_subtitle_skipped_multiple_sidecars` | warning | 字幕未合并：多分段合并时发现多个外挂字幕，未自动合并 |
 | `source_delete_failed` | warning | 源文件删除失败：媒体已入库，但清理源文件失败（仅告警） |
 | `import_job_crashed` | job | 导入流程崩溃：导入过程整体异常中断 |
 | `import_job_bootstrap_failed` | job | 作业启动失败：导入作业入队/引导阶段失败 |

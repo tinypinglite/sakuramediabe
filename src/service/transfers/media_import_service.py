@@ -47,8 +47,8 @@ from src.common.media_import_status import (
     FAILURE_REASON_METADATA_FETCH_FAILED,
     FAILURE_REASON_METADATA_UPSERT_FAILED,
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
+    FAILURE_REASON_MULTI_PART_MERGE_FAILED,
     FAILURE_REASON_RETRY_SOURCES_MISSING,
-    FAILURE_REASON_VR_MEDIA_MERGE_FAILED,
     IMPORT_JOB_STATE_COMPLETED,
     IMPORT_JOB_STATE_FAILED,
     IMPORT_JOB_STATE_PENDING,
@@ -475,7 +475,7 @@ class MediaImportService:
                                 failure_items.append(
                                     make_failure_item(
                                         group.files[0].path,
-                                        FAILURE_REASON_VR_MEDIA_MERGE_FAILED,
+                                        FAILURE_REASON_MULTI_PART_MERGE_FAILED,
                                         str(exc),
                                     )
                                 )
@@ -721,7 +721,7 @@ class MediaImportService:
                 seen_fingerprints.add(file_entry.content_fingerprint)
 
             merge_mode: Literal["single", "vr_concat"] = "single"
-            if original_file_count > 1 and self._group_is_vr(movie_number, deduplicated_entries):
+            if original_file_count > 1 and self._group_needs_multi_part_merge(movie_number, deduplicated_entries):
                 merge_mode = "vr_concat"
             grouped_files[movie_number] = ImportGroup(
                 movie_number=movie_number,
@@ -808,8 +808,18 @@ class MediaImportService:
         )
         return False
 
-    def _group_is_vr(self, movie_number: str, files: List[ScannedSourceFile]) -> bool:
-        if "VR" in movie_number.upper():
+    def _group_needs_multi_part_merge(self, movie_number: str, files: List[ScannedSourceFile]) -> bool:
+        """判定同一番号的多文件分组是否需要拼接合并为一部影片。
+
+        命中的场景共用 ``merge_mode="vr_concat"`` 通道（落库 ``storage_mode="concat"``）：
+        - VR 影片常因时长被拆成多段，需要按文件名顺序拼接还原；
+        - FC2（含 FC2-PPV）虽然不是 VR，但分段命名习惯一致，复用同一拼接路径；
+        - 番号未带 VR 但文件名含 ``VR`` 字样（如片商命名不规范）也按 VR 处理。
+        """
+        normalized_number = movie_number.upper()
+        if "VR" in normalized_number:
+            return True
+        if normalized_number.startswith("FC2"):
             return True
         return any("VR" in file_entry.path.name.upper() for file_entry in files)
 
