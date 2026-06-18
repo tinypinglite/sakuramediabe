@@ -41,7 +41,7 @@
 ### 合集 `/video-collections`
 
 - `GET /video-collections`、`POST`、`GET/PATCH/DELETE /{collection_id}`。
-- `GET /{collection_id}/items`：返回成员，支持 `sort`（`position|created_at|title|duration|file_size` + `:asc|:desc`，默认 `position:asc`）。默认仍按手动 `position` 升序供顺序播放；`duration`/`file_size` 取成员第一条媒体的时长/文件大小，成员 `video` 也返回 `duration_seconds`、`file_size_bytes`。
+- `GET /{collection_id}/items`：分页返回成员（`PageResponse`，含 `items`、`page`、`page_size`、`total`），`page` 默认 `1`、`page_size` 默认 `20`（上限 100，越界 422）；万级成员合集不再一次性全返。支持 `sort`（`position|created_at|title|duration|file_size` + `:asc|:desc`，默认 `position:asc`）。默认仍按手动 `position` 升序供顺序播放；`duration`/`file_size` 取成员第一条媒体的时长/文件大小，成员 `video` 也返回 `duration_seconds`、`file_size_bytes`。`include_play_url=true` 时为每个成员内联「首个媒体（`Media.id` 最小）」的签名播放地址 `play_url`（无媒体成员为 `null`），供连播页直接组装播放列表，免逐集拉详情；默认 `false` 不生成，省去签名开销。
 - `POST /{collection_id}/items`（body `video_item_id`，追加到末尾）、`DELETE /{collection_id}/items/{item_id}`。
 - `POST /{collection_id}/items/reorder`（body `ordered_item_ids`）：按给定顺序重写 `position`，要求恰好覆盖全部成员，否则 422。
 

@@ -6,11 +6,13 @@ from typing import Dict, List
 from peewee import IntegrityError, JOIN, fn
 
 from src.api.exception.errors import ApiError
+from src.common import build_signed_media_url
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import require_record
+from src.common.service_helpers import require_record, validate_page
 from src.model import Image, VideoCollection, VideoCollectionItem, VideoItem
 from src.model.base import get_database
 from src.schema.catalog.actors import ImageResource
+from src.schema.common.pagination import PageResponse
 from src.schema.videos.collections import (
     VideoCollectionCreateRequest,
     VideoCollectionItemResource,
@@ -153,9 +155,50 @@ class VideoCollectionService:
 
     @classmethod
     def list_collection_items(
-        cls, collection_id: int, sort: str | None = None
-    ) -> List[VideoCollectionItemResource]:
+        cls,
+        collection_id: int,
+        sort: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+        include_play_url: bool = False,
+    ) -> PageResponse[VideoCollectionItemResource]:
+        """分页拉取合集成员。万级成员合集不再一次性全返（避免连播页首请求超时）。
+
+        [include_play_url] 为 True 时为每个成员内联「首个媒体」的签名播放地址，
+        供连播页直接组装播放列表，免去逐集 getVideoDetail 的 N+1 风暴。
+        """
         collection = cls._require_collection(collection_id)
+        validate_page(page, page_size, error_code="invalid_video_filter")
+        total = (
+            VideoCollectionItem.select()
+            .where(VideoCollectionItem.collection == collection)
+            .count()
+        )
+        items = cls._query_item_resources(
+            collection,
+            sort=sort,
+            include_play_url=include_play_url,
+            offset=(page - 1) * page_size,
+            limit=page_size,
+        )
+        return PageResponse[VideoCollectionItemResource](
+            items=items,
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    @classmethod
+    def _query_item_resources(
+        cls,
+        collection: VideoCollection,
+        *,
+        sort: str | None = None,
+        include_play_url: bool = False,
+        offset: int | None = None,
+        limit: int | None = None,
+    ) -> List[VideoCollectionItemResource]:
+        """查询并组装成员资源列表。[offset]/[limit] 为 None 时返回全部（供 reorder 用）。"""
         first_media, first_media_id = VideoItemService._first_media_alias()
         # 默认 position 升序（合集手动顺序，前端据此顺序播放）；另支持入库时间/标题/时长/文件大小排序。
         order_by = VideoItemService._build_video_order(
@@ -165,14 +208,18 @@ class VideoCollectionService:
             extra_columns={"position": VideoCollectionItem.position},
             tie_breaker=VideoCollectionItem.id,
         )
-        # 一次 LEFT JOIN 预加载封面与第一条媒体时长/大小，既供排序也供展示。
-        links = list(
+        # 一次 LEFT JOIN 预加载封面与第一条媒体时长/大小，既供排序也供展示；
+        # 同时取出第一条媒体的 id（first_media.id），用于按需生成签名播放地址。
+        query = (
             VideoCollectionItem.select(
                 VideoCollectionItem,
                 VideoItem,
                 Image,
                 fn.COALESCE(first_media.duration_seconds, 0).alias("first_duration_seconds"),
                 fn.COALESCE(first_media.file_size_bytes, 0).alias("first_file_size_bytes"),
+                # 用 COALESCE 包裹才会作为标量挂到 link 上（裸 alias 字段会归到 aliased model）；
+                # 0 作「无媒体」哨兵（media id 恒为正）。
+                fn.COALESCE(first_media.id, 0).alias("play_media_id"),
             )
             .join(VideoItem)
             .join(Image, JOIN.LEFT_OUTER, on=(VideoItem.cover_image == Image.id))
@@ -182,14 +229,25 @@ class VideoCollectionService:
             .where(VideoCollectionItem.collection == collection)
             .order_by(*order_by)
         )
+        if offset:
+            query = query.offset(offset)
+        if limit is not None:
+            query = query.limit(limit)
+        links = list(query)
         stats = VideoItemService._media_stats([link.video_item_id for link in links])
         items: List[VideoCollectionItemResource] = []
         for link in links:
             media_count, can_play = stats.get(link.video_item_id, (0, False))
+            play_url = (
+                build_signed_media_url(link.play_media_id)
+                if include_play_url and link.play_media_id
+                else None
+            )
             items.append(
                 VideoCollectionItemResource(
                     item_id=link.id,
                     position=link.position,
+                    play_url=play_url,
                     video=VideoItemService._to_list_item(
                         link.video_item,
                         media_count,
@@ -276,4 +334,5 @@ class VideoCollectionService:
                 item.updated_at = touched_at
                 item.save(only=[VideoCollectionItem.position, VideoCollectionItem.updated_at])
             cls._touch_collection(collection, touched_at)
-        return cls.list_collection_items(collection_id)
+        # 返回重排后的全部成员（position 升序，无需分页 / 播放地址）。
+        return cls._query_item_resources(collection)

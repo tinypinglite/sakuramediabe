@@ -105,11 +105,14 @@ def test_list_collection_items_default_keeps_position_order(collection_tables):
     VideoCollectionService.add_item(collection.id, a.id)
     VideoCollectionService.add_item(collection.id, b.id)
 
-    items = VideoCollectionService.list_collection_items(collection.id)
+    result = VideoCollectionService.list_collection_items(collection.id)
 
     # 不传 sort 默认按手动 position 升序。
-    assert [it.video.id for it in items] == [a.id, b.id]
-    assert [it.position for it in items] == [0, 1]
+    assert result.total == 2
+    assert [it.video.id for it in result.items] == [a.id, b.id]
+    assert [it.position for it in result.items] == [0, 1]
+    # 默认不内联播放地址。
+    assert all(it.play_url is None for it in result.items)
 
 
 def test_list_collection_items_sort_by_duration_overrides_position(collection_tables):
@@ -122,11 +125,11 @@ def test_list_collection_items_sort_by_duration_overrides_position(collection_ta
     VideoCollectionService.add_item(collection.id, a.id)  # position 0
     VideoCollectionService.add_item(collection.id, b.id)  # position 1
 
-    items = VideoCollectionService.list_collection_items(collection.id, sort="duration:desc")
+    result = VideoCollectionService.list_collection_items(collection.id, sort="duration:desc")
 
     # 第一条媒体：B(200) 在 A(100) 前，覆盖 position 顺序（而非取 A 的最大值 999）。
-    assert [it.video.id for it in items] == [b.id, a.id]
-    by_id = {it.video.id: it.video for it in items}
+    assert [it.video.id for it in result.items] == [b.id, a.id]
+    by_id = {it.video.id: it.video for it in result.items}
     assert by_id[a.id].duration_seconds == 100
     assert by_id[a.id].file_size_bytes == 50
     assert by_id[b.id].duration_seconds == 200
@@ -137,3 +140,52 @@ def test_list_collection_items_rejects_invalid_sort(collection_tables):
     with pytest.raises(ApiError) as exc:
         VideoCollectionService.list_collection_items(collection.id, sort="release_date:desc")
     assert exc.value.code == "invalid_video_filter"
+
+
+def test_list_collection_items_paginates(collection_tables):
+    collection = VideoCollectionService.create_collection(VideoCollectionCreateRequest(name="C"))
+    videos = [VideoItem.create(title=f"V{i}") for i in range(3)]
+    for video in videos:
+        VideoCollectionService.add_item(collection.id, video.id)
+
+    page1 = VideoCollectionService.list_collection_items(collection.id, page=1, page_size=2)
+    page2 = VideoCollectionService.list_collection_items(collection.id, page=2, page_size=2)
+
+    assert page1.total == 3 and page2.total == 3
+    assert [it.video.id for it in page1.items] == [videos[0].id, videos[1].id]
+    assert [it.video.id for it in page2.items] == [videos[2].id]
+
+
+def test_list_collection_items_rejects_invalid_page(collection_tables):
+    collection = VideoCollectionService.create_collection(VideoCollectionCreateRequest(name="C"))
+    with pytest.raises(ApiError) as exc:
+        VideoCollectionService.list_collection_items(collection.id, page=0)
+    assert exc.value.code == "invalid_video_filter"
+
+
+def test_list_collection_items_include_play_url(collection_tables):
+    collection = VideoCollectionService.create_collection(VideoCollectionCreateRequest(name="C"))
+    playable = VideoItem.create(title="可播")
+    media = Media.create(
+        video_item=playable,
+        path="/lib/p0.mp4",
+        valid=True,
+        content_fingerprint="fp0",
+        duration_seconds=100,
+        file_size_bytes=50,
+    )
+    no_media = VideoItem.create(title="无媒体")
+    VideoCollectionService.add_item(collection.id, playable.id)
+    VideoCollectionService.add_item(collection.id, no_media.id)
+
+    result = VideoCollectionService.list_collection_items(collection.id, include_play_url=True)
+
+    by_id = {it.video.id: it for it in result.items}
+    # 有媒体成员内联首个媒体的签名播放地址；无媒体成员为 None。
+    assert by_id[playable.id].play_url is not None
+    assert f"/media/{media.id}/" in by_id[playable.id].play_url
+    assert by_id[no_media.id].play_url is None
+
+    # 不传 include_play_url 时不生成地址（默认行为，省去签名开销）。
+    without = VideoCollectionService.list_collection_items(collection.id)
+    assert all(it.play_url is None for it in without.items)

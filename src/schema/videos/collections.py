@@ -32,6 +32,9 @@ class VideoCollectionItemResource(SchemaModel):
     item_id: int
     position: int
     video: VideoItemListItemResource
+    # 连播页所需「首个媒体」（Media.id 升序）的签名播放地址；仅在 include_play_url=True
+    # 时填充，成员无媒体时为 None。供前端直接组装播放列表，免逐集拉详情（N+1）。
+    play_url: str | None = None
 
 
 class VideoCollectionCreateRequest(SchemaModel):

@@ -3,6 +3,7 @@ from typing import List
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from src.api.routers.deps import db_deps, get_current_user
+from src.schema.common.pagination import PageResponse
 from src.schema.videos.collections import (
     VideoCollectionCreateRequest,
     VideoCollectionItemAddRequest,
@@ -46,9 +47,21 @@ def delete_collection(collection_id: int):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/{collection_id}/items", response_model=List[VideoCollectionItemResource])
-def list_collection_items(collection_id: int, sort: str | None = Query(default=None)):
-    return VideoCollectionService.list_collection_items(collection_id, sort=sort)
+@router.get("/{collection_id}/items", response_model=PageResponse[VideoCollectionItemResource])
+def list_collection_items(
+    collection_id: int,
+    sort: str | None = Query(default=None),
+    page: int = 1,
+    page_size: int = 20,
+    include_play_url: bool = False,
+):
+    return VideoCollectionService.list_collection_items(
+        collection_id,
+        sort=sort,
+        page=page,
+        page_size=page_size,
+        include_play_url=include_play_url,
+    )
 
 
 @router.post("/{collection_id}/items", status_code=status.HTTP_204_NO_CONTENT)

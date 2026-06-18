@@ -80,7 +80,7 @@ def test_video_collection_ordering_and_reorder(client, account_user):
         )
         assert add.status_code == 204
 
-    items = client.get(f"/video-collections/{collection['id']}/items", headers=headers).json()
+    items = client.get(f"/video-collections/{collection['id']}/items", headers=headers).json()["items"]
     # 默认按加入顺序（position 递增）。
     assert [item["video"]["id"] for item in items] == video_ids
     assert [item["position"] for item in items] == [0, 1, 2]
@@ -111,7 +111,7 @@ def test_video_collection_reorder_rejects_incomplete_item_set(client, account_us
         json={"video_item_id": video["id"]},
         headers=headers,
     )
-    items = client.get(f"/video-collections/{collection['id']}/items", headers=headers).json()
+    items = client.get(f"/video-collections/{collection['id']}/items", headers=headers).json()["items"]
 
     # 漏排（给出空列表中缺成员）应被拒绝。
     response = client.post(
@@ -164,7 +164,7 @@ def test_collection_items_accept_sort_param(client, account_user):
     # 按标题升序覆盖默认 position 顺序，且成员 video 暴露时长/大小字段。
     items = client.get(
         f"/video-collections/{collection['id']}/items?sort=title:asc", headers=headers
-    ).json()
+    ).json()["items"]
     assert [it["video"]["title"] for it in items] == ["apple", "banana"]
     assert all("duration_seconds" in it["video"] for it in items)
 
@@ -173,6 +173,36 @@ def test_collection_items_accept_sort_param(client, account_user):
         f"/video-collections/{collection['id']}/items?sort=release_date:desc", headers=headers
     )
     assert bad.status_code == 422
+
+
+def test_collection_items_paginate_and_include_play_url(client, account_user):
+    token = _login(client, username=account_user.username)
+    headers = _headers(token)
+
+    collection = client.post("/video-collections", json={"name": "P"}, headers=headers).json()
+    for index in range(3):
+        video = client.post("/videos", json={"title": f"片{index}"}, headers=headers).json()
+        client.post(
+            f"/video-collections/{collection['id']}/items",
+            json={"video_item_id": video["id"]},
+            headers=headers,
+        )
+
+    # 分页：page_size=2 → 首页 2 条、总数 3。
+    page1 = client.get(
+        f"/video-collections/{collection['id']}/items?page=1&page_size=2", headers=headers
+    ).json()
+    assert page1["total"] == 3
+    assert len(page1["items"]) == 2
+
+    # include_play_url=false（默认）时不内联播放地址。
+    assert all(it["play_url"] is None for it in page1["items"])
+
+    # include_play_url=true 时无媒体成员 play_url 仍为 None（端点字段存在即可）。
+    with_url = client.get(
+        f"/video-collections/{collection['id']}/items?include_play_url=true", headers=headers
+    ).json()
+    assert all("play_url" in it for it in with_url["items"])
 
 
 def test_videos_routes_require_authentication(client):
