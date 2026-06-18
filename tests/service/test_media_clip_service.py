@@ -226,6 +226,40 @@ def test_get_clip_detail_returns_preview_frames(clip_env):
     assert len(detail.preview_frames) == 3
 
 
+def test_list_clip_thumbnails_rebases_offsets(clip_env):
+    media = clip_env
+    resource, _ = MediaClipService.create_clip(
+        media.id,
+        MediaClipCreateRequest(
+            start_thumbnail_id=_thumb_id(media, 10),
+            end_thumbnail_id=_thumb_id(media, 30),
+        ),
+    )
+
+    thumbnails = MediaClipService.list_clip_thumbnails(resource.clip_id)
+
+    # 区间 [10,30] 内源缩略图为 10/20/30，重定基到片段自身时间轴为 0/10/20。
+    assert [t.offset_seconds for t in thumbnails] == [0, 10, 20]
+    assert all(t.clip_id == resource.clip_id for t in thumbnails)
+    assert thumbnails[0].thumbnail_id == _thumb_id(media, 10)
+
+
+def test_list_clip_thumbnails_empty_after_source_deleted(clip_env):
+    media = clip_env
+    resource, _ = MediaClipService.create_clip(
+        media.id,
+        MediaClipCreateRequest(
+            start_thumbnail_id=_thumb_id(media, 0),
+            end_thumbnail_id=_thumb_id(media, 10),
+        ),
+    )
+
+    # 来源 Media 删除后缩略图随之 CASCADE，片段缩略图列表回退为空。
+    Media.delete().where(Media.id == media.id).execute()
+
+    assert MediaClipService.list_clip_thumbnails(resource.clip_id) == []
+
+
 def test_get_clip_detail_returns_collections(clip_env):
     media = clip_env
     resource, _ = MediaClipService.create_clip(

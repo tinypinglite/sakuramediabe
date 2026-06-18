@@ -48,3 +48,12 @@ class MediaClipDetailResource(MediaClipResource):
     preview_frames: list[ImageResource] = []
     # 该片段所属的合集，供前端「加入合集」选择器回显已勾选项。
     collections: list[ClipCollectionSummary] = []
+
+
+class MediaClipThumbnailResource(SchemaModel):
+    clip_id: int
+    # 源媒体缩略图 id，与 /media/{id}/thumbnails 保持一致语义。
+    thumbnail_id: int
+    # 片段自身时间轴的相对秒数 = 源缩略图 offset - 片段 start_offset_seconds，供进度条定位跳转。
+    offset_seconds: int
+    image: ImageResource

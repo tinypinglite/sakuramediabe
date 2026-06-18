@@ -12,6 +12,7 @@ from src.schema.playback.clips import (
     MediaClipCreateRequest,
     MediaClipDetailResource,
     MediaClipResource,
+    MediaClipThumbnailResource,
     MediaClipUpdateRequest,
 )
 from src.service.playback import MediaClipService
@@ -59,6 +60,14 @@ def get_media_clip(
     current_user=Depends(get_current_user),
 ):
     return MediaClipService.get_clip_detail(clip_id)
+
+
+@router.get("/media-clips/{clip_id}/thumbnails", response_model=list[MediaClipThumbnailResource])
+def list_media_clip_thumbnails(
+    clip_id: int,
+    current_user=Depends(get_current_user),
+):
+    return MediaClipService.list_clip_thumbnails(clip_id)
 
 
 @router.patch("/media-clips/{clip_id}", response_model=MediaClipResource)

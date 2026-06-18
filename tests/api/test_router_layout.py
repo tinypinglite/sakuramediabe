@@ -248,6 +248,7 @@ def test_create_app_registers_media_clip_routes():
     assert "/media/{media_id}/clips" in paths
     assert "/media-clips" in paths
     assert "/media-clips/{clip_id}" in paths
+    assert "/media-clips/{clip_id}/thumbnails" in paths
     assert "/media-clips/{clip_id}/stream" in paths
     assert "/clip-collections" in paths
     assert "/clip-collections/{collection_id}" in paths

@@ -29,6 +29,7 @@ from src.schema.playback.media import (
     InvalidMediaResource,
     MediaValidityCheckResponse,
     MediaPointCreateRequest,
+    MediaPointKind,
     MediaPointListItemResource,
     MediaPointResource,
     MediaProgressResource,
@@ -120,6 +121,15 @@ class MediaService:
         except FileNotFoundError:
             return
 
+    @staticmethod
+    def _media_point_kind_filter(kind: MediaPointKind):
+        # 按归属过滤：JAV 取有番号媒体，VIDEO 取非 JAV 视频媒体，ALL 不限制。
+        if kind == MediaPointKind.JAV:
+            return Media.movie.is_null(False)
+        if kind == MediaPointKind.VIDEO:
+            return Media.video_item.is_null(False)
+        return None
+
     @classmethod
     def list_media_points(
         cls,
@@ -127,12 +137,18 @@ class MediaService:
         page: int = 1,
         page_size: int = 20,
         sort: str | None = None,
+        kind: MediaPointKind = MediaPointKind.JAV,
     ) -> PageResponse[MediaPointListItemResource]:
         cls._validate_media_point_page(page, page_size)
         start = (page - 1) * page_size
         order_by = cls._resolve_media_point_sort(sort)
-        total = MediaPoint.select().count()
-        points = list(
+        kind_filter = cls._media_point_kind_filter(kind)
+        # total 与分页查询套用同一 kind 过滤，需 join Media 才能按归属筛。
+        total_query = MediaPoint.select().join(Media)
+        if kind_filter is not None:
+            total_query = total_query.where(kind_filter)
+        total = total_query.count()
+        points_query = (
             MediaPoint.select(MediaPoint, Media, Movie, MediaThumbnail, Image)
             .join(Media)
             .switch(Media)
@@ -142,6 +158,11 @@ class MediaService:
             .join(MediaThumbnail)
             .switch(MediaThumbnail)
             .join(Image)
+        )
+        if kind_filter is not None:
+            points_query = points_query.where(kind_filter)
+        points = list(
+            points_query
             .order_by(*order_by)
             .offset(start)
             .limit(page_size)

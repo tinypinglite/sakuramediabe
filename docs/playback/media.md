@@ -93,7 +93,7 @@
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/media-points` | 分页获取全局媒体书签列表 |
+| `GET` | `/media-points` | 分页获取全局媒体书签列表，按 `kind` 区分 JAV / 非 JAV（默认仅 JAV） |
 | `GET` | `/media/invalid` | 分页获取所有失效媒体列表 |
 | `POST` | `/media/{media_id}/validity-check` | 单次复查媒体文件是否有效，并同步修正 `valid` |
 | `GET` | `/media/{media_id}/points` | 获取指定媒体的书签列表 |
@@ -112,7 +112,7 @@
 
 ### Purpose
 
-分页获取全部 `MediaPoint`。当前接口是全局列表，不按 `media_id` 过滤。
+分页获取全局 `MediaPoint`，不按 `media_id` 过滤，但可按归属用 `kind` 筛选。JAV 时刻带 `movie_number`，非 JAV（videos 域）时刻带 `video_item_id`，前端据此区分并跳转对应详情页。
 
 ### Auth
 
@@ -127,13 +127,20 @@
 - `page`: 页码，默认 `1`，必须大于 `0`
 - `page_size`: 每页数量，默认 `20`，取值范围 `1-100`
 - `sort`: 排序规则，默认 `created_at:desc`
+- `kind`: 归属过滤，默认 `jav`
 
 支持的 `sort`：
 
 - `created_at:desc`
 - `created_at:asc`
 
-当 `created_at` 相同时，服务端会额外按 `point_id` 同方向排序，保证结果稳定。
+支持的 `kind`：
+
+- `jav`（默认）：仅 JAV 影片媒体的时刻
+- `video`：仅非 JAV 视频（videos 域）媒体的时刻
+- `all`：不限归属，两类混合返回
+
+`total` 与列表项都会套用同一 `kind` 过滤。当 `created_at` 相同时，服务端会额外按 `point_id` 同方向排序，保证结果稳定。
 
 ### Request Body
 
@@ -146,12 +153,12 @@
 ### Error Responses
 
 - `401 Unauthorized`: 未认证
-- `422 Unprocessable Entity`: `page`、`page_size` 或 `sort` 非法
+- `422 Unprocessable Entity`: `page`、`page_size`、`sort` 或 `kind` 非法
 
 ### Example Request
 
 ```http
-GET /media-points?page=1&page_size=20&sort=created_at:asc
+GET /media-points?page=1&page_size=20&sort=created_at:asc&kind=jav
 Authorization: Bearer <token>
 ```
 
@@ -164,6 +171,7 @@ Authorization: Bearer <token>
       "point_id": 10,
       "media_id": 100,
       "movie_number": "ABC-001",
+      "video_item_id": null,
       "thumbnail_id": 5,
       "offset_seconds": 120,
       "image": {
@@ -179,6 +187,7 @@ Authorization: Bearer <token>
       "point_id": 11,
       "media_id": 101,
       "movie_number": "ABC-002",
+      "video_item_id": null,
       "thumbnail_id": 18,
       "offset_seconds": 360,
       "image": {
@@ -690,7 +699,7 @@ Content-Type: application/json
 
 ### Purpose
 
-返回指定媒体的缩略图列表。
+返回指定媒体的缩略图列表。本接口及 `/media/{media_id}/points`、`/media/{media_id}/progress` 均按 `media_id` 通用，JAV 与非 JAV（videos 域）媒体一致适用；非 JAV 视频前端可从 `GET /videos/{id}` 的 `media_items[].media_id` 取得媒体 ID 后调用。
 
 ### Auth
 

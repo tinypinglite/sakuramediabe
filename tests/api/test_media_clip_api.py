@@ -58,6 +58,7 @@ def test_clip_endpoints_require_authentication(client):
     assert client.get("/media/1/clips").status_code == 401
     assert client.get("/media-clips").status_code == 401
     assert client.get("/media-clips/1").status_code == 401
+    assert client.get("/media-clips/1/thumbnails").status_code == 401
     assert client.patch("/media-clips/1", json={"title": "x"}).status_code == 401
     assert client.delete("/media-clips/1").status_code == 401
 
@@ -113,6 +114,26 @@ def test_list_and_detail_clip(client, account_user, tmp_path, clip_storage):
     assert len(detail.json()["preview_frames"]) == 3
     # 未加入任何合集时 collections 为空数组（前端选择器据此回显勾选）。
     assert detail.json()["collections"] == []
+
+
+def test_list_clip_thumbnails_returns_rebased_offsets(client, account_user, tmp_path, clip_storage):
+    token = _login(client, username=account_user.username)
+    media = _create_media(tmp_path)
+    clip_id = client.post(
+        f"/media/{media.id}/clips",
+        json={"start_thumbnail_id": _thumb_id(media, 10), "end_thumbnail_id": _thumb_id(media, 30)},
+        headers=_auth(token),
+    ).json()["clip_id"]
+
+    response = client.get(f"/media-clips/{clip_id}/thumbnails", headers=_auth(token))
+
+    assert response.status_code == 200
+    body = response.json()
+    # 区间 [10,30] 内缩略图 10/20/30，重定基为片段相对 0/10/20。
+    assert [item["offset_seconds"] for item in body] == [0, 10, 20]
+    assert all(item["clip_id"] == clip_id for item in body)
+    # 图像走签名 URL。
+    assert body[0]["image"]["origin"].startswith("/files/images/")
 
 
 def test_update_and_delete_clip(client, account_user, tmp_path, clip_storage):

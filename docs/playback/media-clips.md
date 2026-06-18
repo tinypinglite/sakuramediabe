@@ -94,6 +94,31 @@ GET /media-clips/{clip_id}
 
 返回 `MediaClipDetailResource`（含 `preview_frames`）。
 
+### 片段缩略图（进度条跳转）
+
+```
+GET /media-clips/{clip_id}/thumbnails
+```
+
+返回 `list[MediaClipThumbnailResource]`，供前端在片段播放进度条上预览/跳转。片段自身时间轴从 `0` 起，每项 `offset_seconds = 源缩略图 offset - 片段 start_offset_seconds`（即复用源媒体缩略图重定基，不为片段单独生成）。来源媒体已删除时返回空数组。
+
+```json
+[
+  {
+    "clip_id": 12,
+    "thumbnail_id": 100,
+    "offset_seconds": 0,
+    "image": { "id": 88, "origin": "/files/images/...", "...": "..." }
+  },
+  {
+    "clip_id": 12,
+    "thumbnail_id": 101,
+    "offset_seconds": 10,
+    "image": { "id": 89, "origin": "/files/images/...", "...": "..." }
+  }
+]
+```
+
 ### 修改片段标题
 
 ```

@@ -14,6 +14,7 @@ from src.model import (
     Playlist,
     PlaylistMovie,
     ResourceTaskState,
+    VideoItem,
 )
 from src.service.collections import PlaylistService
 from src.service.playback import MediaService
@@ -529,6 +530,58 @@ def test_list_media_points_returns_paginated_results_sorted_by_created_at(
     }
     assert asc_response.status_code == 200
     assert [item["point_id"] for item in asc_response.json()["items"]] == [older_point.id, newer_point.id]
+
+
+def test_list_media_points_defaults_to_jav_and_filters_by_kind(client, account_user):
+    token = _login(client, username=account_user.username)
+    # 一条 JAV 时刻 + 一条非 JAV(video_item) 时刻，验证 kind 过滤与默认值。
+    movie = _create_movie("ABC-100", "MovieA100", title="Movie 100")
+    jav_media = Media.create(movie=movie, path="/library/main/abc-100.mp4", valid=True)
+    jav_thumbnail = _create_thumbnail(jav_media, offset_seconds=120, suffix="jav")
+    jav_point = MediaPoint.create(media=jav_media, thumbnail=jav_thumbnail, offset_seconds=120)
+
+    video_item = VideoItem.create(title="家庭录像")
+    video_media = Media.create(video_item=video_item, path="/library/main/home.mp4", valid=True)
+    video_image = _create_image("videos/1/media/fp/thumbnails/30.webp")
+    video_thumbnail = MediaThumbnail.create(media=video_media, image=video_image, offset=30)
+    video_point = MediaPoint.create(media=video_media, thumbnail=video_thumbnail, offset_seconds=30)
+
+    headers = {"Authorization": f"Bearer {token}"}
+    default_response = client.get("/media-points", headers=headers)
+    jav_response = client.get("/media-points?kind=jav", headers=headers)
+    video_response = client.get("/media-points?kind=video", headers=headers)
+    all_response = client.get("/media-points?kind=all", headers=headers)
+
+    # 默认只返回 JAV 时刻。
+    assert default_response.status_code == 200
+    default_body = default_response.json()
+    assert default_body["total"] == 1
+    assert [item["point_id"] for item in default_body["items"]] == [jav_point.id]
+    assert default_body["items"][0]["movie_number"] == "ABC-100"
+
+    assert [item["point_id"] for item in jav_response.json()["items"]] == [jav_point.id]
+
+    video_body = video_response.json()
+    assert video_body["total"] == 1
+    assert [item["point_id"] for item in video_body["items"]] == [video_point.id]
+    assert video_body["items"][0]["movie_number"] is None
+    assert video_body["items"][0]["video_item_id"] == video_item.id
+
+    all_body = all_response.json()
+    assert all_body["total"] == 2
+    assert {item["point_id"] for item in all_body["items"]} == {jav_point.id, video_point.id}
+
+
+def test_list_media_points_rejects_invalid_kind(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    response = client.get(
+        "/media-points?kind=unknown",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    # kind 为枚举，非法值由 FastAPI 校验拦截返回 422。
+    assert response.status_code == 422
 
 
 def test_list_media_points_rejects_invalid_sort(client, account_user):

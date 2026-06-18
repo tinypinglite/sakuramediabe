@@ -31,6 +31,7 @@ from src.schema.playback.clips import (
     MediaClipCreateRequest,
     MediaClipDetailResource,
     MediaClipResource,
+    MediaClipThumbnailResource,
     MediaClipUpdateRequest,
 )
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
@@ -330,10 +331,11 @@ class MediaClipService:
         return [ClipCollectionSummary(id=row.id, name=row.name) for row in rows]
 
     @staticmethod
-    def _load_preview_frames(clip: MediaClip) -> list[ImageResource]:
+    def _clip_thumbnail_rows(clip: MediaClip) -> list[MediaThumbnail]:
+        """片段区间内的源媒体缩略图（含图像），按 offset 升序；来源 Media 已删时为空。"""
         if clip.media_id is None:
             return []
-        rows = (
+        return list(
             MediaThumbnail.select(MediaThumbnail, Image)
             .join(Image)
             .where(
@@ -343,7 +345,27 @@ class MediaClipService:
             )
             .order_by(MediaThumbnail.offset.asc())
         )
-        return [ImageResource.from_attributes_model(thumbnail.image) for thumbnail in rows]
+
+    @classmethod
+    def _load_preview_frames(cls, clip: MediaClip) -> list[ImageResource]:
+        return [
+            ImageResource.from_attributes_model(thumbnail.image)
+            for thumbnail in cls._clip_thumbnail_rows(clip)
+        ]
+
+    @classmethod
+    def list_clip_thumbnails(cls, clip_id: int) -> list[MediaClipThumbnailResource]:
+        clip = cls._require_clip(clip_id)
+        # 复用源媒体缩略图，把绝对 offset 重定基为片段自身时间轴（从 0 起），供前端进度条定位跳转。
+        return [
+            MediaClipThumbnailResource(
+                clip_id=clip.id,
+                thumbnail_id=thumbnail.id,
+                offset_seconds=thumbnail.offset - clip.start_offset_seconds,
+                image=ImageResource.from_attributes_model(thumbnail.image),
+            )
+            for thumbnail in cls._clip_thumbnail_rows(clip)
+        ]
 
     # ------------------------------------------------------------------ 更新 / 删除
 

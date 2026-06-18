@@ -1,8 +1,17 @@
 from datetime import datetime
+from enum import Enum
+
 from pydantic import Field, field_validator
 
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+
+
+class MediaPointKind(str, Enum):
+    # 时刻归属过滤：JAV 仅影片媒体、VIDEO 仅非 JAV 视频媒体、ALL 不限。
+    JAV = "jav"
+    VIDEO = "video"
+    ALL = "all"
 
 
 class MediaProgressUpdateRequest(SchemaModel):
