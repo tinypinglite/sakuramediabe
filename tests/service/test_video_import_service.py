@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -166,6 +167,12 @@ def test_import_skips_already_indexed_and_duplicate_fingerprint(video_import_tab
     # Media.path 记录的是搬入库后的目标路径，源路径并未登记，故两次跳过都走内容指纹去重。
     assert second.skipped_count == 2
     assert VideoItem.select().count() == 1
+    # 跳过项写入 failed_files（kind=skipped），但不污染失败数、不让任务变红。
+    assert second.failed_count == 0
+    assert second.state == "completed"
+    skipped_entries = [item for item in json.loads(second.failed_files) if item["kind"] == "skipped"]
+    assert len(skipped_entries) == 2
+    assert {item["reason"] for item in skipped_entries} == {"duplicate_fingerprint"}
 
 
 def test_import_associates_collection(video_import_tables, tmp_path):

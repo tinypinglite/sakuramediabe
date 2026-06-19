@@ -20,6 +20,8 @@ from src.api.exception.errors import ApiError
 from src.common.content_fingerprint import compute_content_fingerprint
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.common.media_import_status import (
+    FAILURE_REASON_ALREADY_INDEXED_PATH,
+    FAILURE_REASON_DUPLICATE_FINGERPRINT,
     FAILURE_REASON_IMPORT_JOB_CRASHED,
     FAILURE_REASON_MEDIA_IMPORT_FAILED,
     IMPORT_JOB_STATE_COMPLETED,
@@ -127,11 +129,11 @@ class VideoImportService:
         """
         # 路径已登记：快速路径，免去计算指纹直接跳过。
         if Media.get_or_none(Media.path == str(file_path)) is not None:
-            return "already_indexed_path", None
+            return FAILURE_REASON_ALREADY_INDEXED_PATH, None
         # 内容指纹去重：同一物理内容（拷贝/软链/换挂载点）即便路径不同也视为已导入。
         fingerprint = compute_content_fingerprint(file_path)
         if Media.get_or_none(Media.content_fingerprint == fingerprint) is not None:
-            return "duplicate_fingerprint", None
+            return FAILURE_REASON_DUPLICATE_FINGERPRINT, None
         return None, fingerprint
 
     @staticmethod
@@ -345,6 +347,8 @@ class VideoImportService:
                 if skip_reason is not None:
                     skipped += 1
                     logger.info("Video import skipped path={} reason={}", str(file_path), skip_reason)
+                    # 跳过项写入 failure_items（kind=skipped），让接口可返回跳过明细，不计入失败数。
+                    failure_items.append(make_failure_item(file_path, skip_reason))
                 else:
                     try:
                         video_id, delete_failed = self._create_video_for_file(
