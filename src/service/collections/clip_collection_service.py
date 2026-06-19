@@ -11,10 +11,6 @@ from typing import Dict, List
 from peewee import IntegrityError, fn
 
 from src.api.exception.errors import ApiError
-from src.common import (
-    build_signed_clip_collection_playlist_url,
-    build_signed_clip_url,
-)
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import require_record, validate_page
 from src.model import ClipCollection, ClipCollectionItem, MediaClip
@@ -23,12 +19,10 @@ from src.schema.collections.clips import (
     ClipCollectionClipItemResource,
     ClipCollectionCreateRequest,
     ClipCollectionResource,
-    ClipCollectionThumbnailResource,
     ClipCollectionUpdateRequest,
 )
 from src.schema.common.pagination import PageResponse
 from src.service.playback.media_clip_service import MediaClipService
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
 
 
 class ClipCollectionService:
@@ -118,10 +112,6 @@ class ClipCollectionService:
             description=collection.description,
             clip_count=clip_count,
             cover_image=cls._collection_cover(collection.id) if clip_count else None,
-            # 空合集 m3u8 接口会 404，因此不下发 URL，前端据此隐藏播放器入口。
-            playlist_url=(
-                build_signed_clip_collection_playlist_url(collection.id) if clip_count else None
-            ),
             created_at=collection.created_at,
             updated_at=collection.updated_at,
         )
@@ -260,89 +250,6 @@ class ClipCollectionService:
         if deleted:
             collection.updated_at = cls._current_time()
             collection.save(only=[ClipCollection.updated_at])
-
-    @classmethod
-    def _ordered_collection_clips(cls, collection_id: int) -> List[MediaClip]:
-        """按 position 升序拿到合集所有 MediaClip 实例，供 m3u8 与缩略图轨道复用。"""
-        items = list(
-            ClipCollectionItem.select(ClipCollectionItem, MediaClip)
-            .join(MediaClip)
-            .where(ClipCollectionItem.collection == collection_id)
-            .order_by(ClipCollectionItem.position.asc(), ClipCollectionItem.id.asc())
-        )
-        return [item.clip for item in items]
-
-    @classmethod
-    def build_playlist(cls, collection_id: int) -> str:
-        """组装合集 HLS VOD 清单：每个切片一段 EXTINF，跨切片插入 DISCONTINUITY 让 decoder 重启。
-
-        ``duration_seconds`` 为 0 或负的切片视作脏数据直接跳过；过滤后无合法分片抛 404。
-        """
-        cls._require_collection(collection_id)
-        clips = [clip for clip in cls._ordered_collection_clips(collection_id) if clip.duration_seconds > 0]
-        if not clips:
-            raise ApiError(
-                404,
-                "clip_collection_empty",
-                "Clip collection has no playable clips",
-                {"collection_id": collection_id},
-            )
-        target_duration = max(clip.duration_seconds for clip in clips)
-        lines = [
-            "#EXTM3U",
-            "#EXT-X-VERSION:3",
-            "#EXT-X-PLAYLIST-TYPE:VOD",
-            f"#EXT-X-TARGETDURATION:{target_duration}",
-            "#EXT-X-MEDIA-SEQUENCE:0",
-        ]
-        for index, clip in enumerate(clips):
-            if index > 0:
-                # 切片间 timestamps 不连续；即便同源也用 DISCONTINUITY 保险，让 libmpv 重启 decoder。
-                lines.append("#EXT-X-DISCONTINUITY")
-            lines.append(f"#EXTINF:{clip.duration_seconds}.0,")
-            lines.append(build_signed_clip_url(clip.id))
-        lines.append("#EXT-X-ENDLIST")
-        return "\n".join(lines) + "\n"
-
-    @classmethod
-    def list_collection_thumbnails(
-        cls, collection_id: int
-    ) -> List[ClipCollectionThumbnailResource]:
-        """按合集时间轴串起所有切片的源媒体缩略图：base + (源 offset - clip.start_offset)。"""
-        cls._require_collection(collection_id)
-        clips = cls._ordered_collection_clips(collection_id)
-        # 跨切片可能共享来源 Media，缓存复用避免 N+1 与重复算分辨率。
-        media_thumbnail_cache: Dict[int, list] = {}
-        results: List[ClipCollectionThumbnailResource] = []
-        base_offset = 0
-        for clip in clips:
-            if clip.media_id is not None:
-                media_thumbnails = media_thumbnail_cache.get(clip.media_id)
-                if media_thumbnails is None:
-                    media_thumbnails = MediaThumbnailService.list_media_thumbnails(clip.media_id)
-                    media_thumbnail_cache[clip.media_id] = media_thumbnails
-                for thumbnail in media_thumbnails:
-                    # 仅保留落在片段区间内的缩略图，与 /media-clips/{id}/thumbnails 语义一致。
-                    if (
-                        thumbnail.offset_seconds < clip.start_offset_seconds
-                        or thumbnail.offset_seconds > clip.end_offset_seconds
-                    ):
-                        continue
-                    relative_offset = thumbnail.offset_seconds - clip.start_offset_seconds
-                    results.append(
-                        ClipCollectionThumbnailResource(
-                            collection_id=collection_id,
-                            clip_id=clip.id,
-                            thumbnail_id=thumbnail.thumbnail_id,
-                            offset_seconds=base_offset + relative_offset,
-                            image=thumbnail.image,
-                            width=thumbnail.width,
-                            height=thumbnail.height,
-                        )
-                    )
-            # base_offset 按切片实际产物时长累加，与 m3u8 内 EXTINF 同源，保证缩略图轴与播放轴一致。
-            base_offset += max(clip.duration_seconds, 0)
-        return results
 
     @classmethod
     def set_clips(cls, collection_id: int, clip_ids: List[int]) -> None:
