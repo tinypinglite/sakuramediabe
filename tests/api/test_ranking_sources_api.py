@@ -202,6 +202,69 @@ def test_list_ranking_board_items_validates_source_board_and_period(client, acco
     assert unsupported_period.json()["error"]["code"] == "invalid_ranking_period"
 
 
+def _seed_heat_ranking_rows(items: list[tuple[str, str, int, int]]) -> None:
+    for movie_number, javdb_id, rank, heat in items:
+        movie = _create_movie(movie_number, javdb_id, heat=heat)
+        RankingItem.create(
+            source_key="javdb",
+            board_key="censored",
+            period="daily",
+            rank=rank,
+            movie_number=movie.movie_number,
+            movie=movie,
+        )
+
+
+def test_list_ranking_board_items_supports_sort_by_heat(client, account_user):
+    token = _login(client, username=account_user.username)
+    headers = {"Authorization": f"Bearer {token}"}
+    _seed_heat_ranking_rows(
+        [
+            ("ABP-001", "MovieA1", 1, 10),
+            ("ABP-002", "MovieA2", 2, 50),
+            ("ABP-003", "MovieA3", 3, 30),
+        ]
+    )
+
+    desc_response = client.get(
+        "/ranking-sources/javdb/boards/censored/items?period=daily&sort=heat:desc",
+        headers=headers,
+    )
+    asc_response = client.get(
+        "/ranking-sources/javdb/boards/censored/items?period=daily&sort=heat:asc",
+        headers=headers,
+    )
+
+    assert desc_response.status_code == 200
+    assert asc_response.status_code == 200
+    # 按热度降序：50 > 30 > 10
+    assert [item["movie_number"] for item in desc_response.json()["items"]] == [
+        "ABP-002",
+        "ABP-003",
+        "ABP-001",
+    ]
+    # 按热度升序：10 < 30 < 50
+    assert [item["movie_number"] for item in asc_response.json()["items"]] == [
+        "ABP-001",
+        "ABP-003",
+        "ABP-002",
+    ]
+
+
+def test_list_ranking_board_items_rejects_invalid_sort(client, account_user):
+    token = _login(client, username=account_user.username)
+    headers = {"Authorization": f"Bearer {token}"}
+    _seed_heat_ranking_rows([("ABP-001", "MovieA1", 1, 10)])
+
+    for bad_sort in ("heat", "heat:weird", "unknown:desc"):
+        response = client.get(
+            f"/ranking-sources/javdb/boards/censored/items?period=daily&sort={bad_sort}",
+            headers=headers,
+        )
+        assert response.status_code == 422, bad_sort
+        assert response.json()["error"]["code"] == "invalid_ranking_filter"
+
+
 def test_list_missav_ranking_board_items_returns_ranked_movie_list(client, account_user):
     token = _login(client, username=account_user.username)
     movie_a = _create_movie("ABP-001", "MovieA1", title="Movie A")

@@ -385,6 +385,184 @@ def test_ranking_catalog_service_exposes_scope_synced_at(app):
     assert empty_page.synced_at is None
 
 
+def _seed_heat_ranking_items(
+    *,
+    source_key: str = "javdb",
+    board_key: str = "censored",
+    period: str = "daily",
+    items: list[tuple[str, str, int, int]] | None = None,
+) -> dict[str, Movie]:
+    """构造 (movie_number, javdb_id, rank, heat) 四元组对应的 Movie + RankingItem。"""
+    rows = items or []
+    created: dict[str, Movie] = {}
+    for movie_number, javdb_id, rank, heat in rows:
+        movie = _create_movie(movie_number, javdb_id, heat=heat)
+        created[movie_number] = movie
+        RankingItem.create(
+            source_key=source_key,
+            board_key=board_key,
+            period=period,
+            rank=rank,
+            movie_number=movie.movie_number,
+            movie=movie,
+        )
+    return created
+
+
+def test_ranking_catalog_service_sorts_by_heat_desc(app):
+    _seed_heat_ranking_items(
+        items=[
+            ("ABP-001", "MovieA1", 1, 10),
+            ("ABP-002", "MovieA2", 2, 50),
+            ("ABP-003", "MovieA3", 3, 30),
+        ]
+    )
+
+    page = RankingCatalogService.list_board_items(
+        source_key="javdb",
+        board_key="censored",
+        period="daily",
+        page=1,
+        page_size=20,
+        sort="heat:desc",
+    )
+
+    assert page.total == 3
+    # 按热度降序：50 > 30 > 10
+    assert [item.movie_number for item in page.items] == ["ABP-002", "ABP-003", "ABP-001"]
+
+
+def test_ranking_catalog_service_sorts_by_heat_asc_with_pagination(app):
+    _seed_heat_ranking_items(
+        items=[
+            ("ABP-001", "MovieA1", 1, 10),
+            ("ABP-002", "MovieA2", 2, 50),
+            ("ABP-003", "MovieA3", 3, 30),
+        ]
+    )
+
+    first_page = RankingCatalogService.list_board_items(
+        source_key="javdb",
+        board_key="censored",
+        period="daily",
+        page=1,
+        page_size=2,
+        sort="heat:asc",
+    )
+    second_page = RankingCatalogService.list_board_items(
+        source_key="javdb",
+        board_key="censored",
+        period="daily",
+        page=2,
+        page_size=2,
+        sort="heat:asc",
+    )
+
+    # 按热度升序：10 < 30 < 50，并验证翻页能取到剩余条目
+    assert [item.movie_number for item in first_page.items] == ["ABP-001", "ABP-003"]
+    assert [item.movie_number for item in second_page.items] == ["ABP-002"]
+    assert first_page.total == 3
+    assert second_page.total == 3
+
+
+def test_ranking_catalog_service_sort_heat_tie_breaker_by_rank(app):
+    # heat 相同时按 rank 兜底，保证翻页稳定
+    _seed_heat_ranking_items(
+        items=[
+            ("ABP-001", "MovieA1", 1, 20),
+            ("ABP-002", "MovieA2", 2, 20),
+            ("ABP-003", "MovieA3", 3, 20),
+        ]
+    )
+
+    desc_page = RankingCatalogService.list_board_items(
+        source_key="javdb",
+        board_key="censored",
+        period="daily",
+        page=1,
+        page_size=20,
+        sort="heat:desc",
+    )
+    asc_page = RankingCatalogService.list_board_items(
+        source_key="javdb",
+        board_key="censored",
+        period="daily",
+        page=1,
+        page_size=20,
+        sort="heat:asc",
+    )
+
+    # heat 相同时：desc 方向上 rank 也按 desc 兜底；asc 方向上 rank 按 asc 兜底
+    assert [item.movie_number for item in desc_page.items] == ["ABP-003", "ABP-002", "ABP-001"]
+    assert [item.movie_number for item in asc_page.items] == ["ABP-001", "ABP-002", "ABP-003"]
+
+
+def test_ranking_catalog_service_default_sort_preserves_rank_order(app):
+    # 不传 sort 时保持现有按 rank 升序的默认行为
+    _seed_heat_ranking_items(
+        items=[
+            ("ABP-001", "MovieA1", 2, 99),
+            ("ABP-002", "MovieA2", 1, 1),
+        ]
+    )
+
+    page = RankingCatalogService.list_board_items(
+        source_key="javdb",
+        board_key="censored",
+        period="daily",
+        page=1,
+        page_size=20,
+    )
+
+    assert [item.rank for item in page.items] == [1, 2]
+    assert [item.movie_number for item in page.items] == ["ABP-002", "ABP-001"]
+
+
+def test_ranking_catalog_service_sort_by_rank_desc(app):
+    _seed_heat_ranking_items(
+        items=[
+            ("ABP-001", "MovieA1", 1, 10),
+            ("ABP-002", "MovieA2", 2, 50),
+            ("ABP-003", "MovieA3", 3, 30),
+        ]
+    )
+
+    page = RankingCatalogService.list_board_items(
+        source_key="javdb",
+        board_key="censored",
+        period="daily",
+        page=1,
+        page_size=20,
+        sort="rank:desc",
+    )
+
+    assert [item.rank for item in page.items] == [3, 2, 1]
+
+
+def test_ranking_catalog_service_rejects_invalid_sort(app):
+    _seed_heat_ranking_items(
+        items=[("ABP-001", "MovieA1", 1, 10)]
+    )
+
+    invalid_sorts = ["heat", "unknown:desc", "heat:weird", ":desc", "heat:"]
+    for sort_value in invalid_sorts:
+        with_error = None
+        try:
+            RankingCatalogService.list_board_items(
+                source_key="javdb",
+                board_key="censored",
+                period="daily",
+                page=1,
+                page_size=20,
+                sort=sort_value,
+            )
+        except ApiError as exc:
+            with_error = exc
+        assert with_error is not None, f"sort={sort_value!r} 未触发异常"
+        assert with_error.status_code == 422
+        assert with_error.code == "invalid_ranking_filter"
+
+
 def test_ranking_catalog_service_validates_period(app):
     with_error = None
     try:

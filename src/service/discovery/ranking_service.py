@@ -165,6 +165,9 @@ RANKING_SOURCES: dict[str, RankingSourceDefinition] = {
 
 
 class RankingCatalogService:
+    # 榜单条目允许的排序字段
+    RANKING_BOARD_ITEMS_SORT_FIELDS = ("rank", "heat")
+
     @staticmethod
     def _require_source(source_key: str) -> RankingSourceDefinition:
         source = RANKING_SOURCES.get(source_key)
@@ -222,6 +225,46 @@ class RankingCatalogService:
             )
         return ""
 
+    @classmethod
+    def _build_board_items_sort(
+        cls, sort: str | None
+    ) -> tuple[list, bool]:
+        """解析 ``field:direction`` 排序表达式，返回 (order_by 表达式, 是否需要 JOIN Movie)。"""
+        # 未传或为空时保持默认：按榜单原始排名升序
+        if sort is None or not sort.strip():
+            return [RankingItem.rank.asc()], False
+
+        normalized = sort.strip().lower()
+        try:
+            field_name, direction = normalized.split(":", 1)
+        except ValueError:
+            raise ApiError(
+                422,
+                "invalid_ranking_filter",
+                "Invalid sort expression",
+                {"sort": sort},
+            )
+
+        if (
+            field_name not in cls.RANKING_BOARD_ITEMS_SORT_FIELDS
+            or direction not in ("asc", "desc")
+        ):
+            raise ApiError(
+                422,
+                "invalid_ranking_filter",
+                "Invalid sort expression",
+                {"sort": sort},
+            )
+
+        ascending = direction == "asc"
+        tie_breaker = RankingItem.rank.asc() if ascending else RankingItem.rank.desc()
+        if field_name == "rank":
+            # 按 rank 排序无需 JOIN Movie，且 rank 本身即为唯一键，不再追加 tie-breaker
+            return [tie_breaker], False
+        # 按 heat 排序需要 JOIN Movie，并补 rank 次级排序避免相同热度翻页错位
+        heat_expression = Movie.heat.asc() if ascending else Movie.heat.desc()
+        return [heat_expression, tie_breaker], True
+
     @staticmethod
     def list_sources() -> list[RankingSourceResource]:
         return [
@@ -251,6 +294,7 @@ class RankingCatalogService:
         period: str | None,
         page: int = 1,
         page_size: int = 20,
+        sort: str | None = None,
     ) -> RankingBoardItemsResource:
         board = cls._require_board(source_key, board_key)
         normalized_period = cls._resolve_period(board, period)
@@ -258,15 +302,18 @@ class RankingCatalogService:
         safe_page_size = max(int(page_size), 1)
         start = (safe_page - 1) * safe_page_size
 
-        base_query = (
-            RankingItem.select()
-            .where(
-                RankingItem.source_key == source_key,
-                RankingItem.board_key == board_key,
-                RankingItem.period == normalized_period,
-            )
-            .order_by(RankingItem.rank.asc())
+        order_expressions, needs_movie_join = cls._build_board_items_sort(sort)
+        base_query = RankingItem.select().where(
+            RankingItem.source_key == source_key,
+            RankingItem.board_key == board_key,
+            RankingItem.period == normalized_period,
         )
+        if needs_movie_join:
+            # 按 Movie.heat 排序时 JOIN Movie 表
+            base_query = base_query.join(
+                Movie, on=(RankingItem.movie == Movie.id)
+            )
+        base_query = base_query.order_by(*order_expressions)
         total = base_query.count()
         # 该榜单+周期整批的抓取时间（整榜删旧插新，全批一致），与分页无关
         synced_at = (

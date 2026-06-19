@@ -37,6 +37,10 @@ def list_ranking_board_items(
     period: Optional[str] = Query(default=None),
     page: int = 1,
     page_size: int = 20,
+    sort: Optional[str] = Query(
+        default=None,
+        description="排序表达式 field:direction，可选字段：rank、heat；direction 为 asc 或 desc",
+    ),
 ):
     return RankingCatalogService.list_board_items(
         source_key=source_key,
@@ -44,4 +48,5 @@ def list_ranking_board_items(
         period=period,
         page=page,
         page_size=page_size,
+        sort=sort,
     )
