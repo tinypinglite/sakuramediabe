@@ -283,12 +283,18 @@ class MediaClipService:
         page: int = 1,
         page_size: int = 20,
         sort: str | None = None,
+        movie_number: str | None = None,
     ) -> PageResponse[MediaClipResource]:
         validate_page(page, page_size, error_code="invalid_media_clip_filter")
         order_by = cls._resolve_media_clip_sort(sort)
-        total = MediaClip.select().count()
+        query = MediaClip.select()
+        # 按番号过滤片段：MediaClip.movie_number 为来源快照列，来源删除后仍可命中。
+        normalized_movie_number = (movie_number or "").strip()
+        if normalized_movie_number:
+            query = query.where(MediaClip.movie_number == normalized_movie_number)
+        total = query.count()
         clips = list(
-            MediaClip.select()
+            query
             .order_by(*order_by)
             .offset((page - 1) * page_size)
             .limit(page_size)

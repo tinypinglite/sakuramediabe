@@ -49,9 +49,15 @@ def list_media_clips(
     page: int = Query(default=1),
     page_size: int = Query(default=20),
     sort: str | None = Query(default=None),
+    movie_number: str | None = Query(default=None),
     current_user=Depends(get_current_user),
 ):
-    return MediaClipService.list_media_clips(page=page, page_size=page_size, sort=sort)
+    return MediaClipService.list_media_clips(
+        page=page,
+        page_size=page_size,
+        sort=sort,
+        movie_number=movie_number,
+    )
 
 
 @router.get("/media-clips/{clip_id}", response_model=MediaClipDetailResource)

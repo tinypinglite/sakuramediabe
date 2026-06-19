@@ -116,6 +116,29 @@ def test_list_and_detail_clip(client, account_user, tmp_path, clip_storage):
     assert detail.json()["collections"] == []
 
 
+def test_list_media_clips_filters_by_movie_number(client, account_user, tmp_path, clip_storage):
+    token = _login(client, username=account_user.username)
+    media_a = _create_media(tmp_path, movie_number="ABC-001")
+    media_b = _create_media(tmp_path, movie_number="XYZ-999")
+    client.post(
+        f"/media/{media_a.id}/clips",
+        json={"start_thumbnail_id": _thumb_id(media_a, 0), "end_thumbnail_id": _thumb_id(media_a, 10)},
+        headers=_auth(token),
+    )
+    client.post(
+        f"/media/{media_b.id}/clips",
+        json={"start_thumbnail_id": _thumb_id(media_b, 0), "end_thumbnail_id": _thumb_id(media_b, 10)},
+        headers=_auth(token),
+    )
+
+    filtered = client.get("/media-clips", params={"movie_number": "ABC-001"}, headers=_auth(token))
+
+    assert filtered.status_code == 200
+    body = filtered.json()
+    assert body["total"] == 1
+    assert [item["movie_number"] for item in body["items"]] == ["ABC-001"]
+
+
 def test_list_clip_thumbnails_returns_rebased_offsets(client, account_user, tmp_path, clip_storage):
     token = _login(client, username=account_user.username)
     media = _create_media(tmp_path)

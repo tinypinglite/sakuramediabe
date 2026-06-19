@@ -81,10 +81,10 @@ GET /media/{media_id}/clips
 ### 我的片段（全局分页）
 
 ```
-GET /media-clips?page=1&page_size=20&sort=created_at:desc
+GET /media-clips?page=1&page_size=20&sort=created_at:desc&movie_number=ABC-001
 ```
 
-返回 `PageResponse[MediaClipResource]`。`sort` 支持 `created_at:desc`（默认）、`created_at:asc`。
+返回 `PageResponse[MediaClipResource]`。`sort` 支持 `created_at:desc`（默认）、`created_at:asc`。`movie_number` 可选，按来源番号过滤片段（命中 `MediaClip.movie_number` 快照列，来源 Media/Movie 删除后仍可查询）。
 
 ### 片段详情
 
