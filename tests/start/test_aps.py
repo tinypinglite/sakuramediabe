@@ -162,10 +162,12 @@ def test_aps_sync_rankings_command_runs_job(monkeypatch):
         "sync-rankings",
         {
             "total_targets": 12, "success_targets": 11, "failed_targets": 1,
-            "fetched_numbers": 240, "imported_movies": 220, "skipped_movies": 20, "stored_items": 220,
+            "fetched_numbers": 240, "imported_movies": 200, "local_hit_movies": 20,
+            "skipped_movies": 20, "stored_items": 220,
         },
         "ranking sync finished: total_targets=12 success_targets=11 failed_targets=1 "
-        "fetched_numbers=240 imported_movies=220 skipped_movies=20 stored_items=220",
+        "fetched_numbers=240 imported_movies=200 local_hit_movies=20 "
+        "skipped_movies=20 stored_items=220",
     )
 
 

@@ -132,6 +132,69 @@ def test_ranking_sync_service_replaces_scope_items(app):
     ] == ["ABP-003"]
 
 
+def test_ranking_sync_service_skips_javdb_detail_for_existing_local_movies(app):
+    # 本地已有 Movie 时，直接复用 id 写榜单条目，不调 javdb 详情。
+    _create_movie("ABP-201", "MovieLocal201")
+    _create_movie("ABP-202", "MovieLocal202")
+
+    provider = FakeRankingProvider()
+    provider.set_ranking("0", "daily", ["ABP-201", "ABP-202"])
+    # 故意不预置 details：一旦走 javdb 详情会 KeyError，让测试失败。
+    service = RankingSyncService(
+        import_service=FakeCatalogImportService(),
+        providers={"javdb": provider},
+    )
+
+    stats = service.sync_board_period("javdb", "censored", "daily")
+
+    assert stats["fetched_numbers"] == 2
+    assert stats["local_hit_movies"] == 2
+    assert stats["imported_movies"] == 0
+    assert stats["skipped_movies"] == 0
+    assert stats["stored_items"] == 2
+    assert [
+        item.movie_number
+        for item in RankingItem.select()
+        .where(
+            RankingItem.source_key == "javdb",
+            RankingItem.board_key == "censored",
+            RankingItem.period == "daily",
+        )
+        .order_by(RankingItem.rank.asc())
+    ] == ["ABP-201", "ABP-202"]
+
+
+def test_ranking_sync_service_mixes_local_hit_and_remote_fetch(app):
+    # 本地有的复用，没有的走 javdb 详情入库；两种来源都进入 RankingItem。
+    _create_movie("ABP-301", "MovieLocal301")
+
+    provider = FakeRankingProvider()
+    provider.set_ranking("0", "daily", ["ABP-301", "ABP-302"])
+    provider.set_detail("ABP-302", "MovieFresh302")
+    service = RankingSyncService(
+        import_service=FakeCatalogImportService(),
+        providers={"javdb": provider},
+    )
+
+    stats = service.sync_board_period("javdb", "censored", "daily")
+
+    assert stats["fetched_numbers"] == 2
+    assert stats["local_hit_movies"] == 1
+    assert stats["imported_movies"] == 1
+    assert stats["skipped_movies"] == 0
+    assert stats["stored_items"] == 2
+    assert [
+        item.movie_number
+        for item in RankingItem.select()
+        .where(
+            RankingItem.source_key == "javdb",
+            RankingItem.board_key == "censored",
+            RankingItem.period == "daily",
+        )
+        .order_by(RankingItem.rank.asc())
+    ] == ["ABP-301", "ABP-302"]
+
+
 def test_ranking_sync_service_skips_failed_import_items(app):
     provider = FakeRankingProvider()
     provider.set_ranking("0", "daily", ["ABP-001", "ABP-404", "ABP-002"])

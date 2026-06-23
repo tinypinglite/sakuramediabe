@@ -170,6 +170,7 @@ JOB_REGISTRY: list[JobDefinition] = [
             ("failed_targets", "failed_targets", 0),
             ("fetched_numbers", "fetched_numbers", 0),
             ("imported_movies", "imported_movies", 0),
+            ("local_hit_movies", "local_hit_movies", 0),
             ("skipped_movies", "skipped_movies", 0),
             ("stored_items", "stored_items", 0),
         ),

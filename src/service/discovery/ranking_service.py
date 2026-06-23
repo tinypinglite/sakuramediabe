@@ -474,27 +474,45 @@ class RankingSyncService:
             period=normalized_period,
         )
 
+        # 批量查本地已有影片：榜单上大多数番号都已入库，命中后直接复用 Movie.id 写榜单条目，
+        # 避免逐部走 JavDB 详情接口。watched/want/comment/score 等会变化的热度字段由
+        # sync-movie-interactions 任务负责刷新，排行榜任务不再重复拉详情。
+        existing_movies: dict[str, Movie] = {}
+        if movie_numbers:
+            existing_movies = {
+                movie.movie_number: movie
+                for movie in Movie.select(Movie.id, Movie.movie_number).where(
+                    Movie.movie_number.in_(movie_numbers)
+                )
+            }
+
+        local_hit_count = 0
         imported_count = 0
         skipped_count = 0
         insert_rows: list[dict[str, Any]] = []
         for rank, movie_number in enumerate(movie_numbers, start=1):
-            try:
-                detail = self._get_movie_detail(source_key, movie_number)
-                movie = self.import_service.upsert_movie_from_javdb_detail(detail)
-            except Exception as exc:
-                skipped_count += 1
-                logger.warning(
-                    "Ranking sync item skipped source_key={} board_key={} period={} rank={} movie_number={} detail={}",
-                    source_key,
-                    board_key,
-                    normalized_period,
-                    rank,
-                    movie_number,
-                    exc,
-                )
-                continue
+            movie = existing_movies.get(movie_number)
+            if movie is None:
+                # 本地没有的番号才走 JavDB 详情入库
+                try:
+                    detail = self._get_movie_detail(source_key, movie_number)
+                    movie = self.import_service.upsert_movie_from_javdb_detail(detail)
+                except Exception as exc:
+                    skipped_count += 1
+                    logger.warning(
+                        "Ranking sync item skipped source_key={} board_key={} period={} rank={} movie_number={} detail={}",
+                        source_key,
+                        board_key,
+                        normalized_period,
+                        rank,
+                        movie_number,
+                        exc,
+                    )
+                    continue
+                imported_count += 1
+            else:
+                local_hit_count += 1
 
-            imported_count += 1
             insert_rows.append(
                 {
                     "source_key": source_key,
@@ -520,6 +538,7 @@ class RankingSyncService:
             "period": normalized_period,
             "fetched_numbers": len(movie_numbers),
             "imported_movies": imported_count,
+            "local_hit_movies": local_hit_count,
             "skipped_movies": skipped_count,
             "stored_items": stored_count,
         }
@@ -578,6 +597,7 @@ class RankingSyncService:
             "failed_targets": 0,
             "fetched_numbers": 0,
             "imported_movies": 0,
+            "local_hit_movies": 0,
             "skipped_movies": 0,
             "stored_items": 0,
         }
@@ -641,6 +661,7 @@ class RankingSyncService:
             stats["success_targets"] += 1
             stats["fetched_numbers"] += int(target_stats["fetched_numbers"])
             stats["imported_movies"] += int(target_stats["imported_movies"])
+            stats["local_hit_movies"] += int(target_stats["local_hit_movies"])
             stats["skipped_movies"] += int(target_stats["skipped_movies"])
             stats["stored_items"] += int(target_stats["stored_items"])
             completed_targets += 1
