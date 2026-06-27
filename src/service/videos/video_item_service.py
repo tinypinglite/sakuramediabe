@@ -48,6 +48,27 @@ class VideoItemService:
         )
 
     @staticmethod
+    def _parse_resolution(value: str | None) -> tuple[int | None, int | None]:
+        """拆 Media.resolution 字符串（形如 "1920x1080"）为 (width, height)。
+
+        空 / 缺 'x' / 非整数 / 非正值 一律返 (None, None)，由调用方决定回退策略（前端
+        瀑布流回退 16:9）。MediaMetadataProbeService 探测失败时本就不写该字段。
+        """
+        if not value:
+            return (None, None)
+        parts = value.split("x", 1)
+        if len(parts) != 2:
+            return (None, None)
+        try:
+            width = int(parts[0])
+            height = int(parts[1])
+        except ValueError:
+            return (None, None)
+        if width <= 0 or height <= 0:
+            return (None, None)
+        return (width, height)
+
+    @staticmethod
     def _first_media_alias():
         """构造取「条目第一条媒体」的连接素材：每条目 MIN(Media.id) 分组子查询 + Media 别名。
 
@@ -142,6 +163,8 @@ class VideoItemService:
         *,
         duration_seconds: int = 0,
         file_size_bytes: int = 0,
+        cover_width: int | None = None,
+        cover_height: int | None = None,
     ) -> VideoItemListItemResource:
         return VideoItemListItemResource(
             id=video.id,
@@ -153,6 +176,8 @@ class VideoItemService:
             release_date=video.release_date,
             duration_seconds=duration_seconds,
             file_size_bytes=file_size_bytes,
+            cover_width=cover_width,
+            cover_height=cover_height,
             media_count=media_count,
             can_play=can_play,
             created_at=video.created_at,
@@ -182,6 +207,7 @@ class VideoItemService:
                 Image,
                 fn.COALESCE(first_media.duration_seconds, 0).alias("first_duration_seconds"),
                 fn.COALESCE(first_media.file_size_bytes, 0).alias("first_file_size_bytes"),
+                fn.COALESCE(first_media.resolution, "").alias("first_resolution"),
             )
             .join(Image, JOIN.LEFT_OUTER, on=(VideoItem.cover_image == Image.id))
             .switch(VideoItem)
@@ -192,15 +218,19 @@ class VideoItemService:
             .limit(page_size)
         )
         stats = cls._media_stats([video.id for video in videos])
-        items = [
-            cls._to_list_item(
-                video,
-                *stats.get(video.id, (0, False)),
-                duration_seconds=video.first_duration_seconds,
-                file_size_bytes=video.first_file_size_bytes,
+        items = []
+        for video in videos:
+            cover_width, cover_height = cls._parse_resolution(video.first_resolution)
+            items.append(
+                cls._to_list_item(
+                    video,
+                    *stats.get(video.id, (0, False)),
+                    duration_seconds=video.first_duration_seconds,
+                    file_size_bytes=video.first_file_size_bytes,
+                    cover_width=cover_width,
+                    cover_height=cover_height,
+                )
             )
-            for video in videos
-        ]
         return PageResponse[VideoItemListItemResource](
             items=items,
             page=page,
@@ -263,6 +293,9 @@ class VideoItemService:
         can_play = any(media.valid for media in media_items)
         # 时长/大小取第一条媒体（media_items 已按 Media.id 升序），无媒体时为 0。
         first_media = media_items[0] if media_items else None
+        cover_width, cover_height = cls._parse_resolution(
+            first_media.resolution if first_media else None
+        )
         return VideoItemDetailResource(
             id=video.id,
             title=video.title,
@@ -273,6 +306,8 @@ class VideoItemService:
             release_date=video.release_date,
             duration_seconds=first_media.duration_seconds if first_media else 0,
             file_size_bytes=first_media.file_size_bytes if first_media else 0,
+            cover_width=cover_width,
+            cover_height=cover_height,
             media_count=stats_media_count,
             can_play=can_play,
             created_at=video.created_at,

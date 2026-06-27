@@ -217,6 +217,7 @@ class VideoCollectionService:
                 Image,
                 fn.COALESCE(first_media.duration_seconds, 0).alias("first_duration_seconds"),
                 fn.COALESCE(first_media.file_size_bytes, 0).alias("first_file_size_bytes"),
+                fn.COALESCE(first_media.resolution, "").alias("first_resolution"),
                 # 用 COALESCE 包裹才会作为标量挂到 link 上（裸 alias 字段会归到 aliased model）；
                 # 0 作「无媒体」哨兵（media id 恒为正）。
                 fn.COALESCE(first_media.id, 0).alias("play_media_id"),
@@ -243,6 +244,9 @@ class VideoCollectionService:
                 if include_play_url and link.play_media_id
                 else None
             )
+            cover_width, cover_height = VideoItemService._parse_resolution(
+                link.first_resolution
+            )
             items.append(
                 VideoCollectionItemResource(
                     item_id=link.id,
@@ -256,6 +260,8 @@ class VideoCollectionService:
                         can_play,
                         duration_seconds=link.first_duration_seconds,
                         file_size_bytes=link.first_file_size_bytes,
+                        cover_width=cover_width,
+                        cover_height=cover_height,
                     ),
                 )
             )

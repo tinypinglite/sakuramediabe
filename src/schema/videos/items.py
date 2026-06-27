@@ -17,6 +17,10 @@ class VideoItemListItemResource(SchemaModel):
     # 时长 / 文件大小取该条目第一条媒体（Media.id 最小），无媒体时为 0。
     duration_seconds: int = 0
     file_size_bytes: int = 0
+    # 封面像素宽高 = 第一条媒体的探测分辨率（来源：Media.resolution，"WxH" 字符串拆分）。
+    # 用于前端瀑布流按真实比例排版；探测失败或无媒体时为 None，前端回退 16:9 占位。
+    cover_width: int | None = None
+    cover_height: int | None = None
     media_count: int = 0
     can_play: bool = False
     created_at: datetime
