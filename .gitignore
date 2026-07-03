@@ -17,3 +17,6 @@ compose.yaml
 .worktrees
 .claude
 docs/deployment/license.md
+
+.codex
+AGENTS.md

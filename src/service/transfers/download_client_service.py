@@ -2,13 +2,17 @@ import errno
 import os
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
+from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.model import DownloadClient, DownloadTask, Indexer
 from src.schema.transfers.downloads import (
     DownloadClientCreateRequest,
+    DownloadClientProbeStorageTestRequest,
+    DownloadClientProbeTestRequest,
     DownloadClientResource,
     DownloadClientStorageDirectoryMappingResult,
     DownloadClientStorageHardlinkResult,
@@ -28,6 +32,29 @@ from src.service.transfers.common import (
     validate_non_empty,
 )
 from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
+
+
+@dataclass
+class _MediaLibraryView:
+    root_path: str
+
+
+@dataclass
+class _DownloadClientView:
+    """内存态的 client 视图,供 probe 端点复用 test_client / test_storage 核心逻辑。
+
+    字段名与 `DownloadClient` peewee 模型对齐,`QBittorrentClient.from_download_client`
+    与 `_probe_directory_mapping` 等函数通过属性访问即可直接消费。
+    """
+
+    id: int
+    name: str
+    base_url: str
+    username: str
+    password: str
+    client_save_path: str
+    local_root_path: str
+    media_library: _MediaLibraryView
 
 
 class DownloadClientService:
@@ -91,6 +118,19 @@ class DownloadClientService:
         qbittorrent_client_cls=QBittorrentClient,
     ) -> DownloadClientTestResponse:
         client = require_client(client_id)
+        return cls._run_connectivity_probe(
+            client,
+            qbittorrent_client_cls=qbittorrent_client_cls,
+        )
+
+    @classmethod
+    def _run_connectivity_probe(
+        cls,
+        client,
+        *,
+        qbittorrent_client_cls,
+    ) -> DownloadClientTestResponse:
+        """核心连通性探测,同时服务于已落库 client 与 probe 端点的内存态视图。"""
         start_at = time.time()
         try:
             # 只检测 qB Web API 登录与版本接口，不读取种子、不写远端状态。
@@ -116,7 +156,7 @@ class DownloadClientService:
 
     @staticmethod
     def _build_test_response(
-        client: DownloadClient,
+        client,
         *,
         start_at: float,
         healthy: bool,
@@ -145,6 +185,21 @@ class DownloadClientService:
         probe_id: str | None = None,
     ) -> DownloadClientStorageTestResponse:
         client = require_client(client_id)
+        return cls._run_storage_probe(
+            client,
+            qbittorrent_client_cls=qbittorrent_client_cls,
+            probe_id=probe_id,
+        )
+
+    @classmethod
+    def _run_storage_probe(
+        cls,
+        client,
+        *,
+        qbittorrent_client_cls,
+        probe_id: str | None = None,
+    ) -> DownloadClientStorageTestResponse:
+        """核心存储探测,client 可为 peewee 模型或 `_DownloadClientView`。"""
         start_at = time.time()
         probe_id = probe_id or uuid.uuid4().hex
         local_root = Path(client.local_root_path).expanduser()
@@ -290,6 +345,122 @@ class DownloadClientService:
             target_path=str(target_path),
             error=None,
         )
+
+    @classmethod
+    def probe_test(
+        cls,
+        payload: DownloadClientProbeTestRequest,
+        *,
+        qbittorrent_client_cls=QBittorrentClient,
+    ) -> DownloadClientTestResponse:
+        """连通性预检:接受表单 payload,不落库。"""
+        client_view = cls._build_probe_view_for_connectivity(payload)
+        return cls._run_connectivity_probe(
+            client_view,
+            qbittorrent_client_cls=qbittorrent_client_cls,
+        )
+
+    @classmethod
+    def probe_storage_test(
+        cls,
+        payload: DownloadClientProbeStorageTestRequest,
+        *,
+        qbittorrent_client_cls=QBittorrentClient,
+        probe_id: str | None = None,
+    ) -> DownloadClientStorageTestResponse:
+        """目录映射 + 硬链接预检:接受表单 payload,不落库。"""
+        client_view = cls._build_probe_view_for_storage(payload)
+        return cls._run_storage_probe(
+            client_view,
+            qbittorrent_client_cls=qbittorrent_client_cls,
+            probe_id=probe_id,
+        )
+
+    @classmethod
+    def _build_probe_view_for_connectivity(
+        cls,
+        payload: DownloadClientProbeTestRequest,
+    ) -> "_DownloadClientView":
+        base_url = validate_base_url(payload.base_url)
+        username = validate_non_empty(
+            payload.username,
+            "invalid_download_client_username",
+            "Download client username cannot be empty",
+        )
+        password, existing = cls._resolve_probe_password(
+            password=payload.password,
+            client_id=payload.client_id,
+        )
+        return _DownloadClientView(
+            id=existing.id if existing is not None else 0,
+            name=existing.name if existing is not None else "",
+            base_url=base_url,
+            username=username,
+            password=password,
+            client_save_path=existing.client_save_path if existing is not None else "",
+            local_root_path=existing.local_root_path if existing is not None else "",
+            media_library=_MediaLibraryView(
+                root_path=(
+                    existing.media_library.root_path if existing is not None else ""
+                ),
+            ),
+        )
+
+    @classmethod
+    def _build_probe_view_for_storage(
+        cls,
+        payload: DownloadClientProbeStorageTestRequest,
+    ) -> "_DownloadClientView":
+        base_url = validate_base_url(payload.base_url)
+        username = validate_non_empty(
+            payload.username,
+            "invalid_download_client_username",
+            "Download client username cannot be empty",
+        )
+        client_save_path = validate_absolute_path(
+            payload.client_save_path,
+            field_name="client_save_path",
+        )
+        local_root_path = validate_absolute_path(
+            payload.local_root_path,
+            field_name="local_root_path",
+        )
+        media_library_id = validate_media_library_id(payload.media_library_id)
+        library = require_media_library(media_library_id)
+        password, existing = cls._resolve_probe_password(
+            password=payload.password,
+            client_id=payload.client_id,
+        )
+        return _DownloadClientView(
+            id=existing.id if existing is not None else 0,
+            name=existing.name if existing is not None else "",
+            base_url=base_url,
+            username=username,
+            password=password,
+            client_save_path=client_save_path,
+            local_root_path=local_root_path,
+            media_library=_MediaLibraryView(root_path=library.root_path),
+        )
+
+    @staticmethod
+    def _resolve_probe_password(
+        *,
+        password: Optional[str],
+        client_id: Optional[int],
+    ) -> tuple[str, Optional[DownloadClient]]:
+        """合并密码:留空则要求 client_id,从 DB 取原密码;否则密码必填。"""
+        normalized = (password or "").strip()
+        if normalized:
+            existing = require_client(client_id) if client_id else None
+            return normalized, existing
+        if not client_id:
+            raise ApiError(
+                422,
+                "invalid_download_client_password",
+                "Download client password cannot be empty",
+            )
+        existing = require_client(client_id)
+        return existing.password, existing
 
     @staticmethod
     def _join_remote_path(root: str, *parts: str) -> str:

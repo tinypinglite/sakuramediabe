@@ -19,6 +19,8 @@ from src.model import (
 from src.schema.transfers.downloads import (
     DownloadCandidateResource,
     DownloadClientCreateRequest,
+    DownloadClientProbeStorageTestRequest,
+    DownloadClientProbeTestRequest,
     DownloadClientUpdateRequest,
     DownloadRequestCreateResponse,
     DownloadRequestCreateRequest,
@@ -540,6 +542,163 @@ def test_download_client_service_storage_test_does_not_delete_existing_probe_dir
     assert result.healthy is False
     assert result.directory_mapping.error.type == "filesystem_error"
     assert existing_probe_dir.is_dir()
+
+
+def test_download_client_service_probe_test_uses_payload_password(download_tables):
+    _create_library()
+
+    captured = {}
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            captured["base_url"] = download_client.base_url
+            captured["username"] = download_client.username
+            captured["password"] = download_client.password
+            return cls()
+
+        def inspect_status(self):
+            return {"version": "5.0.4", "web_api_version": "2.11.4"}
+
+    result = DownloadClientService.probe_test(
+        DownloadClientProbeTestRequest(
+            base_url="http://qb.example.com",
+            username="alice",
+            password="fresh-secret",
+        ),
+        qbittorrent_client_cls=FakeQBittorrentClient,
+    )
+
+    assert result.healthy is True
+    assert result.client_id == 0
+    assert result.client_name == ""
+    assert result.base_url == "http://qb.example.com"
+    assert captured["password"] == "fresh-secret"
+
+
+def test_download_client_service_probe_test_merges_password_from_db(download_tables):
+    library = _create_library()
+    existing = _create_client(library, name="client-a", password="db-secret")
+
+    captured = {}
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            captured["password"] = download_client.password
+            return cls()
+
+        def inspect_status(self):
+            return {"version": "5.0.4", "web_api_version": "2.11.4"}
+
+    result = DownloadClientService.probe_test(
+        DownloadClientProbeTestRequest(
+            base_url="http://qb.example.com",
+            username="alice",
+            password=None,
+            client_id=existing.id,
+        ),
+        qbittorrent_client_cls=FakeQBittorrentClient,
+    )
+
+    assert result.healthy is True
+    assert captured["password"] == "db-secret"
+
+
+def test_download_client_service_probe_test_rejects_empty_password_without_client_id(download_tables):
+    with pytest.raises(ApiError) as exc_info:
+        DownloadClientService.probe_test(
+            DownloadClientProbeTestRequest(
+                base_url="http://qb.example.com",
+                username="alice",
+                password=None,
+            ),
+        )
+    assert exc_info.value.code == "invalid_download_client_password"
+
+
+def test_download_client_service_probe_storage_test_uses_payload_paths(download_tables, tmp_path):
+    library = _create_library(root_path=str(tmp_path / "library"))
+    (tmp_path / "downloads").mkdir()
+    (tmp_path / "library").mkdir()
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            assert download_client.base_url == "http://qb.example.com"
+            assert download_client.password == "fresh-secret"
+            return cls()
+
+        def list_directory_names(self, directory_path):
+            assert directory_path == "/downloads/a/.sakuramedia-diagnostics/probe-new"
+            return ["sentinel.txt"]
+
+    result = DownloadClientService.probe_storage_test(
+        DownloadClientProbeStorageTestRequest(
+            base_url="http://qb.example.com",
+            username="alice",
+            password="fresh-secret",
+            client_save_path="/downloads/a",
+            local_root_path=str(tmp_path / "downloads"),
+            media_library_id=library.id,
+        ),
+        qbittorrent_client_cls=FakeQBittorrentClient,
+        probe_id="probe-new",
+    )
+
+    assert result.healthy is True
+    assert result.client_id == 0
+    assert result.directory_mapping.status == "ok"
+    assert result.hardlink.status == "ok"
+
+
+def test_download_client_service_probe_storage_test_merges_password_from_db(download_tables, tmp_path):
+    library = _create_library(root_path=str(tmp_path / "library"))
+    existing = _create_client(library, name="client-a", password="db-secret")
+    (tmp_path / "downloads").mkdir()
+    (tmp_path / "library").mkdir()
+
+    captured = {}
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            captured["password"] = download_client.password
+            return cls()
+
+        def list_directory_names(self, directory_path):
+            return ["sentinel.txt"]
+
+    DownloadClientService.probe_storage_test(
+        DownloadClientProbeStorageTestRequest(
+            base_url="http://qb.example.com",
+            username="alice",
+            password=None,
+            client_save_path="/downloads/a",
+            local_root_path=str(tmp_path / "downloads"),
+            media_library_id=library.id,
+            client_id=existing.id,
+        ),
+        qbittorrent_client_cls=FakeQBittorrentClient,
+        probe_id="probe-merge",
+    )
+
+    assert captured["password"] == "db-secret"
+
+
+def test_download_client_service_probe_storage_test_rejects_missing_media_library(download_tables, tmp_path):
+    with pytest.raises(ApiError) as exc_info:
+        DownloadClientService.probe_storage_test(
+            DownloadClientProbeStorageTestRequest(
+                base_url="http://qb.example.com",
+                username="alice",
+                password="secret",
+                client_save_path="/downloads/a",
+                local_root_path=str(tmp_path / "downloads"),
+                media_library_id=404,
+            ),
+        )
+    assert exc_info.value.code == "media_library_not_found"
 
 
 def test_jackett_client_parses_and_sorts_candidates(download_tables):

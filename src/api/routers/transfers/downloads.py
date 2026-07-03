@@ -9,6 +9,8 @@ from src.schema.transfers.downloads import (
     DownloadCandidateResource,
     DownloadCandidatesQuery,
     DownloadClientCreateRequest,
+    DownloadClientProbeStorageTestRequest,
+    DownloadClientProbeTestRequest,
     DownloadClientResource,
     DownloadClientStorageTestResponse,
     DownloadClientTestResponse,
@@ -43,6 +45,27 @@ def create_download_client(
     current_user=Depends(get_current_user),
 ):
     return DownloadClientService.create_client(payload)
+
+
+# 注意:probe/* 静态路径必须声明在 {client_id} 参数化路径之前,
+# 否则 FastAPI 会先尝试用 "probe" 匹配 client_id: int 并返回 422。
+@router.post("/download-clients/probe/test", response_model=DownloadClientTestResponse)
+def probe_test_download_client(
+    payload: DownloadClientProbeTestRequest,
+    current_user=Depends(get_current_user),
+):
+    return DownloadClientService.probe_test(payload)
+
+
+@router.post(
+    "/download-clients/probe/storage-test",
+    response_model=DownloadClientStorageTestResponse,
+)
+def probe_test_download_client_storage(
+    payload: DownloadClientProbeStorageTestRequest,
+    current_user=Depends(get_current_user),
+):
+    return DownloadClientService.probe_storage_test(payload)
 
 
 @router.patch("/download-clients/{client_id}", response_model=DownloadClientResource)

@@ -25,6 +25,8 @@ def test_download_endpoints_require_authentication(client):
     assert client.delete("/download-clients/1").status_code == 401
     assert client.get("/download-clients/1/test").status_code == 401
     assert client.post("/download-clients/1/storage-test").status_code == 401
+    assert client.post("/download-clients/probe/test", json={}).status_code == 401
+    assert client.post("/download-clients/probe/storage-test", json={}).status_code == 401
     assert client.get("/download-candidates", params={"movie_number": "ABC-001"}).status_code == 401
     assert client.post("/download-requests", json={}).status_code == 401
 
@@ -281,6 +283,106 @@ def test_download_client_storage_test_api_returns_warning_result(client, account
     assert data["healthy"] is True
     assert data["hardlink"]["status"] == "failed"
     assert data["warnings"] == ["下载目录到媒体库不支持硬链接，导入会回退为复制"]
+
+
+def test_download_client_probe_test_api_forwards_payload(client, account_user, monkeypatch):
+    token = _login(client, username=account_user.username)
+
+    captured = {}
+
+    def fake_probe_test(payload):
+        captured["payload"] = payload
+        return DownloadClientTestResponse(
+            healthy=True,
+            checked_at="2026-03-10T08:00:00",
+            client_id=0,
+            client_name="",
+            base_url=payload.base_url,
+            elapsed_ms=8,
+            version="5.0.4",
+            web_api_version="2.11.4",
+        )
+
+    monkeypatch.setattr(
+        "src.api.routers.transfers.downloads.DownloadClientService.probe_test",
+        staticmethod(fake_probe_test),
+    )
+
+    response = client.post(
+        "/download-clients/probe/test",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "base_url": "http://qb.example.com",
+            "username": "alice",
+            "password": "fresh",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["healthy"] is True
+    assert data["client_id"] == 0
+    assert data["client_name"] == ""
+    assert data["base_url"] == "http://qb.example.com"
+    assert captured["payload"].password == "fresh"
+    assert captured["payload"].client_id is None
+
+
+def test_download_client_probe_storage_test_api_forwards_payload(client, account_user, monkeypatch):
+    token = _login(client, username=account_user.username)
+
+    captured = {}
+
+    def fake_probe_storage(payload):
+        captured["payload"] = payload
+        return DownloadClientStorageTestResponse(
+            healthy=True,
+            checked_at="2026-03-10T08:00:00",
+            client_id=payload.client_id or 0,
+            client_name="",
+            elapsed_ms=15,
+            warnings=[],
+            directory_mapping=DownloadClientStorageDirectoryMappingResult(
+                status="ok",
+                client_save_path=payload.client_save_path,
+                local_root_path=payload.local_root_path,
+                probe_remote_dir="/downloads/a/.sakuramedia-diagnostics/probe",
+                probe_local_dir="/mnt/downloads/a/.sakuramedia-diagnostics/probe",
+                sentinel_visible_to_qb=True,
+            ),
+            hardlink=DownloadClientStorageHardlinkResult(
+                status="ok",
+                supported=True,
+                source_path="/mnt/downloads/a/.sakuramedia-diagnostics/probe/sentinel.txt",
+                target_path="/library/.sakuramedia-diagnostics/probe/sentinel.link",
+            ),
+        )
+
+    monkeypatch.setattr(
+        "src.api.routers.transfers.downloads.DownloadClientService.probe_storage_test",
+        staticmethod(fake_probe_storage),
+    )
+
+    response = client.post(
+        "/download-clients/probe/storage-test",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "base_url": "http://qb.example.com",
+            "username": "alice",
+            "password": None,
+            "client_save_path": "/downloads/a",
+            "local_root_path": "/mnt/downloads/a",
+            "media_library_id": 7,
+            "client_id": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["healthy"] is True
+    assert data["directory_mapping"]["client_save_path"] == "/downloads/a"
+    assert captured["payload"].client_id == 3
+    assert captured["payload"].password is None
 
 
 def test_download_candidates_api_uses_search_service(client, account_user, monkeypatch):

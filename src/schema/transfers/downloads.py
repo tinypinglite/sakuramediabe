@@ -113,6 +113,36 @@ class DownloadClientStorageTestResponse(SchemaModel):
     hardlink: DownloadClientStorageHardlinkResult
 
 
+class DownloadClientProbeTestRequest(SchemaModel):
+    """连通性预检 payload。
+
+    - `password` 可为空/缺省;此时必须提供 `client_id`,后端从 DB 合并原密码
+      (对齐"编辑时密码留空=不改"约定)。
+    - `client_id` 仅用于取原密码;probe 端点不会落库。
+    """
+
+    base_url: str
+    username: str
+    password: Optional[str] = None
+    client_id: Optional[int] = None
+
+
+class DownloadClientProbeStorageTestRequest(SchemaModel):
+    """目录映射 + 硬链接预检 payload。
+
+    - `password` 处理规则同 `DownloadClientProbeTestRequest`。
+    - `media_library_id` 决定硬链接目标根路径 (probe 端点不会落库)。
+    """
+
+    base_url: str
+    username: str
+    password: Optional[str] = None
+    client_save_path: str
+    local_root_path: str
+    media_library_id: int
+    client_id: Optional[int] = None
+
+
 class DownloadCandidateResource(SchemaModel):
     source: str
     indexer_name: str
