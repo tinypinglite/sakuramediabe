@@ -45,6 +45,20 @@ class FakeQbClient:
         info_hash = (torrent_hashes or [""])[0]
         return [FakeTorrent(info_hash)]
 
+    def app_version(self):
+        return "5.0.4"
+
+    def app_web_api_version(self):
+        return "2.11.4"
+
+    def app_get_directory_content(self, directory_path):
+        return [
+            "sentinel.txt",
+            {"name": "sentinel.txt"},
+            {"path": f"{directory_path}/nested"},
+            _DirectoryEntry("object-file.txt"),
+        ]
+
 
 class FakeHttpResponse:
     def __init__(self, content: bytes):
@@ -183,6 +197,62 @@ def test_add_candidate_requires_source():
             rename="MIAB-317",
             client_id=1,
         )
+
+
+def test_inspect_status_reads_qb_versions():
+    client = _make_client()
+
+    result = client.inspect_status()
+
+    assert result == {
+        "version": "5.0.4",
+        "web_api_version": "2.11.4",
+    }
+
+
+def test_inspect_status_wraps_qb_errors():
+    class FakeQb:
+        def auth_log_in(self):
+            pass
+
+        def app_version(self):
+            raise RuntimeError("version unavailable")
+
+    client = _make_client(qb=FakeQb())
+
+    with pytest.raises(QBittorrentClientError) as exc_info:
+        client.inspect_status()
+
+    assert str(exc_info.value) == "version unavailable"
+
+
+class _DirectoryEntry:
+    def __init__(self, name):
+        self.name = name
+
+
+def test_list_directory_names_normalizes_dict_and_object_entries():
+    client = _make_client()
+
+    names = client.list_directory_names("/downloads/probe")
+
+    assert names == ["sentinel.txt", "sentinel.txt", "nested", "object-file.txt"]
+
+
+def test_list_directory_names_wraps_qb_errors():
+    class FakeQb:
+        def auth_log_in(self):
+            pass
+
+        def app_get_directory_content(self, directory_path):
+            raise RuntimeError("directory not found")
+
+    client = _make_client(qb=FakeQb())
+
+    with pytest.raises(QBittorrentClientError) as exc_info:
+        client.list_directory_names("/downloads/probe")
+
+    assert str(exc_info.value) == "directory not found"
 
 
 class _FileNoIndex:

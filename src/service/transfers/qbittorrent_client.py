@@ -5,7 +5,6 @@ from typing import List, Optional
 import httpx
 import libtorrent as lt
 import qbittorrentapi
-from loguru import logger
 
 from src.model import DownloadClient
 from src.service.transfers.common import CLIENT_QB_TAG_PREFIX, SYSTEM_QB_TAG
@@ -118,6 +117,33 @@ class QBittorrentClient:
             if client_tag in normalized_tags:
                 result.append(self._to_dict(item))
         return result
+
+    def inspect_status(self) -> dict:
+        """只读探测 qBittorrent Web API 可用性，返回基础版本信息。"""
+        self._login()
+        try:
+            version = self.client.app_version()
+            web_api_version = self.client.app_web_api_version()
+        except Exception as exc:
+            raise QBittorrentClientError(str(exc)) from exc
+        return {
+            "version": str(version) if version is not None else None,
+            "web_api_version": str(web_api_version) if web_api_version is not None else None,
+        }
+
+    def list_directory_names(self, directory_path: str) -> List[str]:
+        """读取 qBittorrent 视角下的目录内容，并归一化为条目名称列表。"""
+        self._login()
+        try:
+            entries = self.client.app_get_directory_content(directory_path)
+        except Exception as exc:
+            raise QBittorrentClientError(str(exc)) from exc
+        names = []
+        for item in entries:
+            name = self._directory_entry_name(item)
+            if name:
+                names.append(name)
+        return names
 
     def list_torrent_files(self, info_hash: str) -> List[dict]:
         # 取单个种子的文件列表，归一化成业务侧需要的字段，屏蔽 qbittorrentapi 的对象结构。
@@ -247,6 +273,19 @@ class QBittorrentClient:
         # qBittorrent 5.x：返回 JSON 元数据(TorrentsAddedMetadata)，按 failure_count 判定失败
         if response.get("failure_count", 0):
             raise QBittorrentClientError(f"qBittorrent add failed: {response}")
+
+    @staticmethod
+    def _directory_entry_name(entry) -> str:
+        if isinstance(entry, str):
+            raw_name = entry
+        elif isinstance(entry, dict):
+            raw_name = entry.get("name") or entry.get("path") or ""
+        else:
+            raw_name = getattr(entry, "name", None) or getattr(entry, "path", "")
+        text = str(raw_name or "").strip()
+        if not text:
+            return ""
+        return text.replace("\\", "/").rstrip("/").split("/")[-1]
 
     @staticmethod
     def _to_dict(torrent) -> dict:

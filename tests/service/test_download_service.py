@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pytest
 
 from src.api.exception.errors import ApiError
@@ -283,6 +281,266 @@ def test_download_client_service_reports_validation_errors(download_tables):
             )
         )
     assert invalid_path.value.code == "invalid_download_client_client_save_path"
+
+
+def test_download_client_service_test_client_reports_qb_status(download_tables):
+    library = _create_library()
+    client = _create_client(library)
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            assert download_client.id == client.id
+            return cls()
+
+        def inspect_status(self):
+            return {
+                "version": "5.0.4",
+                "web_api_version": "2.11.4",
+            }
+
+    result = DownloadClientService.test_client(
+        client.id,
+        qbittorrent_client_cls=FakeQBittorrentClient,
+    )
+
+    assert result.healthy is True
+    assert result.client_id == client.id
+    assert result.client_name == "client-a"
+    assert result.base_url == "http://localhost:8080"
+    assert result.version == "5.0.4"
+    assert result.web_api_version == "2.11.4"
+    assert result.error is None
+
+
+def test_download_client_service_test_client_returns_unhealthy_on_qb_error(download_tables):
+    library = _create_library()
+    client = _create_client(library)
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls()
+
+        def inspect_status(self):
+            raise QBittorrentClientError("login failed")
+
+    result = DownloadClientService.test_client(
+        client.id,
+        qbittorrent_client_cls=FakeQBittorrentClient,
+    )
+
+    assert result.healthy is False
+    assert result.version is None
+    assert result.web_api_version is None
+    assert result.error is not None
+    assert result.error.type == "qbittorrent_request_error"
+    assert result.error.message == "login failed"
+
+
+def test_download_client_service_test_client_requires_existing_client(download_tables):
+    with pytest.raises(ApiError) as exc_info:
+        DownloadClientService.test_client(404)
+
+    assert exc_info.value.code == "download_client_not_found"
+
+
+def test_download_client_service_storage_test_reports_mapping_and_hardlink_ok(download_tables, tmp_path):
+    library = _create_library(root_path=str(tmp_path / "library"))
+    client = _create_client(library, name="client-storage")
+    client.local_root_path = str(tmp_path / "downloads")
+    client.save()
+    (tmp_path / "downloads").mkdir()
+    (tmp_path / "library").mkdir()
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            assert download_client.id == client.id
+            return cls()
+
+        def list_directory_names(self, directory_path):
+            assert directory_path == "/downloads/a/.sakuramedia-diagnostics/probe-ok"
+            return ["sentinel.txt"]
+
+    result = DownloadClientService.test_storage(
+        client.id,
+        qbittorrent_client_cls=FakeQBittorrentClient,
+        probe_id="probe-ok",
+    )
+
+    assert result.healthy is True
+    assert result.directory_mapping.status == "ok"
+    assert result.directory_mapping.sentinel_visible_to_qb is True
+    assert result.hardlink.status == "ok"
+    assert result.hardlink.supported is True
+    assert result.warnings == []
+    assert not (tmp_path / "downloads" / ".sakuramedia-diagnostics" / "probe-ok").exists()
+    assert not (tmp_path / "library" / ".sakuramedia-diagnostics" / "probe-ok").exists()
+
+
+def test_download_client_service_storage_test_fails_when_sentinel_invisible(download_tables, tmp_path):
+    library = _create_library(root_path=str(tmp_path / "library"))
+    client = _create_client(library, name="client-storage")
+    client.local_root_path = str(tmp_path / "downloads")
+    client.save()
+    (tmp_path / "downloads").mkdir()
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls()
+
+        def list_directory_names(self, directory_path):
+            return ["other.txt"]
+
+    result = DownloadClientService.test_storage(
+        client.id,
+        qbittorrent_client_cls=FakeQBittorrentClient,
+        probe_id="probe-missing",
+    )
+
+    assert result.healthy is False
+    assert result.directory_mapping.status == "failed"
+    assert result.directory_mapping.sentinel_visible_to_qb is False
+    assert result.directory_mapping.error.type == "sentinel_not_visible_to_qb"
+    assert result.hardlink.status == "skipped"
+    assert not (tmp_path / "downloads" / ".sakuramedia-diagnostics" / "probe-missing").exists()
+
+
+def test_download_client_service_storage_test_reports_qb_directory_error(download_tables, tmp_path):
+    library = _create_library(root_path=str(tmp_path / "library"))
+    client = _create_client(library, name="client-storage")
+    client.local_root_path = str(tmp_path / "downloads")
+    client.save()
+    (tmp_path / "downloads").mkdir()
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls()
+
+        def list_directory_names(self, directory_path):
+            raise QBittorrentClientError("directory not found")
+
+    result = DownloadClientService.test_storage(
+        client.id,
+        qbittorrent_client_cls=FakeQBittorrentClient,
+        probe_id="probe-error",
+    )
+
+    assert result.healthy is False
+    assert result.directory_mapping.error.type == "qbittorrent_request_error"
+    assert result.directory_mapping.error.message == "directory not found"
+    assert result.hardlink.status == "skipped"
+    assert not (tmp_path / "downloads" / ".sakuramedia-diagnostics" / "probe-error").exists()
+
+
+def test_download_client_service_storage_test_reports_missing_local_root(download_tables, tmp_path):
+    library = _create_library(root_path=str(tmp_path / "library"))
+    client = _create_client(library, name="client-storage")
+    client.local_root_path = str(tmp_path / "missing-downloads")
+    client.save()
+
+    result = DownloadClientService.test_storage(
+        client.id,
+        qbittorrent_client_cls=object,
+        probe_id="probe-missing-root",
+    )
+
+    assert result.healthy is False
+    assert result.directory_mapping.error.type == "local_root_path_not_accessible"
+    assert result.hardlink.status == "skipped"
+
+
+def test_download_client_service_storage_test_warns_when_hardlink_fails(
+    download_tables,
+    tmp_path,
+    monkeypatch,
+):
+    library = _create_library(root_path=str(tmp_path / "library"))
+    client = _create_client(library, name="client-storage")
+    client.local_root_path = str(tmp_path / "downloads")
+    client.save()
+    (tmp_path / "downloads").mkdir()
+    (tmp_path / "library").mkdir()
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls()
+
+        def list_directory_names(self, directory_path):
+            return ["sentinel.txt"]
+
+    def raise_cross_device(source, target):
+        raise OSError("Invalid cross-device link")
+
+    monkeypatch.setattr("src.service.transfers.download_client_service.os.link", raise_cross_device)
+
+    result = DownloadClientService.test_storage(
+        client.id,
+        qbittorrent_client_cls=FakeQBittorrentClient,
+        probe_id="probe-hardlink-fail",
+    )
+
+    assert result.healthy is True
+    assert result.directory_mapping.status == "ok"
+    assert result.hardlink.status == "failed"
+    assert result.hardlink.supported is False
+    assert result.hardlink.error.type == "hardlink_not_supported"
+    assert result.warnings == ["下载目录到媒体库不支持硬链接，导入会回退为复制"]
+    assert not (tmp_path / "downloads" / ".sakuramedia-diagnostics" / "probe-hardlink-fail").exists()
+    assert not (tmp_path / "library" / ".sakuramedia-diagnostics" / "probe-hardlink-fail").exists()
+
+
+def test_download_client_service_storage_test_keeps_existing_diagnostic_parent(download_tables, tmp_path):
+    library = _create_library(root_path=str(tmp_path / "library"))
+    client = _create_client(library, name="client-storage")
+    client.local_root_path = str(tmp_path / "downloads")
+    client.save()
+    (tmp_path / "downloads" / ".sakuramedia-diagnostics").mkdir(parents=True)
+    (tmp_path / "library" / ".sakuramedia-diagnostics").mkdir(parents=True)
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls()
+
+        def list_directory_names(self, directory_path):
+            return ["sentinel.txt"]
+
+    result = DownloadClientService.test_storage(
+        client.id,
+        qbittorrent_client_cls=FakeQBittorrentClient,
+        probe_id="probe-existing-parent",
+    )
+
+    assert result.healthy is True
+    assert (tmp_path / "downloads" / ".sakuramedia-diagnostics").is_dir()
+    assert (tmp_path / "library" / ".sakuramedia-diagnostics").is_dir()
+    assert not (tmp_path / "downloads" / ".sakuramedia-diagnostics" / "probe-existing-parent").exists()
+    assert not (tmp_path / "library" / ".sakuramedia-diagnostics" / "probe-existing-parent").exists()
+
+
+def test_download_client_service_storage_test_does_not_delete_existing_probe_dir(download_tables, tmp_path):
+    library = _create_library(root_path=str(tmp_path / "library"))
+    client = _create_client(library, name="client-storage")
+    client.local_root_path = str(tmp_path / "downloads")
+    client.save()
+    existing_probe_dir = tmp_path / "downloads" / ".sakuramedia-diagnostics" / "probe-collision"
+    existing_probe_dir.mkdir(parents=True)
+
+    result = DownloadClientService.test_storage(
+        client.id,
+        qbittorrent_client_cls=object,
+        probe_id="probe-collision",
+    )
+
+    assert result.healthy is False
+    assert result.directory_mapping.error.type == "filesystem_error"
+    assert existing_probe_dir.is_dir()
+
 
 def test_jackett_client_parses_and_sorts_candidates(download_tables):
     class FakeResponse:
@@ -1319,7 +1577,7 @@ def test_download_task_service_trigger_import_rejects_non_completed_or_duplicate
 
     with pytest.raises(ApiError) as invalid_state:
         DownloadTaskService.trigger_import(pending_task.id)
-    with pytest.raises(ApiError) as conflict:
+    with pytest.raises(ApiError):
         DownloadTaskService.trigger_import(running_task.id)
 
     assert invalid_state.value.code == "invalid_download_task_import"

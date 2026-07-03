@@ -184,6 +184,8 @@
 | `POST` | `/download-clients` | 创建下载客户端配置 |
 | `PATCH` | `/download-clients/{client_id}` | 更新下载客户端配置 |
 | `DELETE` | `/download-clients/{client_id}` | 删除下载客户端配置 |
+| `GET` | `/download-clients/{client_id}/test` | 测试 qBittorrent Web API 可用性 |
+| `POST` | `/download-clients/{client_id}/storage-test` | 测试下载目录映射与硬链接能力 |
 | `GET` | `/download-candidates` | 搜索番号的候选资源 |
 | `POST` | `/download-requests` | 向指定客户端提交下载 |
 
@@ -345,6 +347,160 @@
 - `401 Unauthorized`: 未认证
 - `404 Not Found`: 下载客户端不存在
 - `409 Conflict`: 仍有关联下载任务，无法删除
+
+### Endpoint
+
+`GET /download-clients/{client_id}/test`
+
+### Purpose
+
+实时测试下载客户端对应的 qBittorrent Web API 是否可用。
+
+该接口只执行只读检测：登录 qBittorrent，并读取 qBittorrent 应用版本与 Web API 版本。它不会读取种子列表、不会添加下载任务、不会修改远端标签，也不会检查 `client_save_path` / `local_root_path` 路径映射或硬链接能力。
+
+### Auth
+
+需要 Bearer Token。
+
+### Path Params
+
+- `client_id`: 下载客户端 ID
+
+### Success Responses
+
+- `200 OK`: 始终返回本次检测结果；qBittorrent 不可用时通过 `healthy=false` 与 `error` 字段表达
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `404 Not Found`: 下载客户端不存在
+
+### Example Response
+
+```json
+{
+  "healthy": true,
+  "checked_at": "2026-07-03T12:00:00",
+  "client_id": 1,
+  "client_name": "client-a",
+  "base_url": "http://localhost:8080",
+  "elapsed_ms": 18,
+  "version": "5.0.4",
+  "web_api_version": "2.11.4",
+  "error": null
+}
+```
+
+失败示例：
+
+```json
+{
+  "healthy": false,
+  "checked_at": "2026-07-03T12:00:00",
+  "client_id": 1,
+  "client_name": "client-a",
+  "base_url": "http://localhost:8080",
+  "elapsed_ms": 1002,
+  "version": null,
+  "web_api_version": null,
+  "error": {
+    "type": "qbittorrent_request_error",
+    "message": "login failed"
+  }
+}
+```
+
+### Endpoint
+
+`POST /download-clients/{client_id}/storage-test`
+
+### Purpose
+
+主动测试下载客户端的目录映射与硬链接能力。
+
+该接口会在后端可见的 `local_root_path/.sakuramedia-diagnostics/<uuid>/` 下创建哨兵文件，再通过 qBittorrent 的目录读取接口检查 qB 视角下的 `client_save_path/.sakuramedia-diagnostics/<uuid>/` 是否能看到同名文件。若 qB 能看到哨兵文件，则认为 `local_root_path` 与 `client_save_path` 映射到同一目录。
+
+目录映射通过后，接口会尝试从哨兵文件硬链接到绑定媒体库 `root_path/.sakuramedia-diagnostics/<uuid>/sentinel.link`，用于判断后续导入是否能使用硬链接。硬链接失败不会使整体检测失败，因为导入流程会回退为复制，但响应会返回 warning。
+
+该接口不检测 qBittorrent 默认保存路径。无论检测成功或失败，后端都会尽力清理本次创建的哨兵文件、硬链接目标和空诊断目录。
+
+### Auth
+
+需要 Bearer Token。
+
+### Path Params
+
+- `client_id`: 下载客户端 ID
+
+### Success Responses
+
+- `200 OK`: 始终返回本次检测结果；目录映射失败时 `healthy=false`，硬链接失败时 `healthy=true` 且包含 `warnings`
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `404 Not Found`: 下载客户端不存在
+
+### Example Response
+
+```json
+{
+  "healthy": true,
+  "checked_at": "2026-07-03T12:05:00",
+  "client_id": 1,
+  "client_name": "client-a",
+  "elapsed_ms": 24,
+  "warnings": [],
+  "directory_mapping": {
+    "status": "ok",
+    "client_save_path": "/downloads/a",
+    "local_root_path": "/mnt/qb/downloads/a",
+    "probe_remote_dir": "/downloads/a/.sakuramedia-diagnostics/4f9b",
+    "probe_local_dir": "/mnt/qb/downloads/a/.sakuramedia-diagnostics/4f9b",
+    "sentinel_visible_to_qb": true,
+    "error": null
+  },
+  "hardlink": {
+    "status": "ok",
+    "supported": true,
+    "source_path": "/mnt/qb/downloads/a/.sakuramedia-diagnostics/4f9b/sentinel.txt",
+    "target_path": "/media/library/main/.sakuramedia-diagnostics/4f9b/sentinel.link",
+    "error": null
+  }
+}
+```
+
+硬链接失败示例：
+
+```json
+{
+  "healthy": true,
+  "checked_at": "2026-07-03T12:05:00",
+  "client_id": 1,
+  "client_name": "client-a",
+  "elapsed_ms": 31,
+  "warnings": ["下载目录到媒体库不支持硬链接，导入会回退为复制"],
+  "directory_mapping": {
+    "status": "ok",
+    "client_save_path": "/downloads/a",
+    "local_root_path": "/mnt/qb/downloads/a",
+    "probe_remote_dir": "/downloads/a/.sakuramedia-diagnostics/4f9b",
+    "probe_local_dir": "/mnt/qb/downloads/a/.sakuramedia-diagnostics/4f9b",
+    "sentinel_visible_to_qb": true,
+    "error": null
+  },
+  "hardlink": {
+    "status": "failed",
+    "supported": false,
+    "source_path": "/mnt/qb/downloads/a/.sakuramedia-diagnostics/4f9b/sentinel.txt",
+    "target_path": "/media/library/main/.sakuramedia-diagnostics/4f9b/sentinel.link",
+    "error": {
+      "type": "hardlink_not_supported",
+      "message": "Invalid cross-device link"
+    }
+  }
+}
+```
 
 ### Endpoint
 

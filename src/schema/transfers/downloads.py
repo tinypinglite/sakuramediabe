@@ -62,6 +62,57 @@ class DownloadClientUpdateRequest(SchemaModel):
     media_library_id: Optional[int] = None
 
 
+class DownloadClientTestError(SchemaModel):
+    type: str
+    message: str
+
+
+class DownloadClientTestResponse(SchemaModel):
+    healthy: bool
+    checked_at: datetime
+    client_id: int
+    client_name: str
+    base_url: str
+    elapsed_ms: int
+    version: Optional[str] = None
+    web_api_version: Optional[str] = None
+    error: Optional[DownloadClientTestError] = None
+
+
+class DownloadClientStorageTestError(SchemaModel):
+    type: str
+    message: str
+
+
+class DownloadClientStorageDirectoryMappingResult(SchemaModel):
+    status: str
+    client_save_path: str
+    local_root_path: str
+    probe_remote_dir: str
+    probe_local_dir: str
+    sentinel_visible_to_qb: bool
+    error: Optional[DownloadClientStorageTestError] = None
+
+
+class DownloadClientStorageHardlinkResult(SchemaModel):
+    status: str
+    supported: bool
+    source_path: str
+    target_path: str
+    error: Optional[DownloadClientStorageTestError] = None
+
+
+class DownloadClientStorageTestResponse(SchemaModel):
+    healthy: bool
+    checked_at: datetime
+    client_id: int
+    client_name: str
+    elapsed_ms: int
+    warnings: List[str] = []
+    directory_mapping: DownloadClientStorageDirectoryMappingResult
+    hardlink: DownloadClientStorageHardlinkResult
+
+
 class DownloadCandidateResource(SchemaModel):
     source: str
     indexer_name: str

@@ -10,6 +10,8 @@ from src.schema.transfers.downloads import (
     DownloadCandidatesQuery,
     DownloadClientCreateRequest,
     DownloadClientResource,
+    DownloadClientStorageTestResponse,
+    DownloadClientTestResponse,
     DownloadClientUpdateRequest,
     DownloadRequestCreateRequest,
     DownloadRequestCreateResponse,
@@ -56,6 +58,16 @@ def update_download_client(
 def delete_download_client(client_id: int, current_user=Depends(get_current_user)):
     DownloadClientService.delete_client(client_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/download-clients/{client_id}/test", response_model=DownloadClientTestResponse)
+def test_download_client(client_id: int, current_user=Depends(get_current_user)):
+    return DownloadClientService.test_client(client_id)
+
+
+@router.post("/download-clients/{client_id}/storage-test", response_model=DownloadClientStorageTestResponse)
+def test_download_client_storage(client_id: int, current_user=Depends(get_current_user)):
+    return DownloadClientService.test_storage(client_id)
 
 
 @router.get("/download-candidates", response_model=List[DownloadCandidateResource])

@@ -1,6 +1,10 @@
 from src.api.exception.errors import ApiError
 from src.model import DownloadClient, MediaLibrary
 from src.schema.transfers.downloads import (
+    DownloadClientStorageDirectoryMappingResult,
+    DownloadClientStorageHardlinkResult,
+    DownloadClientStorageTestResponse,
+    DownloadClientTestResponse,
     DownloadRequestCreateResponse,
     DownloadTaskResource,
 )
@@ -19,6 +23,8 @@ def test_download_endpoints_require_authentication(client):
     assert client.post("/download-clients", json={}).status_code == 401
     assert client.patch("/download-clients/1", json={}).status_code == 401
     assert client.delete("/download-clients/1").status_code == 401
+    assert client.get("/download-clients/1/test").status_code == 401
+    assert client.post("/download-clients/1/storage-test").status_code == 401
     assert client.get("/download-candidates", params={"movie_number": "ABC-001"}).status_code == 401
     assert client.post("/download-requests", json={}).status_code == 401
 
@@ -115,6 +121,166 @@ def test_download_client_api_reports_expected_errors(client, account_user):
     )
     assert invalid_url.status_code == 422
     assert invalid_url.json()["error"]["code"] == "invalid_download_client_base_url"
+
+
+def test_download_client_test_api_returns_qb_status(client, account_user, monkeypatch):
+    token = _login(client, username=account_user.username)
+
+    monkeypatch.setattr(
+        "src.api.routers.transfers.downloads.DownloadClientService.test_client",
+        staticmethod(
+            lambda client_id: DownloadClientTestResponse(
+                healthy=True,
+                checked_at="2026-03-10T08:00:00",
+                client_id=client_id,
+                client_name="client-a",
+                base_url="http://localhost:8080",
+                elapsed_ms=12,
+                version="5.0.4",
+                web_api_version="2.11.4",
+            )
+        ),
+    )
+
+    response = client.get(
+        "/download-clients/3/test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["healthy"] is True
+    assert data["client_id"] == 3
+    assert data["version"] == "5.0.4"
+    assert data["web_api_version"] == "2.11.4"
+    assert data["error"] is None
+
+
+def test_download_client_test_api_returns_unhealthy_result(client, account_user, monkeypatch):
+    token = _login(client, username=account_user.username)
+
+    monkeypatch.setattr(
+        "src.api.routers.transfers.downloads.DownloadClientService.test_client",
+        staticmethod(
+            lambda client_id: {
+                "healthy": False,
+                "checked_at": "2026-03-10T08:00:00",
+                "client_id": client_id,
+                "client_name": "client-a",
+                "base_url": "http://localhost:8080",
+                "elapsed_ms": 15,
+                "version": None,
+                "web_api_version": None,
+                "error": {
+                    "type": "qbittorrent_request_error",
+                    "message": "login failed",
+                },
+            }
+        ),
+    )
+
+    response = client.get(
+        "/download-clients/3/test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["healthy"] is False
+    assert data["error"]["type"] == "qbittorrent_request_error"
+    assert data["error"]["message"] == "login failed"
+
+
+def test_download_client_storage_test_api_returns_result(client, account_user, monkeypatch):
+    token = _login(client, username=account_user.username)
+
+    monkeypatch.setattr(
+        "src.api.routers.transfers.downloads.DownloadClientService.test_storage",
+        staticmethod(
+            lambda client_id: DownloadClientStorageTestResponse(
+                healthy=True,
+                checked_at="2026-03-10T08:00:00",
+                client_id=client_id,
+                client_name="client-a",
+                elapsed_ms=20,
+                warnings=[],
+                directory_mapping=DownloadClientStorageDirectoryMappingResult(
+                    status="ok",
+                    client_save_path="/downloads/a",
+                    local_root_path="/mnt/downloads/a",
+                    probe_remote_dir="/downloads/a/.sakuramedia-diagnostics/probe",
+                    probe_local_dir="/mnt/downloads/a/.sakuramedia-diagnostics/probe",
+                    sentinel_visible_to_qb=True,
+                ),
+                hardlink=DownloadClientStorageHardlinkResult(
+                    status="ok",
+                    supported=True,
+                    source_path="/mnt/downloads/a/.sakuramedia-diagnostics/probe/sentinel.txt",
+                    target_path="/library/.sakuramedia-diagnostics/probe/sentinel.link",
+                ),
+            )
+        ),
+    )
+
+    response = client.post(
+        "/download-clients/3/storage-test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["healthy"] is True
+    assert data["client_id"] == 3
+    assert data["directory_mapping"]["status"] == "ok"
+    assert data["hardlink"]["supported"] is True
+
+
+def test_download_client_storage_test_api_returns_warning_result(client, account_user, monkeypatch):
+    token = _login(client, username=account_user.username)
+
+    monkeypatch.setattr(
+        "src.api.routers.transfers.downloads.DownloadClientService.test_storage",
+        staticmethod(
+            lambda client_id: {
+                "healthy": True,
+                "checked_at": "2026-03-10T08:00:00",
+                "client_id": client_id,
+                "client_name": "client-a",
+                "elapsed_ms": 22,
+                "warnings": ["下载目录到媒体库不支持硬链接，导入会回退为复制"],
+                "directory_mapping": {
+                    "status": "ok",
+                    "client_save_path": "/downloads/a",
+                    "local_root_path": "/mnt/downloads/a",
+                    "probe_remote_dir": "/downloads/a/.sakuramedia-diagnostics/probe",
+                    "probe_local_dir": "/mnt/downloads/a/.sakuramedia-diagnostics/probe",
+                    "sentinel_visible_to_qb": True,
+                    "error": None,
+                },
+                "hardlink": {
+                    "status": "failed",
+                    "supported": False,
+                    "source_path": "/mnt/downloads/a/.sakuramedia-diagnostics/probe/sentinel.txt",
+                    "target_path": "/library/.sakuramedia-diagnostics/probe/sentinel.link",
+                    "error": {
+                        "type": "hardlink_not_supported",
+                        "message": "Invalid cross-device link",
+                    },
+                },
+            }
+        ),
+    )
+
+    response = client.post(
+        "/download-clients/3/storage-test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["healthy"] is True
+    assert data["hardlink"]["status"] == "failed"
+    assert data["warnings"] == ["下载目录到媒体库不支持硬链接，导入会回退为复制"]
 
 
 def test_download_candidates_api_uses_search_service(client, account_user, monkeypatch):
