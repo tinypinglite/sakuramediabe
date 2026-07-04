@@ -248,8 +248,13 @@ class PlaylistService:
     @classmethod
     def get_playlist(cls, playlist_id: int) -> PlaylistResource:
         playlist = cls._require_playlist(playlist_id)
-        counts = cls._playlist_counts([playlist.id])
-        return PlaylistResource.from_playlist(playlist, movie_count=counts.get(playlist.id, 0))
+        # 虚拟系统列表（VR/4K）成员不落库，走 special_tag 实时派生；其余按 PlaylistMovie 统计。
+        if playlist.kind in cls.VIRTUAL_KINDS:
+            movie_count = cls._virtual_playlist_count(playlist.kind)
+        else:
+            counts = cls._playlist_counts([playlist.id])
+            movie_count = counts.get(playlist.id, 0)
+        return PlaylistResource.from_playlist(playlist, movie_count=movie_count)
 
     @classmethod
     def update_playlist(cls, playlist_id: int, payload: PlaylistUpdateRequest) -> PlaylistResource:

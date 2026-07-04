@@ -158,6 +158,23 @@ def test_list_playlists_includes_virtual_system_playlists_with_dynamic_counts(ap
     assert playlists[PLAYLIST_KIND_VR].is_deletable is False
 
 
+def test_get_playlist_returns_virtual_system_playlist_dynamic_count(app):
+    init_system_playlists()
+    # VR/4K 虚拟列表成员不落库，get_playlist 也必须按 special_tag 实时统计。
+    vr_movie = _create_movie("VR-001", "MovieVR1", title="VR 1")
+    four_k_movie_a = _create_movie("ABC-101", "Movie4K1", title="4K 1")
+    four_k_movie_b = _create_movie("ABC-102", "Movie4K2", title="4K 2")
+    Media.create(movie=vr_movie, path="/library/vr-001.mp4", valid=True, special_tags="VR")
+    Media.create(movie=four_k_movie_a, path="/library/abc-101.mp4", valid=True, special_tags="4K")
+    Media.create(movie=four_k_movie_b, path="/library/abc-102.mp4", valid=True, special_tags="4K 中字")
+
+    vr_playlist = Playlist.get(Playlist.kind == PLAYLIST_KIND_VR)
+    four_k_playlist = Playlist.get(Playlist.kind == PLAYLIST_KIND_4K)
+
+    assert PlaylistService.get_playlist(vr_playlist.id).movie_count == 1
+    assert PlaylistService.get_playlist(four_k_playlist.id).movie_count == 2
+
+
 def test_list_playlists_orders_system_playlists_before_custom(app):
     init_system_playlists()
     Playlist.create(name="我的收藏", description="Favorite")
