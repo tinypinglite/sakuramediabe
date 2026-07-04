@@ -186,6 +186,8 @@
 | `DELETE` | `/download-clients/{client_id}` | 删除下载客户端配置 |
 | `GET` | `/download-clients/{client_id}/test` | 测试 qBittorrent Web API 可用性 |
 | `POST` | `/download-clients/{client_id}/storage-test` | 测试下载目录映射与硬链接能力 |
+| `POST` | `/download-clients/probe/test` | 落库前预检 qBittorrent Web API 可用性 |
+| `POST` | `/download-clients/probe/storage-test` | 落库前预检下载目录映射与硬链接能力 |
 | `GET` | `/download-candidates` | 搜索番号的候选资源 |
 | `POST` | `/download-requests` | 向指定客户端提交下载 |
 
@@ -498,6 +500,146 @@
       "type": "hardlink_not_supported",
       "message": "Invalid cross-device link"
     }
+  }
+}
+```
+
+### Endpoint
+
+`POST /download-clients/probe/test`
+
+### Purpose
+
+在下载客户端尚未落库的情况下，直接使用表单提供的连接信息预检 qBittorrent Web API 可用性。用于「新建」或「编辑」表单里的即时测试按钮，探测过程不写数据库。
+
+行为与 `GET /download-clients/{client_id}/test` 完全一致：只登录 qBittorrent 并读取应用版本与 Web API 版本，不读取种子列表、不修改远端标签。
+
+密码合并规则（对齐「编辑时密码留空 = 不改」约定）：
+
+- `password` 非空：直接用 payload 的密码进行探测。
+- `password` 为空/缺省：必须同时提供 `client_id`，后端会读取该客户端已保存的密码。
+- `password` 为空且未提供 `client_id`：返回 `422 invalid_download_client_password`。
+
+### Auth
+
+需要 Bearer Token。
+
+### Request Body
+
+```json
+{
+  "base_url": "http://localhost:8080",
+  "username": "alice",
+  "password": "s3cret",
+  "client_id": null
+}
+```
+
+字段说明：
+
+- `base_url`: 必填，qBittorrent Web UI 地址，必须是 `http` 或 `https`
+- `username`: 必填
+- `password`: 可空/缺省；空时必须提供 `client_id`
+- `client_id`: 可空；仅用于「密码留空时合并 DB 原密码」，不会因此写库
+
+### Success Responses
+
+- `200 OK`: 始终返回本次检测结果；qBittorrent 不可用时通过 `healthy=false` 与 `error` 字段表达；未落库场景下 `client_id=0`、`client_name=""`
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `404 Not Found`: 传入了不存在的 `client_id`
+- `422 Unprocessable Entity`: 参数校验失败（`base_url`、`username`、`password` 组合非法）
+
+### Example Response
+
+```json
+{
+  "healthy": true,
+  "checked_at": "2026-07-03T12:00:00",
+  "client_id": 0,
+  "client_name": "",
+  "base_url": "http://localhost:8080",
+  "elapsed_ms": 18,
+  "version": "5.0.4",
+  "web_api_version": "2.11.4",
+  "error": null
+}
+```
+
+### Endpoint
+
+`POST /download-clients/probe/storage-test`
+
+### Purpose
+
+在下载客户端尚未落库的情况下，直接使用表单提供的连接信息与路径配置预检下载目录映射与硬链接能力。用于「新建」或「编辑」表单里的即时测试按钮，探测过程不写数据库。
+
+行为与 `POST /download-clients/{client_id}/storage-test` 完全一致：在 `local_root_path/.sakuramedia-diagnostics/<uuid>/` 写哨兵文件，通过 qBittorrent 的目录读取接口检查 `client_save_path/.sakuramedia-diagnostics/<uuid>/` 是否可见；随后尝试硬链接到绑定媒体库 `root_path/.sakuramedia-diagnostics/<uuid>/sentinel.link`。硬链接失败会以 `warnings` 返回，不影响 `healthy`。无论成功失败都会尽力清理临时文件与空诊断目录。
+
+`media_library_id` 必填，决定硬链接目标根路径。`password` 处理规则与 `POST /download-clients/probe/test` 相同。
+
+### Auth
+
+需要 Bearer Token。
+
+### Request Body
+
+```json
+{
+  "base_url": "http://localhost:8080",
+  "username": "alice",
+  "password": "s3cret",
+  "client_save_path": "/downloads/a",
+  "local_root_path": "/mnt/qb/downloads/a",
+  "media_library_id": 1,
+  "client_id": null
+}
+```
+
+字段说明：
+
+- `base_url` / `username` / `password` / `client_id`: 同 `POST /download-clients/probe/test`
+- `client_save_path`: 必填，qBittorrent 视角下的下载根路径，必须是绝对路径
+- `local_root_path`: 必填，当前后端进程可访问的下载根路径，必须是绝对路径
+- `media_library_id`: 必填，绑定媒体库 ID，用于确定硬链接目标根路径
+
+### Success Responses
+
+- `200 OK`: 始终返回本次检测结果；目录映射失败时 `healthy=false`，硬链接失败时 `healthy=true` 且包含 `warnings`；未落库场景下 `client_id=0`、`client_name=""`
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `404 Not Found`: 传入了不存在的 `client_id`
+- `422 Unprocessable Entity`: 参数校验失败（`base_url` / `username` / 路径 / 密码组合非法，或 `media_library_id` 不存在）
+
+### Example Response
+
+```json
+{
+  "healthy": true,
+  "checked_at": "2026-07-03T12:05:00",
+  "client_id": 0,
+  "client_name": "",
+  "elapsed_ms": 24,
+  "warnings": [],
+  "directory_mapping": {
+    "status": "ok",
+    "client_save_path": "/downloads/a",
+    "local_root_path": "/mnt/qb/downloads/a",
+    "probe_remote_dir": "/downloads/a/.sakuramedia-diagnostics/4f9b",
+    "probe_local_dir": "/mnt/qb/downloads/a/.sakuramedia-diagnostics/4f9b",
+    "sentinel_visible_to_qb": true,
+    "error": null
+  },
+  "hardlink": {
+    "status": "ok",
+    "supported": true,
+    "source_path": "/mnt/qb/downloads/a/.sakuramedia-diagnostics/4f9b/sentinel.txt",
+    "target_path": "/media/library/main/.sakuramedia-diagnostics/4f9b/sentinel.link",
+    "error": null
   }
 }
 ```

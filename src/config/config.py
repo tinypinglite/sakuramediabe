@@ -181,7 +181,7 @@ class Scheduler(BaseModel):
     download_small_file_cleanup_cron: str = "*/5 * * * *"
     movie_collection_sync_cron: str = "0 1 * * *"
     movie_heat_cron: str = "15 0 * * *"
-    movie_interaction_sync_cron: str = "0 * * * *"
+    movie_interaction_sync_cron: str = "0 5 * * *"
     ranking_sync_cron: str = "45 1 * * *"
     hot_review_sync_cron: str = "20 1 * * *"
     media_file_scan_cron: str = "0 */6 * * *"

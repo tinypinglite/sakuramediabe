@@ -1,5 +1,6 @@
 import errno
 import os
+import shutil
 import time
 import uuid
 from dataclasses import dataclass
@@ -214,7 +215,6 @@ class DownloadClientService:
         hardlink_path = library_probe_dir / cls.HARDLINK_FILENAME
         remote_probe_dir = cls._join_remote_path(client.client_save_path, cls.DIAGNOSTIC_DIR_NAME, probe_id)
         warnings: list[str] = []
-        created_directories: list[Path] = []
         mapping = DownloadClientStorageDirectoryMappingResult(
             status="failed",
             client_save_path=client.client_save_path,
@@ -232,6 +232,10 @@ class DownloadClientService:
             error=None,
         )
 
+        # 只有本次探测自己 mkdir 出来的子树才会在 finally 里被 rmtree,
+        # 避免撞上事先存在的同名目录时误删用户数据。
+        owned_probe_dirs: list[Path] = []
+        owned_probe_files: list[Path] = []
         try:
             if not local_root.exists() or not local_root.is_dir():
                 mapping.error = cls._storage_error(
@@ -241,7 +245,7 @@ class DownloadClientService:
             else:
                 # 哨兵文件放在专用诊断目录内，避免直接污染下载根目录。
                 local_probe_dir.mkdir(parents=True, exist_ok=False)
-                created_directories.append(local_probe_dir)
+                owned_probe_dirs.append(local_probe_dir)
                 sentinel_path.write_text("sakuramedia storage diagnostic\n", encoding="utf-8")
                 mapping = cls._probe_directory_mapping(
                     client,
@@ -254,7 +258,8 @@ class DownloadClientService:
                         sentinel_path,
                         hardlink_path,
                         warnings,
-                        created_directories,
+                        owned_probe_dirs=owned_probe_dirs,
+                        owned_probe_files=owned_probe_files,
                     )
         except OSError as exc:
             mapping.error = cls._storage_error(
@@ -264,11 +269,11 @@ class DownloadClientService:
         finally:
             warnings.extend(
                 cls._cleanup_storage_probe(
-                    files=[hardlink_path, sentinel_path],
-                    directories=[
-                        *created_directories,
-                        *([] if library_diagnostic_dir_existed else [library_diagnostic_dir]),
+                    probe_files=owned_probe_files,
+                    probe_dirs=owned_probe_dirs,
+                    diagnostic_dirs=[
                         *([] if local_diagnostic_dir_existed else [local_diagnostic_dir]),
+                        *([] if library_diagnostic_dir_existed else [library_diagnostic_dir]),
                     ],
                 )
             )
@@ -318,14 +323,19 @@ class DownloadClientService:
         source_path: Path,
         target_path: Path,
         warnings: list[str],
-        created_directories: list[Path],
+        *,
+        owned_probe_dirs: list[Path],
+        owned_probe_files: list[Path],
     ) -> DownloadClientStorageHardlinkResult:
         try:
+            # 只把本次真正新建的 library_probe_dir 登记进清理列表；已存在时保持原样，防止误删。
             target_parent_existed = target_path.parent.exists()
             target_path.parent.mkdir(parents=True, exist_ok=True)
             if not target_parent_existed:
-                created_directories.append(target_path.parent)
+                owned_probe_dirs.append(target_path.parent)
             os.link(source_path, target_path)
+            # 目标目录预先存在时也只清理本次创建的 hardlink 文件，避免留下诊断痕迹。
+            owned_probe_files.append(target_path)
         except OSError as exc:
             warnings.append("下载目录到媒体库不支持硬链接，导入会回退为复制")
             return DownloadClientStorageHardlinkResult(
@@ -471,19 +481,33 @@ class DownloadClientService:
         return DownloadClientStorageTestError(type=error_type, message=message)
 
     @staticmethod
-    def _cleanup_storage_probe(*, files: list[Path], directories: list[Path]) -> list[str]:
-        warnings = []
-        for path in files:
+    def _cleanup_storage_probe(
+        *,
+        probe_files: list[Path],
+        probe_dirs: list[Path],
+        diagnostic_dirs: list[Path],
+    ) -> list[str]:
+        warnings: list[str] = []
+        for path in probe_files:
             try:
                 if path.exists() or path.is_symlink():
                     path.unlink()
             except OSError as exc:
                 warnings.append(f"诊断临时文件清理失败: {path} ({exc})")
-        seen_dirs: set[Path] = set()
-        for directory in directories:
-            if directory in seen_dirs:
+        # probe_dirs 是本次 probe 独占的 uuid 子目录，递归删除；不存在则忽略。
+        for path in probe_dirs:
+            try:
+                shutil.rmtree(path)
+            except FileNotFoundError:
                 continue
-            seen_dirs.add(directory)
+            except OSError as exc:
+                warnings.append(f"诊断临时目录清理失败: {path} ({exc})")
+        # 诊断根目录仅在本次新建时才尝试删除，且只删空目录，避免踩踏并发的其他 probe。
+        seen: set[Path] = set()
+        for directory in diagnostic_dirs:
+            if directory in seen:
+                continue
+            seen.add(directory)
             try:
                 directory.rmdir()
             except FileNotFoundError:

@@ -134,7 +134,7 @@ download_small_file_cleanup_cron = "*/5 * * * *"
 # 影片热度重算 cron 表达式。
 movie_heat_cron = "15 0 * * *"
 # 影片互动数同步 cron 表达式。
-movie_interaction_sync_cron = "0 * * * *"
+movie_interaction_sync_cron = "0 5 * * *"
 # 榜单同步 cron 表达式。
 ranking_sync_cron = "45 1 * * *"
 # JavDB 热评同步 cron 表达式。

@@ -42,7 +42,7 @@ media_clip_ffmpeg_timeout_seconds = 120
 
 [scheduler]
 # 影片互动数同步 cron 表达式。
-movie_interaction_sync_cron = "0 * * * *"
+movie_interaction_sync_cron = "0 5 * * *"
 # 影片描述回填 cron 表达式。
 movie_desc_sync_cron = "0 4 * * *"
 # 影片简介翻译 cron 表达式。

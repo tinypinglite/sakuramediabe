@@ -50,7 +50,7 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
     assert settings.scheduler.download_task_auto_import_cron == "*/3 * * * *"
     assert settings.scheduler.movie_collection_sync_cron == "0 1 * * *"
     assert settings.scheduler.movie_heat_cron == "15 0 * * *"
-    assert settings.scheduler.movie_interaction_sync_cron == "0 * * * *"
+    assert settings.scheduler.movie_interaction_sync_cron == "0 5 * * *"
     assert settings.scheduler.ranking_sync_cron == "45 1 * * *"
     assert settings.scheduler.hot_review_sync_cron == "20 1 * * *"
     assert settings.logging.level == "INFO"
@@ -334,7 +334,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             download_task_auto_import_cron="*/10 * * * *",
             movie_collection_sync_cron="0 1 * * *",
             movie_heat_cron="15 0 * * *",
-            movie_interaction_sync_cron="0 * * * *",
+            movie_interaction_sync_cron="0 5 * * *",
             ranking_sync_cron="45 1 * * *",
             hot_review_sync_cron="20 1 * * *",
             media_file_scan_cron="0 */6 * * *",
@@ -395,7 +395,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
             "download_task_auto_import_cron": "*/10 * * * *",
             "movie_collection_sync_cron": "0 1 * * *",
             "movie_heat_cron": "15 0 * * *",
-            "movie_interaction_sync_cron": "0 * * * *",
+            "movie_interaction_sync_cron": "0 5 * * *",
             "ranking_sync_cron": "45 1 * * *",
             "hot_review_sync_cron": "20 1 * * *",
             "media_file_scan_cron": "0 */6 * * *",
@@ -459,7 +459,7 @@ def test_update_settings_writes_indexer_settings_and_refreshes_runtime_state(
         assert config_module.settings.scheduler.download_task_auto_import_cron == "*/10 * * * *"
         assert config_module.settings.scheduler.movie_collection_sync_cron == "0 1 * * *"
         assert config_module.settings.scheduler.movie_heat_cron == "15 0 * * *"
-        assert config_module.settings.scheduler.movie_interaction_sync_cron == "0 * * * *"
+        assert config_module.settings.scheduler.movie_interaction_sync_cron == "0 5 * * *"
         assert config_module.settings.scheduler.ranking_sync_cron == "45 1 * * *"
         assert config_module.settings.scheduler.hot_review_sync_cron == "20 1 * * *"
         assert config_module.settings.scheduler.media_file_scan_cron == "0 */6 * * *"

@@ -391,7 +391,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_collection_sync_cron", "0 1 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_file_scan_cron", "0 */6 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_desc_sync_cron", "0 4 * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.movie_interaction_sync_cron", "0 * * * *")
+    monkeypatch.setattr("src.start.aps.settings.scheduler.movie_interaction_sync_cron", "0 5 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_desc_translation_cron", "15 4 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_title_translation_cron", "20 4 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_thumbnail_cron", "*/5 * * * *")
@@ -418,7 +418,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert str(scheduler.get_job("ranking_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='1', minute='10']"
     assert str(scheduler.get_job("hot_review_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='1', minute='20']"
     assert str(scheduler.get_job("movie_desc_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='0']"
-    assert str(scheduler.get_job("movie_interaction_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='0']"
+    assert str(scheduler.get_job("movie_interaction_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"
     assert str(scheduler.get_job("movie_desc_translation").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='15']"
     assert str(scheduler.get_job("movie_title_translation").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='20']"
     assert str(scheduler.get_job("movie_heat_update").trigger) == "cron[month='*', day='*', day_of_week='*', hour='0', minute='15']"

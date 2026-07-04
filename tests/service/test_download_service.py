@@ -652,6 +652,46 @@ def test_download_client_service_probe_storage_test_uses_payload_paths(download_
     assert result.hardlink.status == "ok"
 
 
+def test_download_client_service_probe_storage_test_preserves_existing_library_probe_dir(
+    download_tables,
+    tmp_path,
+):
+    library = _create_library(root_path=str(tmp_path / "library"))
+    downloads_root = tmp_path / "downloads"
+    library_root = tmp_path / "library"
+    library_probe_dir = library_root / ".sakuramedia-diagnostics" / "probe-existing"
+    downloads_root.mkdir()
+    library_probe_dir.mkdir(parents=True)
+    keep_file = library_probe_dir / "keep.txt"
+    keep_file.write_text("user-owned\n", encoding="utf-8")
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls()
+
+        def list_directory_names(self, directory_path):
+            return ["sentinel.txt"]
+
+    result = DownloadClientService.probe_storage_test(
+        DownloadClientProbeStorageTestRequest(
+            base_url="http://qb.example.com",
+            username="alice",
+            password="fresh-secret",
+            client_save_path="/downloads/a",
+            local_root_path=str(downloads_root),
+            media_library_id=library.id,
+        ),
+        qbittorrent_client_cls=FakeQBittorrentClient,
+        probe_id="probe-existing",
+    )
+
+    assert result.hardlink.status == "ok"
+    assert library_probe_dir.exists()
+    assert keep_file.read_text(encoding="utf-8") == "user-owned\n"
+    assert not (library_probe_dir / "sentinel.link").exists()
+
+
 def test_download_client_service_probe_storage_test_merges_password_from_db(download_tables, tmp_path):
     library = _create_library(root_path=str(tmp_path / "library"))
     existing = _create_client(library, name="client-a", password="db-secret")
