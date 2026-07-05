@@ -16,7 +16,7 @@ def _drop_archived_at_indexes(database, migrator) -> None:
     for index in database.get_indexes("system_notification"):
         if "archived_at" not in getattr(index, "columns", []):
             continue
-        # archived_at 历史上带 index=True，SQLite 删列前必须先移除引用该列的索引，否则 DROP COLUMN 会失败。
+        # archived_at 历史上带 index=True，删列前必须先移除引用该列的索引。
         run_migration(migrator.drop_index("system_notification", index.name))
 
 

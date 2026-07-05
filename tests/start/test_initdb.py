@@ -1,8 +1,8 @@
 from datetime import date, datetime
 
-from peewee import IntegrityError
+import pytest
+from peewee import IntegrityError, ProgrammingError
 
-from src.config.config import DatabaseEngine
 from src.model import (
     Actor,
     BackgroundTaskRun,
@@ -40,15 +40,15 @@ def _create_movie_table_missing_title_zh(test_db):
     test_db.execute_sql(
         """
         CREATE TABLE movie (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
             javdb_id VARCHAR(64) NOT NULL UNIQUE,
             movie_number VARCHAR(255) NOT NULL UNIQUE,
             title TEXT NOT NULL,
-            release_date DATETIME NULL,
+            release_date TIMESTAMP NULL,
             duration_minutes INTEGER NOT NULL DEFAULT 0,
-            score REAL NOT NULL DEFAULT 0,
+            score DOUBLE PRECISION NOT NULL DEFAULT 0,
             score_number INTEGER NOT NULL DEFAULT 0,
             watched_count INTEGER NOT NULL DEFAULT 0,
             cover_image_id INTEGER NULL,
@@ -60,11 +60,11 @@ def _create_movie_table_missing_title_zh(test_db):
             want_watch_count INTEGER NOT NULL DEFAULT 0,
             comment_count INTEGER NOT NULL DEFAULT 0,
             heat INTEGER NOT NULL DEFAULT 0,
-            is_collection INTEGER NOT NULL DEFAULT 0,
-            is_collection_overridden INTEGER NOT NULL DEFAULT 0,
-            is_subscribed INTEGER NOT NULL DEFAULT 0,
-            subscribed_at DATETIME NULL,
-            desc TEXT NOT NULL DEFAULT '',
+            is_collection BOOLEAN NOT NULL DEFAULT FALSE,
+            is_collection_overridden BOOLEAN NOT NULL DEFAULT FALSE,
+            is_subscribed BOOLEAN NOT NULL DEFAULT FALSE,
+            subscribed_at TIMESTAMP NULL,
+            "desc" TEXT NOT NULL DEFAULT '',
             desc_zh TEXT NOT NULL DEFAULT '',
             extra TEXT NULL
         )
@@ -72,10 +72,18 @@ def _create_movie_table_missing_title_zh(test_db):
     )
 
 
-def test_create_tables_creates_system_tables(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
+def _column_names(database, table_name: str) -> set[str]:
+    return {column.name for column in database.get_columns(table_name)}
 
+
+def _column_is_nullable(database, table_name: str, column_name: str) -> bool:
+    for column in database.get_columns(table_name):
+        if column.name == column_name:
+            return column.null
+    raise AssertionError(f"column not found: {table_name}.{column_name}")
+
+
+def test_create_tables_creates_system_tables(test_db, monkeypatch):
     create_tables()
 
     assert User.table_exists()
@@ -96,8 +104,6 @@ def test_create_tables_creates_system_tables(test_db, monkeypatch):
 
 
 def test_create_tables_creates_videos_domain_tables_and_decoupled_media(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
     # 组合运行时其他测试可能重绑 Peewee 模型；这里显式绑定当前库再验证实际建表结果。
     test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
 
@@ -108,22 +114,16 @@ def test_create_tables_creates_videos_domain_tables_and_decoupled_media(test_db,
     assert VideoCollectionItem.table_exists()
 
     # 合集成员带 position 排序字段。
-    collection_item_columns = {
-        row[1] for row in database.execute_sql("PRAGMA table_info(video_collection_item)").fetchall()
-    }
+    collection_item_columns = _column_names(database, "video_collection_item")
     assert "position" in collection_item_columns
 
     # Media 解耦：movie_number 可空且新增 video_item_id。
-    media_info = {row[1]: row for row in database.execute_sql("PRAGMA table_info(media)").fetchall()}
-    assert "video_item_id" in media_info
-    # PRAGMA table_info 第 3 列(notnull) 为 0 表示可空。
-    assert media_info["movie_number"][3] == 0
+    media_columns = _column_names(database, "media")
+    assert "video_item_id" in media_columns
+    assert _column_is_nullable(database, "media", "movie_number") is True
 
 
 def test_create_tables_creates_daily_recommendation_unique_constraints(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
-
     create_tables()
 
     first_movie = Movie.create(movie_number="ABP-001", javdb_id="daily-1", title="Daily 1")
@@ -161,9 +161,6 @@ def test_create_tables_creates_daily_recommendation_unique_constraints(test_db, 
 
 
 def test_create_tables_creates_moment_recommendation_unique_constraints(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
-
     create_tables()
 
     first_movie = Movie.create(movie_number="ABP-101", javdb_id="moment-1", title="Moment 1")
@@ -222,8 +219,6 @@ def test_create_tables_creates_moment_recommendation_unique_constraints(test_db,
 
 
 def test_create_tables_creates_current_schema_columns(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
     # 组合运行时其他测试可能重绑 Peewee 模型；这里显式绑定当前库再验证实际建表结果。
     test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
 
@@ -232,16 +227,13 @@ def test_create_tables_creates_current_schema_columns(test_db, monkeypatch):
         database.connect()
 
     assert Actor.table_exists()
-    actor_columns = {row[1] for row in database.execute_sql("PRAGMA table_info(actor)").fetchall()}
+    actor_columns = _column_names(database, "actor")
     assert "subscribed_at" in actor_columns
     assert BackgroundTaskRun.table_exists()
     assert ResourceTaskState.table_exists()
 
 
 def test_create_tables_creates_resource_task_state_unique_constraint(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
-
     create_tables()
 
     ResourceTaskState.create(
@@ -262,9 +254,6 @@ def test_create_tables_creates_resource_task_state_unique_constraint(test_db, mo
 
 
 def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
-
     create_tables()
 
     BackgroundTaskRun.create(
@@ -288,13 +277,16 @@ def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(te
 
 
 def test_create_tables_does_not_patch_existing_legacy_movie_schema(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
     # 当前受支持的老用户 schema 只缺少 title_zh。
     _create_movie_table_missing_title_zh(test_db)
 
-    create_tables()
+    # 生产链路是先 migrate 再 initdb；老 schema 直接跑 create_tables 时，PostgreSQL 会因
+    # 现有 movie 表缺少新版索引所需列（如 series_id）而报错，正好把用户挡在"必须先跑迁移"上，
+    # 而不是像 SQLite 那样静默给不存在的列建索引留下奇怪状态。
+    with pytest.raises(ProgrammingError):
+        create_tables()
 
+    # 关键约束：即使建表流程中断，legacy movie 表本身必须保持原样，未被 initdb 悄悄补列。
     movie_columns = {column.name for column in test_db.get_columns("movie")}
 
     assert "maker_name" in movie_columns
@@ -307,9 +299,6 @@ def test_create_tables_does_not_patch_existing_legacy_movie_schema(test_db, monk
 
 
 def test_create_tables_creates_movie_series_schema(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
-
     create_tables()
 
     assert MovieSeries.table_exists()
@@ -321,8 +310,6 @@ def test_create_tables_creates_movie_series_schema(test_db, monkeypatch):
 def test_init_user_creates_single_account_once(test_db, monkeypatch):
     monkeypatch.setattr("src.start.initdb.settings.auth.username", "account")
     monkeypatch.setattr("src.start.initdb.settings.auth.password", "account")
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
 
     create_tables()
 
@@ -339,9 +326,6 @@ def test_init_user_creates_single_account_once(test_db, monkeypatch):
 
 
 def test_init_system_playlists_creates_all_system_playlists_once(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
-
     create_tables()
 
     created = init_system_playlists()
@@ -359,9 +343,6 @@ def test_init_system_playlists_creates_all_system_playlists_once(test_db, monkey
 
 
 def test_init_system_playlists_backfills_missing_kinds_on_upgrade(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
-
     create_tables()
     # 显式构造"老库仅有最近播放"的初始状态，不依赖建表后表为空。
     Playlist.delete().execute()

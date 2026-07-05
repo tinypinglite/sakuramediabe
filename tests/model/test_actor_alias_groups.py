@@ -30,7 +30,7 @@ def test_actor_name_and_alias_name_do_not_need_to_be_unique(test_db):
     assert duplicate.alias_name == "河北彩花 / 河北彩伽"
 
 
-def test_actor_javdb_id_is_unique_and_case_sensitive_in_sqlite(test_db):
+def test_actor_javdb_id_is_unique_and_case_sensitive_in_postgres(test_db):
     test_db.bind([Image, Actor], bind_refs=False, bind_backrefs=False)
     test_db.create_tables([Image, Actor])
 
@@ -41,7 +41,7 @@ def test_actor_javdb_id_is_unique_and_case_sensitive_in_sqlite(test_db):
         Actor.create(javdb_id="AbC123", name="河北彩花")
 
 
-def test_movie_javdb_id_is_unique_and_case_sensitive_in_sqlite(test_db):
+def test_movie_javdb_id_is_unique_and_case_sensitive_in_postgres(test_db):
     test_db.bind([Image, MovieSeries, Movie], bind_refs=False, bind_backrefs=False)
     test_db.create_tables([Image, MovieSeries, Movie])
 

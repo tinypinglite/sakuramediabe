@@ -64,7 +64,8 @@
   - `uv run python -m src.start.commands test-javdb --movie-number ABP-123`
   - `uv run python -m src.start.commands test-dmm --movie-number ABP-123`
 - 测试（默认 pytest-xdist 多进程并行）：
-  - 全量：`uv run pytest`（`pyproject.toml` 已设 `addopts = "-n auto"`，按 CPU 核数并行，全量约 40s）
+  - 前置：数据库测试直接跑在 PostgreSQL 上（已移除 SQLite 内存库），运行前必须起一个 PostgreSQL 并设置环境变量 `SAKURAMEDIA_TEST_DATABASE_URL`（例如 `postgresql://sakuramedia:sakuramedia@127.0.0.1:5432/sakuramedia_test`），可直接复用 `compose.example.yaml` 里的 postgres 服务；未设置时数据库相关用例会直接 fail 并给出提示。`test_db` fixture 会为每个用例建独立 schema、结束后 `DROP SCHEMA ... CASCADE`。
+  - 全量：`uv run pytest`（`pyproject.toml` 已设 `addopts = "-n auto"`，按 CPU 核数并行）
   - 单文件：`uv run pytest tests/service/test_media_import_service.py`
   - 单用例：`uv run pytest tests/api/test_movie_api.py::test_list_movies_supports_status_subscribed -q`
   - 增量只跑受本次改动影响的用例：`uv run pytest --testmon -n0`（testmon 不与 xdist 协同，**必须配 `-n0`**；首次会全量建依赖映射，之后才增量。映射库 `.testmondata*` 已在 `.gitignore`，是本地产物）
@@ -101,9 +102,9 @@
 - 保持代码直接、可读，不要为了抽象引入多余包装或与现有风格不一致的技巧。
 - 复用现有错误模型、分页 schema、响应 schema，不要平行再造 DTO。
 - 不要在 router 或 service 中手写大段字段搬运代码；Peewee -> Pydantic 优先使用 `SchemaModel.from_attributes_model()`、`SchemaModel.from_peewee_model()`、`SchemaModel.from_items()`，必要时再用 `model_to_dict(...) + model_validate(...)`。
-- 涉及 `src/start/initdb.py` 或其他手写 SQL 的表结构变更时，禁止写死数据库方言专属类型或语法；列类型必须与当前 Peewee 数据库方言一致，至少同时兼容 SQLite 和 PostgreSQL，并补对应的 `tests/start/test_initdb.py` 用例。
+- 后端只支持 PostgreSQL（已移除 SQLite / MySQL）；涉及 `src/start/initdb.py` 或其他手写 SQL 的表结构变更时，列类型直接按 PostgreSQL 方言书写即可，但仍优先交由 Peewee 模型渲染、不要在业务代码里散落裸 SQL，并补对应的 `tests/start/test_initdb.py` 用例。
 - 数据库迁移走 `src/start/migrations/` 框架：版本文件放在 `versions/`，按 `YYYYMMDD_NN_<desc>.py` 命名，导出 `name` 常量并实现 `migrate(database, migrator)`，前置条件不满足时抛 `SkipMigration()`；`runner.py` 按文件名排序执行，已应用版本记录在 `SchemaMigration` 模型，入口是 `migrate` CLI 与 lifespan/`initdb` 链路。新增迁移要同步补 `tests/start/test_migrations.py`。
-- 迁移补列涉及默认值时，默认值 SQL 必须通过 Peewee 上下文与 `Value(...)` / converter 生成，禁止手写 `TRUE/FALSE`、`0/1` 等字面量拼接，避免 SQLite/PostgreSQL 类型不一致。
+- 迁移补列涉及默认值时，默认值 SQL 优先通过 Peewee 上下文与 `Value(...)` / converter 生成，避免手写字面量导致与 PostgreSQL 布尔/数值类型不一致。
 - 当前系统是单账号架构；涉及账号、权限、刷新令牌时，不要擅自引入多租户或多账号语义。
 - 测试框架是 `pytest`；新增或修改 router、service、schema 转换、metadata provider、CLI、scheduler、joytag 推理服务时，都要同步补测试。
 - API 测试优先复用 `tests/conftest.py` 里的 `client`、`app`、`account_user` 等 fixture，不要重复创建测试应用。

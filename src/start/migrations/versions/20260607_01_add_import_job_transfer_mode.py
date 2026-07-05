@@ -20,7 +20,7 @@ def migrate(database, migrator) -> None:
     if _column_exists(database, table_name="import_job", column_name="transfer_mode"):
         return
 
-    # 默认值通过 Peewee 字段定义交由 migrator 渲染，兼容 SQLite/PostgreSQL，不手写字面量。
+    # 默认值通过 Peewee 字段定义交由 migrator 渲染，不手写 SQL 字面量。
     run_migration(
         migrator.add_column(
             "import_job",

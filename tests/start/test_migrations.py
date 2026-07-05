@@ -1,9 +1,9 @@
+from datetime import datetime
 from pathlib import Path
 
 from click.testing import CliRunner
 
-from src.config.config import DatabaseEngine
-from src.model import SchemaMigration, VideoImportJob
+from src.model import BackgroundTaskRun, Image, MediaLibrary, SchemaMigration, VideoImportJob
 from src.start.commands import main
 from src.start.migrations.runner import (
     MigrationExecution,
@@ -18,15 +18,15 @@ def _create_movie_table_missing_title_zh(test_db):
     test_db.execute_sql(
         """
         CREATE TABLE movie (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
             javdb_id VARCHAR(64) NOT NULL UNIQUE,
             movie_number VARCHAR(255) NOT NULL UNIQUE,
             title TEXT NOT NULL,
-            release_date DATETIME NULL,
+            release_date TIMESTAMP NULL,
             duration_minutes INTEGER NOT NULL DEFAULT 0,
-            score REAL NOT NULL DEFAULT 0,
+            score DOUBLE PRECISION NOT NULL DEFAULT 0,
             score_number INTEGER NOT NULL DEFAULT 0,
             watched_count INTEGER NOT NULL DEFAULT 0,
             cover_image_id INTEGER NULL,
@@ -38,11 +38,11 @@ def _create_movie_table_missing_title_zh(test_db):
             want_watch_count INTEGER NOT NULL DEFAULT 0,
             comment_count INTEGER NOT NULL DEFAULT 0,
             heat INTEGER NOT NULL DEFAULT 0,
-            is_collection INTEGER NOT NULL DEFAULT 0,
-            is_collection_overridden INTEGER NOT NULL DEFAULT 0,
-            is_subscribed INTEGER NOT NULL DEFAULT 0,
-            subscribed_at DATETIME NULL,
-            desc TEXT NOT NULL DEFAULT '',
+            is_collection BOOLEAN NOT NULL DEFAULT FALSE,
+            is_collection_overridden BOOLEAN NOT NULL DEFAULT FALSE,
+            is_subscribed BOOLEAN NOT NULL DEFAULT FALSE,
+            subscribed_at TIMESTAMP NULL,
+            "desc" TEXT NOT NULL DEFAULT '',
             desc_zh TEXT NOT NULL DEFAULT '',
             extra TEXT NULL
         )
@@ -58,7 +58,7 @@ def _insert_legacy_movie(test_db, movie_number: str, javdb_id: str, series_name:
         INSERT INTO movie (
             created_at, updated_at, javdb_id, movie_number, title, series_name
         ) VALUES (
-            '2024-01-01 00:00:00', '2024-01-01 00:00:00', ?, ?, ?, ?
+            '2024-01-01 00:00:00', '2024-01-01 00:00:00', %s, %s, %s, %s
         )
         """,
         (javdb_id, movie_number, movie_number, series_name),
@@ -69,9 +69,9 @@ def _create_import_job_table_missing_transfer_mode(test_db):
     test_db.execute_sql(
         """
         CREATE TABLE import_job (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
             source_path VARCHAR(1024) NOT NULL,
             library_id INTEGER NOT NULL,
             download_task_id INTEGER NULL,
@@ -81,8 +81,8 @@ def _create_import_job_table_missing_transfer_mode(test_db):
             skipped_count INTEGER NOT NULL DEFAULT 0,
             failed_count INTEGER NOT NULL DEFAULT 0,
             failed_files TEXT NOT NULL DEFAULT '[]',
-            started_at DATETIME NULL,
-            finished_at DATETIME NULL
+            started_at TIMESTAMP NULL,
+            finished_at TIMESTAMP NULL
         )
         """
     )
@@ -92,7 +92,7 @@ def _insert_legacy_import_job(test_db, source_path: str, state: str = "failed"):
     test_db.execute_sql(
         """
         INSERT INTO import_job (created_at, updated_at, source_path, library_id, state)
-        VALUES ('2026-05-01 00:00:00', '2026-05-01 00:00:00', ?, 1, ?)
+        VALUES ('2026-05-01 00:00:00', '2026-05-01 00:00:00', %s, 1, %s)
         """,
         (source_path, state),
     )
@@ -102,18 +102,18 @@ def _create_actor_table_missing_subscribed_at(test_db):
     test_db.execute_sql(
         """
         CREATE TABLE actor (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
             javdb_id VARCHAR(64) NOT NULL UNIQUE,
             name VARCHAR(255) NOT NULL,
             alias_name TEXT NOT NULL DEFAULT '',
             profile_image_id INTEGER NULL,
             javdb_type INTEGER NOT NULL DEFAULT 0,
             gender INTEGER NOT NULL DEFAULT 0,
-            is_subscribed INTEGER NOT NULL DEFAULT 0,
-            subscribed_movies_synced_at DATETIME NULL,
-            subscribed_movies_full_synced_at DATETIME NULL
+            is_subscribed BOOLEAN NOT NULL DEFAULT FALSE,
+            subscribed_movies_synced_at TIMESTAMP NULL,
+            subscribed_movies_full_synced_at TIMESTAMP NULL
         )
         """
     )
@@ -125,7 +125,7 @@ def _insert_legacy_actor(test_db, *, javdb_id: str, name: str, created_at: str, 
         INSERT INTO actor (
             created_at, updated_at, javdb_id, name, is_subscribed
         ) VALUES (
-            ?, ?, ?, ?, ?
+            %s, %s, %s, %s, %s
         )
         """,
         (created_at, created_at, javdb_id, name, is_subscribed),
@@ -141,18 +141,37 @@ def _schema_migration_names(test_db):
 def _movie_foreign_keys(test_db):
     return [
         {
-            "table": row[2],
-            "from": row[3],
-            "to": row[4],
-            "on_delete": row[6],
+            "table": row[0],
+            "from": row[1],
+            "to": row[2],
+            "on_delete": row[3],
         }
-        for row in test_db.execute_sql("PRAGMA foreign_key_list(movie)").fetchall()
+        for row in test_db.execute_sql(
+            """
+            SELECT
+                ccu.table_name,
+                kcu.column_name,
+                ccu.column_name,
+                rc.delete_rule
+            FROM information_schema.table_constraints AS tc
+            JOIN information_schema.key_column_usage AS kcu
+                ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage AS ccu
+                ON ccu.constraint_name = tc.constraint_name
+                AND ccu.table_schema = tc.table_schema
+            JOIN information_schema.referential_constraints AS rc
+                ON rc.constraint_name = tc.constraint_name
+                AND rc.constraint_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+                AND tc.table_schema = current_schema()
+                AND tc.table_name = 'movie'
+            """
+        ).fetchall()
     ]
 
 
 def test_run_pending_migrations_extracts_movie_series_from_supported_legacy_schema(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
     # 当前受支持的老用户 schema 只缺少 title_zh。
     _create_movie_table_missing_title_zh(test_db)
     _insert_legacy_movie(test_db, "ABP-001", "javdb-001", " A 系列 ")
@@ -341,16 +360,16 @@ def _create_legacy_system_notification_table(test_db):
     test_db.execute_sql(
         """
         CREATE TABLE system_notification (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
             category VARCHAR(32) NOT NULL,
             level VARCHAR(32) NOT NULL,
             title VARCHAR(255) NOT NULL,
             content TEXT NOT NULL,
-            is_read INTEGER NOT NULL DEFAULT 0,
-            read_at DATETIME NULL,
-            archived_at DATETIME NULL,
+            is_read BOOLEAN NOT NULL DEFAULT FALSE,
+            read_at TIMESTAMP NULL,
+            archived_at TIMESTAMP NULL,
             related_task_run_id INTEGER NULL,
             related_resource_type VARCHAR(64) NULL,
             related_resource_id INTEGER NULL
@@ -368,7 +387,7 @@ def _insert_legacy_notification(test_db, *, category: str, level: str, title: st
         INSERT INTO system_notification (
             created_at, updated_at, category, level, title, content
         ) VALUES (
-            '2024-01-01 00:00:00', '2024-01-01 00:00:00', ?, ?, ?, ?
+            '2024-01-01 00:00:00', '2024-01-01 00:00:00', %s, %s, %s, %s
         )
         """,
         (category, level, title, ""),
@@ -429,7 +448,7 @@ def test_run_pending_migrations_adds_actor_subscribed_at_and_backfills_created_a
 
     assert "subscribed_at" in columns
     assert "subscribed_at" in indexed_columns
-    assert rows == [("ActorA1", "2026-03-08 09:00:00"), ("ActorA2", None)]
+    assert rows == [("ActorA1", datetime(2026, 3, 8, 9, 0, 0)), ("ActorA2", None)]
 
 
 def test_run_pending_migrations_adds_import_job_transfer_mode_with_default(test_db):
@@ -478,15 +497,15 @@ def _create_legacy_notification_table_with_archived_index(test_db):
     test_db.execute_sql(
         """
         CREATE TABLE system_notification (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
             category VARCHAR(32) NOT NULL,
             title VARCHAR(255) NOT NULL,
             content TEXT NOT NULL,
-            is_read INTEGER NOT NULL DEFAULT 0,
-            read_at DATETIME NULL,
-            archived_at DATETIME NULL,
+            is_read BOOLEAN NOT NULL DEFAULT FALSE,
+            read_at TIMESTAMP NULL,
+            archived_at TIMESTAMP NULL,
             related_task_run_id INTEGER NULL,
             related_resource_type VARCHAR(64) NULL,
             related_resource_id INTEGER NULL
@@ -536,9 +555,9 @@ def _create_legacy_media_table_not_null(test_db):
     test_db.execute_sql(
         """
         CREATE TABLE media (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
             movie_number VARCHAR(255) NOT NULL,
             library_id INTEGER NULL,
             path VARCHAR(1024) NOT NULL UNIQUE,
@@ -549,7 +568,7 @@ def _create_legacy_media_table_not_null(test_db):
             duration_seconds INTEGER NOT NULL DEFAULT 0,
             video_info TEXT NULL,
             special_tags VARCHAR(255) NOT NULL DEFAULT '普通',
-            valid INTEGER NOT NULL DEFAULT 1
+            valid BOOLEAN NOT NULL DEFAULT TRUE
         )
         """
     )
@@ -563,9 +582,10 @@ def _column_is_nullable(test_db, table_name: str, column_name: str) -> bool:
 
 
 def test_run_pending_migrations_decouples_media_movie_and_adds_video_item(test_db, monkeypatch):
-    monkeypatch.setattr("src.start.initdb.settings.database.engine", DatabaseEngine.SQLITE)
-    monkeypatch.setattr("src.start.initdb.settings.database.path", test_db.database)
     _create_legacy_media_table_not_null(test_db)
+    # 真实老库里 image / media_library / background_task_run 都是既有核心表，videos 域新表建表时
+    # 外键引用它们；PostgreSQL 要求被引用表先存在，故显式建出还原真实前置状态。
+    test_db.create_tables([Image, MediaLibrary, BackgroundTaskRun])
     test_db.execute_sql(
         """
         INSERT INTO media (created_at, updated_at, movie_number, path, content_fingerprint)

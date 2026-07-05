@@ -19,8 +19,7 @@ class ActivityCleanupService:
     - background_task_run 每个 task_key 只保留最近若干条运行记录，供任务中心翻页，更旧的删除。
     - system_notification 把已读且超过保留天数的通知删除，未读通知一律保留。
 
-    只删数据、不改表结构；阈值定位用 limit/offset 而非窗口函数，全部为方言无关写法，
-    同时兼容 SQLite 与 PostgreSQL。
+    只删数据、不改表结构；阈值定位用 limit/offset 而非窗口函数，避免清理逻辑过度依赖复杂 SQL。
     """
 
     def cleanup(self) -> dict[str, int]:
@@ -57,7 +56,7 @@ class ActivityCleanupService:
         ]
         for task_key in task_keys:
             # 按 id 降序定位"第 retention_per_key+1 新"那条记录的 id 作为阈值（id 自增，越大越新）；
-            # 用 limit/offset 取阈值而非窗口函数，保证 SQLite 与 PostgreSQL 行为一致。
+            # 用 limit/offset 取阈值而非窗口函数，保持查询形态直观可测。
             threshold_id = (
                 BackgroundTaskRun.select(BackgroundTaskRun.id)
                 .where(BackgroundTaskRun.task_key == task_key)

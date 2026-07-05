@@ -47,7 +47,7 @@ def migrate(database, migrator) -> None:
 
     _backfill_categories(database)
 
-    # SQLite 删除列前要求先移除引用该列的旧索引，否则 DROP COLUMN 会失败。
+    # 删列前先移除引用该列的旧索引，保证旧库结构转换路径稳定。
     _drop_level_indexes(database, migrator)
 
     run_migration(migrator.drop_column("system_notification", "level"))

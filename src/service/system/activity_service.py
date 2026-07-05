@@ -12,7 +12,7 @@ from typing import Any, Callable, Literal
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 
-from peewee import IntegrityError, MySQLDatabase, PostgresqlDatabase, SqliteDatabase, fn
+from peewee import IntegrityError, fn
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
@@ -184,18 +184,8 @@ def _build_task_skip_result(blocking_task_run: BackgroundTaskRun) -> dict[str, A
 @contextmanager
 def _activity_read_snapshot():
     database = get_database()
-    if isinstance(database, SqliteDatabase):
-        with database.atomic():
-            yield
-        return
-
-    if isinstance(database, (MySQLDatabase, PostgresqlDatabase)):
-        # 活动中心首屏需要同一读快照，避免多次 SELECT 之间看到不同时间点的数据。
-        with database.atomic(isolation_level="repeatable read"):
-            yield
-        return
-
-    with database.atomic():
+    # 活动中心首屏需要同一读快照，避免多次 SELECT 之间看到不同时间点的数据。
+    with database.atomic(isolation_level="repeatable read"):
         yield
 
 

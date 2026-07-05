@@ -5,8 +5,8 @@ from importlib import import_module
 from pathlib import Path
 from types import ModuleType
 
-from peewee import Database, MySQLDatabase, PostgresqlDatabase, SqliteDatabase
-from playhouse.migrate import MySQLMigrator, PostgresqlMigrator, SqliteMigrator
+from peewee import Database, PostgresqlDatabase
+from playhouse.migrate import PostgresqlMigrator
 
 from src.model import SchemaMigration
 
@@ -37,10 +37,6 @@ class MigrationRunSummary:
 
 
 def _build_migrator(database: Database):
-    if isinstance(database, SqliteDatabase):
-        return SqliteMigrator(database)
-    if isinstance(database, MySQLDatabase):
-        return MySQLMigrator(database)
     if isinstance(database, PostgresqlDatabase):
         return PostgresqlMigrator(database)
     raise ValueError(f"unsupported_migration_database: {type(database).__name__}")

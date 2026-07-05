@@ -95,7 +95,7 @@ class VideoItemService:
 
         - created_at / title 取 VideoItem 自身列；
         - duration / file_size 取第一条媒体的时长 / 文件大小，无媒体时按 0 参与排序
-          （COALESCE 兜底，保证 SQLite 与 PostgreSQL 排序行为一致）；
+          （COALESCE 兜底，保证空媒体排序稳定）；
         - extra_columns 注入域特有字段（合集的 position）。
         """
         columns = {

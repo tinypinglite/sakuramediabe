@@ -32,7 +32,6 @@ ensure_app_identity() {
 bootstrap_data_dirs() {
     mkdir -p \
         "${DATA_ROOT}/config" \
-        "${DATA_ROOT}/db" \
         "${DATA_ROOT}/cache/assets" \
         "${DATA_ROOT}/cache/subtitles" \
         "${DATA_ROOT}/cache/gfriends" \
@@ -42,7 +41,7 @@ bootstrap_data_dirs() {
 
 run_database_migrations() {
     echo "Running database migrations..."
-    # 迁移必须以应用用户执行，避免新建 sqlite 文件落成 root 权限。
+    # 迁移必须以应用用户执行，保持运行期文件与日志权限一致。
     su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands migrate" "${APP_USER}"
 }
 

@@ -14,7 +14,7 @@ name = "20260613_02_add_media_clip_tables"
 
 
 def migrate(database, migrator) -> None:
-    # 新表通过 Peewee 模型创建，保持 SQLite/PostgreSQL 字段类型与当前方言一致。
+    # 新表通过 Peewee 模型创建，字段定义统一交由 PostgreSQL 后端渲染。
     required_tables = {"movie", "media"}
     existing_tables = set(database.get_tables())
     if not required_tables.issubset(existing_tables):

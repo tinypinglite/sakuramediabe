@@ -2,14 +2,11 @@
 enable_docs = false
 
 [database]
-# 数据库类型，可选值：sqlite、mysql、postgres。
-engine = "sqlite"
+# 数据库类型固定为 postgres。
+engine = "postgres"
 
-# MySQL / Postgres 连接串；仅当 engine=mysql 或 postgres 时生效。
-# 示例：
-# mysql://user:password@127.0.0.1:3306/sakuramedia
-# postgresql://user:password@127.0.0.1:5432/sakuramedia
-url = ""
+# PostgreSQL 连接串。
+url = "postgresql://sakuramedia:sakuramedia@postgres:5432/sakuramedia"
 
 [auth]
 

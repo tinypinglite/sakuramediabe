@@ -48,7 +48,7 @@ def _ensure_series_column(database, migrator) -> None:
 
 def _drop_legacy_series_name_index(database, migrator) -> None:
     if _index_exists(database, table_name="movie", index_name="movie_series_name"):
-        # SQLite 删除列前要求先移除引用该列的旧索引，否则 DROP COLUMN 会失败。
+        # 删列前先移除引用该列的旧索引，保证旧库结构转换路径稳定。
         run_migration(migrator.drop_index("movie", "movie_series_name"))
 
 

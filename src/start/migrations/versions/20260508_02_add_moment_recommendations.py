@@ -8,7 +8,7 @@ name = "20260508_02_add_moment_recommendations"
 
 
 def migrate(database, migrator) -> None:
-    # 新表通过 Peewee 模型创建，保持 SQLite/PostgreSQL 字段类型与当前方言一致。
+    # 新表通过 Peewee 模型创建，字段定义统一交由 PostgreSQL 后端渲染。
     required_tables = {"movie", "media", "media_thumbnail", "media_point"}
     existing_tables = set(database.get_tables())
     if not required_tables.issubset(existing_tables):

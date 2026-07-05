@@ -28,14 +28,14 @@ def test_writes_full_default_config_when_file_missing(bootstrap_env):
     for section in ("database", "auth", "media", "metadata", "scheduler", "image_search", "qdrant"):
         assert section in persisted, f"missing section: {section}"
     # 默认值正确落盘。
-    assert persisted["database"]["engine"] == "sqlite"
+    assert persisted["database"]["engine"] == "postgres"
     assert persisted["scheduler"]["actor_subscription_sync_cron"] == "0 2 * * *"
     # 生成的密钥已写入且与内存一致。
     assert persisted["auth"]["secret_key"] == config_module.settings.auth.secret_key
     assert persisted["auth"]["file_signature_secret"] == config_module.settings.auth.file_signature_secret
     assert persisted["auth"]["secret_key"]
     # 落盘内容可被 Settings 原样回读。
-    assert Settings().database.engine.value == "sqlite"
+    assert Settings().database.engine.value == "postgres"
 
 
 def test_writes_full_default_config_when_file_empty(bootstrap_env):

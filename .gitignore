@@ -20,3 +20,6 @@ docs/deployment/license.md
 
 .codex
 AGENTS.md
+
+# 本地测试库连接串（含账号密码），只保留脱敏模板 .env.test.example
+.env.test

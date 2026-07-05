@@ -1,4 +1,4 @@
-from src.config.config import Database, DatabaseEngine
+from src.config.config import Database
 from src.model import Movie
 from src.model.base import create_database
 from src.service.catalog.movie_heat_service import MovieHeatService
@@ -118,9 +118,7 @@ def test_update_single_movie_heat_only_updates_target_movie(app):
 
 def test_build_update_query_compiles_for_supported_backends():
     backends = [
-        Database(engine=DatabaseEngine.SQLITE, path=":memory:"),
-        Database(engine=DatabaseEngine.MYSQL, url="mysql://user:pass@localhost:3306/app"),
-        Database(engine=DatabaseEngine.POSTGRES, url="postgresql://user:pass@localhost:5432/app"),
+        Database(url="postgresql://user:pass@localhost:5432/app"),
     ]
     original_db = Movie._meta.database
 

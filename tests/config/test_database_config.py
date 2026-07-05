@@ -19,11 +19,11 @@ from src.config.config import (
 )
 
 
-def test_database_defaults_to_sqlite_file():
+def test_database_defaults_to_postgres_url():
     database = Database()
 
-    assert database.engine is DatabaseEngine.SQLITE
-    assert database.path == "/data/db/sakuramedia.db"
+    assert database.engine is DatabaseEngine.POSTGRES
+    assert database.url == "postgresql://sakuramedia:sakuramedia@postgres:5432/sakuramedia"
 
 
 def test_image_search_defaults_to_remote_inference_endpoint():
@@ -40,8 +40,8 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
 
     settings = Settings()
 
-    assert settings.database.engine is DatabaseEngine.SQLITE
-    assert settings.database.path == "/data/db/sakuramedia.db"
+    assert settings.database.engine is DatabaseEngine.POSTGRES
+    assert settings.database.url == "postgresql://sakuramedia:sakuramedia@postgres:5432/sakuramedia"
     assert settings.auth.username == "account"
     assert settings.scheduler.enabled is True
     assert settings.scheduler.actor_subscription_sync_cron == "0 2 * * *"

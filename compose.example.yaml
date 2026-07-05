@@ -1,8 +1,27 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sakuramedia-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sakuramedia
+      POSTGRES_USER: sakuramedia
+      POSTGRES_PASSWORD: sakuramedia
+    volumes:
+      - ./docker-data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sakuramedia -d sakuramedia"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   sakuramedia:
     image: tinyping/sakuramediabe:latest
     container_name: sakuramedia
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       # HTTP API端口
       - "38000:8000"
@@ -14,8 +33,6 @@ services:
       TZ: "Asia/Shanghai"
     volumes:
       - ./docker-data/config:/data/config
-      # 如果使用sqlite数据库，尽量把这个目录放到ssd上
-      - ./docker-data/db:/data/db
       - ./docker-data/cache/assets:/data/cache/assets
       - ./docker-data/cache/gfriends:/data/cache/gfriends
       # 抓取/解析的字幕文件，独立持久化避免容器重建丢失。

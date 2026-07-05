@@ -256,7 +256,7 @@ def test_actor_service_get_actor_years_uses_database_distinct(app, test_db):
     assert len(year_queries) == 1
     # 实现以 GROUP BY 在数据库层按年份聚合并计数，等价于去重且无需在 Python 侧再处理
     assert "GROUP BY" in year_queries[0]
-    assert "strftime" in year_queries[0]
+    assert "DATE_PART" in year_queries[0]
 
 
 def test_stream_search_actor_uses_catalog_import_service(app, test_db, monkeypatch):

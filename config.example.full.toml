@@ -6,17 +6,10 @@
 enable_docs = true
 
 [database]
-# 数据库类型，可选值：sqlite、mysql、postgres。
-engine = "sqlite"
-# SQLite 数据库文件路径；仅当 engine=sqlite 时生效。除非你知道再做什么，否则不需要修改
-path = "/data/db/sakuramedia.db"
-# MySQL 连接字符集；仅当 engine=mysql 时生效。
-charset = "utf8mb4"
-# MySQL / Postgres 连接串；仅当 engine=mysql 或 postgres 时生效。
-# 示例：
-# mysql://user:password@127.0.0.1:3306/sakuramedia
-# postgresql://user:password@127.0.0.1:5432/sakuramedia
-url = ""
+# 数据库类型固定为 postgres。
+engine = "postgres"
+# PostgreSQL 连接串。
+url = "postgresql://sakuramedia:sakuramedia@postgres:5432/sakuramedia"
 
 [auth]
 # 默认登录用户名。
@@ -242,7 +235,3 @@ name = "mteam"
 url = "http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/"
 # 索引器资源类型，可选值：pt、bt。
 kind = "pt"
-
-[database.pragmas]
-# SQLite 外键约束开关；仅当 engine=sqlite 时生效。
-foreign_keys = 1

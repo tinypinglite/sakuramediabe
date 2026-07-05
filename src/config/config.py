@@ -21,8 +21,6 @@ from pydantic_settings import (
 
 
 class DatabaseEngine(str, Enum):
-    SQLITE = "sqlite"
-    MYSQL = "mysql"
     POSTGRES = "postgres"
 
 
@@ -36,11 +34,8 @@ class IndexerKind(str, Enum):
 
 
 class Database(BaseModel):
-    engine: DatabaseEngine = DatabaseEngine.SQLITE
-    path: str = "/data/db/sakuramedia.db"
-    charset: str = "utf8mb4"
-    url: str = ""
-    pragmas: dict[str, Any] = Field(default_factory=lambda: {"foreign_keys": 1})
+    engine: DatabaseEngine = DatabaseEngine.POSTGRES
+    url: str = "postgresql://sakuramedia:sakuramedia@postgres:5432/sakuramedia"
 
 
 class Auth(BaseModel):
