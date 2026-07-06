@@ -19,9 +19,10 @@ def _build_fake_bin(bin_dir: Path) -> None:
         bin_dir / "su",
         "#!/usr/bin/env bash\n"
         "printf 'su:%s\\n' \"$*\" >> \"$LOG_PATH\"\n"
-        "if [ \"${FAIL_MIGRATE:-0}\" = \"1\" ]; then\n"
-        "  exit 1\n"
-        "fi\n"
+        "case \"$*\" in\n"
+        "  *'commands wait-db'*) [ \"${FAIL_WAIT_DB:-0}\" = \"1\" ] && exit 1 ;;\n"
+        "  *'commands migrate'*) [ \"${FAIL_MIGRATE:-0}\" = \"1\" ] && exit 1 ;;\n"
+        "esac\n"
         "exit 0\n",
     )
     _write_executable(
@@ -36,6 +37,7 @@ def _run_entrypoint(
     tmp_path: Path,
     *,
     fail_migrate: bool = False,
+    fail_wait_db: bool = False,
     args: list[str] | None = None,
     create_config: bool = True,
 ):
@@ -59,6 +61,7 @@ def _run_entrypoint(
             "PATH": f"{bin_dir}:{env.get('PATH', '')}",
             "LOG_PATH": str(log_path),
             "FAIL_MIGRATE": "1" if fail_migrate else "0",
+            "FAIL_WAIT_DB": "1" if fail_wait_db else "0",
             "SAKURAMEDIA_DATA_ROOT": str(data_root),
             "SAKURAMEDIA_APP_ROOT": str(app_root),
             "SAKURAMEDIA_SUPERVISORD_BIN": str(bin_dir / "supervisord"),
@@ -75,15 +78,29 @@ def test_docker_entrypoint_runs_migrations_before_starting_supervisor(tmp_path):
     result, lines = _run_entrypoint(tmp_path)
 
     assert result.returncode == 0, result.stderr
+    assert "Waiting for database to become ready..." in result.stdout
     assert "Running database migrations..." in result.stdout
     assert "Bootstrapping default account and system playlists..." in result.stdout
     assert "Starting supervisor..." in result.stdout
-    assert len(lines) == 3
-    assert "-m src.start.commands migrate" in lines[0]
-    assert "-m src.start.commands initdb" in lines[1]
+    assert len(lines) == 4
+    assert "-m src.start.commands wait-db" in lines[0]
+    assert "-m src.start.commands migrate" in lines[1]
+    assert "-m src.start.commands initdb" in lines[2]
     assert lines[0].startswith("su:")
     assert lines[1].startswith("su:")
-    assert lines[2].startswith("supervisord:")
+    assert lines[2].startswith("su:")
+    assert lines[3].startswith("supervisord:")
+
+
+def test_docker_entrypoint_stops_when_database_is_not_ready(tmp_path):
+    result, lines = _run_entrypoint(tmp_path, fail_wait_db=True)
+
+    assert result.returncode != 0
+    assert "Waiting for database to become ready..." in result.stdout
+    assert "Running database migrations..." not in result.stdout
+    assert "Starting supervisor..." not in result.stdout
+    assert len(lines) == 1
+    assert "-m src.start.commands wait-db" in lines[0]
 
 
 def test_docker_entrypoint_stops_when_migration_fails(tmp_path):
@@ -93,8 +110,9 @@ def test_docker_entrypoint_stops_when_migration_fails(tmp_path):
     assert "Running database migrations..." in result.stdout
     assert "Bootstrapping default account and system playlists..." not in result.stdout
     assert "Starting supervisor..." not in result.stdout
-    assert len(lines) == 1
-    assert lines[0].startswith("su:")
+    assert len(lines) == 2
+    assert "-m src.start.commands wait-db" in lines[0]
+    assert "-m src.start.commands migrate" in lines[1]
 
 
 def test_docker_entrypoint_starts_without_config_file(tmp_path):
@@ -103,10 +121,11 @@ def test_docker_entrypoint_starts_without_config_file(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "Starting supervisor..." in result.stdout
-    assert len(lines) == 3
-    assert "-m src.start.commands migrate" in lines[0]
-    assert "-m src.start.commands initdb" in lines[1]
-    assert lines[2].startswith("supervisord:")
+    assert len(lines) == 4
+    assert "-m src.start.commands wait-db" in lines[0]
+    assert "-m src.start.commands migrate" in lines[1]
+    assert "-m src.start.commands initdb" in lines[2]
+    assert lines[3].startswith("supervisord:")
 
 
 def test_docker_entrypoint_passthrough_for_non_start_commands(tmp_path):

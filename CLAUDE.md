@@ -32,6 +32,7 @@
 - 启动 JoyTag 推理服务：`uv run python src/start/start_joytag_infer.py`
 - 初始化数据库：`uv run python -m src.start.commands initdb`
 - 执行待应用的数据库迁移：`uv run python -m src.start.commands migrate`
+- 等待数据库可连接（容器入口在 migrate 前调用）：`uv run python -m src.start.commands wait-db --timeout 60`
 - 启动调度器：`uv run python -m src.start.commands aps`
 - 单次执行 APS 任务：
   - `uv run python -m src.start.commands aps sync-subscribed-actor-movies`

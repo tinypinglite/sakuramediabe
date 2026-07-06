@@ -46,6 +46,17 @@ poetry run python -m src.start.commands initdb
 - `initdb` 只会按当前 Peewee 模型建表，不再兼容旧数据库补列、补索引或旧字段回填。
 - `initdb` 只负责建表和初始化默认数据，不会执行待应用 migration，也不是旧库升级入口。
 
+- 等待数据库可连接：
+
+```bash
+poetry run python -m src.start.commands wait-db --timeout 60 --interval 2
+```
+
+说明：
+
+- `wait-db` 按固定间隔轮询 PostgreSQL 直到可连接，超时后以非零码退出。
+- 容器入口在执行 `migrate` 前会先执行 `wait-db --timeout 120`：宿主机重启时容器间没有启动顺序保证，显式等待可避免应用先于数据库就绪导致迁移失败。
+
 - 执行待应用的数据库迁移：
 
 ```bash

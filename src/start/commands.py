@@ -261,6 +261,55 @@ def migrate():
     )
 
 
+@main.command(name="wait-db")
+@click.option(
+    "--timeout",
+    "timeout_seconds",
+    type=float,
+    default=60.0,
+    show_default=True,
+    help="Max seconds to wait for the database to accept connections.",
+)
+@click.option(
+    "--interval",
+    "interval_seconds",
+    type=float,
+    default=2.0,
+    show_default=True,
+    help="Seconds between connection attempts.",
+)
+def wait_db(timeout_seconds: float, interval_seconds: float):
+    """等待 PostgreSQL 可连接；供容器启动时在迁移前对齐数据库就绪时序"""
+    import time
+
+    from peewee import OperationalError
+
+    from src.model.base import create_database
+
+    deadline = time.monotonic() + timeout_seconds
+    attempt = 0
+    last_error: OperationalError | None = None
+    while True:
+        attempt += 1
+        database = create_database(settings.database)
+        try:
+            database.connect()
+            database.execute_sql("SELECT 1")
+            database.close()
+            click.echo(f"database is ready (attempt {attempt})")
+            return
+        except OperationalError as exc:
+            # 数据库容器尚未就绪（连接拒绝 / 启动中）；到截止时间前按固定间隔重试。
+            last_error = exc
+            if not database.is_closed():
+                database.close()
+        if time.monotonic() >= deadline:
+            raise click.ClickException(
+                f"database not ready after {timeout_seconds}s ({attempt} attempts): {last_error}"
+            )
+        time.sleep(interval_seconds)
+
+
 @main.command(name="test-trans")
 @click.option("--text", type=str, help="Text to translate.")
 @click.option(

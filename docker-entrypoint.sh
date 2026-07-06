@@ -39,6 +39,12 @@ bootstrap_data_dirs() {
         "${DATA_ROOT}/logs"
 }
 
+wait_for_database() {
+    echo "Waiting for database to become ready..."
+    # 显式等待 PostgreSQL 可连接：宿主机重启时容器间无启动顺序保证，避免应用先于数据库就绪导致迁移失败。
+    su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands wait-db --timeout 120" "${APP_USER}"
+}
+
 run_database_migrations() {
     echo "Running database migrations..."
     # 迁移必须以应用用户执行，保持运行期文件与日志权限一致。
@@ -54,6 +60,7 @@ bootstrap_default_data() {
 if [ "${1:-}" = "start" ]; then
     ensure_app_identity
     bootstrap_data_dirs
+    wait_for_database
     run_database_migrations
     bootstrap_default_data
 

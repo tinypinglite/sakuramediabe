@@ -8,7 +8,8 @@ enable_docs = true
 [database]
 # 数据库类型固定为 postgres。
 engine = "postgres"
-# PostgreSQL 连接串。
+# PostgreSQL 连接串。默认值与 compose.example.yaml 内置的 postgres 服务对齐，
+# 照抄 compose 部署时无需修改；只有使用外部 PostgreSQL 时才需要改这里。
 url = "postgresql://sakuramedia:sakuramedia@postgres:5432/sakuramedia"
 
 [auth]
