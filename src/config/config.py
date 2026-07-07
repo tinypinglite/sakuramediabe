@@ -98,7 +98,7 @@ class Media(BaseModel):
             "MMDV",
         }
     )
-    allowed_min_video_file_size: int = 1024 * 1024 * 1024
+    allowed_min_video_file_size: int = 268435456 # 256MB
     import_image_root_path: str = "/data/cache/assets"
     subtitle_root_path: str = "/data/cache/subtitles"
     max_thumbnail_process_count: int = Field(
@@ -171,8 +171,8 @@ class Scheduler(BaseModel):
     log_dir: str = "/data/logs"
     actor_subscription_sync_cron: str = "0 2 * * *"
     subscribed_movie_auto_download_cron: str = "30 2 * * *"
-    download_task_sync_cron: str = "* * * * *"
-    download_task_auto_import_cron: str = "*/3 * * * *"
+    download_task_sync_cron: str = "*/5 * * * *"
+    download_task_auto_import_cron: str = "*/10 * * * *"
     download_small_file_cleanup_cron: str = "*/5 * * * *"
     movie_collection_sync_cron: str = "0 1 * * *"
     movie_heat_cron: str = "15 0 * * *"
