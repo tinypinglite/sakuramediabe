@@ -12,7 +12,7 @@ from src.api.routers.playback import media_libraries
 from src.api.routers.system import account
 from src.api.routers.system import activity
 from src.api.routers.system import auth
-from src.api.routers.system import collection_number_features
+from src.api.routers.system import config as system_config
 from src.api.routers.system import indexer_settings
 from src.api.routers.system import movie_desc_translation_settings
 from src.api.routers.system import status
@@ -107,12 +107,12 @@ def test_movie_desc_translation_settings_router_uses_db_deps_as_router_level_dep
     )
 
 
-def test_collection_number_features_router_uses_db_deps_as_router_level_dependency():
+def test_config_router_uses_db_deps_as_router_level_dependency():
     assert hasattr(deps, "db_deps")
     assert any(
         isinstance(dependency.dependency, type(deps.db_deps))
         or dependency.dependency is deps.db_deps
-        for dependency in collection_number_features.router.dependencies
+        for dependency in system_config.router.dependencies
     )
 
 
@@ -225,9 +225,8 @@ def test_create_app_registers_image_search_routes():
     assert "/movies/{movie_number}/interaction-sync" in paths
     assert "/movies/{movie_number}/heat-recompute" in paths
     assert "/movies/series/{series_id}/javdb/import/stream" in paths
-    assert "/movie-desc-translation-settings" in paths
+    # GET/PATCH 已剔除；此路由现在只暴露连通性探测端点。
     assert "/movie-desc-translation-settings/test" in paths
-    assert "/collection-number-features" in paths
     assert "/system/activity/bootstrap" in paths
     assert "/system/notifications" in paths
     assert "/system/task-runs" in paths

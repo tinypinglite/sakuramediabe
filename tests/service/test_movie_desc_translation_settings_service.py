@@ -8,7 +8,6 @@ from src.api.exception.errors import ApiError
 from src.config.config import MovieInfoTranslation, Settings
 from src.schema.system.movie_desc_translation_settings import (
     MovieDescTranslationSettingsTestRequest,
-    MovieDescTranslationSettingsUpdateRequest,
 )
 from src.service.system.movie_desc_translation_settings_service import (
     DEFAULT_API_TEST_TRANSLATION_TEXT,
@@ -44,99 +43,6 @@ def isolated_movie_desc_translation_settings(tmp_path, monkeypatch):
 
 def _persisted_movie_info_translation(config_path) -> dict:
     return toml.load(config_path)["movie_info_translation"]
-
-
-def test_get_settings_returns_current_translation_configuration(
-    isolated_movie_desc_translation_settings,
-):
-    response = MovieDescTranslationSettingsService.get_settings()
-
-    assert response.model_dump() == {
-        "enabled": False,
-        "base_url": "http://saved-llm:8000",
-        "api_key": "saved-token",
-        "model": "saved-model",
-        "timeout_seconds": 60.0,
-        "connect_timeout_seconds": 5.0,
-    }
-
-
-def test_update_settings_persists_only_movie_desc_translation_section(
-    isolated_movie_desc_translation_settings,
-):
-    original_auth_secret = config_module.settings.auth.secret_key
-
-    response = MovieDescTranslationSettingsService.update_settings(
-        MovieDescTranslationSettingsUpdateRequest(
-            enabled=True,
-            base_url=" http://updated-llm:9000/ ",
-            api_key="  ",
-            model=" updated-model ",
-            timeout_seconds=120,
-            connect_timeout_seconds=7,
-        )
-    )
-
-    assert response.model_dump() == {
-        "enabled": True,
-        "base_url": "http://updated-llm:9000",
-        "api_key": "",
-        "model": "updated-model",
-        "timeout_seconds": 120.0,
-        "connect_timeout_seconds": 7.0,
-    }
-    assert config_module.settings.auth.secret_key == original_auth_secret
-    assert _persisted_movie_info_translation(isolated_movie_desc_translation_settings) == {
-        "enabled": True,
-        "base_url": "http://updated-llm:9000",
-        "api_key": "",
-        "model": "updated-model",
-        "timeout_seconds": 120.0,
-        "connect_timeout_seconds": 7.0,
-    }
-
-
-def test_update_settings_rejects_empty_payload(
-    isolated_movie_desc_translation_settings,
-):
-    with pytest.raises(ApiError) as exc_info:
-        MovieDescTranslationSettingsService.update_settings(
-            MovieDescTranslationSettingsUpdateRequest()
-        )
-
-    assert exc_info.value.code == "empty_movie_desc_translation_settings_update"
-
-
-@pytest.mark.parametrize(
-    ("payload", "error_code"),
-    [
-        (
-            MovieDescTranslationSettingsUpdateRequest(base_url="localhost:8000"),
-            "invalid_movie_desc_translation_base_url",
-        ),
-        (
-            MovieDescTranslationSettingsUpdateRequest(model="   "),
-            "invalid_movie_desc_translation_model",
-        ),
-        (
-            MovieDescTranslationSettingsUpdateRequest(timeout_seconds=0),
-            "invalid_movie_desc_translation_timeout_seconds",
-        ),
-        (
-            MovieDescTranslationSettingsUpdateRequest(connect_timeout_seconds=-1),
-            "invalid_movie_desc_translation_connect_timeout_seconds",
-        ),
-    ],
-)
-def test_update_settings_rejects_invalid_values(
-    isolated_movie_desc_translation_settings,
-    payload,
-    error_code,
-):
-    with pytest.raises(ApiError) as exc_info:
-        MovieDescTranslationSettingsService.update_settings(payload)
-
-    assert exc_info.value.code == error_code
 
 
 def test_test_settings_uses_saved_config_when_request_is_empty(

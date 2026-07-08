@@ -216,7 +216,7 @@ poetry run python -m src.start.commands test-dmm --movie-number ABP-123 --json
 
 说明：
 
-- 命令复用 `build_dmm_provider()`，代理取自 `settings.metadata.proxy`；旧版 `metadata.dmm_proxy` 仅在 `proxy` 为空时作为兼容回退。
+- 命令复用 `build_dmm_provider()`，代理取自 `settings.metadata.proxy`。
 - 如果 DMM 搜索不到对应番号，或详情页没有简介，会直接返回非零退出码。
 
 ## 常见问题

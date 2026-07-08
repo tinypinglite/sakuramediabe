@@ -16,13 +16,11 @@
 
 - [system/auth.md](./system/auth.md): 登录与访问令牌
 - [system/account.md](./system/account.md): 唯一账号资料与密码维护
+- [system/config.md](./system/config.md): 统一配置读写接口（全部 toml 配置项）
 - [system/indexer-settings.md](./system/indexer-settings.md): 索引器配置管理
-- [system/metadata-provider-license.md](./system/metadata-provider-license.md): 闭源元数据 Provider 授权状态与激活
-- [system/collection-number-features.md](./system/collection-number-features.md): 合集影片番号特征管理
 - [system/notifications.md](./system/notifications.md): 通知中心接口
 - [system/jobs.md](./system/jobs.md): 系统任务元数据与手动触发接口
 - [system/task-runs.md](./system/task-runs.md): 任务中心与事件流接口
-- [system/flutter-activity-integration.md](./system/flutter-activity-integration.md): Flutter 活动中心对接说明
 
 ### Catalog
 

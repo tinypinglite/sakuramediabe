@@ -17,7 +17,7 @@ from src.metadata.gfriends import GfriendsActorImageResolver
 
 
 class GfriendsAvatarJavdbProvider:
-    """只负责为闭源 JavDB 返回结果补 GFriends 头像，不实现站点抓取。"""
+    """只负责为 JavDB provider 返回结果补 GFriends 头像，不实现站点抓取。"""
 
     def __init__(self, provider: JavdbProvider, actor_image_resolver: GfriendsActorImageResolver | None):
         self.provider = provider

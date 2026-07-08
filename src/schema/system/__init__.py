@@ -6,10 +6,8 @@ from .activity import (
     TaskRunResource,
 )
 from .movie_desc_translation_settings import (
-    MovieDescTranslationSettingsResource,
     MovieDescTranslationSettingsTestRequest,
     MovieDescTranslationSettingsTestResource,
-    MovieDescTranslationSettingsUpdateRequest,
 )
 from .resource_task_state import (
     ResourceTaskDefinitionResource,
@@ -24,10 +22,8 @@ __all__ = [
     "ActivityBootstrapResource",
     "NotificationReadResponse",
     "NotificationResource",
-    "MovieDescTranslationSettingsResource",
     "MovieDescTranslationSettingsTestRequest",
     "MovieDescTranslationSettingsTestResource",
-    "MovieDescTranslationSettingsUpdateRequest",
     "ResourceTaskDefinitionResource",
     "ResourceTaskRecordResource",
     "SystemEventEnvelope",

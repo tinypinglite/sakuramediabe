@@ -40,7 +40,7 @@
 |---|---|---|
 | `GET` | `/status` | 获取系统汇总统计 |
 | `GET` | `/status/image-search` | 获取 JoyTag/Qdrant 运行状态与索引计数 |
-| `GET` | `/status/metadata-providers/{provider}/test` | 测试闭源 Provider 提供的 JavDB/DMM 外部站点实际可用性 |
+| `GET` | `/status/metadata-providers/{provider}/test` | 测试内置 Provider 提供的 JavDB/DMM 外部站点实际可用性 |
 
 ## `GET /status`
 
@@ -220,6 +220,5 @@ DMM 示例响应：
 - `movie_number`: 固定测试番号，当前为 `SSNI-888`
 - `elapsed_ms`: 本次检测耗时（毫秒）
 - `error.type`: `metadata_request_error`、`metadata_not_found` 或 `unexpected_error`
-- `javdb.*`: JavDB 成功时返回的详情摘要；站点请求由闭源 Provider 提供，JavDB 默认不走 `settings.metadata.proxy`
-- `dmm.*`: DMM 成功时返回的简介摘要；站点请求由闭源 Provider 提供，代理沿用统一的 `settings.metadata.proxy` 配置
-- `metadata_license_error`: 闭源 Provider 未激活、授权过期或授权状态不可用；可先调用 `/metadata-provider-license/status` 查看状态
+- `javdb.*`: JavDB 成功时返回的详情摘要；站点请求由内置 Provider 提供，JavDB 默认不走 `settings.metadata.proxy`
+- `dmm.*`: DMM 成功时返回的简介摘要；站点请求由内置 Provider 提供，代理沿用统一的 `settings.metadata.proxy` 配置

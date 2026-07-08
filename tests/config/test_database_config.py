@@ -61,7 +61,7 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
     assert settings.metadata.gfriends_cdn_base_url == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
     assert settings.metadata.gfriends_filetree_cache_path == "/data/cache/gfriends/gfriends-filetree.json"
     assert settings.metadata.gfriends_filetree_cache_ttl_hours == 168
-    assert settings.metadata.normalized_dmm_proxy is None
+    assert settings.metadata.normalized_proxy is None
     assert settings.media.collection_duration_threshold_minutes == 300
     assert settings.media.max_thumbnail_process_count == max(
         1, math.ceil(((config_module.os.cpu_count() or 1) / 2))
@@ -85,7 +85,8 @@ def test_settings_loads_metadata_gfriends_settings_from_config_file(tmp_path, mo
                 "metadata": {
                     "javdb_host": "example.com",
                     "proxy": "http://127.0.0.1:7890",
-                    "dmm_proxy": "  http://127.0.0.1:7890  ",
+                    # 老 toml 里遗留的 dmm_proxy 字段应被 Metadata 的默认 extra=ignore 静默丢弃，不该崩启动。
+                    "dmm_proxy": "http://legacy-should-be-ignored:1080",
                     "gfriends_filetree_url": "https://cdn.example.com/Filetree.json",
                     "gfriends_cdn_base_url": "https://cdn.example.com",
                     "gfriends_filetree_cache_path": "./tmp/gfriends.json",
@@ -103,7 +104,7 @@ def test_settings_loads_metadata_gfriends_settings_from_config_file(tmp_path, mo
     assert settings.metadata.proxy == "http://127.0.0.1:7890"
     assert settings.metadata.normalized_proxy == "http://127.0.0.1:7890"
     assert settings.metadata.gfriends_proxy == "http://127.0.0.1:7890"
-    assert settings.metadata.normalized_dmm_proxy == "http://127.0.0.1:7890"
+    assert not hasattr(settings.metadata, "dmm_proxy")
     assert settings.metadata.gfriends_filetree_url == "https://cdn.example.com/Filetree.json"
     assert settings.metadata.gfriends_cdn_base_url == "https://cdn.example.com"
     assert settings.metadata.gfriends_filetree_cache_path == "./tmp/gfriends.json"
@@ -125,36 +126,67 @@ def test_metadata_proxy_normalization(raw_proxy, expected_proxy):
 
     assert metadata.normalized_proxy == expected_proxy
     assert metadata.gfriends_proxy == expected_proxy
-    assert metadata.normalized_dmm_proxy == expected_proxy
 
 
-@pytest.mark.parametrize(
-    ("raw_proxy", "expected_proxy"),
-    [
-        ("http://127.0.0.1:7890", "http://127.0.0.1:7890"),
-        ("  http://127.0.0.1:7890  ", "http://127.0.0.1:7890"),
-        ("", None),
-        ("   ", None),
-        (None, None),
-    ],
-)
-def test_metadata_legacy_dmm_proxy_fallback(raw_proxy, expected_proxy):
-    metadata = Metadata(dmm_proxy=raw_proxy)
-
-    assert metadata.normalized_proxy == expected_proxy
-    assert metadata.gfriends_proxy == expected_proxy
-    assert metadata.normalized_dmm_proxy == expected_proxy
-
-
-def test_metadata_proxy_takes_priority_over_legacy_dmm_proxy():
-    metadata = Metadata(
-        proxy="  http://127.0.0.1:7890  ",
-        dmm_proxy="http://127.0.0.1:7891",
+def test_settings_loads_lenient_when_proxy_and_urls_are_legacy_or_invalid(tmp_path, monkeypatch):
+    # 老配置里可能存在不带 scheme 的 proxy、留空的 URL、非法 cron。启动加载走宽松档，
+    # 只 warn 保留原值、不阻止进程起来；严格档由配置 API 写入路径独立保证。
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        toml.dumps(
+            {
+                "metadata": {
+                    "proxy": "127.0.0.1:7890",
+                },
+                "movie_info_translation": {
+                    "base_url": "",
+                },
+                "qdrant": {
+                    "url": "not-a-url",
+                },
+                "scheduler": {
+                    "movie_heat_cron": "definitely not a cron",
+                },
+            }
+        ),
+        encoding="utf-8",
     )
+    monkeypatch.setitem(config_module.Settings.model_config, "toml_file", config_path)
 
+    settings = config_module.Settings()
+
+    assert settings.metadata.proxy == "127.0.0.1:7890"
+    assert settings.movie_info_translation.base_url == ""
+    assert settings.qdrant.url == "not-a-url"
+    assert settings.scheduler.movie_heat_cron == "definitely not a cron"
+
+
+def test_settings_strict_context_rejects_invalid_proxy_and_urls():
+    # 严格档由配置 API 通过 context={"strict": True} 触发，非法值直接抛 ValidationError。
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Metadata.model_validate({"proxy": "127.0.0.1:7890"}, context={"strict": True})
+    with pytest.raises(ValidationError):
+        MovieInfoTranslation.model_validate({"base_url": ""}, context={"strict": True})
+    with pytest.raises(ValidationError):
+        Qdrant.model_validate({"url": "not-a-url"}, context={"strict": True})
+    with pytest.raises(ValidationError):
+        Scheduler.model_validate(
+            {"movie_heat_cron": "definitely not a cron"}, context={"strict": True}
+        )
+
+
+def test_metadata_ignores_legacy_dmm_proxy_field():
+    # 兼容老 toml：Metadata 默认 extra=ignore 会静默丢弃已移除的 dmm_proxy 键，不影响 proxy 归一化。
+    metadata = Metadata.model_validate({
+        "proxy": "http://127.0.0.1:7890",
+        "dmm_proxy": "http://legacy:1080",
+    })
+
+    assert metadata.proxy == "http://127.0.0.1:7890"
     assert metadata.normalized_proxy == "http://127.0.0.1:7890"
-    assert metadata.gfriends_proxy == "http://127.0.0.1:7890"
-    assert metadata.normalized_dmm_proxy == "http://127.0.0.1:7890"
+    assert not hasattr(metadata, "dmm_proxy")
 
 
 def test_auth_secrets_default_to_empty_sentinel():

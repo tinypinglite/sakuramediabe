@@ -13,7 +13,7 @@
 - 命令入口统一是 `src.start.commands`
 - 这些命令不会初始化数据库
 - 这些命令不会写任务记录
-- 默认读取当前 `config.toml` 中的翻译服务、JavDB、DMM 和闭源 Provider 授权配置
+- 默认读取当前 `config.toml` 中的翻译服务、JavDB、DMM 配置
 - 传入 `--json` 时会输出稳定 JSON，便于脚本集成
 
 ## 翻译服务
@@ -76,9 +76,8 @@ JSON 输出：
 
 说明：
 
-- 默认复用 `build_javdb_provider(use_metadata_proxy=False)`；站点请求由闭源 `sakuramedia-metadata-providers` 提供
+- 默认复用 `build_javdb_provider(use_metadata_proxy=False)`；站点请求由内置 metadata provider 提供
 - `--use-metadata-proxy` 会让 JavDB 与 GFriends 一起走统一 metadata 代理
-- 未激活或授权过期时，命令会返回授权错误，需要先通过 `/metadata-provider-license/activate` 激活
 - 命令会输出影片标题、JavDB ID、演员数量、标签数量和简介摘要，方便快速判断接口是否正常
 
 ## DMM
@@ -97,9 +96,8 @@ JSON 输出：
 
 说明：
 
-- 命令复用 `build_dmm_provider()`；站点请求由闭源 `sakuramedia-metadata-providers` 提供
-- 代理取自 `settings.metadata.proxy`；旧版 `metadata.dmm_proxy` 仅在 `proxy` 为空时作为兼容回退
-- 未激活或授权过期时，命令会返回授权错误，需要先通过 `/metadata-provider-license/activate` 激活
+- 命令复用 `build_dmm_provider()`；站点请求由内置 metadata provider 提供
+- 代理取自 `settings.metadata.proxy`
 - 如果 DMM 搜索不到对应番号，或详情页没有简介，会直接返回非零退出码
 
 ## 常见报错
@@ -107,6 +105,6 @@ JSON 输出：
 - `movie_desc_translation_unavailable`
   - 当前大模型服务不可达、超时或网络被拒绝，优先检查 `movie_info_translation.base_url`、容器网络和 API Key
 - `metadata request failed`
-  - JavDB 或 DMM 远端请求失败，优先检查闭源 Provider 授权状态、代理配置、目标站点可访问性和当前网络环境
+  - JavDB 或 DMM 远端请求失败，优先检查代理配置、目标站点可访问性和当前网络环境
 - `--json` 模式退出码非零
   - 命令仍会输出结构化错误对象，可读取 `error.type`、`error_code`、`status_code` 或请求 URL 辅助排查

@@ -43,7 +43,6 @@ def _build_detail(actors: list[JavdbMovieActorResource]):
 
 def test_build_dmm_provider_passes_site_proxy(monkeypatch):
     monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
-    monkeypatch.setattr(settings.metadata, "dmm_proxy", None)
 
     provider = build_dmm_provider()
 
@@ -66,7 +65,6 @@ def test_build_javdb_provider_routes_site_proxy(
     expected_gfriends_proxy,
 ):
     monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
-    monkeypatch.setattr(settings.metadata, "dmm_proxy", None)
 
     provider = build_javdb_provider(use_metadata_proxy=use_metadata_proxy)
 
@@ -87,7 +85,6 @@ def test_build_javdb_provider_passes_account_credentials(monkeypatch):
 
 def test_build_missav_providers_pass_site_proxy(monkeypatch):
     monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
-    monkeypatch.setattr(settings.metadata, "dmm_proxy", None)
 
     assert build_missav_thumbnail_provider() is not None
     assert build_missav_ranking_provider() is not None

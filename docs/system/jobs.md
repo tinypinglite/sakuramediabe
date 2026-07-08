@@ -132,7 +132,6 @@
 - HTTP 手动触发会创建 `trigger_type=manual` 的 `BackgroundTaskRun`
 - 同一个 APS 注册任务在 `manual` 与 `scheduled` 之间按 `aps:<task_key>` 互斥
 - 任务在线程内执行；API 进程退出会导致未完成任务中断，下一次启动或调度前会按任务恢复规则回收
-- `metadata_provider_license_renew` 当前禁止 HTTP 手动触发，仅保留 cron / CLI 路径
 
 ## 前端接入建议
 

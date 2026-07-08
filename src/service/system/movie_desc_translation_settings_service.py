@@ -1,12 +1,10 @@
 from urllib.parse import urlparse
 
 from src.api.exception.errors import ApiError
-from src.config.config import Settings, settings, update_settings as persist_settings
+from src.config.config import settings
 from src.schema.system.movie_desc_translation_settings import (
-    MovieDescTranslationSettingsResource,
     MovieDescTranslationSettingsTestRequest,
     MovieDescTranslationSettingsTestResource,
-    MovieDescTranslationSettingsUpdateRequest,
 )
 from src.service.catalog.movie_desc_translation_client import (
     MovieDescTranslationClient,
@@ -19,47 +17,6 @@ DEFAULT_API_TEST_TRANSLATION_TEXT = "hi"
 
 
 class MovieDescTranslationSettingsService:
-    @classmethod
-    def get_settings(cls) -> MovieDescTranslationSettingsResource:
-        return MovieDescTranslationSettingsResource.model_validate(
-            settings.movie_info_translation.model_dump()
-        )
-
-    @classmethod
-    def update_settings(
-        cls,
-        payload: MovieDescTranslationSettingsUpdateRequest,
-    ) -> MovieDescTranslationSettingsResource:
-        update_data = payload.model_dump(exclude_unset=True, by_alias=False)
-        if not update_data:
-            raise ApiError(
-                422,
-                "empty_movie_desc_translation_settings_update",
-                "At least one field must be provided",
-            )
-
-        current_settings = Settings.model_validate(settings.model_dump())
-        translation_settings = current_settings.movie_info_translation.model_copy(deep=True)
-
-        if "enabled" in update_data:
-            translation_settings.enabled = cls._validate_enabled(payload.enabled)
-        if "base_url" in update_data:
-            translation_settings.base_url = cls._validate_base_url(payload.base_url)
-        if "api_key" in update_data:
-            translation_settings.api_key = cls._validate_api_key(payload.api_key)
-        if "model" in update_data:
-            translation_settings.model = cls._validate_model(payload.model)
-        if "timeout_seconds" in update_data:
-            translation_settings.timeout_seconds = cls._validate_timeout_seconds(payload.timeout_seconds)
-        if "connect_timeout_seconds" in update_data:
-            translation_settings.connect_timeout_seconds = cls._validate_connect_timeout_seconds(
-                payload.connect_timeout_seconds
-            )
-
-        current_settings.movie_info_translation = translation_settings
-        persist_settings(current_settings)
-        return cls.get_settings()
-
     @classmethod
     def test_settings(
         cls,
@@ -115,16 +72,6 @@ class MovieDescTranslationSettingsService:
         return MovieDescTranslationSettingsTestResource(
             ok=True,
         )
-
-    @staticmethod
-    def _validate_enabled(value: bool | None) -> bool:
-        if value is None:
-            raise ApiError(
-                422,
-                "invalid_movie_desc_translation_enabled",
-                "Enabled flag cannot be empty",
-            )
-        return bool(value)
 
     @staticmethod
     def _validate_base_url(value: str | None) -> str:

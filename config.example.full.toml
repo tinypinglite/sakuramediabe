@@ -229,10 +229,5 @@ type = "jackett"
 # Jackett API Key。
 api_key = "change-me"
 
-[[indexer_settings.indexers]]
-# 索引器显示名称，需保持唯一。
-name = "mteam"
-# Jackett Torznab 接口地址。
-url = "http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/"
-# 索引器资源类型，可选值：pt、bt。
-kind = "pt"
+# 索引器明细（`[[indexer_settings.indexers]]`）不再存 toml，改由 DB `Indexer` 表管理，
+# 请走 `PATCH /indexer-settings` 或直接改数据库。

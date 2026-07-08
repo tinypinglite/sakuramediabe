@@ -9,15 +9,71 @@ import secrets
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal, Tuple, Type
+from urllib.parse import urlparse
+
+from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
 import toml
-from pydantic import AliasChoices, BaseModel, Field, model_validator
+from pydantic import AliasChoices, BaseModel, Field, ValidationInfo, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
+
+
+# 与 src.common.movie_numbers.normalize_movie_number 保持一致的番号规范化：
+# 去空白 / 大写 / _→- / 抹 PPV-。这里内联而非 import 是为了绕开 src.config ↔ src.common 的循环
+# （src.common.__init__ 会加载 file_signatures，后者在顶层 import 全局 settings；Media validator
+# 在 Settings() 构造过程中触发时，settings 尚未创建，任何形式的 src.common 引入都会崩）。逻辑很小，
+# 若源函数变化时需要同步这里。
+def _normalize_number_feature(value: str) -> str:
+    normalized = (value or "").strip().upper()
+    normalized = normalized.replace(" ", "")
+    normalized = normalized.replace("_", "-")
+    normalized = normalized.replace("PPV-", "")
+    return normalized
+
+
+# 校验分档：
+# - 无 context（默认，覆盖启动期 Settings() 从 toml 加载）：仅 warn 保留原值，避免存量非法配置让进程启动即崩。
+# - context={"strict": True}（覆盖配置 API 写入路径）：直接 raise，阻止把非法值写入磁盘。
+def _validation_is_strict(info: ValidationInfo | None) -> bool:
+    if info is None:
+        return False
+    context = info.context
+    if isinstance(context, dict):
+        return bool(context.get("strict"))
+    return False
+
+
+def _check_http_url(value: str, label: str, info: ValidationInfo | None) -> str:
+    parsed = urlparse((value or "").strip())
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        return value
+    message = f"{label} 必须是 http 或 https URL"
+    if _validation_is_strict(info):
+        raise ValueError(message)
+    logger.warning("配置 {} 不是合法的 http/https URL（当前值={!r}），将原样保留使用", label, value)
+    return value
+
+
+def _check_proxy_url(value: str | None, info: ValidationInfo | None) -> str | None:
+    # 代理允许 http/https 与 socks5(h)；None 或空串视为未配置，直接放行。
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return value
+    parsed = urlparse(normalized)
+    if parsed.scheme in {"http", "https", "socks5", "socks5h"} and parsed.netloc:
+        return value
+    message = "proxy 必须是 http/https/socks5/socks5h URL"
+    if _validation_is_strict(info):
+        raise ValueError(message)
+    logger.warning("配置 proxy 不是合法的 http/https/socks5(h) URL（当前值={!r}），将原样保留使用", value)
+    return value
 
 
 class DatabaseEngine(str, Enum):
@@ -111,6 +167,25 @@ class Media(BaseModel):
     # 单次 ffmpeg 切片的墙钟超时（秒）：兜住坏文件/慢挂载导致的进程卡死，超时即杀进程。
     media_clip_ffmpeg_timeout_seconds: int = 120
 
+    @field_validator("others_number_features", mode="before")
+    @classmethod
+    def _normalize_others_number_features(cls, value, info: ValidationInfo):
+        # 规范化：对每一项按番号习惯归一（去空白 / 大写 / _→- / 抹 PPV-）；空结果按分档处理：
+        # - 严格档（配置 API 写入）：抛错，阻止把空/纯空白项写入磁盘
+        # - 宽松档（启动加载）：静默丢弃，兼容存量脏值
+        # 保持返回 set[str]，避免上游 movie_collection_service 等按集合语义比较的地方被打破。
+        if value is None:
+            return set()
+        strict = _validation_is_strict(info)
+        normalized: set[str] = set()
+        for item in value:
+            result = _normalize_number_feature(str(item))
+            if result:
+                normalized.add(result)
+            elif strict:
+                raise ValueError(f"invalid number feature: {item!r}")
+        return normalized
+
 
 class MovieInfoTranslation(BaseModel):
     enabled: bool = False
@@ -119,6 +194,11 @@ class MovieInfoTranslation(BaseModel):
     model: str = "gpt-4o-mini"
     timeout_seconds: float = 300.0
     connect_timeout_seconds: float = 3.0
+
+    @field_validator("base_url")
+    @classmethod
+    def _check_base_url(cls, value: str, info: ValidationInfo) -> str:
+        return _check_http_url(value, "base_url", info)
 
 
 # 兼容现有导入路径，运行时统一使用 MovieInfoTranslation。
@@ -131,13 +211,21 @@ class Metadata(BaseModel):
     javdb_username: str | None = None
     javdb_password: str | None = None
     proxy: str | None = None
-    # 兼容旧配置项：新版本统一使用 proxy，dmm_proxy 仅在 proxy 为空时作为读取回退。
-    dmm_proxy: str | None = Field(default=None, exclude=True)
     gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
     gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
     gfriends_filetree_cache_path: str = "/data/cache/gfriends/gfriends-filetree.json"
     gfriends_filetree_cache_ttl_hours: int = 24 * 7
     import_metadata_max_workers: int = 3
+
+    @field_validator("proxy")
+    @classmethod
+    def _check_proxy(cls, value: str | None, info: ValidationInfo) -> str | None:
+        return _check_proxy_url(value, info)
+
+    @field_validator("gfriends_filetree_url", "gfriends_cdn_base_url")
+    @classmethod
+    def _check_gfriends_urls(cls, value: str, info: ValidationInfo) -> str:
+        return _check_http_url(value, "gfriends URL", info)
 
     @property
     def javdb_account_configured(self) -> bool:
@@ -149,20 +237,12 @@ class Metadata(BaseModel):
 
     @property
     def normalized_proxy(self) -> str | None:
-        # 统一在配置层做代理值归一化；旧 dmm_proxy 只作为老用户配置回退。
-        proxy = (self.proxy or "").strip()
-        if proxy:
-            return proxy
-        return (self.dmm_proxy or "").strip() or None
+        # 统一在配置层做代理值归一化（去空白，空串归一为 None）。
+        return (self.proxy or "").strip() or None
 
     @property
     def gfriends_proxy(self) -> str | None:
-        # 兼容仅配置了旧 dmm_proxy 的用户，统一代理仍可作用于 GFriends。
-        return self.normalized_proxy
-
-    @property
-    def normalized_dmm_proxy(self) -> str | None:
-        # 兼容旧代码读路径，实际代理策略统一由 normalized_proxy 决定。
+        # 兼容旧读路径，GFriends 代理沿用统一 proxy。
         return self.normalized_proxy
 
 
@@ -195,6 +275,28 @@ class Scheduler(BaseModel):
     activity_event_retention_days: int = 1
     activity_task_run_retention_per_key: int = 200
     activity_notification_read_retention_days: int = 3
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_cron_expressions(cls, data, info: ValidationInfo):
+        # 严格档（配置 API 写入）遇非法 cron 直接拒；宽松档（启动加载）仅 warn，避免存量非法 cron 让进程启动即崩，
+        # 由 aps 进程装配时再报错更定位得到。
+        if not isinstance(data, dict):
+            return data
+        strict = _validation_is_strict(info)
+        for name, value in data.items():
+            if not (isinstance(name, str) and name.endswith("_cron") and isinstance(value, str)):
+                continue
+            try:
+                CronTrigger.from_crontab(value)
+            except (ValueError, TypeError) as exc:
+                if strict:
+                    raise ValueError(f"{name} 不是合法的 cron 表达式: {value}") from exc
+                logger.warning(
+                    "scheduler.{} 不是合法的 cron 表达式（当前值={!r}）：{}；将原样保留，实际调度时可能失败",
+                    name, value, exc,
+                )
+        return data
 
 
 
@@ -233,10 +335,20 @@ class ImageSearch(BaseModel):
     optimize_every_seconds: int = 1800
     optimize_on_job_end: bool = True
 
+    @field_validator("inference_base_url")
+    @classmethod
+    def _check_inference_base_url(cls, value: str, info: ValidationInfo) -> str:
+        return _check_http_url(value, "inference_base_url", info)
+
 
 class Qdrant(BaseModel):
     url: str = "http://qdrant:6333"
     api_key: str = ""
+
+    @field_validator("url")
+    @classmethod
+    def _check_url(cls, value: str, info: ValidationInfo) -> str:
+        return _check_http_url(value, "qdrant.url", info)
 
 
 _DATA_CONFIG_PATH = Path('/data/config/config.toml')

@@ -38,7 +38,7 @@ from src.api.routers.discovery.ranking_sources import router as ranking_sources_
 from src.api.routers.system.account import router as account_router
 from src.api.routers.system.auth import router as auth_router
 from src.api.routers.system.activity import router as activity_router
-from src.api.routers.system.collection_number_features import router as collection_number_features_router
+from src.api.routers.system.config import router as config_router
 from src.api.routers.system.indexer_settings import router as indexer_settings_router
 from src.api.routers.system.jobs import router as jobs_router
 from src.api.routers.system.movie_desc_translation_settings import (
@@ -112,7 +112,7 @@ def create_app() -> FastAPI:
     app.include_router(indexer_settings_router)
     app.include_router(movie_desc_translation_settings_router)
 
-    app.include_router(collection_number_features_router)
+    app.include_router(config_router)
 
     app.include_router(videos_router)
     app.include_router(video_collections_router)
