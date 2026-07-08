@@ -30,7 +30,9 @@ from src.metadata._providers.models import (
 )
 from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
 from src.service.catalog.movie_desc_translation_client import MovieDescTranslationClientError
+from src.service.catalog.movie_metadata_refresh_service import MovieMetadataRefreshService
 from src.service.catalog.movie_service import MovieService
+from src.service.catalog.movie_task_service import MovieTaskService
 
 
 def _login(client, username="account", password="password123"):
@@ -342,7 +344,7 @@ def test_movie_missav_thumbnails_streams_progress_and_completed_result(
             },
         }
 
-    monkeypatch.setattr(MovieService, "stream_missav_thumbnails", fake_stream)
+    monkeypatch.setattr(MovieTaskService, "stream_missav_thumbnails", fake_stream)
 
     response = client.get(
         "/movies/SSNI-888/thumbnails/missav/stream?refresh=true",
@@ -387,7 +389,7 @@ def test_movie_missav_thumbnails_streams_progress_and_completed_result(
 def test_movie_missav_thumbnails_streams_failed_completed_event(client, account_user, monkeypatch):
     token = _login(client, username=account_user.username)
     monkeypatch.setattr(
-        MovieService,
+        MovieTaskService,
         "stream_missav_thumbnails",
         lambda movie_number, refresh=False: iter(
             [
@@ -2041,8 +2043,8 @@ def test_movie_javdb_stream_created_flow(client, account_user, monkeypatch):
                 title=detail.title,
             )
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
     response = client.post(
         "/movies/search/javdb/stream",
@@ -2089,9 +2091,9 @@ def test_movie_javdb_stream_returns_existing_subscription_state_after_upsert(
             return detail
 
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
     monkeypatch.setattr(
-        MovieService,
+        MovieMetadataRefreshService,
         "_build_catalog_import_service",
         lambda: CatalogImportService(image_downloader=lambda url, target_path: target_path.write_bytes(b"img")),
     )
@@ -2118,7 +2120,7 @@ def test_movie_javdb_stream_not_found_flow(client, account_user, monkeypatch):
         def get_movie_by_number(self, movie_number: str):
             raise MetadataNotFoundError("movie", movie_number)
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
 
     response = client.post(
         "/movies/search/javdb/stream",
@@ -2147,8 +2149,8 @@ def test_movie_javdb_stream_failed_upsert_flow(client, account_user, monkeypatch
         def upsert_movie_from_javdb_detail(self, detail):
             raise ImageDownloadError("download_failed")
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
     response = client.post(
         "/movies/search/javdb/stream",
@@ -2250,8 +2252,8 @@ def test_import_series_movies_from_javdb_stream_skips_existing_and_imports_new(
                 series_name=detail.series_name,
             )
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: fake_provider)
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: fake_provider)
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
     response = client.post(
         f"/movies/series/{local_series.id}/javdb/import/stream",
@@ -2297,7 +2299,7 @@ def test_import_series_movies_from_javdb_stream_requires_exact_javdb_series_matc
         def search_series(self, series_name: str):
             return [JavdbSeriesResource(javdb_id="series-1", name="A 系列 SP", videos_count=1)]
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
 
     response = client.post(
         f"/movies/series/{local_series.id}/javdb/import/stream",
@@ -2355,8 +2357,8 @@ def test_import_series_movies_from_javdb_stream_continues_after_movie_failure(
                 title=detail.title,
             )
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
     response = client.post(
         f"/movies/series/{local_series.id}/javdb/import/stream",
@@ -2441,8 +2443,8 @@ def test_translate_movie_desc_returns_updated_detail_and_matches_normalized_movi
         captured["trigger_type"] = trigger_type
         return func(None)
 
-    monkeypatch.setattr(MovieService, "_build_movie_desc_translation_service", lambda: FakeTranslationService())
-    monkeypatch.setattr("src.service.catalog.movie_service.ActivityService.run_task", fake_run_task)
+    monkeypatch.setattr(MovieTaskService, "_build_movie_desc_translation_service", lambda: FakeTranslationService())
+    monkeypatch.setattr("src.service.catalog.movie_task_service.ActivityService.run_task", fake_run_task)
 
     response = client.post(
         "/movies/fc2-123456/desc-translation",
@@ -2460,7 +2462,7 @@ def test_translate_movie_desc_returns_422_when_desc_is_missing(client, account_u
     _create_movie("ABP-124", "javdb-ABP-124", desc="", title="Movie 1")
 
     monkeypatch.setattr(
-        "src.service.catalog.movie_service.ActivityService.run_task",
+        "src.service.catalog.movie_task_service.ActivityService.run_task",
         lambda **kwargs: kwargs["func"](None),
     )
 
@@ -2485,9 +2487,9 @@ def test_translate_movie_desc_maps_translation_client_error(client, account_user
                 "service unavailable",
             )
 
-    monkeypatch.setattr(MovieService, "_build_movie_desc_translation_service", lambda: FakeTranslationService())
+    monkeypatch.setattr(MovieTaskService, "_build_movie_desc_translation_service", lambda: FakeTranslationService())
     monkeypatch.setattr(
-        "src.service.catalog.movie_service.ActivityService.run_task",
+        "src.service.catalog.movie_task_service.ActivityService.run_task",
         lambda **kwargs: kwargs["func"](None),
     )
 
@@ -2547,8 +2549,8 @@ def test_sync_movie_interactions_returns_updated_detail(client, account_user, mo
         captured["trigger_type"] = trigger_type
         return func(None)
 
-    monkeypatch.setattr(MovieService, "_build_movie_interaction_sync_service", lambda: FakeInteractionService())
-    monkeypatch.setattr("src.service.catalog.movie_service.ActivityService.run_task", fake_run_task)
+    monkeypatch.setattr(MovieTaskService, "_build_movie_interaction_sync_service", lambda: FakeInteractionService())
+    monkeypatch.setattr("src.service.catalog.movie_task_service.ActivityService.run_task", fake_run_task)
 
     response = client.post(
         "/movies/ABP-126/interaction-sync",
@@ -2584,9 +2586,9 @@ def test_sync_movie_interactions_returns_502_when_sync_fails(client, account_use
         def sync_movie(self, movie):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(MovieService, "_build_movie_interaction_sync_service", lambda: FakeInteractionService())
+    monkeypatch.setattr(MovieTaskService, "_build_movie_interaction_sync_service", lambda: FakeInteractionService())
     monkeypatch.setattr(
-        "src.service.catalog.movie_service.ActivityService.run_task",
+        "src.service.catalog.movie_task_service.ActivityService.run_task",
         lambda **kwargs: kwargs["func"](None),
     )
 
@@ -2617,7 +2619,7 @@ def test_recompute_movie_heat_returns_updated_detail(client, account_user, monke
         captured["trigger_type"] = trigger_type
         return func(None)
 
-    monkeypatch.setattr("src.service.catalog.movie_service.ActivityService.run_task", fake_run_task)
+    monkeypatch.setattr("src.service.catalog.movie_task_service.ActivityService.run_task", fake_run_task)
 
     response = client.post(
         "/movies/ABP-129/heat-recompute",
@@ -2651,8 +2653,8 @@ def test_movie_metadata_refresh_returns_updated_detail(client, account_user, mon
             target_movie.save()
             return target_movie
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
     response = client.post(
         f"/movies/{movie.movie_number}/metadata-refresh",
@@ -2687,8 +2689,8 @@ def test_movie_metadata_refresh_matches_normalized_local_movie_number(client, ac
             target_movie.save()
             return target_movie
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
     response = client.post(
         "/movies/fc2-123456/metadata-refresh",
@@ -2709,7 +2711,7 @@ def test_movie_metadata_refresh_returns_404_when_remote_metadata_missing(client,
         def get_movie_by_number(self, movie_number: str):
             raise MetadataNotFoundError("movie", movie_number)
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
 
     response = client.post(
         "/movies/ABP-123/metadata-refresh",
@@ -2732,8 +2734,8 @@ def test_movie_metadata_refresh_returns_502_when_refresh_fails(client, account_u
         def refresh_movie_metadata_strict(self, movie, detail):
             raise ImageDownloadError("refresh failed")
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
     response = client.post(
         "/movies/ABP-123/metadata-refresh",
@@ -2754,7 +2756,7 @@ def test_movie_metadata_refresh_returns_409_when_remote_number_conflicts(client,
             detail.movie_number = "SSNI-888"
             return detail
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
 
     response = client.post(
         "/movies/ABP-123/metadata-refresh",
@@ -2776,7 +2778,7 @@ def test_movie_metadata_refresh_returns_409_when_remote_javdb_id_conflicts(clien
             detail.javdb_id = "javdb-ABP-456-remote"
             return detail
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
 
     response = client.post(
         "/movies/ABP-123/metadata-refresh",

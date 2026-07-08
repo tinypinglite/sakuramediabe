@@ -47,7 +47,7 @@ from src.service.transfers.file_transfer import (
     delete_source_files,
     transfer_file,
 )
-from src.service.transfers.media_import_service import MediaImportService
+from src.service.transfers.media_source_scanner import find_media_library_containing_path
 from src.service.transfers.tag_rules import build_media_special_tags
 from src.service.videos.video_collection_service import VideoCollectionService
 from src.service.videos.video_cover_service import VideoCoverService
@@ -139,7 +139,7 @@ class VideoImportService:
     @staticmethod
     def _assert_source_outside_libraries(source_entry: Path) -> None:
         # cleanup-source 会删除源文件，禁止对任何媒体库目录或其子路径执行，避免删到库内文件。
-        matched = MediaImportService._find_media_library_containing_path(source_entry)
+        matched = find_media_library_containing_path(source_entry)
         if matched is not None:
             raise ApiError(
                 422,

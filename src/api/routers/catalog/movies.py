@@ -30,7 +30,12 @@ from src.schema.catalog.movies import (
 from src.schema.catalog.subtitles import MovieSubtitleListResource
 from src.schema.common.pagination import PageResponse
 from src.metadata._providers.models import JavdbMovieReviewResource
-from src.service.catalog import MovieService, MovieSubtitleService
+from src.service.catalog import (
+    MovieMetadataRefreshService,
+    MovieService,
+    MovieSubtitleService,
+    MovieTaskService,
+)
 from src.service.discovery import MovieRecommendationService
 
 router = APIRouter(
@@ -149,7 +154,7 @@ def list_movies_by_series(payload: MovieSeriesListRequest):
 @router.post("/series/{series_id}/javdb/import/stream")
 def import_series_movies_from_javdb_stream(series_id: int):
     def stream():
-        for event, event_payload in MovieService.stream_import_series_movies_from_javdb(series_id):
+        for event, event_payload in MovieMetadataRefreshService.stream_import_series_movies_from_javdb(series_id):
             yield _to_sse_event(event, event_payload)
 
     return StreamingResponse(
@@ -225,7 +230,7 @@ def list_similar_movies(
 @router.get("/{movie_number}/thumbnails/missav/stream")
 def stream_missav_movie_thumbnails(movie_number: str, refresh: bool = False):
     def stream():
-        for event, event_payload in MovieService.stream_missav_thumbnails(
+        for event, event_payload in MovieTaskService.stream_missav_thumbnails(
             movie_number=movie_number,
             refresh=refresh,
         ):
@@ -245,7 +250,7 @@ def stream_missav_movie_thumbnails(movie_number: str, refresh: bool = False):
 @router.post("/search/javdb/stream")
 def search_javdb_movies_stream(payload: MovieJavdbSearchRequest):
     def stream():
-        for event, event_payload in MovieService.stream_search_and_upsert_movie_from_javdb(
+        for event, event_payload in MovieMetadataRefreshService.stream_search_and_upsert_movie_from_javdb(
             payload.movie_number
         ):
             yield _to_sse_event(event, event_payload)
@@ -263,22 +268,22 @@ def search_javdb_movies_stream(payload: MovieJavdbSearchRequest):
 
 @router.post("/{movie_number}/metadata-refresh", response_model=MovieDetailResource)
 def refresh_movie_metadata(movie_number: str):
-    return MovieService.refresh_movie_metadata(movie_number)
+    return MovieMetadataRefreshService.refresh_movie_metadata(movie_number)
 
 
 @router.post("/{movie_number}/desc-translation", response_model=MovieDetailResource)
 def translate_movie_desc(movie_number: str):
-    return MovieService.translate_movie_desc(movie_number)
+    return MovieTaskService.translate_movie_desc(movie_number)
 
 
 @router.post("/{movie_number}/interaction-sync", response_model=MovieDetailResource)
 def sync_movie_interactions(movie_number: str):
-    return MovieService.sync_movie_interactions(movie_number)
+    return MovieTaskService.sync_movie_interactions(movie_number)
 
 
 @router.post("/{movie_number}/heat-recompute", response_model=MovieDetailResource)
 def recompute_movie_heat(movie_number: str):
-    return MovieService.recompute_movie_heat(movie_number)
+    return MovieTaskService.recompute_movie_heat(movie_number)
 
 
 @router.get("/{movie_number}", response_model=MovieDetailResource)

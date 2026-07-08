@@ -6,7 +6,9 @@ from .movie_desc_translation_service import MovieDescTranslationService
 from .movie_desc_sync_service import MovieDescSyncService
 from .movie_heat_service import MovieHeatService
 from .movie_interaction_sync_service import MovieInteractionSyncService
+from .movie_metadata_refresh_service import MovieMetadataRefreshService
 from .movie_service import MovieService
+from .movie_task_service import MovieTaskService
 from .movie_thin_cover_backfill_service import MovieThinCoverBackfillService
 from .movie_title_translation_service import MovieTitleTranslationService
 from .movie_subtitle_service import MovieSubtitleService
@@ -23,7 +25,9 @@ __all__ = [
     "MovieDescSyncService",
     "MovieHeatService",
     "MovieInteractionSyncService",
+    "MovieMetadataRefreshService",
     "MovieService",
+    "MovieTaskService",
     "MovieThinCoverBackfillService",
     "MovieTitleTranslationService",
     "MovieSubtitleService",

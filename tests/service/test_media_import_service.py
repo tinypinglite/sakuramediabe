@@ -38,6 +38,7 @@ from src.service.playback.media_metadata_probe_service import MediaMetadataProbe
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 from src.service.transfers.media_import_service import MediaImportService
+from src.service.transfers.media_source_scanner import build_content_fingerprint
 
 
 @pytest.fixture()
@@ -306,10 +307,7 @@ def test_import_media_cleanup_source_removes_duplicate_but_keeps_failed_media(
         library=library,
         path=str(existing_path),
         storage_mode="copy",
-        content_fingerprint=MediaImportService(
-            provider=FakeJavdbProvider({}),
-            image_downloader=_fake_downloader,
-        )._build_content_fingerprint(duplicate_video, "ABP-123"),
+        content_fingerprint=build_content_fingerprint(duplicate_video, "ABP-123"),
         valid=True,
     )
 
@@ -350,10 +348,7 @@ def test_import_media_cleanup_source_marks_failed_when_duplicate_delete_fails(
         library=library,
         path=str(existing_path),
         storage_mode="copy",
-        content_fingerprint=MediaImportService(
-            provider=FakeJavdbProvider({}),
-            image_downloader=_fake_downloader,
-        )._build_content_fingerprint(duplicate_video, "ABP-123"),
+        content_fingerprint=build_content_fingerprint(duplicate_video, "ABP-123"),
         valid=True,
     )
 
@@ -435,10 +430,7 @@ def test_import_media_cleanup_source_skips_media_library_when_source_parent_cont
         library=library,
         path=str(library_video),
         storage_mode="copy",
-        content_fingerprint=MediaImportService(
-            provider=FakeJavdbProvider({}),
-            image_downloader=_fake_downloader,
-        )._build_content_fingerprint(library_video, "ABP-123"),
+        content_fingerprint=build_content_fingerprint(library_video, "ABP-123"),
         valid=True,
     )
 
@@ -817,10 +809,7 @@ def test_import_media_cleanup_source_imports_when_duplicate_record_path_missing(
         library=library,
         path=str(stale_path),
         storage_mode="copy",
-        content_fingerprint=MediaImportService(
-            provider=FakeJavdbProvider({}),
-            image_downloader=_fake_downloader,
-        )._build_content_fingerprint(source_video, "ABP-123"),
+        content_fingerprint=build_content_fingerprint(source_video, "ABP-123"),
         valid=True,
     )
 
@@ -977,7 +966,7 @@ def test_import_media_revive_invalid_media_persists_probe_metadata(
         ),
     )
 
-    expected_fingerprint = service._build_content_fingerprint(source_dir / "ABP-191.mp4", "ABP-191")
+    expected_fingerprint = build_content_fingerprint(source_dir / "ABP-191.mp4", "ABP-191")
     invalid_media.content_fingerprint = expected_fingerprint
     invalid_media.save(only=[Media.content_fingerprint])
 
@@ -1017,7 +1006,7 @@ def test_import_vr_media_group_marks_4k_from_merged_video_info(
     def _fake_merge(files, target_path: Path) -> None:
         target_path.write_bytes(b"merged-video")
 
-    monkeypatch.setattr(service, "_merge_media_files", _fake_merge)
+    monkeypatch.setattr("src.service.transfers.media_import_writer.merge_media_files", _fake_merge)
 
     service.import_from_source(str(source_dir), library.id)
 
@@ -1070,7 +1059,7 @@ def test_import_media_revive_invalid_media_keeps_existing_video_info_when_probe_
         ),
     )
 
-    expected_fingerprint = service._build_content_fingerprint(source_dir / "ABP-192.mp4", "ABP-192")
+    expected_fingerprint = build_content_fingerprint(source_dir / "ABP-192.mp4", "ABP-192")
     invalid_media.content_fingerprint = expected_fingerprint
     invalid_media.save(only=[Media.content_fingerprint])
 
@@ -1089,8 +1078,8 @@ def test_content_fingerprint_changes_when_movie_number_changes(import_tables, tm
         image_downloader=_fake_downloader,
     )
 
-    first = service._build_content_fingerprint(file_path, "ABP-123")
-    second = service._build_content_fingerprint(file_path, "SSIS-001")
+    first = build_content_fingerprint(file_path, "ABP-123")
+    second = build_content_fingerprint(file_path, "SSIS-001")
 
     assert first != second
 
@@ -1137,7 +1126,7 @@ def test_import_media_revives_invalid_media_and_preserves_thumbnail(
         now_ms=lambda: 1730000000000,
     )
 
-    expected_fingerprint = service._build_content_fingerprint(source_dir / "ABP-123.mp4", "ABP-123")
+    expected_fingerprint = build_content_fingerprint(source_dir / "ABP-123.mp4", "ABP-123")
     invalid_media.content_fingerprint = expected_fingerprint
     invalid_media.save(only=[Media.content_fingerprint])
 
@@ -1345,7 +1334,7 @@ def test_import_media_keeps_file_import_order_when_metadata_finishes_out_of_orde
 
     imported_movie_numbers: List[str] = []
 
-    def _record_import(file_path: Path, library: MediaLibrary, movie_number: str, transfer_mode="auto"):
+    def _record_import(file_path: Path, library: MediaLibrary, movie_number: str, **kwargs):
         imported_movie_numbers.append(movie_number)
         target_directory = Path(library.root_path) / movie_number / str(service.now_ms())
         target_directory.mkdir(parents=True, exist_ok=True)
@@ -1353,7 +1342,7 @@ def test_import_media_keeps_file_import_order_when_metadata_finishes_out_of_orde
         target_path.write_bytes(file_path.read_bytes())
         return "copy", target_path
 
-    monkeypatch.setattr(service, "_import_single_media_file", _record_import)
+    monkeypatch.setattr("src.service.transfers.media_import_writer._import_single_media_file", _record_import)
 
     job = service.import_from_source(str(source_dir), library.id)
 
@@ -1420,7 +1409,7 @@ def test_import_media_merges_multi_file_vr_into_single_media(
         merged_inputs.extend(file.path.name for file in files)
         target_path.write_bytes(b"merged-video")
 
-    monkeypatch.setattr(service, "_merge_media_files", _fake_merge)
+    monkeypatch.setattr("src.service.transfers.media_import_writer.merge_media_files", _fake_merge)
 
     job = service.import_from_source(str(source_dir), library.id)
 
@@ -1460,7 +1449,7 @@ def test_import_media_cleanup_source_removes_vr_fragments_after_merge(
         now_ms=lambda: 1730000000000,
     )
 
-    monkeypatch.setattr(service, "_merge_media_files", lambda files, target_path: target_path.write_bytes(b"merged-video"))
+    monkeypatch.setattr("src.service.transfers.media_import_writer.merge_media_files", lambda files, target_path: target_path.write_bytes(b"merged-video"))
 
     job = service.import_from_source(str(source_dir), library.id, transfer_mode="cleanup-source")
 
@@ -1538,23 +1527,18 @@ def test_import_media_keeps_non_vr_multi_file_as_separate_media(
 
 
 def test_group_needs_multi_part_merge_matches_fc2_number_case_insensitively(tmp_path):
-    from src.service.transfers.media_import_service import ScannedSourceFile
-
-    service = MediaImportService(
-        provider=FakeJavdbProvider({}),
-        image_downloader=_fake_downloader,
-    )
+    from src.service.transfers.media_source_scanner import ScannedSourceFile, group_needs_multi_part_merge
 
     def _scanned(name: str) -> ScannedSourceFile:
         return ScannedSourceFile(path=tmp_path / name, content_fingerprint="fp")
 
     # FC2 番号无论大小写都按多分段方式合并
-    assert service._group_needs_multi_part_merge("FC2-1234567", [_scanned("a.mp4")]) is True
-    assert service._group_needs_multi_part_merge("fc2-ppv-123", [_scanned("a.mp4")]) is True
+    assert group_needs_multi_part_merge("FC2-1234567", [_scanned("a.mp4")]) is True
+    assert group_needs_multi_part_merge("fc2-ppv-123", [_scanned("a.mp4")]) is True
     # 含 VR 仍命中
-    assert service._group_needs_multi_part_merge("SIVR-001", [_scanned("a.mp4")]) is True
+    assert group_needs_multi_part_merge("SIVR-001", [_scanned("a.mp4")]) is True
     # 既非 FC2 也无 VR 字样则不合并
-    assert service._group_needs_multi_part_merge("ABP-123", [_scanned("a.mp4")]) is False
+    assert group_needs_multi_part_merge("ABP-123", [_scanned("a.mp4")]) is False
 
 
 def test_group_content_fingerprint_changes_when_fragment_order_changes(import_tables, tmp_path):
@@ -1567,11 +1551,13 @@ def test_group_content_fingerprint_changes_when_fragment_order_changes(import_ta
         image_downloader=_fake_downloader,
     )
 
-    first_fingerprint = service._build_content_fingerprint(first, "SIVR-001")
-    second_fingerprint = service._build_content_fingerprint(second, "SIVR-001")
+    from src.service.transfers.media_source_scanner import build_group_content_fingerprint
 
-    ordered = service._build_group_content_fingerprint([first_fingerprint, second_fingerprint])
-    reversed_value = service._build_group_content_fingerprint([second_fingerprint, first_fingerprint])
+    first_fingerprint = build_content_fingerprint(first, "SIVR-001")
+    second_fingerprint = build_content_fingerprint(second, "SIVR-001")
+
+    ordered = build_group_content_fingerprint([first_fingerprint, second_fingerprint])
+    reversed_value = build_group_content_fingerprint([second_fingerprint, first_fingerprint])
 
     assert ordered != reversed_value
 
@@ -1600,7 +1586,7 @@ def test_import_media_skips_duplicate_fragments_inside_vr_group(
         merged_inputs.extend(file.path.name for file in files)
         target_path.write_bytes(b"merged-video")
 
-    monkeypatch.setattr(service, "_merge_media_files", _fake_merge)
+    monkeypatch.setattr("src.service.transfers.media_import_writer.merge_media_files", _fake_merge)
 
     job = service.import_from_source(str(source_dir), library.id)
 
@@ -1631,7 +1617,7 @@ def test_import_media_skips_multiple_subtitles_for_merged_vr_group(
         now_ms=lambda: 1730000000000,
     )
 
-    monkeypatch.setattr(service, "_merge_media_files", lambda files, target_path: target_path.write_bytes(b"merged"))
+    monkeypatch.setattr("src.service.transfers.media_import_writer.merge_media_files", lambda files, target_path: target_path.write_bytes(b"merged"))
 
     job = service.import_from_source(str(source_dir), library.id)
 
@@ -1662,7 +1648,7 @@ def test_import_media_marks_group_failed_when_vr_merge_raises(
     def _raise_merge(files, target_path: Path) -> None:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(service, "_merge_media_files", _raise_merge)
+    monkeypatch.setattr("src.service.transfers.media_import_writer.merge_media_files", _raise_merge)
 
     job = service.import_from_source(str(source_dir), library.id)
 

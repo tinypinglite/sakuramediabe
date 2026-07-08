@@ -41,7 +41,9 @@ from src.schema.catalog.movies import (
     MovieSpecialTagFilter,
 )
 from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
+from src.service.catalog.movie_metadata_refresh_service import MovieMetadataRefreshService
 from src.service.catalog.movie_service import MovieService
+from src.service.catalog.movie_task_service import MovieTaskService
 
 
 def _capture_queries(test_db):
@@ -1664,10 +1666,10 @@ def test_stream_search_movie_uses_catalog_import_service(app, monkeypatch):
                 title=detail.title,
             )
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
-    events = list(MovieService.stream_search_and_upsert_movie_from_javdb("abp123"))
+    events = list(MovieMetadataRefreshService.stream_search_and_upsert_movie_from_javdb("abp123"))
 
     assert called["upsert"] == 1
     assert [event for event, _ in events] == [
@@ -1706,14 +1708,14 @@ def test_stream_search_movie_returns_existing_subscription_state_after_upsert(ap
             return detail
 
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
     monkeypatch.setattr(
-        MovieService,
+        MovieMetadataRefreshService,
         "_build_catalog_import_service",
         lambda: CatalogImportService(image_downloader=lambda url, target_path: target_path.write_bytes(b"img")),
     )
 
-    events = list(MovieService.stream_search_and_upsert_movie_from_javdb("ABP-123"))
+    events = list(MovieMetadataRefreshService.stream_search_and_upsert_movie_from_javdb("ABP-123"))
 
     movie = Movie.get(Movie.movie_number == "ABP-123")
     assert movie.is_subscribed is True
@@ -1727,9 +1729,9 @@ def test_stream_search_movie_returns_not_found_when_provider_misses(app, monkeyp
         def get_movie_by_number(self, movie_number: str):
             raise MetadataNotFoundError("movie", movie_number)
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
 
-    events = list(MovieService.stream_search_and_upsert_movie_from_javdb("unknown"))
+    events = list(MovieMetadataRefreshService.stream_search_and_upsert_movie_from_javdb("unknown"))
 
     assert [event for event, _ in events] == [
         "search_started",
@@ -1747,10 +1749,10 @@ def test_stream_search_movie_maps_image_download_failure(app, monkeypatch):
         def upsert_movie_from_javdb_detail(self, detail):
             raise ImageDownloadError("download_failed")
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
-    events = list(MovieService.stream_search_and_upsert_movie_from_javdb("ABP-123"))
+    events = list(MovieMetadataRefreshService.stream_search_and_upsert_movie_from_javdb("ABP-123"))
 
     assert [event for event, _ in events] == [
         "search_started",
@@ -1817,10 +1819,10 @@ def test_stream_import_series_movies_deduplicates_and_skips_existing(app, monkey
                 series_name=detail.series_name,
             )
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
-    events = list(MovieService.stream_import_series_movies_from_javdb(local_series.id))
+    events = list(MovieMetadataRefreshService.stream_import_series_movies_from_javdb(local_series.id))
 
     assert [event for event, _ in events] == [
         "search_started",
@@ -1875,10 +1877,10 @@ def test_refresh_movie_metadata_matches_normalized_movie_number_and_returns_upda
             target_movie.save()
             return target_movie
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
-    response = MovieService.refresh_movie_metadata("fc2-123456")
+    response = MovieMetadataRefreshService.refresh_movie_metadata("fc2-123456")
 
     assert captured == {
         "provider_movie_number": "FC2-123456",
@@ -1899,10 +1901,10 @@ def test_refresh_movie_metadata_returns_remote_not_found_when_provider_misses(ap
         def get_movie_by_number(self, movie_number: str):
             raise MetadataNotFoundError("movie", movie_number)
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
 
     with pytest.raises(ApiError) as exc_info:
-        MovieService.refresh_movie_metadata("ABP-123")
+        MovieMetadataRefreshService.refresh_movie_metadata("ABP-123")
 
     assert exc_info.value.status_code == 404
     assert exc_info.value.code == "movie_metadata_not_found"
@@ -1921,10 +1923,10 @@ def test_refresh_movie_metadata_rejects_conflicting_remote_movie_number(app, mon
             detail.movie_number = "SSNI-888"
             return detail
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
 
     with pytest.raises(ApiError) as exc_info:
-        MovieService.refresh_movie_metadata("ABP-123")
+        MovieMetadataRefreshService.refresh_movie_metadata("ABP-123")
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.code == "movie_metadata_number_conflict"
@@ -1946,10 +1948,10 @@ def test_refresh_movie_metadata_rejects_conflicting_remote_javdb_id(app, monkeyp
             detail.javdb_id = "javdb-ABP-456-remote"
             return detail
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
 
     with pytest.raises(ApiError) as exc_info:
-        MovieService.refresh_movie_metadata("ABP-123")
+        MovieMetadataRefreshService.refresh_movie_metadata("ABP-123")
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.code == "movie_metadata_javdb_id_conflict"
@@ -1973,11 +1975,11 @@ def test_refresh_movie_metadata_maps_refresh_failure_to_502(app, monkeypatch):
         def refresh_movie_metadata_strict(self, movie, detail):
             raise ImageDownloadError("image refresh failed")
 
-    monkeypatch.setattr(MovieService, "_build_javdb_provider", lambda: FakeProvider())
-    monkeypatch.setattr(MovieService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_javdb_provider", lambda: FakeProvider())
+    monkeypatch.setattr(MovieMetadataRefreshService, "_build_catalog_import_service", lambda: FakeCatalogImportService())
 
     with pytest.raises(ApiError) as exc_info:
-        MovieService.refresh_movie_metadata("ABP-123")
+        MovieMetadataRefreshService.refresh_movie_metadata("ABP-123")
 
     assert exc_info.value.status_code == 502
     assert exc_info.value.code == "movie_metadata_refresh_failed"
@@ -2013,9 +2015,9 @@ def test_stream_missav_thumbnails_emits_progress_and_completed_result(monkeypatc
                 ],
             )
 
-    monkeypatch.setattr(MovieService, "_build_missav_thumbnail_service", lambda: FakeService())
+    monkeypatch.setattr(MovieTaskService, "_build_missav_thumbnail_service", lambda: FakeService())
 
-    events = list(MovieService.stream_missav_thumbnails("SSNI-888", refresh=True))
+    events = list(MovieTaskService.stream_missav_thumbnails("SSNI-888", refresh=True))
 
     assert [event for event, _ in events] == [
         "search_started",
@@ -2049,9 +2051,9 @@ def test_stream_missav_thumbnails_maps_fetch_error_to_failed_completed(monkeypat
         def get_movie_thumbnails(self, movie_number: str, *, refresh: bool = False, progress_callback=None):
             raise MissavThumbnailRequestError("https://missav.ws/cn/SSNI-888", "bad gateway")
 
-    monkeypatch.setattr(MovieService, "_build_missav_thumbnail_service", lambda: FakeService())
+    monkeypatch.setattr(MovieTaskService, "_build_missav_thumbnail_service", lambda: FakeService())
 
-    events = list(MovieService.stream_missav_thumbnails("SSNI-888"))
+    events = list(MovieTaskService.stream_missav_thumbnails("SSNI-888"))
 
     assert events == [
         ("search_started", {"movie_number": "SSNI-888", "refresh": False}),
