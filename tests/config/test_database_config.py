@@ -47,7 +47,7 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
     assert settings.scheduler.actor_subscription_sync_cron == "0 2 * * *"
     assert settings.scheduler.subscribed_movie_auto_download_cron == "30 2 * * *"
     assert settings.scheduler.download_task_sync_cron == "*/5 * * * *"
-    assert settings.scheduler.download_task_auto_import_cron == "*/3 * * * *"
+    assert settings.scheduler.download_task_auto_import_cron == "*/10 * * * *"
     assert settings.scheduler.movie_collection_sync_cron == "0 1 * * *"
     assert settings.scheduler.movie_heat_cron == "15 0 * * *"
     assert settings.scheduler.movie_interaction_sync_cron == "0 5 * * *"
