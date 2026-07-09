@@ -1,13 +1,10 @@
-import json
-from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, Response, status
-from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 
+from src.api.routers.catalog._sse import to_sse_event
 from src.api.routers.deps import db_deps, get_current_user
-from src.common.runtime_time import serialize_runtime_local
 from src.schema.catalog.actors import (
     ActorDetailResource,
     ActorJavdbSearchRequest,
@@ -25,15 +22,6 @@ router = APIRouter(
     tags=["actors"],
     dependencies=[Depends(db_deps), Depends(get_current_user)],
 )
-
-
-def _to_sse_event(event: str, payload: dict) -> str:
-    # SSE 事件先转为 JSON 安全结构，避免 datetime 等对象中断流式响应。
-    encoded_payload = jsonable_encoder(
-        payload,
-        custom_encoder={datetime: serialize_runtime_local},
-    )
-    return f"event: {event}\ndata: {json.dumps(encoded_payload, ensure_ascii=False)}\n\n"
 
 
 @router.get("", response_model=PageResponse[ActorResource], response_model_by_alias=False)
@@ -61,7 +49,7 @@ def search_javdb_actor_stream(
         for event, event_payload in ActorService.stream_search_and_upsert_actor_from_javdb(
             payload.actor_name
         ):
-            yield _to_sse_event(event, event_payload)
+            yield to_sse_event(event, event_payload)
 
     return StreamingResponse(
         stream(),

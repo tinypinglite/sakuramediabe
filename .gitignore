@@ -17,6 +17,7 @@ compose.yaml
 .worktrees
 .claude
 docs/deployment/license.md
+.jscpd-report
 
 .codex
 .codegraph
@@ -27,3 +28,4 @@ AGENTS.md
 
 
 CLAUDE.md
+.jscpd.json

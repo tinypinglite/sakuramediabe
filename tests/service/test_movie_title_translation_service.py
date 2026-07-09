@@ -229,7 +229,7 @@ def test_movie_title_translation_service_skips_movie_updated_concurrently(app, t
         call_state["count"] += 1
         return original_get_by_id(movie_id)
 
-    monkeypatch.setattr("src.service.catalog.movie_title_translation_service.Movie.get_by_id", fake_get_by_id)
+    monkeypatch.setattr("src.service.catalog._movie_field_translation.Movie.get_by_id", fake_get_by_id)
 
     stats = service.run()
 
@@ -251,7 +251,7 @@ def test_movie_title_translation_service_retries_429_then_succeeds(app, tmp_path
             return "重试后的中文标题"
 
     monkeypatch.setattr(settings.movie_desc_translation, "enabled", True, raising=False)
-    monkeypatch.setattr("src.service.catalog.movie_title_translation_service.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr("src.service.catalog._movie_field_translation.time.sleep", lambda seconds: sleep_calls.append(seconds))
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("请输出中文标题", encoding="utf-8")
     service = MovieTitleTranslationService(
@@ -279,7 +279,7 @@ def test_movie_title_translation_service_aborts_task_for_retryable_errors(app, t
             )
 
     monkeypatch.setattr(settings.movie_desc_translation, "enabled", True, raising=False)
-    monkeypatch.setattr("src.service.catalog.movie_title_translation_service.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr("src.service.catalog._movie_field_translation.time.sleep", lambda seconds: sleep_calls.append(seconds))
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("请输出中文标题", encoding="utf-8")
     service = MovieTitleTranslationService(

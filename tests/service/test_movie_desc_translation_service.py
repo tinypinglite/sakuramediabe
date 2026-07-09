@@ -367,7 +367,7 @@ def test_movie_desc_translation_service_skips_movie_updated_concurrently(app, tm
         call_state["count"] += 1
         return original_get_by_id(movie_id)
 
-    monkeypatch.setattr("src.service.catalog.movie_desc_translation_service.Movie.get_by_id", fake_get_by_id)
+    monkeypatch.setattr("src.service.catalog._movie_field_translation.Movie.get_by_id", fake_get_by_id)
 
     stats = service.run()
 
@@ -426,7 +426,7 @@ def test_movie_desc_translation_service_retries_429_then_succeeds(app, tmp_path,
             return "重试后的中文简介"
 
     monkeypatch.setattr(settings.movie_desc_translation, "enabled", True, raising=False)
-    monkeypatch.setattr("src.service.catalog.movie_desc_translation_service.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr("src.service.catalog._movie_field_translation.time.sleep", lambda seconds: sleep_calls.append(seconds))
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("你是一个翻译助手", encoding="utf-8")
     service = MovieDescTranslationService(
@@ -474,7 +474,7 @@ def test_movie_desc_translation_service_aborts_task_for_retryable_errors(
             raise MovieDescTranslationClientError(status_code, error_code, message)
 
     monkeypatch.setattr(settings.movie_desc_translation, "enabled", True, raising=False)
-    monkeypatch.setattr("src.service.catalog.movie_desc_translation_service.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr("src.service.catalog._movie_field_translation.time.sleep", lambda seconds: sleep_calls.append(seconds))
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("你是一个翻译助手", encoding="utf-8")
     service = MovieDescTranslationService(
@@ -515,7 +515,7 @@ def test_movie_desc_translation_service_marks_permanent_client_error_as_failed_a
             return "后续影片译文"
 
     monkeypatch.setattr(settings.movie_desc_translation, "enabled", True, raising=False)
-    monkeypatch.setattr("src.service.catalog.movie_desc_translation_service.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr("src.service.catalog._movie_field_translation.time.sleep", lambda seconds: sleep_calls.append(seconds))
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("你是一个翻译助手", encoding="utf-8")
     service = MovieDescTranslationService(
@@ -644,7 +644,7 @@ def test_translate_movie_marks_retryable_error_as_failed_for_single_movie(app, t
             raise MovieDescTranslationClientError(429, "rate_limit", "too many requests")
 
     monkeypatch.setattr(settings.movie_desc_translation, "enabled", True, raising=False)
-    monkeypatch.setattr("src.service.catalog.movie_desc_translation_service.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr("src.service.catalog._movie_field_translation.time.sleep", lambda seconds: sleep_calls.append(seconds))
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("你是一个翻译助手", encoding="utf-8")
     service = MovieDescTranslationService(
@@ -684,7 +684,7 @@ def test_activity_service_marks_translation_task_failed_with_partial_summary(app
             raise MovieDescTranslationClientError(429, "rate_limit", "too many requests")
 
     monkeypatch.setattr(settings.movie_desc_translation, "enabled", True, raising=False)
-    monkeypatch.setattr("src.service.catalog.movie_desc_translation_service.time.sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr("src.service.catalog._movie_field_translation.time.sleep", lambda seconds: sleep_calls.append(seconds))
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("你是一个翻译助手", encoding="utf-8")
     service = MovieDescTranslationService(
