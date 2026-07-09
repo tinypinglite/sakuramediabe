@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Optional
 
-from pydantic import computed_field
+from pydantic import Field, computed_field
 
 from src.schema.common.base import SchemaModel
 # 把下载任务的 import_status 原始码转换成中文展示文案，取值集中在 media_import_status 模块。
@@ -221,6 +221,43 @@ class DownloadTaskResource(SchemaModel):
     @classmethod
     def from_models(cls, tasks) -> List["DownloadTaskResource"]:
         return [cls.from_model(task) for task in tasks]
+
+
+class DownloadTasksQuery(SchemaModel):
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    client_id: Optional[int] = Field(default=None, gt=0)
+    movie_number: Optional[str] = None
+    sort: Optional[str] = None
+
+
+class DownloadTaskActionResponse(SchemaModel):
+    task_id: int
+    action: str
+    status: str = "ok"
+
+
+class DownloadTaskProgressResource(SchemaModel):
+    task_id: int
+    client_id: int
+    movie_number: Optional[str] = None
+    name: str
+    info_hash: str
+    progress: float
+    raw_state: str
+    download_state: str
+    download_speed_bytes: int
+    uploaded_speed_bytes: int
+    downloaded_bytes: int
+    total_size_bytes: int
+    eta_seconds: Optional[int] = None
+
+
+class DownloadClientTransferResource(SchemaModel):
+    client_id: int
+    download_speed_bytes: int
+    upload_speed_bytes: int
+    connection_status: Optional[str] = None
 
 
 class DownloadRequestCreateResponse(SchemaModel):

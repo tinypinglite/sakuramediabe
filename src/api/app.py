@@ -52,11 +52,12 @@ from src.api.routers.videos.items import router as videos_router
 from src.common.database import ensure_database_ready
 from src.config.config import ensure_runtime_config, settings
 from src.start.recovery import recover_interrupted_tasks
+from src.service.transfers.download_progress_service import DownloadProgressHub
 
 
 def _create_lifespan():
     @asynccontextmanager
-    async def lifespan(_: FastAPI):
+    async def lifespan(app: FastAPI):
         logging.getLogger(__name__).info("Starting FastAPI runtime jobs")
         # 服务对外前确保运行配置就绪：缺失/空文件写入全量默认配置，并自举鉴权密钥落盘。
         ensure_runtime_config()
@@ -66,7 +67,14 @@ def _create_lifespan():
             trigger_types=("startup", "manual", "internal"),
             error_message="API进程重启，任务已中断",
         )
-        yield
+        # 进度 Hub 仅在有 SSE 订阅时才连接 qBittorrent，关闭应用时负责停止所有轮询线程。
+        app.state.download_progress_hub = DownloadProgressHub(
+            poll_interval_seconds=settings.downloads.progress_stream_poll_interval_seconds,
+        )
+        try:
+            yield
+        finally:
+            app.state.download_progress_hub.close()
 
     return lifespan
 

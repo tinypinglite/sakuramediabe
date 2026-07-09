@@ -1,10 +1,13 @@
 from typing import List
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
+from src.api.exception.errors import ApiError
+from src.api.routers.catalog._sse import to_sse_event
 from src.api.routers.deps import db_deps, get_current_user
+from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
     DownloadCandidateResource,
     DownloadCandidatesQuery,
@@ -17,11 +20,15 @@ from src.schema.transfers.downloads import (
     DownloadClientUpdateRequest,
     DownloadRequestCreateRequest,
     DownloadRequestCreateResponse,
+    DownloadTaskActionResponse,
+    DownloadTaskResource,
+    DownloadTasksQuery,
 )
 from src.service.transfers import (
     DownloadClientService,
     DownloadRequestService,
     DownloadSearchService,
+    DownloadTaskService,
 )
 
 router = APIRouter(
@@ -112,3 +119,78 @@ def create_download_request(
     result = DownloadRequestService().create_request(payload)
     status_code = status.HTTP_201_CREATED if result.created else status.HTTP_200_OK
     return JSONResponse(status_code=status_code, content=jsonable_encoder(result))
+
+
+@router.get("/download-tasks", response_model=PageResponse[DownloadTaskResource])
+def list_download_tasks(
+    query: DownloadTasksQuery = Depends(),
+    current_user=Depends(get_current_user),
+):
+    return DownloadTaskService.list_tasks(
+        page=query.page,
+        page_size=query.page_size,
+        client_id=query.client_id,
+        movie_number=query.movie_number,
+        sort=query.sort,
+    )
+
+
+@router.get("/download-tasks/stream")
+def stream_download_tasks(
+    request: Request,
+    client_id: int | None = Query(default=None, gt=0),
+    movie_number: str | None = Query(default=None),
+    current_user=Depends(get_current_user),
+):
+    hub = request.app.state.download_progress_hub
+    subscription = hub.subscribe(client_id=client_id, movie_number=movie_number)
+
+    def stream():
+        for event, payload in hub.iter_events(subscription):
+            yield to_sse_event(event, payload)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post(
+    "/download-tasks/{task_id}/pause",
+    response_model=DownloadTaskActionResponse,
+)
+def pause_download_task(task_id: int, current_user=Depends(get_current_user)):
+    return DownloadTaskService.pause_task(task_id)
+
+
+@router.post(
+    "/download-tasks/{task_id}/resume",
+    response_model=DownloadTaskActionResponse,
+)
+def resume_download_task(task_id: int, current_user=Depends(get_current_user)):
+    return DownloadTaskService.resume_task(task_id)
+
+
+@router.delete("/download-tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_download_task(
+    task_id: int,
+    request: Request,
+    delete_files: bool = Query(default=False),
+    confirm_delete_files: bool = Query(default=False),
+    current_user=Depends(get_current_user),
+):
+    if delete_files and not confirm_delete_files:
+        raise ApiError(
+            422,
+            "download_task_delete_confirmation_required",
+            "Deleting downloaded files requires explicit confirmation",
+            {"task_id": task_id},
+        )
+    removed = DownloadTaskService.delete_task(task_id, delete_files=delete_files)
+    request.app.state.download_progress_hub.publish_task_removed(removed)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

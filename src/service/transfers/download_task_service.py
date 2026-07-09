@@ -7,10 +7,19 @@ from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.model import BackgroundTaskRun, DownloadTask, ImportJob
-from src.schema.transfers.downloads import DownloadTaskImportResponse
+from src.schema.common.pagination import PageResponse
+from src.schema.transfers.downloads import (
+    DownloadTaskActionResponse,
+    DownloadTaskImportResponse,
+    DownloadTaskResource,
+)
 from src.service.system import ActivityService
 from src.service.transfers.common import (
+    build_task_movie_filter,
     require_task,
+    require_client,
+    resolve_task_sort,
+    validate_page,
 )
 from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
 from src.common.media_import_status import (
@@ -24,10 +33,156 @@ from src.common.media_import_status import (
     make_failure_item,
 )
 from src.service.transfers.media_import_service import MediaImportService
+from src.service.transfers.qbittorrent_client import (
+    QBittorrentClient,
+    QBittorrentClientError,
+    QBittorrentTorrentNotFoundError,
+    QBittorrentTorrentNotManagedError,
+)
 
 
 class DownloadTaskService:
     DEFAULT_IMPORTABLE_STATUSES = {IMPORT_STATUS_PENDING, IMPORT_STATUS_FAILED, IMPORT_STATUS_SKIPPED}
+
+    @classmethod
+    def list_tasks(
+        cls,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        client_id: int | None = None,
+        movie_number: str | None = None,
+        sort: str | None = None,
+    ) -> PageResponse[DownloadTaskResource]:
+        validate_page(page, page_size)
+        query = DownloadTask.select()
+        if client_id is not None:
+            require_client(client_id)
+            query = query.where(DownloadTask.client == client_id)
+        if movie_number and movie_number.strip():
+            query = query.where(build_task_movie_filter(movie_number))
+
+        total = query.count()
+        tasks = list(
+            query.order_by(*resolve_task_sort(sort)).paginate(page, page_size)
+        )
+        return PageResponse[DownloadTaskResource](
+            items=DownloadTaskResource.from_models(tasks),
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    @classmethod
+    def pause_task(
+        cls,
+        task_id: int,
+        *,
+        qbittorrent_client_cls=QBittorrentClient,
+    ) -> DownloadTaskActionResponse:
+        task = require_task(task_id)
+        cls._operate_remote_task(
+            task,
+            action="pause",
+            qbittorrent_client_cls=qbittorrent_client_cls,
+        )
+        return DownloadTaskActionResponse(task_id=task.id, action="pause")
+
+    @classmethod
+    def resume_task(
+        cls,
+        task_id: int,
+        *,
+        qbittorrent_client_cls=QBittorrentClient,
+    ) -> DownloadTaskActionResponse:
+        task = require_task(task_id)
+        cls._operate_remote_task(
+            task,
+            action="resume",
+            qbittorrent_client_cls=qbittorrent_client_cls,
+        )
+        return DownloadTaskActionResponse(task_id=task.id, action="resume")
+
+    @classmethod
+    def delete_task(
+        cls,
+        task_id: int,
+        *,
+        delete_files: bool,
+        qbittorrent_client_cls=QBittorrentClient,
+    ) -> dict:
+        task = require_task(task_id)
+        if task.import_status == IMPORT_STATUS_RUNNING:
+            raise ApiError(
+                409,
+                "download_task_import_running",
+                "Cannot delete a download task while importing media",
+                {"task_id": task.id},
+            )
+
+        qb_client = qbittorrent_client_cls.from_download_client(task.client)
+        try:
+            # 远端任务已被人工清理时，本地镜像仍可安全删除；若远端存在则客户端层会再次验标签。
+            qb_client.delete_torrent(
+                task.info_hash,
+                client_id=task.client_id,
+                delete_files=delete_files,
+            )
+        except QBittorrentTorrentNotManagedError as exc:
+            raise ApiError(
+                409,
+                "download_task_not_managed",
+                "qBittorrent torrent is not managed by this download client",
+                {"task_id": task.id},
+            ) from exc
+        except QBittorrentClientError as exc:
+            logger.warning("Delete qBittorrent task failed task_id={} detail={}", task.id, exc)
+            raise ApiError(
+                502,
+                "download_task_delete_failed",
+                "qBittorrent request failed",
+                {"task_id": task.id, "detail": str(exc)},
+            ) from exc
+
+        removed = {
+            "task_id": task.id,
+            "client_id": task.client_id,
+            "movie_number": task.movie,
+            "info_hash": task.info_hash,
+        }
+        task.delete_instance()
+        return removed
+
+    @classmethod
+    def _operate_remote_task(cls, task: DownloadTask, *, action: str, qbittorrent_client_cls) -> None:
+        qb_client = qbittorrent_client_cls.from_download_client(task.client)
+        try:
+            if action == "pause":
+                qb_client.pause_torrent(task.info_hash, client_id=task.client_id)
+            else:
+                qb_client.resume_torrent(task.info_hash, client_id=task.client_id)
+        except QBittorrentTorrentNotFoundError as exc:
+            raise ApiError(
+                409,
+                "download_task_remote_missing",
+                "qBittorrent torrent is no longer available",
+                {"task_id": task.id},
+            ) from exc
+        except QBittorrentTorrentNotManagedError as exc:
+            raise ApiError(
+                409,
+                "download_task_not_managed",
+                "qBittorrent torrent is not managed by this download client",
+                {"task_id": task.id},
+            ) from exc
+        except QBittorrentClientError as exc:
+            logger.warning("{} qBittorrent task failed task_id={} detail={}", action, task.id, exc)
+            raise ApiError(
+                502,
+                f"download_task_{action}_failed",
+                "qBittorrent request failed",
+                {"task_id": task.id, "detail": str(exc)},
+            ) from exc
 
     @classmethod
     def trigger_import(

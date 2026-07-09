@@ -2,7 +2,11 @@ from .downloads import (
     DownloadClientCreateRequest,
     DownloadClientResource,
     DownloadClientUpdateRequest,
+    DownloadClientTransferResource,
+    DownloadTaskActionResponse,
+    DownloadTaskProgressResource,
     DownloadTaskResource,
+    DownloadTasksQuery,
 )
 from .media_import import (
     DeleteFailedFileRequest,
@@ -21,7 +25,11 @@ __all__ = [
     "DownloadClientCreateRequest",
     "DownloadClientResource",
     "DownloadClientUpdateRequest",
+    "DownloadClientTransferResource",
+    "DownloadTaskActionResponse",
+    "DownloadTaskProgressResource",
     "DownloadTaskResource",
+    "DownloadTasksQuery",
     "DeleteFailedFileRequest",
     "FailedFileResource",
     "FilesystemEntryResource",

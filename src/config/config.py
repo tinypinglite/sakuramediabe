@@ -303,6 +303,8 @@ class Scheduler(BaseModel):
 class Downloads(BaseModel):
     # 下载中种子内小于该大小（MB）的文件视为可清理小文件，会被设为不下载并物理删除。
     small_file_cleanup_threshold_mb: int = 256
+    # SSE 下载进度轮询 qBittorrent Sync API 的间隔；低于 0.2 秒会无谓放大 qB Web API 压力。
+    progress_stream_poll_interval_seconds: float = Field(default=1.0, ge=0.2, le=10.0)
 
 
 class MediaImport(BaseModel):

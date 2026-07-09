@@ -1,11 +1,13 @@
 from src.api.exception.errors import ApiError
 from src.model import DownloadClient, MediaLibrary
+from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
     DownloadClientStorageDirectoryMappingResult,
     DownloadClientStorageHardlinkResult,
     DownloadClientStorageTestResponse,
     DownloadClientTestResponse,
     DownloadRequestCreateResponse,
+    DownloadTaskActionResponse,
     DownloadTaskResource,
 )
 
@@ -29,6 +31,11 @@ def test_download_endpoints_require_authentication(client):
     assert client.post("/download-clients/probe/storage-test", json={}).status_code == 401
     assert client.get("/download-candidates", params={"movie_number": "ABC-001"}).status_code == 401
     assert client.post("/download-requests", json={}).status_code == 401
+    assert client.get("/download-tasks").status_code == 401
+    assert client.get("/download-tasks/stream").status_code == 401
+    assert client.post("/download-tasks/1/pause").status_code == 401
+    assert client.post("/download-tasks/1/resume").status_code == 401
+    assert client.delete("/download-tasks/1").status_code == 401
 
 
 def test_download_client_crud_api(client, account_user):
@@ -499,3 +506,110 @@ def test_download_request_api_propagates_domain_errors(client, account_user, mon
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_download_request_candidate"
+
+
+def test_download_tasks_api_lists_controls_and_confirms_file_deletion(client, account_user, monkeypatch):
+    token = _login(client, username=account_user.username)
+    task = DownloadTaskResource(
+        id=7,
+        client_id=3,
+        movie_number="ABC-001",
+        name="ABC-001",
+        info_hash="hash-1",
+        save_path="/mnt/downloads/a/ABC-001",
+        progress=0.5,
+        download_state="downloading",
+        import_status="pending",
+        created_at="2026-03-10T08:10:00Z",
+        updated_at="2026-03-10T08:10:00Z",
+    )
+    captured = {}
+
+    def fake_list_tasks(**kwargs):
+        captured["list"] = kwargs
+        return PageResponse(items=[task], page=1, page_size=20, total=1)
+
+    def fake_delete_task(task_id, delete_files):
+        captured["delete"] = {"task_id": task_id, "delete_files": delete_files}
+        return {"task_id": task_id, "client_id": 3, "movie_number": "ABC-001", "info_hash": "hash-1"}
+
+    monkeypatch.setattr(
+        "src.api.routers.transfers.downloads.DownloadTaskService.list_tasks",
+        fake_list_tasks,
+    )
+    monkeypatch.setattr(
+        "src.api.routers.transfers.downloads.DownloadTaskService.pause_task",
+        lambda task_id: DownloadTaskActionResponse(task_id=task_id, action="pause"),
+    )
+    monkeypatch.setattr(
+        "src.api.routers.transfers.downloads.DownloadTaskService.resume_task",
+        lambda task_id: DownloadTaskActionResponse(task_id=task_id, action="resume"),
+    )
+    monkeypatch.setattr(
+        "src.api.routers.transfers.downloads.DownloadTaskService.delete_task",
+        fake_delete_task,
+    )
+
+    listed = client.get(
+        "/download-tasks",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"client_id": 3, "movie_number": "ABC-001"},
+    )
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["id"] == 7
+    assert captured["list"]["client_id"] == 3
+
+    paused = client.post("/download-tasks/7/pause", headers={"Authorization": f"Bearer {token}"})
+    resumed = client.post("/download-tasks/7/resume", headers={"Authorization": f"Bearer {token}"})
+    assert paused.status_code == 200 and paused.json()["action"] == "pause"
+    assert resumed.status_code == 200 and resumed.json()["action"] == "resume"
+
+    rejected = client.delete(
+        "/download-tasks/7",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"delete_files": "true"},
+    )
+    assert rejected.status_code == 422
+    assert rejected.json()["error"]["code"] == "download_task_delete_confirmation_required"
+
+    deleted = client.delete(
+        "/download-tasks/7",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"delete_files": "true", "confirm_delete_files": "true"},
+    )
+    assert deleted.status_code == 204
+    assert captured["delete"] == {"task_id": 7, "delete_files": True}
+
+
+def test_download_task_stream_api_emits_sse_payload(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    class FakeHub:
+        def __init__(self):
+            self.filters = None
+
+        def subscribe(self, *, client_id=None, movie_number=None):
+            self.filters = {"client_id": client_id, "movie_number": movie_number}
+            return object()
+
+        @staticmethod
+        def iter_events(_subscription):
+            yield "snapshot", {"client_id": 3, "items": []}
+
+        @staticmethod
+        def close():
+            return None
+
+    fake_hub = FakeHub()
+    client.app.state.download_progress_hub = fake_hub
+    response = client.get(
+        "/download-tasks/stream",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"client_id": 3, "movie_number": "ABC-001"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: snapshot" in response.text
+    assert '"client_id": 3' in response.text
+    assert fake_hub.filters == {"client_id": 3, "movie_number": "ABC-001"}

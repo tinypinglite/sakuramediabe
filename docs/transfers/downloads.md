@@ -9,8 +9,8 @@
 - Jackett 负责“搜索候选资源”
 - qBittorrent 负责“实际下载”
 - `DownloadTask` 是本地镜像数据，由“提交下载”或“同步任务”流程写入
-- API 不提供 `DownloadTask` 的通用创建、更新、详情接口
-- 当前 API 不提供 `DownloadTask` 删除入口；本地镜像由同步与内部流程维护，不直接删除 qBittorrent 中的种子
+- API 不提供 `DownloadTask` 的通用创建、更新、详情接口；只提供查询、实时状态与受控操作
+- 删除下载任务会同时移除本地镜像；是否删除 qBittorrent 中的下载文件由调用方显式确认
 
 ## 边界说明
 
@@ -176,6 +176,27 @@
 - `failed`
 - `skipped`
 
+## 实时进度与任务控制
+
+客户端先通过 `GET /download-tasks` 分页加载全部历史记录，再以 `GET /download-tasks/stream` 订阅 qBittorrent 的实时状态。两个接口都支持 `client_id` 与 `movie_number` 筛选；SSE 首次为每个匹配下载客户端发送 `snapshot`，随后发送：
+
+- `download_task_updated`：进度、速度、总大小、已下载量、ETA 与 qB 原始/归一化状态
+- `download_task_removed`：qB 中任务被移除或本系统删除任务
+- `download_client_status`：qB 客户端可用性，以及整体上下行速度
+- `heartbeat`：连接保活
+
+SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改变现有 APS 同步和自动导入节奏。客户端断线后应重新查询任务列表并重新建立 SSE 连接。
+
+暂停、恢复与删除均以本地 `task_id` 操作，后端会再次验证 qB 种子带有 `sakuramedia` 和对应 `client:<id>` 标签，手动加入 qB 的种子不会被操作。
+
+- `POST /download-tasks/{task_id}/pause`
+- `POST /download-tasks/{task_id}/resume`
+- `DELETE /download-tasks/{task_id}?delete_files=false&confirm_delete_files=false`
+
+`delete_files` 默认为 `false`。要连同 qB 下载文件删除，必须同时传 `delete_files=true` 和 `confirm_delete_files=true`；处于本地导入中的任务不能删除，避免与导入线程争用文件。删除成功后本地 `DownloadTask` 会被移除，已完成的媒体导入记录保持不变。
+
+进度轮询周期由 `[downloads].progress_stream_poll_interval_seconds` 配置，默认 `1.0` 秒，允许范围为 `0.2` 至 `10` 秒。
+
 ## 端点总览
 
 | Method | Endpoint | Purpose |
@@ -190,6 +211,11 @@
 | `POST` | `/download-clients/probe/storage-test` | 落库前预检下载目录映射与硬链接能力 |
 | `GET` | `/download-candidates` | 搜索番号的候选资源 |
 | `POST` | `/download-requests` | 向指定客户端提交下载 |
+| `GET` | `/download-tasks` | 分页查询全部下载历史 |
+| `GET` | `/download-tasks/stream` | 订阅 qBittorrent 实时进度 SSE |
+| `POST` | `/download-tasks/{task_id}/pause` | 暂停受管下载任务 |
+| `POST` | `/download-tasks/{task_id}/resume` | 恢复受管下载任务 |
+| `DELETE` | `/download-tasks/{task_id}` | 移除受管种子与本地任务镜像 |
 
 ## 详细接口定义
 

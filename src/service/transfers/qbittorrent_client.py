@@ -7,11 +7,23 @@ import libtorrent as lt
 import qbittorrentapi
 
 from src.model import DownloadClient
-from src.service.transfers.common import CLIENT_QB_TAG_PREFIX, SYSTEM_QB_TAG
+from src.service.transfers.common import (
+    CLIENT_QB_TAG_PREFIX,
+    SYSTEM_QB_TAG,
+    is_qb_managed_torrent,
+)
 
 
 class QBittorrentClientError(Exception):
     pass
+
+
+class QBittorrentTorrentNotManagedError(QBittorrentClientError):
+    """目标种子不属于 SakuraMedia 当前下载客户端。"""
+
+
+class QBittorrentTorrentNotFoundError(QBittorrentClientError):
+    """目标种子已不在 qBittorrent 中。"""
 
 
 class QBittorrentClient:
@@ -33,6 +45,7 @@ class QBittorrentClient:
             password=password,
         )
         self.http_client = http_client or httpx.Client(timeout=120.0, follow_redirects=True, trust_env=False)
+        self._logged_in = False
 
     @classmethod
     def from_download_client(cls, download_client: DownloadClient) -> "QBittorrentClient":
@@ -212,6 +225,70 @@ class QBittorrentClient:
             return None
         raise QBittorrentClientError(f"torrent not found: {info_hash}")
 
+    def get_torrent_progress_delta(self) -> dict:
+        """读取 qB Sync 增量数据，供长连接复用同一个 RID 会话。"""
+        self._login()
+        try:
+            payload = self.client.sync.maindata.delta()
+        except Exception as exc:
+            raise QBittorrentClientError(str(exc)) from exc
+
+        torrents = {}
+        for info_hash, item in (payload.get("torrents") or {}).items():
+            torrents[str(info_hash).lower()] = self._to_progress_dict(item)
+        return {
+            "full_update": bool(payload.get("full_update")),
+            "torrents": torrents,
+            "torrents_removed": [str(item).lower() for item in (payload.get("torrents_removed") or [])],
+            "server_state": self._to_progress_dict(payload.get("server_state") or {}),
+        }
+
+    def pause_torrent(self, info_hash: str, *, client_id: int) -> None:
+        self._operate_managed_torrent(
+            info_hash,
+            client_id=client_id,
+            operation=lambda: self.client.torrents_stop(torrent_hashes=info_hash),
+        )
+
+    def resume_torrent(self, info_hash: str, *, client_id: int) -> None:
+        self._operate_managed_torrent(
+            info_hash,
+            client_id=client_id,
+            operation=lambda: self.client.torrents_start(torrent_hashes=info_hash),
+        )
+
+    def delete_torrent(self, info_hash: str, *, client_id: int, delete_files: bool) -> bool:
+        """删除受管种子；远端已不存在时返回 False，供本地清理陈旧任务。"""
+        self._login()
+        torrent = self.get_torrent(info_hash, allow_missing=True)
+        if torrent is None:
+            return False
+        self._ensure_managed_torrent(torrent, client_id)
+        try:
+            self.client.torrents_delete(
+                torrent_hashes=info_hash,
+                delete_files=delete_files,
+            )
+        except Exception as exc:
+            raise QBittorrentClientError(str(exc)) from exc
+        return True
+
+    def _operate_managed_torrent(self, info_hash: str, *, client_id: int, operation) -> None:
+        self._login()
+        torrent = self.get_torrent(info_hash, allow_missing=True)
+        if torrent is None:
+            raise QBittorrentTorrentNotFoundError("torrent not found")
+        self._ensure_managed_torrent(torrent, client_id)
+        try:
+            operation()
+        except Exception as exc:
+            raise QBittorrentClientError(str(exc)) from exc
+
+    @staticmethod
+    def _ensure_managed_torrent(torrent: dict, client_id: int) -> None:
+        if not is_qb_managed_torrent(torrent.get("tags"), client_id):
+            raise QBittorrentTorrentNotManagedError("torrent is not managed by this download client")
+
     def _download_torrent_file(self, torrent_url: str) -> bytes:
         try:
             response = self.http_client.get(torrent_url)
@@ -221,8 +298,12 @@ class QBittorrentClient:
             raise QBittorrentClientError(str(exc)) from exc
 
     def _login(self) -> None:
+        if self._logged_in:
+            return
         try:
             self.client.auth_log_in()
+            # qBittorrent Web API 客户端会在 Cookie 失效时自行重新认证；这里仅避免同一长连接每秒重复登录。
+            self._logged_in = True
         except Exception as exc:
             raise QBittorrentClientError(str(exc)) from exc
 
@@ -297,4 +378,30 @@ class QBittorrentClient:
             "state": getattr(torrent, "state", ""),
             "save_path": str(content_path),
             "tags": getattr(torrent, "tags", "") or "",
+        }
+
+    @staticmethod
+    def _to_progress_dict(item) -> dict:
+        """兼容 qbittorrent-api 的字典和属性对象，保留 Sync 原始字段。"""
+        if isinstance(item, dict):
+            return dict(item)
+        if hasattr(item, "items"):
+            return dict(item.items())
+        return {
+            key: getattr(item, key)
+            for key in (
+                "name",
+                "tags",
+                "progress",
+                "state",
+                "dlspeed",
+                "upspeed",
+                "downloaded",
+                "size",
+                "eta",
+                "dl_info_speed",
+                "up_info_speed",
+                "connection_status",
+            )
+            if hasattr(item, key)
         }

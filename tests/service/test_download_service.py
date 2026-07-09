@@ -1,3 +1,5 @@
+from queue import Empty
+
 import pytest
 
 from src.api.exception.errors import ApiError
@@ -34,11 +36,16 @@ from src.service.transfers.subscribed_movie_auto_download_service import (
 )
 from src.service.transfers.download_sync_service import DownloadSyncService
 from src.service.transfers.download_task_service import DownloadTaskService
-from src.service.transfers.common import build_movie_save_path, map_remote_path
+from src.service.transfers.common import build_movie_save_path, map_download_state, map_remote_path
 from src.service.transfers.jackett_client import JackettClient
 from src.service.transfers.qbittorrent_client import (
     QBittorrentClient,
     QBittorrentClientError,
+    QBittorrentTorrentNotManagedError,
+)
+from src.service.transfers.download_progress_service import (
+    DownloadProgressHub,
+    DownloadProgressSubscription,
 )
 
 
@@ -66,6 +73,92 @@ def test_ensure_add_success_rejects_qb5_failure_metadata():
         )
 
 
+def test_qbittorrent_client_reads_sync_delta_and_controls_managed_torrent():
+    class FakeTorrent:
+        hash = "hash-1"
+        name = "ABC-001"
+        progress = 0.2
+        state = "downloading"
+        save_path = "/downloads/a/ABC-001"
+        tags = "sakuramedia,client:3"
+
+    class FakeMainData:
+        def delta(self):
+            return {
+                "full_update": True,
+                "torrents": {
+                    "hash-1": {
+                        "name": "ABC-001",
+                        "tags": "sakuramedia,client:3",
+                        "progress": 0.2,
+                        "state": "downloading",
+                        "dlspeed": 123,
+                    }
+                },
+                "torrents_removed": [],
+                "server_state": {"dl_info_speed": 456, "up_info_speed": 7},
+            }
+
+    class FakeClient:
+        def __init__(self):
+            self.sync = type("Sync", (), {"maindata": FakeMainData()})()
+            self.stopped = []
+            self.started = []
+            self.deleted = []
+
+        def auth_log_in(self):
+            return None
+
+        def torrents_info(self, torrent_hashes=None):
+            return [FakeTorrent()]
+
+        def torrents_stop(self, torrent_hashes):
+            self.stopped.append(torrent_hashes)
+
+        def torrents_start(self, torrent_hashes):
+            self.started.append(torrent_hashes)
+
+        def torrents_delete(self, torrent_hashes, delete_files):
+            self.deleted.append((torrent_hashes, delete_files))
+
+    fake = FakeClient()
+    qb = QBittorrentClient(base_url="http://qb", username="u", password="p", client=fake)
+
+    delta = qb.get_torrent_progress_delta()
+    assert delta["full_update"] is True
+    assert delta["torrents"]["hash-1"]["dlspeed"] == 123
+    qb.pause_torrent("hash-1", client_id=3)
+    qb.resume_torrent("hash-1", client_id=3)
+    assert qb.delete_torrent("hash-1", client_id=3, delete_files=True) is True
+    assert fake.stopped == ["hash-1"]
+    assert fake.started == ["hash-1"]
+    assert fake.deleted == [("hash-1", True)]
+
+
+def test_qbittorrent_client_rejects_unmanaged_torrent_control():
+    class FakeTorrent:
+        hash = "hash-1"
+        name = "manual"
+        progress = 0.2
+        state = "downloading"
+        save_path = "/downloads/a/manual"
+        tags = "manual"
+
+    class FakeClient:
+        def auth_log_in(self):
+            return None
+
+        def torrents_info(self, torrent_hashes=None):
+            return [FakeTorrent()]
+
+        def torrents_stop(self, torrent_hashes):
+            raise AssertionError("unmanaged torrent must not be stopped")
+
+    qb = QBittorrentClient(base_url="http://qb", username="u", password="p", client=FakeClient())
+    with pytest.raises(QBittorrentTorrentNotManagedError):
+        qb.pause_torrent("hash-1", client_id=3)
+
+
 @pytest.mark.parametrize(
     "raw_state, expected",
     [
@@ -81,7 +174,7 @@ def test_ensure_add_success_rejects_qb5_failure_metadata():
     ],
 )
 def test_map_download_state_handles_qb5_stopped_states(raw_state, expected):
-    assert DownloadSyncService._map_download_state(raw_state) == expected
+    assert map_download_state(raw_state) == expected
 
 
 @pytest.mark.parametrize(
@@ -100,7 +193,7 @@ def test_map_download_state_handles_qb5_stopped_states(raw_state, expected):
 def test_map_download_state_does_not_complete_during_checking_or_moving(raw_state):
     # 回归：旧逻辑用 progress>=1 会把这些过渡态误判为 completed，触发对未写完文件的导入，
     # 导致内容指纹不稳定、去重失效而重复导入。
-    assert DownloadSyncService._map_download_state(raw_state) != "completed"
+    assert map_download_state(raw_state) != "completed"
 
 
 @pytest.mark.parametrize(
@@ -2269,3 +2362,166 @@ def test_add_candidate_handles_duplicate_conflict(download_tables):
 
     assert fake.added_tags == ("sakuramedia,client:1", info_hash)
     assert result["info_hash"] == info_hash
+
+
+def test_download_task_service_lists_filters_and_controls_tasks(download_tables):
+    library = _create_library()
+    first_client = _create_client(library)
+    second_client = _create_client(library, name="client-b")
+    first = DownloadTask.create(
+        client=first_client,
+        movie="ABC-001",
+        name="ABC-001",
+        info_hash="hash-1",
+        save_path="/mnt/downloads/a/ABC-001",
+        progress=0.2,
+        download_state="downloading",
+        import_status="pending",
+    )
+    DownloadTask.create(
+        client=second_client,
+        movie="DEF-002",
+        name="DEF-002",
+        info_hash="hash-2",
+        save_path="/mnt/downloads/a/DEF-002",
+        progress=0.0,
+        download_state="queued",
+        import_status="pending",
+    )
+
+    page = DownloadTaskService.list_tasks(client_id=first_client.id, movie_number=" abc-001 ")
+    assert page.total == 1
+    assert page.items[0].id == first.id
+
+    calls = []
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls()
+
+        def pause_torrent(self, info_hash, *, client_id):
+            calls.append(("pause", info_hash, client_id))
+
+        def resume_torrent(self, info_hash, *, client_id):
+            calls.append(("resume", info_hash, client_id))
+
+        def delete_torrent(self, info_hash, *, client_id, delete_files):
+            calls.append(("delete", info_hash, client_id, delete_files))
+            return True
+
+    assert DownloadTaskService.pause_task(first.id, qbittorrent_client_cls=FakeQBittorrentClient).status == "ok"
+    assert DownloadTaskService.resume_task(first.id, qbittorrent_client_cls=FakeQBittorrentClient).action == "resume"
+    removed = DownloadTaskService.delete_task(
+        first.id,
+        delete_files=True,
+        qbittorrent_client_cls=FakeQBittorrentClient,
+    )
+    assert removed["task_id"] == first.id
+    assert DownloadTask.get_or_none(DownloadTask.id == first.id) is None
+    assert calls == [
+        ("pause", "hash-1", first_client.id),
+        ("resume", "hash-1", first_client.id),
+        ("delete", "hash-1", first_client.id, True),
+    ]
+
+
+def test_download_task_service_rejects_delete_while_import_running(download_tables):
+    library = _create_library()
+    client = _create_client(library)
+    task = DownloadTask.create(
+        client=client,
+        movie="ABC-001",
+        name="ABC-001",
+        info_hash="hash-1",
+        save_path="/mnt/downloads/a/ABC-001",
+        progress=1.0,
+        download_state="completed",
+        import_status="running",
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        DownloadTaskService.delete_task(task.id, delete_files=True)
+    assert exc_info.value.code == "download_task_import_running"
+
+
+def test_download_progress_hub_merges_partial_delta_without_exposing_manual_torrent(download_tables):
+    library = _create_library()
+    client = _create_client(library)
+    task = DownloadTask.create(
+        client=client,
+        movie="ABC-001",
+        name="ABC-001",
+        info_hash="managed-hash",
+        save_path="/mnt/downloads/a/ABC-001",
+        progress=0.0,
+        download_state="queued",
+        import_status="pending",
+    )
+    hub = DownloadProgressHub()
+    subscription = DownloadProgressSubscription(subscription_id=1, client_ids={client.id})
+    hub._subscriptions[subscription.subscription_id] = subscription
+
+    hub._consume_delta(
+        client.id,
+        {
+            "full_update": True,
+            "torrents": {
+                "managed-hash": {
+                    "name": "ABC-001",
+                    "tags": f"sakuramedia,client:{client.id}",
+                    "progress": 0.4,
+                    "state": "downloading",
+                    "dlspeed": 20,
+                    "downloaded": 40,
+                    "size": 100,
+                    "eta": 3,
+                },
+                "manual-hash": {
+                    "name": "manual",
+                    "tags": "manual",
+                    "progress": 0.9,
+                    "state": "downloading",
+                },
+            },
+            "torrents_removed": [],
+            "server_state": {},
+        },
+    )
+    event, payload = subscription.queue.get_nowait()
+    assert event == "snapshot"
+    assert payload["items"] == [
+        {
+            "task_id": task.id,
+            "client_id": client.id,
+            "movie_number": "ABC-001",
+            "name": "ABC-001",
+            "info_hash": "managed-hash",
+            "progress": 0.4,
+            "raw_state": "downloading",
+            "download_state": "downloading",
+            "download_speed_bytes": 20,
+            "uploaded_speed_bytes": 0,
+            "downloaded_bytes": 40,
+            "total_size_bytes": 100,
+            "eta_seconds": 3,
+        }
+    ]
+    # 快照后不应紧跟同内容的 download_task_updated，避免客户端重复渲染。
+    with pytest.raises(Empty):
+        subscription.queue.get_nowait()
+
+    hub._consume_delta(
+        client.id,
+        {
+            "full_update": False,
+            "torrents": {"managed-hash": {"progress": 0.5, "dlspeed": 30}},
+            "torrents_removed": [],
+            "server_state": {},
+        },
+    )
+    event, payload = subscription.queue.get_nowait()
+    assert event == "download_task_updated"
+    assert payload["progress"] == 0.5
+    assert payload["download_speed_bytes"] == 30
+    assert payload["name"] == "ABC-001"
