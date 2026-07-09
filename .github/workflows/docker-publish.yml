@@ -94,9 +94,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
-          # 正式发布镜像必须走 PyArmor 混淆 target，避免把原始 src 源码发布到 Docker Hub。
-          target: obfuscated
+          file: ./docker/backend/Dockerfile
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}

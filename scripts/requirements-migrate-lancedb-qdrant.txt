@@ -1,5 +1,0 @@
-lancedb==0.21.2
-pyarrow==16.1.0
-qdrant-client>=1.12,<2.0
-numpy>=1.26,<3
-tqdm>=4.65,<5

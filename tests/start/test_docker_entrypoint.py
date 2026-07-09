@@ -42,7 +42,7 @@ def _run_entrypoint(
     create_config: bool = True,
 ):
     repo_root = Path(__file__).resolve().parents[2]
-    script_path = repo_root / "docker-entrypoint.sh"
+    script_path = repo_root / "docker" / "backend" / "docker-entrypoint.sh"
     data_root = tmp_path / "data"
     bin_dir = tmp_path / "bin"
     log_path = tmp_path / "entrypoint.log"

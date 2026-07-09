@@ -6,26 +6,17 @@
 
 ### 构建 Docker 镜像
 
-普通运行时镜像保留源码，适合本地调试和快速验证：
+构建后端运行时镜像：
 
 ```bash
-docker build -t sakuramediabe:plain .
-```
-
-发布用混淆镜像只复制 PyArmor 产物，不会把原始 `src` 源码复制到最终镜像层：
-
-```bash
-docker build --target obfuscated -t sakuramediabe:obfuscated .
+docker build -f docker/backend/Dockerfile -t sakuramediabe:latest .
 ```
 
 说明：
 
-- 混淆镜像使用 PyArmor-only 方案，不引入授权 secret、Cython 或 Nuitka。
-- 混淆目标保留与普通镜像一致的运行入口，容器启动时仍会先执行 `migrate`，再执行 `initdb`。
-- 后端只支持 PostgreSQL；`compose.example.yaml` 已内置 PostgreSQL 服务，手动部署时必须在 `[database].url` 配置 PostgreSQL 连接串。
+- 容器启动时会先执行 `migrate`，再执行 `initdb`。
+- 后端只支持 PostgreSQL，手动部署时必须在 `[database].url` 配置 PostgreSQL 连接串。
 - `/data/config/config.toml` 为可选：缺失或为空时容器走默认值启动，并在首启写入一份含全部配置项默认值的完整 `config.toml`（其中 `secret_key`、`file_signature_secret` 自动生成随机值）到该路径，之后保持稳定；已有内容的配置文件只补缺失的鉴权密钥、保留其余配置。发布镜像不会内置本地配置文件。
-- GitHub Release 触发的 Docker Hub 正式发布也会构建 `obfuscated` target。
-- 该方案用于提高发布镜像源码逆向成本，不等同于不可破解的代码保护。
 
 JoyTag 推理服务使用独立源码目录 `docker/joytag-infer/app`，对应镜像不会复制主项目 `src`：
 

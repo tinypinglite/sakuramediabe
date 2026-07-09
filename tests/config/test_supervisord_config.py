@@ -5,7 +5,7 @@ from pathlib import Path
 def load_supervisord_config() -> configparser.RawConfigParser:
     config = configparser.RawConfigParser()
     config.read(
-        Path(__file__).resolve().parents[2] / "supervisord.conf",
+        Path(__file__).resolve().parents[2] / "docker" / "backend" / "supervisord.conf",
         encoding="utf-8",
     )
     return config

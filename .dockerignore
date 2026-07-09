@@ -12,10 +12,14 @@ logs
 storage
 tests
 docs
-sakuramedia.db
 poetry.lock
 pyproject.toml
 *.md
 !src/service/catalog/prompts/*.md
 .claude
 .worktrees
+.codex
+.codegraph
+.github
+.poetry
+
