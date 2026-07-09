@@ -32,7 +32,7 @@ API 本身只负责“上传查询图 -> 检索已索引缩略图”。要让搜
 - 删除媒体时，服务会 best-effort 删除对应 `media_id` 的向量记录
 - 当前索引任务只扫描 `joytag_index_status = PENDING` 的缩略图
 
-相关命令可参考 [../deployment/commands.md](../deployment/commands.md)，容器部署与 JoyTag 模型准备可参考 [../deployment/docker.md](../deployment/docker.md)。
+容器部署与 JoyTag 模型准备可参考 [../deployment/docker.md](../deployment/docker.md)。
 
 ## 资源模型
 

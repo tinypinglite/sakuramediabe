@@ -64,8 +64,6 @@
 ### Deployment
 
 - [deployment/docker.md](./deployment/docker.md): Docker 部署教程
-- [deployment/commands.md](./deployment/commands.md): 容器启动后的初始化、导入和单次任务命令
-- [deployment/external-service-tests.md](./deployment/external-service-tests.md): 外部服务 `click` 测试命令说明
 
 ## 资源清单
 
