@@ -495,6 +495,15 @@ def test_aps_recovers_interrupted_scheduled_tasks_before_starting_scheduler(monk
                 "force": True,
             },
         ),
+        (
+            "recover",
+            {
+                "trigger_type": "startup",
+                "error_message": "APS进程重启，任务已中断",
+                "allow_null_owner": True,
+                "force": True,
+            },
+        ),
         "build",
         "scheduler.start",
     ]
@@ -545,6 +554,7 @@ def test_aps_recovers_task_related_business_running_states(monkeypatch):
         ("recover", "scheduled"),
         ("recover", "manual"),
         ("recover", "internal"),
+        ("recover", "startup"),
         ("recover_desc", "影片描述抓取任务中断，等待重试"),
         ("recover_translation", "影片简介翻译任务中断，等待重试"),
         ("recover_import", True),

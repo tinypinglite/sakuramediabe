@@ -270,6 +270,8 @@ class Scheduler(BaseModel):
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
     activity_cleanup_cron: str = "30 5 * * *"
+    # GFriends Filetree 缓存刷新：默认每周一 04:00，对齐 disk cache 默认 7 天 TTL。
+    gfriends_filetree_refresh_cron: str = "0 4 * * 1"
     # 活动中心三张表的保留期：事件流只保留最近 N 天，每个 task_key 只保留最近 N 条运行记录，
     # 已读通知保留最近 N 天。具体语义见 ActivityCleanupService。
     activity_event_retention_days: int = 1

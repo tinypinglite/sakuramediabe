@@ -5,7 +5,23 @@ from src.metadata._providers.models import JavdbMovieActorResource, JavdbMovieDe
 from src.metadata._providers.dmm import DmmProvider
 
 from src.config.config import settings
-from src.metadata.factory import GfriendsAvatarJavdbProvider, build_dmm_provider, build_javdb_provider, build_missav_ranking_provider, build_missav_thumbnail_provider
+from src.metadata import factory as factory_module
+from src.metadata.factory import (
+    GfriendsAvatarJavdbProvider,
+    build_dmm_provider,
+    build_javdb_provider,
+    build_missav_ranking_provider,
+    build_missav_thumbnail_provider,
+    refresh_gfriends_filetree,
+)
+
+
+@pytest.fixture(autouse=True)
+def _clear_gfriends_resolver_cache():
+    # 单例缓存跨测试可能污染断言；每个 case 前后都清一次。
+    factory_module._resolver_cache.clear()
+    yield
+    factory_module._resolver_cache.clear()
 
 
 @dataclass
@@ -113,6 +129,58 @@ def test_javdb_adapter_prefers_gfriends_avatar():
 
     assert detail.actors[0].avatar_url == "https://gfriends.example/avatar.jpg"
     assert resolver.candidate_names == ["Arina Hashimoto", "桥本有菜"]
+
+
+def test_gfriends_resolver_is_singleton_per_config_key(monkeypatch):
+    monkeypatch.setattr(settings.metadata, "proxy", None)
+
+    provider_a = build_javdb_provider(use_metadata_proxy=False)
+    provider_b = build_javdb_provider(use_metadata_proxy=False)
+
+    # 同一 (url, cdn, cache_path, ttl, proxy) 组合下应命中缓存返回同实例，
+    # 让预热任务写入的内存 index 能被业务侧直接看到。
+    assert provider_a.actor_image_resolver is provider_b.actor_image_resolver
+
+
+def test_gfriends_resolver_rebuilt_when_proxy_changes(monkeypatch):
+    monkeypatch.setattr(settings.metadata, "proxy", None)
+    resolver_no_proxy = build_javdb_provider(use_metadata_proxy=False).actor_image_resolver
+
+    monkeypatch.setattr(settings.metadata, "proxy", "http://site-proxy:7890")
+    resolver_with_proxy = build_javdb_provider(use_metadata_proxy=True).actor_image_resolver
+
+    assert resolver_no_proxy is not resolver_with_proxy
+
+
+def test_gfriends_resolver_cache_evicts_previous_config(monkeypatch):
+    # 配置换代后旧实例必须被 evict，避免长期热更新累积无引用的 resolver 内存。
+    monkeypatch.setattr(settings.metadata, "proxy", None)
+    build_javdb_provider(use_metadata_proxy=False)
+
+    monkeypatch.setattr(settings.metadata, "proxy", "http://site-proxy:7890")
+    build_javdb_provider(use_metadata_proxy=True)
+
+    assert len(factory_module._resolver_cache) == 1
+
+
+def test_refresh_gfriends_filetree_delegates_to_resolver(monkeypatch):
+    monkeypatch.setattr(settings.metadata, "proxy", None)
+
+    calls: list[bool] = []
+
+    def _fake_refresh(*, force: bool):
+        calls.append(force)
+        return {"entries": 42, "source": "network", "bytes_written": 1024, "force": force}
+
+    # 拿到 factory 会 build 的同一个 resolver 实例后打桩其 refresh。
+    resolver = build_javdb_provider().actor_image_resolver
+    monkeypatch.setattr(resolver, "refresh", _fake_refresh)
+
+    stats = refresh_gfriends_filetree(force=True)
+
+    assert calls == [True]
+    assert stats["entries"] == 42
+    assert stats["source"] == "network"
 
 
 def test_javdb_adapter_keeps_original_avatar_when_gfriends_fails():

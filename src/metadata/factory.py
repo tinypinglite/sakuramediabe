@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Iterable
 
 from loguru import logger
@@ -14,6 +15,15 @@ from src.metadata._providers.missav import (
     MissavThumbnailProvider,
 )
 from src.metadata.gfriends import GfriendsActorImageResolver
+
+# Resolver 单例缓存：预热任务与业务代码共享同一实例的内存 index，
+# 避免"预热把 disk cache 拉下来但内存 index 只属于预热实例"的浪费。
+# key 覆盖会影响构建/行为的所有字段；配置热更新（改 URL/proxy/TTL）时自动 miss 重建。
+# 只保留"最近一次配置组合"对应的单个实例：当前架构下所有调用点共享同一份
+# settings，key 变化即意味着配置换代，旧实例已无引用价值，miss 时直接清空避免
+# 长期热更新累积内存。
+_resolver_cache: dict[tuple, GfriendsActorImageResolver] = {}
+_resolver_cache_lock = threading.Lock()
 
 
 class GfriendsAvatarJavdbProvider:
@@ -79,13 +89,41 @@ class GfriendsAvatarJavdbProvider:
 
 
 def _build_gfriends_resolver(*, proxy: str | None) -> GfriendsActorImageResolver:
-    return GfriendsActorImageResolver(
-        filetree_url=settings.metadata.gfriends_filetree_url,
-        cdn_base_url=settings.metadata.gfriends_cdn_base_url,
-        cache_path=settings.metadata.gfriends_filetree_cache_path,
-        cache_ttl_hours=settings.metadata.gfriends_filetree_cache_ttl_hours,
-        proxy=proxy,
+    key = (
+        settings.metadata.gfriends_filetree_url,
+        settings.metadata.gfriends_cdn_base_url,
+        settings.metadata.gfriends_filetree_cache_path,
+        settings.metadata.gfriends_filetree_cache_ttl_hours,
+        proxy,
     )
+    cached = _resolver_cache.get(key)
+    if cached is not None:
+        return cached
+    with _resolver_cache_lock:
+        cached = _resolver_cache.get(key)
+        if cached is not None:
+            return cached
+        # 配置组合变了，旧实例不会再被业务命中，清掉避免热更新场景下累积。
+        _resolver_cache.clear()
+        resolver = GfriendsActorImageResolver(
+            filetree_url=settings.metadata.gfriends_filetree_url,
+            cdn_base_url=settings.metadata.gfriends_cdn_base_url,
+            cache_path=settings.metadata.gfriends_filetree_cache_path,
+            cache_ttl_hours=settings.metadata.gfriends_filetree_cache_ttl_hours,
+            proxy=proxy,
+        )
+        _resolver_cache[key] = resolver
+        return resolver
+
+
+def refresh_gfriends_filetree(*, force: bool = False) -> dict[str, Any]:
+    """APS 任务入口：拉取 GFriends Filetree 并写入本地缓存，返回统计信息。
+
+    force=False 时若 disk cache 新鲜（未超过 TTL）则跳过网络请求；
+    force=True 无条件重新拉取。使用当前 settings 中配置的代理与地址。
+    """
+    resolver = _build_gfriends_resolver(proxy=settings.metadata.gfriends_proxy)
+    return resolver.refresh(force=force)
 
 
 def build_javdb_provider(*, use_metadata_proxy: bool = False) -> GfriendsAvatarJavdbProvider:

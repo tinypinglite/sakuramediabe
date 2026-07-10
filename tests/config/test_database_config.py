@@ -72,6 +72,7 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
     assert settings.scheduler.movie_desc_sync_cron == "0 4 * * *"
     assert settings.scheduler.movie_desc_translation_cron == "15 4 * * *"
     assert settings.scheduler.movie_title_translation_cron == "20 4 * * *"
+    assert settings.scheduler.gfriends_filetree_refresh_cron == "0 4 * * 1"
     assert settings.movie_info_translation == MovieInfoTranslation()
     assert settings.image_search == ImageSearch()
     assert settings.qdrant == Qdrant()
