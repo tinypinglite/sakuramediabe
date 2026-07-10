@@ -16,7 +16,8 @@
     - snapshot_cookies / update_cookies （cookies 保活/热替换，见 _merge_set_cookies）
     - 构造函数（cookies 字符串 -> httpx.AsyncClient）
 
-不含：二维码登录、通用文件上传（仅 .torrent 的 sample 上传用于离线选文件）、分享、事件订阅、图片 CDN 等。
+不含：二维码登录（在独立的 qrlogin.Cloud115QrLogin，登录发生在拿到 cookies 之前）、
+通用文件上传（仅 .torrent 的 sample 上传用于离线选文件）、分享、事件订阅、图片 CDN 等。
 不依赖任何业务 model / service / schema，纯 HTTP + RSA 层。
 """
 

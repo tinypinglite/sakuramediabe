@@ -1,7 +1,8 @@
 """115 网盘极简异步客户端。
 
-覆盖播放/查找/缩略图/离线下载（含 BT 选文件）4 类上层需求需要的 HTTP 接口 + cookies 认证。
-不含二维码登录、通用文件上传（仅 .torrent 的 sample 上传）、分享、事件订阅等。
+覆盖播放/查找/缩略图/离线下载（含 BT 选文件）4 类上层需求需要的 HTTP 接口 + cookies 认证；
+另含扫码登录（Cloud115QrLogin，独立于 cookies，用于首次获取 cookies）。
+不含通用文件上传（仅 .torrent 的 sample 上传）、分享、事件订阅等。
 
 上层使用方式：
     from src.lib.cloud115 import Cloud115Client, DirectUrl
@@ -16,6 +17,7 @@ Cookies 保活：客户端内部维护 cookies dict，每次响应自动 merge �
 """
 
 from src.lib.cloud115.client import Cloud115Client
+from src.lib.cloud115.qrlogin import APPS, Cloud115QrLogin
 from src.lib.cloud115.exceptions import (
     Cloud115AuthError,
     Cloud115CipherError,
@@ -38,6 +40,9 @@ from src.lib.cloud115.types import (
     OfflineTask,
     OfflineTaskAddResult,
     OfflineTaskPage,
+    QrCodeToken,
+    QrLoginResult,
+    QrStatus,
     TorrentFileEntry,
     TorrentInfo,
     VideoDefinition,
@@ -47,6 +52,11 @@ from src.lib.cloud115.types import (
 
 __all__ = [
     "Cloud115Client",
+    "Cloud115QrLogin",
+    "APPS",
+    "QrCodeToken",
+    "QrStatus",
+    "QrLoginResult",
     "DirEntry",
     "DirMeta",
     "DirBreadcrumb",
