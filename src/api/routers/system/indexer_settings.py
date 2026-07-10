@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.system.indexer_settings import (
+    IndexerConnectionTestResponse,
     IndexerSettingsResource,
     IndexerSettingsUpdateRequest,
 )
@@ -25,3 +26,8 @@ def update_indexer_settings(
     current_user=Depends(get_current_user),
 ):
     return IndexerSettingsService.update_settings(payload)
+
+
+@router.get("/test", response_model=IndexerConnectionTestResponse)
+def test_indexer_connection(current_user=Depends(get_current_user)):
+    return IndexerSettingsService.test_connection()

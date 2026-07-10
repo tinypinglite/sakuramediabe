@@ -6,6 +6,10 @@ import toml
 import src.config.config as config_module
 from src.config.config import IndexerSettings, IndexerType
 from src.model import DownloadClient, Indexer, MediaLibrary
+from src.schema.system.indexer_settings import (
+    IndexerConnectionTestError,
+    IndexerConnectionTestResponse,
+)
 
 
 def _login(client, username="account", password="password123"):
@@ -54,9 +58,11 @@ def _create_client(name: str = "client-a") -> DownloadClient:
 def test_indexer_settings_endpoints_require_authentication(client):
     get_response = client.get("/indexer-settings")
     patch_response = client.patch("/indexer-settings", json={"api_key": "updated-key"})
+    test_response = client.get("/indexer-settings/test")
 
     assert get_response.status_code == 401
     assert patch_response.status_code == 401
+    assert test_response.status_code == 401
 
 
 def test_get_indexer_settings_returns_current_configuration(
@@ -191,3 +197,77 @@ def test_patch_indexer_settings_rejects_unknown_download_client(
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "indexer_settings_download_client_not_found"
+
+
+def test_indexer_settings_test_api_returns_healthy_result(
+    client,
+    account_user,
+    isolated_indexer_settings,
+    monkeypatch,
+):
+    token = _login(client, username=account_user.username)
+
+    monkeypatch.setattr(
+        "src.api.routers.system.indexer_settings.IndexerSettingsService.test_connection",
+        staticmethod(
+            lambda: IndexerConnectionTestResponse(
+                healthy=True,
+                checked_at="2026-03-10T08:00:00",
+                query="SSNI-888",
+                indexers_checked=2,
+                result_count=5,
+                elapsed_ms=120,
+            )
+        ),
+    )
+
+    response = client.get(
+        "/indexer-settings/test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["healthy"] is True
+    assert data["query"] == "SSNI-888"
+    assert data["indexers_checked"] == 2
+    assert data["result_count"] == 5
+    assert data["error"] is None
+
+
+def test_indexer_settings_test_api_returns_unhealthy_result(
+    client,
+    account_user,
+    isolated_indexer_settings,
+    monkeypatch,
+):
+    token = _login(client, username=account_user.username)
+
+    monkeypatch.setattr(
+        "src.api.routers.system.indexer_settings.IndexerSettingsService.test_connection",
+        staticmethod(
+            lambda: IndexerConnectionTestResponse(
+                healthy=False,
+                checked_at="2026-03-10T08:00:00",
+                query="SSNI-888",
+                indexers_checked=1,
+                result_count=0,
+                elapsed_ms=30,
+                error=IndexerConnectionTestError(
+                    type="jackett_request_error",
+                    message="connection refused",
+                ),
+            )
+        ),
+    )
+
+    response = client.get(
+        "/indexer-settings/test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["healthy"] is False
+    assert data["error"]["type"] == "jackett_request_error"
+    assert data["error"]["message"] == "connection refused"

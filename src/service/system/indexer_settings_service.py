@@ -1,7 +1,9 @@
+import time
 from typing import List, Optional, Set
 from urllib.parse import urlparse
 
 from src.api.exception.errors import ApiError
+from src.common.runtime_time import utc_now_for_db
 from src.config.config import (
     IndexerKind,
     IndexerType,
@@ -11,6 +13,8 @@ from src.config.config import (
 )
 from src.model import DownloadClient, Indexer
 from src.schema.system.indexer_settings import (
+    IndexerConnectionTestError,
+    IndexerConnectionTestResponse,
     IndexerItemUpdatePayload,
     IndexerItemResource,
     IndexerSettingsResource,
@@ -19,6 +23,9 @@ from src.schema.system.indexer_settings import (
 
 
 class IndexerSettingsService:
+    # 连通性测试固定用一个已知存在的番号做真实搜索，比单纯 ping 更能反映 apikey/indexer 是否真正可用。
+    CONNECTION_TEST_QUERY = "SSNI-888"
+
     @staticmethod
     def get_settings() -> IndexerSettingsResource:
         return IndexerSettingsResource(
@@ -69,6 +76,70 @@ class IndexerSettingsService:
         current_settings.indexer_settings = indexer_settings
         persist_settings(current_settings)
         return cls.get_settings()
+
+    @classmethod
+    def test_connection(
+        cls,
+        *,
+        jackett_client_cls=None,
+    ) -> IndexerConnectionTestResponse:
+        """Jackett 连通性检测:用固定番号真实搜一次，而不是单纯 ping,以此验证 apikey 与 indexer 配置整体可用。"""
+        # 延迟导入，避免 system service 与 transfers service 顶层依赖链形成循环。
+        from src.service.transfers.jackett_client import JackettClient, JackettClientError
+
+        jackett_client_cls = jackett_client_cls or JackettClient
+        start_at = time.time()
+        indexers_checked = Indexer.select().count()
+        if indexers_checked == 0:
+            return cls._build_connection_test_response(
+                start_at=start_at,
+                healthy=False,
+                indexers_checked=0,
+                error=IndexerConnectionTestError(
+                    type="no_indexers_configured",
+                    message="尚未配置任何 indexer，无法测试 Jackett 连通性",
+                ),
+            )
+
+        try:
+            candidates = jackett_client_cls().search(cls.CONNECTION_TEST_QUERY)
+        except JackettClientError as exc:
+            return cls._build_connection_test_response(
+                start_at=start_at,
+                healthy=False,
+                indexers_checked=indexers_checked,
+                error=IndexerConnectionTestError(
+                    type="jackett_request_error",
+                    message=str(exc),
+                ),
+            )
+
+        return cls._build_connection_test_response(
+            start_at=start_at,
+            healthy=True,
+            indexers_checked=indexers_checked,
+            result_count=len(candidates),
+        )
+
+    @classmethod
+    def _build_connection_test_response(
+        cls,
+        *,
+        start_at: float,
+        healthy: bool,
+        indexers_checked: int,
+        result_count: int = 0,
+        error: Optional[IndexerConnectionTestError] = None,
+    ) -> IndexerConnectionTestResponse:
+        return IndexerConnectionTestResponse(
+            healthy=healthy,
+            checked_at=utc_now_for_db(),
+            query=cls.CONNECTION_TEST_QUERY,
+            indexers_checked=indexers_checked,
+            result_count=result_count,
+            elapsed_ms=int((time.time() - start_at) * 1000),
+            error=error,
+        )
 
     @staticmethod
     def _validate_api_key(value: Optional[str]) -> str:

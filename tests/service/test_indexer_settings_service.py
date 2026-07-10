@@ -12,6 +12,7 @@ from src.schema.system.indexer_settings import (
     IndexerSettingsUpdateRequest,
 )
 from src.service.system.indexer_settings_service import IndexerSettingsService
+from src.service.transfers.jackett_client import JackettClientError
 
 
 @pytest.fixture()
@@ -257,3 +258,58 @@ def test_update_settings_rejects_unknown_download_client(isolated_indexer_settin
         )
 
     assert exc_info.value.code == "indexer_settings_download_client_not_found"
+
+
+def test_test_connection_reports_healthy_with_result_count(isolated_indexer_settings, indexer_tables):
+    client = _create_client()
+    Indexer.create(
+        name="initial",
+        url="http://127.0.0.1:9117/api/v2.0/indexers/initial/results/torznab/",
+        kind="bt",
+        download_client=client,
+    )
+
+    class FakeJackettClient:
+        def search(self, movie_number):
+            assert movie_number == IndexerSettingsService.CONNECTION_TEST_QUERY
+            return [object(), object()]
+
+    result = IndexerSettingsService.test_connection(jackett_client_cls=FakeJackettClient)
+
+    assert result.healthy is True
+    assert result.query == "SSNI-888"
+    assert result.indexers_checked == 1
+    assert result.result_count == 2
+    assert result.error is None
+
+
+def test_test_connection_returns_unhealthy_on_jackett_error(isolated_indexer_settings, indexer_tables):
+    client = _create_client()
+    Indexer.create(
+        name="initial",
+        url="http://127.0.0.1:9117/api/v2.0/indexers/initial/results/torznab/",
+        kind="bt",
+        download_client=client,
+    )
+
+    class FakeJackettClient:
+        def search(self, movie_number):
+            raise JackettClientError("connection refused")
+
+    result = IndexerSettingsService.test_connection(jackett_client_cls=FakeJackettClient)
+
+    assert result.healthy is False
+    assert result.indexers_checked == 1
+    assert result.result_count == 0
+    assert result.error is not None
+    assert result.error.type == "jackett_request_error"
+    assert result.error.message == "connection refused"
+
+
+def test_test_connection_returns_unhealthy_when_no_indexers_configured(isolated_indexer_settings, indexer_tables):
+    result = IndexerSettingsService.test_connection()
+
+    assert result.healthy is False
+    assert result.indexers_checked == 0
+    assert result.error is not None
+    assert result.error.type == "no_indexers_configured"
