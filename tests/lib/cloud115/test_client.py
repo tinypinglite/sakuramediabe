@@ -20,8 +20,10 @@ from src.lib.cloud115.exceptions import (
     Cloud115Error,
     Cloud115MembershipRequiredError,
     Cloud115NotFoundError,
+    Cloud115OfflineQuotaExceededError,
     Cloud115RateLimitedError,
     Cloud115RequestError,
+    Cloud115VideoNotReadyError,
 )
 
 
@@ -659,3 +661,748 @@ async def test_close_is_idempotent_for_external_client() -> None:
     resp = await external.get("https://example.com")
     assert resp.status_code == 200
     await external.aclose()
+
+
+# ---------------------------------------------------------------------------
+# pickcode_info
+# ---------------------------------------------------------------------------
+
+
+async def test_pickcode_info_uses_pick_code_query_param() -> None:
+    sample = {
+        "state": True,
+        "data": [{
+            "fid": "222", "cid": "0", "n": "x.mkv", "s": 42,
+            "sha": "SHAY", "pc": "pcpc", "te": 1, "tp": 2, "iv": 1,
+        }],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "webapi.115.com"
+        assert request.url.path == "/files/get_info"
+        # 关键：走 pick_code 参数，不是 file_id
+        assert request.url.params.get("pick_code") == "pcpc"
+        assert "file_id" not in request.url.params
+        return httpx.Response(200, json=sample)
+
+    client = _make_client(handler)
+    meta = await client.pickcode_info("pcpc")
+    assert meta.file_id == "222"
+    assert meta.pickcode == "pcpc"
+    assert meta.is_video is True
+    await client.close()
+
+
+async def test_pickcode_info_empty_data_raises_not_found() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={"state": True, "data": []}))
+    with pytest.raises(Cloud115NotFoundError, match="pick_code"):
+        await client.pickcode_info("bogus-pc")
+    await client.close()
+
+
+async def test_pickcode_info_requires_pickcode() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="pickcode"):
+        await client.pickcode_info("")
+    await client.close()
+
+
+async def test_file_info_requires_file_id() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="file_id"):
+        await client.file_info("")
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# dir_info
+# ---------------------------------------------------------------------------
+
+
+async def test_dir_info_root_returns_sentinel_without_request() -> None:
+    """cid=0 走服务端会 errNo=1001，SDK 直接构造哨兵返回。"""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    d = await client.dir_info("0")
+    assert call_count == 0    # 未发起任何请求
+    assert d.cid == "0"
+    assert d.name == "根目录"
+    assert d.pickcode == ""
+    assert d.parent_id == ""
+    assert d.paths == ()
+    assert d.file_count == 0
+    await client.close()
+
+
+async def test_dir_info_parses_response_and_breadcrumb() -> None:
+    sample = {
+        "state": True,
+        "errNo": 0,
+        "count": 6,
+        "size": "11.23GB",
+        "folder_count": 3,
+        "show_play_long": 0,
+        "play_long": 1893,
+        "ctime": 1778749843,
+        "utime": 1783841779,
+        "file_name": "云下载",
+        "pick_code": "fedn5812sugiog3ns8",
+        "paths": [
+            {"file_id": 0, "file_name": "根目录"},
+            {"file_id": 3428707991046116541, "file_name": "父目录"},
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "webapi.115.com"
+        assert request.url.path == "/category/get"
+        assert request.url.params.get("cid") == "999888777"
+        return httpx.Response(200, json=sample)
+
+    client = _make_client(handler)
+    d = await client.dir_info("999888777")
+    assert d.cid == "999888777"
+    assert d.name == "云下载"
+    assert d.pickcode == "fedn5812sugiog3ns8"
+    assert d.file_count == 6
+    assert d.folder_count == 3
+    assert d.play_long_seconds == 1893
+    assert d.mtime == 1783841779
+    assert d.ctime == 1778749843
+    # 面包屑：从根开始
+    assert len(d.paths) == 2
+    assert d.paths[0].file_id == "0"        # 根 file_id 是数字 0，字符串化后应为 "0"
+    assert d.paths[0].name == "根目录"
+    assert d.paths[1].file_id == "3428707991046116541"
+    # parent_id 从 paths 末尾解析
+    assert d.parent_id == "3428707991046116541"
+    await client.close()
+
+
+async def test_dir_info_state_false_maps_errno_1001_to_base_error() -> None:
+    """cid 无效时服务端返 errNo=1001；1001 不在已知子类集合里，落到基类。"""
+    client = _make_client(lambda r: httpx.Response(200, json={
+        "state": False, "errNo": 1001, "errno": 1001, "error": "参数错误"
+    }))
+    with pytest.raises(Cloud115Error) as info:
+        await client.dir_info("bogus-cid")
+    assert type(info.value) is Cloud115Error
+    await client.close()
+
+
+async def test_dir_info_requires_cid() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="cid"):
+        await client.dir_info("")
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# get_video_info: file_status 处理路径
+# ---------------------------------------------------------------------------
+
+
+async def test_get_video_info_file_status_0_raises_not_ready() -> None:
+    """转码未完成（file_status=0）时抛 VideoNotReadyError，不是 NotFound。"""
+    client = _make_client(lambda r: httpx.Response(200, json={
+        "state": True,
+        "file_status": 0,
+        "video_url": "",
+        "width": 0,
+        "height": 0,
+    }))
+    with pytest.raises(Cloud115VideoNotReadyError) as info:
+        await client.get_video_info("cd5xxx")
+    assert info.value.file_status == 0
+    await client.close()
+
+
+async def test_get_video_info_file_status_2_raises_not_ready() -> None:
+    """任何非 1 的 file_status 都视为未就绪。"""
+    client = _make_client(lambda r: httpx.Response(200, json={
+        "state": True, "file_status": 2, "video_url": "", "width": 0, "height": 0,
+    }))
+    with pytest.raises(Cloud115VideoNotReadyError) as info:
+        await client.get_video_info("cd5xxx")
+    assert info.value.file_status == 2
+    await client.close()
+
+
+async def test_get_video_info_missing_file_status_falls_back_to_ready() -> None:
+    """老响应没有 file_status 字段时按 ready 处理，避免破坏兼容。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "webapi.115.com" and request.url.path == "/files/video":
+            # 无 file_status，只有 video_url
+            return httpx.Response(200, json={
+                "state": True,
+                "video_url": _MASTER_M3U8_URL,
+                "width": 1280,
+                "height": 720,
+            })
+        if str(request.url) == _MASTER_M3U8_URL:
+            return httpx.Response(200, content=_SAMPLE_MASTER_M3U8.encode("utf-8"))
+        raise AssertionError(f"unexpected: {request.url}")
+
+    client = _make_client(handler)
+    info = await client.get_video_info("cd5abc")
+    assert info.width == 1280
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Cookies 保活：Set-Cookie merge + snapshot + update_cookies
+# ---------------------------------------------------------------------------
+
+
+async def test_set_cookie_merged_into_snapshot() -> None:
+    """响应带 Set-Cookie 时，snapshot_cookies 应含新字段。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"state": True},
+            headers={"Set-Cookie": "acw_tc=NEWVALUE123;path=/;HttpOnly;Max-Age=1800"},
+        )
+
+    client = _make_client(handler, cookies=COOKIE)
+    assert "acw_tc=" not in client.snapshot_cookies()
+    await client.check_cookies_alive()
+    snap = client.snapshot_cookies()
+    assert "acw_tc=NEWVALUE123" in snap
+    await client.close()
+
+
+async def test_set_cookie_updates_existing_key() -> None:
+    """已存在的 key 被服务端覆盖时用新值。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"state": True, "count": 0, "data": []},
+            headers={"Set-Cookie": "SEID=REFRESHED;path=/;HttpOnly"},
+        )
+
+    client = _make_client(handler, cookies=COOKIE)
+    assert "SEID=xyz" in client.snapshot_cookies()
+    await client.list_dir("0")
+    snap = client.snapshot_cookies()
+    assert "SEID=REFRESHED" in snap
+    assert "SEID=xyz" not in snap
+    await client.close()
+
+
+async def test_next_request_carries_refreshed_cookie() -> None:
+    """服务端塞了新 acw_tc 后，下一次请求的 Cookie header 必须带上新值（跨子域也认账）。"""
+    captured: list[str] = []
+    step = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        step["count"] += 1
+        captured.append(request.headers.get("Cookie", ""))
+        if step["count"] == 1:
+            # 第一次：塞 acw_tc
+            return httpx.Response(200, json={"state": True}, headers={
+                "Set-Cookie": "acw_tc=FIRST;path=/;Max-Age=1800",
+            })
+        # 第二次：应该带着 acw_tc=FIRST 过来
+        return httpx.Response(200, json={"state": True, "count": 0, "data": []})
+
+    client = _make_client(handler, cookies=COOKIE)
+    await client.check_cookies_alive()
+    await client.list_dir("0")
+    assert step["count"] == 2
+    assert "acw_tc=" not in captured[0]
+    assert "acw_tc=FIRST" in captured[1]
+    await client.close()
+
+
+async def test_snapshot_preserves_original_insertion_order() -> None:
+    """snapshot 保持原 cookies 里字段的顺序（服务端一般不校验 Cookie 顺序，
+    但保序是 SDK 契约里"逐字节透传"精神的延续）。"""
+    client = _make_client(
+        lambda r: httpx.Response(200, json={"state": True}),
+        cookies="GST=g; UID=1_A1_100; CID=c; SEID=s; KID=k",
+    )
+    snap = client.snapshot_cookies()
+    assert snap == "GST=g; UID=1_A1_100; CID=c; SEID=s; KID=k"
+    await client.close()
+
+
+async def test_update_cookies_replaces_state() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={"state": True}))
+    assert client.user_id == USER_ID
+    new_cookies = "UID=87654321_A1_1800000000; CID=other; SEID=new"
+    client.update_cookies(new_cookies)
+    assert client.user_id == "87654321"
+    assert "SEID=new" in client.snapshot_cookies()
+    # 老 cookies 里的字段不应残留
+    assert "SEID=xyz" not in client.snapshot_cookies()
+    await client.close()
+
+
+async def test_update_cookies_rejects_without_uid_and_preserves_state() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={"state": True}))
+    original = client.snapshot_cookies()
+    with pytest.raises(Cloud115AuthError):
+        client.update_cookies("CID=x; SEID=y")
+    # 原状态未被破坏
+    assert client.user_id == USER_ID
+    assert client.snapshot_cookies() == original
+    await client.close()
+
+
+async def test_user_id_property_matches_uid_cookie() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={"state": True}))
+    assert client.user_id == USER_ID
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# 网络异常在业务接口的重试路径（补 list_dir / file_info 覆盖）
+# ---------------------------------------------------------------------------
+
+
+async def test_list_dir_retries_on_timeout_and_succeeds() -> None:
+    """list_dir 遇到 TimeoutException 走 _request 的重试逻辑。"""
+    call_count = 0
+    good = {"state": True, "count": 0, "offset": 0, "limit": 50, "data": []}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise httpx.ConnectTimeout("mock timeout")
+        return httpx.Response(200, json=good)
+
+    client = _make_client(handler)
+    import asyncio
+    orig = asyncio.sleep
+    async def instant(_): return None
+    asyncio.sleep = instant  # type: ignore
+    try:
+        entries, total = await client.list_dir("0")
+        assert entries == []
+        assert call_count == 2
+    finally:
+        asyncio.sleep = orig  # type: ignore
+        await client.close()
+
+
+async def test_file_info_network_error_raises_after_retries() -> None:
+    """file_info 连续网络错重试耗尽后抛 Cloud115RequestError。"""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("mock connect fail")
+
+    client = _make_client(handler)
+    import asyncio
+    orig = asyncio.sleep
+    async def instant(_): return None
+    asyncio.sleep = instant  # type: ignore
+    try:
+        with pytest.raises(Cloud115RequestError, match="after"):
+            await client.file_info("111")
+    finally:
+        asyncio.sleep = orig  # type: ignore
+        await client.close()
+
+
+# ---------------------------------------------------------------------------
+# list_dir offset 透传断言（原来 handler 只校验 offset==0）
+# ---------------------------------------------------------------------------
+
+
+async def test_list_dir_offset_is_passed_through() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["offset"] == "500"
+        assert request.url.params["limit"] == "100"
+        return httpx.Response(200, json={"state": True, "count": 0, "data": []})
+
+    client = _make_client(handler)
+    entries, total = await client.list_dir("0", offset=500, limit=100)
+    assert entries == []
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# m3u8 边界：无 BANDWIDTH / 无 RESOLUTION / EXTINF 整数时长
+# ---------------------------------------------------------------------------
+
+
+async def test_master_m3u8_parser_missing_bandwidth_defaults_to_zero() -> None:
+    from src.lib.cloud115.client import Cloud115Client
+    text = (
+        "#EXTM3U\r\n"
+        '#EXT-X-STREAM-INF:PROGRAM-ID=1,RESOLUTION=1280x720,NAME="HD"\r\n'
+        "https://example.com/variant.m3u8\r\n"
+    )
+    defs = Cloud115Client._parse_master_m3u8(text, base_url="https://example.com/master.m3u8")
+    assert len(defs) == 1
+    assert defs[0].bandwidth == 0
+    assert defs[0].resolution == "1280x720"
+
+
+async def test_master_m3u8_parser_missing_resolution_and_name() -> None:
+    from src.lib.cloud115.client import Cloud115Client
+    text = (
+        "#EXTM3U\r\n"
+        "#EXT-X-STREAM-INF:BANDWIDTH=500000\r\n"
+        "https://example.com/variant.m3u8\r\n"
+    )
+    defs = Cloud115Client._parse_master_m3u8(text, base_url="https://example.com/master.m3u8")
+    assert len(defs) == 1
+    assert defs[0].bandwidth == 500000
+    assert defs[0].resolution == ""
+    assert defs[0].label == ""
+
+
+async def test_variant_m3u8_parser_accepts_integer_extinf() -> None:
+    from src.lib.cloud115.client import Cloud115Client
+    text = (
+        "#EXTM3U\r\n"
+        "#EXTINF:10,\r\n"
+        "https://example.com/a.ts\r\n"
+        "#EXTINF:9,\r\n"
+        "https://example.com/b.ts\r\n"
+        "#EXT-X-ENDLIST\r\n"
+    )
+    segs = Cloud115Client._parse_variant_m3u8(text, base_url="https://example.com/x.m3u8")
+    assert len(segs) == 2
+    assert segs[0].duration_seconds == 10.0
+    assert segs[1].duration_seconds == 9.0
+
+
+# ===========================================================================
+# 离线下载：list_offline_tasks / offline_quota / default_download_dir /
+#          add_offline_urls / delete_offline_tasks / clear_offline_tasks /
+#          restart_offline_task
+# ===========================================================================
+
+
+_SAMPLE_TASK_LISTS = {
+    "state": True,
+    "page": 1,
+    "page_count": 3,
+    "page_size": 30,
+    "count": 30,
+    "quota": 197,
+    "total": 200,
+    "tasks": [
+        {
+            "info_hash": "aaaa" * 10,
+            "add_time": 1700000000,
+            "percentDone": 100,
+            "display_percent": 100,
+            "size": 1234567,
+            "peers": 0,
+            "rateDownload": 0,
+            "name": "Movie.mkv",
+            "last_update": 1700001000,
+            "left_time": 0,
+            "file_id": "999888777",
+            "pick_code": "pcabc",
+            "wp_path_id": "555",
+            "url": "",
+            "move": 1,
+            "status": 2,
+            "status_text": "下载成功",
+            "display_status": "finished",
+            "retry_count": 0,
+            "retry_limit": 3,
+        },
+        {
+            "info_hash": "bbbb" * 10,
+            "add_time": 1700100000,
+            "percentDone": 42.5,
+            "size": 2000000000,
+            "peers": 15,
+            "rateDownload": 3000000,     # 3 MB/s
+            "name": "Series.S01",
+            "last_update": 1700102000,
+            "left_time": 300,
+            "file_id": "",              # 未完成还没落地
+            "pick_code": "",
+            "wp_path_id": "555",
+            "url": "magnet:?xt=urn:btih:bbbb...",
+            "status": 1,
+            "status_text": "下载中",
+            "retry_count": 1,
+            "retry_limit": 3,
+        },
+    ],
+}
+
+
+async def test_list_offline_tasks_builds_request_and_parses() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "115.com"
+        assert request.url.path == "/web/lixian/"
+        assert request.url.params["ct"] == "lixian"
+        assert request.url.params["ac"] == "task_lists"
+        assert request.url.params["page"] == "2"
+        assert request.url.params["page_size"] == "20"
+        return httpx.Response(200, json=_SAMPLE_TASK_LISTS)
+
+    client = _make_client(handler)
+    page = await client.list_offline_tasks(page=2, page_size=20)
+    assert page.page == 1  # 响应字段直接透传，测试样本里是 1
+    assert page.page_count == 3
+    assert page.total_tasks == 200
+    assert len(page.tasks) == 2
+
+    # 完成的任务
+    t0 = page.tasks[0]
+    assert t0.info_hash == "aaaa" * 10
+    assert t0.name == "Movie.mkv"
+    assert t0.status == 2
+    assert t0.status_text == "下载成功"
+    assert t0.percent_done == 100.0
+    assert t0.file_id == "999888777"
+    assert t0.pickcode == "pcabc"
+    assert t0.save_dir_id == "555"
+
+    # 进行中的任务
+    t1 = page.tasks[1]
+    assert t1.status == 1
+    assert t1.status_text == "下载中"
+    assert t1.percent_done == 42.5
+    assert t1.rate_download == 3000000
+    assert t1.peers == 15
+    assert t1.left_time_seconds == 300
+    assert t1.file_id == ""          # 未完成没有 file_id
+    assert t1.pickcode == ""
+    assert t1.source_url.startswith("magnet:")
+    assert t1.retry_count == 1
+
+    await client.close()
+
+
+async def test_list_offline_tasks_rejects_page_less_than_1() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={}))
+    with pytest.raises(ValueError, match="page"):
+        await client.list_offline_tasks(page=0)
+    await client.close()
+
+
+async def test_list_offline_tasks_rejects_page_size_less_than_1() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={}))
+    with pytest.raises(ValueError, match="page_size"):
+        await client.list_offline_tasks(page_size=0)
+    await client.close()
+
+
+async def test_list_offline_tasks_state_false_maps_to_error() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={
+        "state": False, "errno": 990009, "error": "not logged in"
+    }))
+    with pytest.raises(Cloud115AuthError):
+        await client.list_offline_tasks()
+    await client.close()
+
+
+async def test_offline_quota_extracts_total_and_remaining() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        # quota 通过 task_lists 端点获取（page=1, page_size=1 减轻负载）
+        assert request.url.path == "/web/lixian/"
+        assert request.url.params["ac"] == "task_lists"
+        assert request.url.params["page"] == "1"
+        assert request.url.params["page_size"] == "1"
+        return httpx.Response(200, json={
+            "state": True, "total": 200, "quota": 197,
+            "page": 1, "page_count": 200, "page_size": 1, "tasks": [],
+        })
+
+    client = _make_client(handler)
+    q = await client.offline_quota()
+    assert q.total == 200
+    assert q.remaining == 197
+    await client.close()
+
+
+async def test_default_download_dir_picks_selected_entry() -> None:
+    sample = {
+        "state": True,
+        "error": None,
+        "errno": None,
+        "data": [
+            {"id": "1", "user_id": "u", "file_id": "111", "update_time": "1000",
+             "is_selected": "0", "file_name": "候选 A"},
+            {"id": "2", "user_id": "u", "file_id": "222", "update_time": "2000",
+             "is_selected": "1", "file_name": "云下载"},   # <- 挑这个
+            {"id": "3", "user_id": "u", "file_id": "333", "update_time": "3000",
+             "is_selected": "0", "file_name": "候选 C"},
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "webapi.115.com"
+        # 注意 115 端点名字缺一个 l：offine，不是 offline
+        assert request.url.path == "/offine/downpath"
+        return httpx.Response(200, json=sample)
+
+    client = _make_client(handler)
+    d = await client.default_download_dir()
+    assert d.entry_id == "222"
+    assert d.name == "云下载"
+    assert d.is_dir is True
+    assert d.mtime == 2000
+    await client.close()
+
+
+async def test_default_download_dir_falls_back_to_first_when_none_selected() -> None:
+    """如果没有 is_selected=1 的候选，取第一个（服务端不给标就默认第一个）。"""
+    client = _make_client(lambda r: httpx.Response(200, json={
+        "state": True,
+        "data": [{"file_id": "AAA", "file_name": "第一个", "update_time": "0",
+                  "is_selected": "0"}],
+    }))
+    d = await client.default_download_dir()
+    assert d.entry_id == "AAA"
+    await client.close()
+
+
+async def test_default_download_dir_raises_not_found_when_no_candidates() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={"state": True, "data": []}))
+    with pytest.raises(Cloud115NotFoundError, match="no default"):
+        await client.default_download_dir()
+    await client.close()
+
+
+async def test_add_offline_urls_builds_form_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/web/lixian/"
+        assert request.url.params["ct"] == "lixian"
+        assert request.url.params["ac"] == "add_task_urls"
+        assert request.method == "POST"
+        # form body 里应有 url[0], url[1], wp_path_id
+        body = request.content.decode("utf-8")
+        from urllib.parse import parse_qs
+        form = parse_qs(body)
+        assert form["url[0]"] == ["magnet:?xt=urn:btih:aaa"]
+        assert form["url[1]"] == ["http://example.com/x.mp4"]
+        assert form["wp_path_id"] == ["555"]
+        return httpx.Response(200, json={
+            "state": True, "errno": 0,
+            "result": [
+                {"info_hash": "aaa" * 13 + "a", "url": "magnet:?xt=urn:btih:aaa"},
+                {"info_hash": "bbb" * 13 + "b", "url": "http://example.com/x.mp4"},
+            ],
+        })
+
+    client = _make_client(handler)
+    results = await client.add_offline_urls(
+        ["magnet:?xt=urn:btih:aaa", "http://example.com/x.mp4"],
+        save_dir_id="555",
+    )
+    assert len(results) == 2
+    assert results[0].info_hash == "aaa" * 13 + "a"
+    assert results[0].url == "magnet:?xt=urn:btih:aaa"
+    assert results[1].url == "http://example.com/x.mp4"
+    await client.close()
+
+
+async def test_add_offline_urls_rejects_empty_urls() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="urls"):
+        await client.add_offline_urls([], save_dir_id="555")
+    await client.close()
+
+
+async def test_add_offline_urls_rejects_empty_save_dir_id() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="save_dir_id"):
+        await client.add_offline_urls(["magnet:?xt=urn:btih:aaa"], save_dir_id="")
+    await client.close()
+
+
+async def test_add_offline_urls_quota_exceeded_maps_to_specific_error() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={
+        "state": False, "errno": 10008, "error": "离线数已达上限"
+    }))
+    with pytest.raises(Cloud115OfflineQuotaExceededError) as info:
+        await client.add_offline_urls(["magnet:?xt=urn:btih:aaa"], save_dir_id="555")
+    assert info.value.errno == 10008
+    await client.close()
+
+
+async def test_delete_offline_tasks_builds_hash_array_and_flag() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["ac"] == "task_del"
+        body = request.content.decode("utf-8")
+        from urllib.parse import parse_qs
+        form = parse_qs(body)
+        assert form["hash[0]"] == ["hashA"]
+        assert form["hash[1]"] == ["hashB"]
+        assert form["flag"] == ["1"]     # delete_source_files=True
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    await client.delete_offline_tasks(["hashA", "hashB"], delete_source_files=True)
+    await client.close()
+
+
+async def test_delete_offline_tasks_flag_defaults_to_0() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.content.decode("utf-8")
+        assert "flag=0" in body    # 默认 delete_source_files=False
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    await client.delete_offline_tasks(["h"])
+    await client.close()
+
+
+async def test_delete_offline_tasks_rejects_empty_hashes() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="info_hashes"):
+        await client.delete_offline_tasks([])
+    await client.close()
+
+
+@pytest.mark.parametrize("scope,expected_flag", [
+    ("finished", "0"),
+    ("all", "1"),
+    ("failed", "2"),
+    ("running", "3"),
+    ("finished_with_source", "4"),
+    ("all_with_source", "5"),
+])
+async def test_clear_offline_tasks_scope_to_flag_mapping(scope, expected_flag) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["ac"] == "task_clear"
+        body = request.content.decode("utf-8")
+        assert f"flag={expected_flag}" in body
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    await client.clear_offline_tasks(scope=scope)
+    await client.close()
+
+
+async def test_clear_offline_tasks_rejects_unknown_scope() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="scope"):
+        await client.clear_offline_tasks(scope="whatever")  # type: ignore
+    await client.close()
+
+
+async def test_restart_offline_task_sends_info_hash() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["ac"] == "restart"
+        body = request.content.decode("utf-8")
+        assert "info_hash=THE_HASH" in body
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    await client.restart_offline_task("THE_HASH")
+    await client.close()
+
+
+async def test_restart_offline_task_rejects_empty_hash() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="info_hash"):
+        await client.restart_offline_task("")
+    await client.close()

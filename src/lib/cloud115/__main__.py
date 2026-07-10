@@ -17,10 +17,20 @@
 支持的子命令：
     check-alive              探测 cookies 是否活着
     list-dir                 列目录一页
-    file-info                取单文件元信息
+    file-info                取单文件元信息（by file_id）
+    pickcode-info            取单文件元信息（by pickcode，业务侧持久化的稳定 ID）
+    dir-info                 取目录元信息 + 面包屑
     downurl                  拿 302 直链
     video-info               拿视频信息 + 清晰度列表（VIP 专属）
     video-segments           拿视频 HLS ts 分段列表（VIP 专属）
+    snapshot-cookies         打印当前最新 cookies 字符串（含服务端 Set-Cookie 更新）
+    offline-list             列离线下载任务（分页）
+    offline-quota            查本月离线下载次数配额
+    offline-default-dir      查默认云下载保存目录
+    offline-add              提交离线下载任务
+    offline-del              删除离线任务
+    offline-clear            按范围清空离线任务
+    offline-restart          重试失败任务
 """
 
 from __future__ import annotations
@@ -83,6 +93,115 @@ async def _cmd_list_dir(client: Cloud115Client, args: argparse.Namespace) -> int
 
 async def _cmd_file_info(client: Cloud115Client, args: argparse.Namespace) -> int:
     meta = await client.file_info(args.file_id)
+    _print_file_meta(meta)
+    return 0
+
+
+async def _cmd_pickcode_info(client: Cloud115Client, args: argparse.Namespace) -> int:
+    meta = await client.pickcode_info(args.pickcode)
+    _print_file_meta(meta)
+    return 0
+
+
+async def _cmd_dir_info(client: Cloud115Client, args: argparse.Namespace) -> int:
+    d = await client.dir_info(args.cid)
+    _print_kv([
+        ("cid", d.cid),
+        ("name", d.name),
+        ("pickcode", d.pickcode),
+        ("parent_id", d.parent_id),
+        ("file_count", d.file_count),
+        ("folder_count", d.folder_count),
+        ("play_long_seconds", d.play_long_seconds),
+        ("mtime", d.mtime),
+        ("ctime", d.ctime),
+    ])
+    print()
+    print(f"  paths ({len(d.paths)}):")
+    if not d.paths:
+        print("    (root)")
+    for p in d.paths:
+        print(f"    file_id={p.file_id!r:<12}  name={p.name!r}")
+    return 0
+
+
+async def _cmd_snapshot_cookies(client: Cloud115Client, _args: argparse.Namespace) -> int:
+    # 先探活一次触发一次 Set-Cookie merge，然后打印
+    await client.check_cookies_alive()
+    print(client.snapshot_cookies())
+    return 0
+
+
+# ---- 离线下载子命令 ----
+
+
+async def _cmd_offline_list(client: Cloud115Client, args: argparse.Namespace) -> int:
+    page = await client.list_offline_tasks(page=args.page, page_size=args.page_size)
+    print(f"page {page.page}/{page.page_count}  page_size={page.page_size}  total={page.total_tasks}")
+    if not page.tasks:
+        print("  (empty)")
+        return 0
+    print()
+    print(f"  {'status':<12}  {'progress':>8}  {'info_hash':<40}  name")
+    print(f"  {'-'*12}  {'-'*8}  {'-'*40}  {'-'*30}")
+    for t in page.tasks:
+        prog = f"{t.percent_done:.1f}%"
+        # 状态用 status_text 服务端已翻译好的中文
+        st = t.status_text or {-1: "失败", 0: "待办", 1: "进行中", 2: "完成"}.get(t.status, str(t.status))
+        print(f"  {st:<12}  {prog:>8}  {t.info_hash:<40}  {t.name}")
+    return 0
+
+
+async def _cmd_offline_quota(client: Cloud115Client, _args: argparse.Namespace) -> int:
+    q = await client.offline_quota()
+    _print_kv([("total", q.total), ("remaining", q.remaining), ("used", q.total - q.remaining)])
+    return 0
+
+
+async def _cmd_offline_default_dir(client: Cloud115Client, _args: argparse.Namespace) -> int:
+    d = await client.default_download_dir()
+    _print_kv([
+        ("entry_id", d.entry_id),
+        ("name", d.name),
+        ("is_dir", d.is_dir),
+        ("mtime", d.mtime),
+    ])
+    return 0
+
+
+async def _cmd_offline_add(client: Cloud115Client, args: argparse.Namespace) -> int:
+    save_dir_id = args.save_dir_id
+    if not save_dir_id:
+        # 用户没指定就用默认下载目录
+        d = await client.default_download_dir()
+        save_dir_id = d.entry_id
+        print(f"(using default dir: cid={save_dir_id} name={d.name!r})")
+    results = await client.add_offline_urls(args.url, save_dir_id=save_dir_id)
+    for r in results:
+        _print_kv([("info_hash", r.info_hash), ("url", r.url)])
+        print()
+    return 0
+
+
+async def _cmd_offline_del(client: Cloud115Client, args: argparse.Namespace) -> int:
+    await client.delete_offline_tasks(args.info_hash, delete_source_files=args.delete_source)
+    print(f"deleted {len(args.info_hash)} task(s)  delete_source_files={args.delete_source}")
+    return 0
+
+
+async def _cmd_offline_clear(client: Cloud115Client, args: argparse.Namespace) -> int:
+    await client.clear_offline_tasks(scope=args.scope)
+    print(f"cleared scope={args.scope}")
+    return 0
+
+
+async def _cmd_offline_restart(client: Cloud115Client, args: argparse.Namespace) -> int:
+    await client.restart_offline_task(args.info_hash)
+    print(f"restarted {args.info_hash}")
+    return 0
+
+
+def _print_file_meta(meta) -> None:
     _print_kv([
         ("file_id", meta.file_id),
         ("parent_id", meta.parent_id),
@@ -94,7 +213,6 @@ async def _cmd_file_info(client: Cloud115Client, args: argparse.Namespace) -> in
         ("ctime", meta.ctime),
         ("is_video", meta.is_video),
     ])
-    return 0
 
 
 async def _cmd_downurl(client: Cloud115Client, args: argparse.Namespace) -> int:
@@ -182,8 +300,45 @@ def _build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--offset", type=int, default=0, help="分页 offset（默认 0）")
     p_list.add_argument("--limit", type=int, default=50, help="页大小（默认 50，服务端最大 1150）")
 
-    p_info = sub.add_parser("file-info", help="取单文件元信息")
+    p_info = sub.add_parser("file-info", help="取单文件元信息（by file_id）")
     p_info.add_argument("--file-id", dest="file_id", required=True, help="文件 file_id（list-dir 结果里的 entry_id）")
+
+    p_pi = sub.add_parser("pickcode-info", help="取单文件元信息（by pickcode）")
+    p_pi.add_argument("--pickcode", required=True, help="文件 pickcode（业务侧持久化的稳定 ID）")
+
+    p_di = sub.add_parser("dir-info", help="取目录元信息 + 面包屑")
+    p_di.add_argument("--cid", required=True, help="目录 cid（根目录用 0，SDK 返回哨兵）")
+
+    sub.add_parser("snapshot-cookies", help="打印当前最新 cookies 字符串（含服务端 Set-Cookie 更新）")
+
+    p_ol = sub.add_parser("offline-list", help="列离线下载任务（分页）")
+    p_ol.add_argument("--page", type=int, default=1, help="页码，从 1 开始（默认 1）")
+    p_ol.add_argument("--page-size", dest="page_size", type=int, default=30, help="每页大小（默认 30）")
+
+    sub.add_parser("offline-quota", help="查本月离线下载次数配额")
+
+    sub.add_parser("offline-default-dir", help="查默认云下载保存目录")
+
+    p_oa = sub.add_parser("offline-add", help="提交离线下载任务（--url 可重复）")
+    p_oa.add_argument("--url", action="append", required=True,
+                      help="下载源 URL，支持 http/https/ftp/magnet/ed2k；可重复传多个")
+    p_oa.add_argument("--save-dir-id", dest="save_dir_id", default=None,
+                      help="保存目录 cid；缺省时用默认云下载目录")
+
+    p_od = sub.add_parser("offline-del", help="删除离线任务（--info-hash 可重复）")
+    p_od.add_argument("--info-hash", dest="info_hash", action="append", required=True,
+                      help="任务 info_hash；可重复传多个")
+    p_od.add_argument("--delete-source", dest="delete_source", action="store_true",
+                      help="同时删除已下载的源文件（不可逆）")
+
+    p_oc = sub.add_parser("offline-clear", help="按范围清空离线任务")
+    p_oc.add_argument("--scope", default="finished",
+                      choices=["finished", "failed", "running", "all",
+                               "finished_with_source", "all_with_source"],
+                      help="清理范围（默认 finished）")
+
+    p_or = sub.add_parser("offline-restart", help="重试失败/停滞的离线任务")
+    p_or.add_argument("--info-hash", dest="info_hash", required=True, help="任务 info_hash")
 
     p_du = sub.add_parser("downurl", help="拿 302 直链")
     p_du.add_argument("--pickcode", required=True, help="文件 pickcode（list-dir 结果里 pc 列）")
@@ -218,9 +373,19 @@ async def _run(args: argparse.Namespace) -> int:
         "check-alive": _cmd_check_alive,
         "list-dir": _cmd_list_dir,
         "file-info": _cmd_file_info,
+        "pickcode-info": _cmd_pickcode_info,
+        "dir-info": _cmd_dir_info,
         "downurl": _cmd_downurl,
         "video-info": _cmd_video_info,
         "video-segments": _cmd_video_segments,
+        "snapshot-cookies": _cmd_snapshot_cookies,
+        "offline-list": _cmd_offline_list,
+        "offline-quota": _cmd_offline_quota,
+        "offline-default-dir": _cmd_offline_default_dir,
+        "offline-add": _cmd_offline_add,
+        "offline-del": _cmd_offline_del,
+        "offline-clear": _cmd_offline_clear,
+        "offline-restart": _cmd_offline_restart,
     }
     async with Cloud115Client(cookies=cookies, timeout=args.timeout) as client:
         return await handlers[args.command](client, args)

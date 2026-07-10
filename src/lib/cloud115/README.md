@@ -12,6 +12,7 @@ SakuraMediaBE 内部维护的 115 网盘极简异步客户端。**仅支持 cook
 
 - [快速开始](#快速开始)
 - [认证与 cookies](#认证与-cookies)
+- [Cookies 保活](#cookies-保活)
 - [接口清单](#接口清单)
 - [VIP 视频接口](#vip-视频接口)
 - [数据类型](#数据类型)
@@ -84,6 +85,51 @@ UID=<user_id>_A1_<unix_ts>; CID=<hex>; SEID=<hex>; KID=<hex>
 
 ---
 
+## Cookies 保活
+
+SDK 内部把 cookies 存成保序 dict，每次响应都会自动 merge 服务端 `Set-Cookie`（同一个 `Cloud115Client` 实例的多次请求间生效）。这是必要的：
+
+- 阿里云 WAF 的 `acw_tc` 字段是**30 分钟过期** token（`Max-Age=1800`）
+- 客户端不带 `acw_tc` 时服务端会立刻塞一个新的（`Set-Cookie: acw_tc=...`）
+- 若客户端始终用户初次粘贴那份 cookies 而不吃 `Set-Cookie`，30 分钟后 `acw_tc` 过期，WAF 直接挡门
+
+**实测确认**：`acw_tc` 是账号级、跨 `my.115.com` / `webapi.115.com` / `proapi.115.com` 共享的，只要客户端把新值放进 `Cookie:` header 就没问题（不需要按子域分开管理）。
+
+### 三个保活相关 API
+
+**`snapshot_cookies() -> str`**：拿当前完整 cookies 字符串（含服务端最新推送的 `acw_tc`）。上层业务应**定时落盘**，进程重启时用最新快照初始化 SDK，避免每次首启就撞 `acw_tc` 过期需要重种一次的额外往返。
+
+```python
+# 例：APScheduler 定时任务
+async def persist_cookies():
+    async with Cloud115Client(cookies=load_cookies_from_config()) as client:
+        await client.check_cookies_alive()
+        save_cookies_to_config(client.snapshot_cookies())
+```
+
+**`update_cookies(cookies: str) -> None`**：整体覆盖当前 cookies（管理面板改了 cookies 后热生效）。不合法时抛 `Cloud115AuthError`，**原 cookies 不被破坏**。
+
+```python
+try:
+    client.update_cookies(new_cookies_from_user)
+except Cloud115AuthError:
+    # UI 弹错误，客户端仍可继续用旧 cookies
+    ...
+```
+
+**`user_id -> str`**（只读属性）：从 `UID` cookie 前段解出的数字用户 ID，供上层日志/观测使用。
+
+### 能续、不能续什么
+
+| 字段 | 有效期 | SDK 能自动续吗 |
+|------|--------|---------------|
+| `acw_tc`（阿里云 WAF） | 30 分钟 | ✅ Set-Cookie 自动 merge |
+| `GST` / `USERSESSIONID` / `PHPSESSID` | 服务端不定时刷新 | ✅ 同上 |
+| `UID` / `CID` / `SEID` / `KID` | 长效 60 天+ | ❌ 必须用户重登，任何 SDK 都做不了 |
+| 账号被踢下线（同 ssoent 别处登录 60 秒后） | 立即失效 | ❌ 上层探活到 fail 后引导重登 |
+
+---
+
 ## 接口清单
 
 ### 1. `check_cookies_alive() -> bool`
@@ -147,7 +193,7 @@ meta = await client.file_info("3471260435703924578")
 print(meta.name, meta.size, meta.sha1, meta.pickcode)
 ```
 
-**注意**：**不接受 pickcode 作为参数**。如果你从别处只拿到 pickcode，先 `list_dir` 拿完整 `DirEntry` 用它的 `entry_id`；或者直接 `get_download_url(pickcode, ua)` 也能拿到 `file_id`。
+**注意**：`file_info` 只接 `file_id`。**业务侧持久化的 ID 通常是 pickcode**（跨会话稳定，file_id 会因 115 内部存储位置变动而变），这种场景请用下面的 `pickcode_info`。
 
 **异常**：
 - `data` 数组为空 → `Cloud115NotFoundError`（file_id 不存在）
@@ -155,7 +201,46 @@ print(meta.name, meta.size, meta.sha1, meta.pickcode)
 
 ---
 
-### 4. `get_download_url(pickcode, user_agent) -> DirectUrl`
+### 4. `pickcode_info(pickcode) -> FileMeta`
+
+按 pickcode 查单文件元信息。**返回结构与 `file_info` 完全一致**，只是走 `webapi.115.com/files/get_info?pick_code=xxx`（115 官方支持 `pick_code` 参数）。
+
+```python
+meta = await client.pickcode_info("bijccwbcsacpi842c")
+print(meta.file_id, meta.name, meta.size)
+```
+
+**用途**：数据库里持久化的稳定 ID 通常是 pickcode，业务需要"确认这个文件还在不在 / 拿最新元数据"时直接 `pickcode_info(pickcode)`，避免绕道 `list_dir` 或 `get_download_url`。
+
+**异常**：
+- `data` 数组为空 → `Cloud115NotFoundError`（pickcode 无效或文件已删）
+- 其它异常同 `list_dir`
+
+---
+
+### 5. `dir_info(cid) -> DirMeta`
+
+取目录元信息 + 面包屑路径链。走 `webapi.115.com/category/get?cid=<cid>`。
+
+```python
+d = await client.dir_info("3428707991046116541")
+print(d.name, d.parent_id, d.file_count, d.folder_count)
+for crumb in d.paths:
+    print(f"  {crumb.file_id}\t{crumb.name}")
+```
+
+**根目录特判**：`cid="0"` 会被 115 服务端拒（`errNo=1001`），SDK 层**直接构造哨兵值返回**（`name="根目录"`, `pickcode=""`, `paths=()`），调用方不必特判 `cid == "0"`。
+
+**参数**：
+- `cid`：目录 category_id 字符串；空串抛 `ValueError`
+
+**异常**：
+- `state=False` + 未知 `errno` → `Cloud115Error`（基类，未识别的 errno 不吞）
+- auth 类 errno → `Cloud115AuthError`
+
+---
+
+### 6. `get_download_url(pickcode, user_agent) -> DirectUrl`
 
 拿 302 直链。这是 SDK 里逻辑最复杂的一个接口，走 RSA 加密的 `proapi.115.com/app/chrome/downurl`。
 
@@ -182,7 +267,7 @@ print(du.user_agent)   # 回传给你，用于后续 Range GET
 
 ---
 
-### 5. `Cloud115Client(cookies, *, user_agent=None, timeout=30.0, http_client=None)`
+### 7. `Cloud115Client(cookies, *, user_agent=None, timeout=30.0, http_client=None)`
 
 构造函数。
 
@@ -221,8 +306,9 @@ for d in info.definitions:
 ```
 
 **异常**：
-- errno=406 → `Cloud115MembershipRequiredError`
-- `video_url` 字段为空（非视频 / 未转码）→ `Cloud115NotFoundError`
+- `errno=406` → `Cloud115MembershipRequiredError`
+- **`file_status != 1`（转码中或失败）→ `Cloud115VideoNotReadyError`**（附 `file_status` 字段）—— 新上传视频通常要几分钟到几十分钟才转好；上层应把任务丢回重试队列，别标 invalid
+- `video_url` 字段为空且 `file_status` 缺失 → `Cloud115NotFoundError`（非视频文件）
 - 5xx / 网络错 → 内部重试 2 次后 `Cloud115RequestError`
 
 ### `get_video_segments(pickcode, *, prefer_bandwidth=None) -> list[VideoSegment]`
@@ -290,7 +376,33 @@ subprocess.run([
 
 ### `FileMeta`
 
-`file_info` 返回的单文件明细，字段与 `DirEntry` 的文件分支基本一致（区别：`sha1` 不为 None）。
+`file_info` / `pickcode_info` 返回的单文件明细，字段与 `DirEntry` 的文件分支基本一致（区别：`sha1` 不为 None）。
+
+### `DirMeta`
+
+`dir_info` 返回的目录元信息。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `cid` | `str` | 目录 category_id（输入回传） |
+| `name` | `str` | 目录名 |
+| `pickcode` | `str` | 目录自身的 pickcode；根目录哨兵为 `""` |
+| `parent_id` | `str` | 父目录 cid，从 `paths` 末尾解析；根目录哨兵为 `""` |
+| `file_count` | `int` | 目录直接内容总数（含子目录）；根目录哨兵为 0 |
+| `folder_count` | `int` | 直接子目录数；根目录哨兵为 0 |
+| `play_long_seconds` | `int` | 目录内视频总时长秒（115 服务端聚合） |
+| `mtime` | `int` | 最后修改 unix 秒 |
+| `ctime` | `int` | 创建 unix 秒 |
+| `paths` | `tuple[DirBreadcrumb, ...]` | 面包屑链：从根到当前目录父级；根目录哨兵为 `()` |
+
+### `DirBreadcrumb`
+
+面包屑一节。
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `file_id` | `str` | 该级 file_id/cid；根目录是 `"0"` |
+| `name` | `str` | 该级名字，如 `"根目录"` |
 
 ### `VideoInfo`
 
@@ -351,6 +463,7 @@ variant m3u8 里的一个 HLS ts 分段。
 Cloud115Error                          # 基类
 ├── Cloud115AuthError                  # cookies 失效 / UID 缺失 / 账号冻结（errno=99/990009/990017/20130827/...）
 ├── Cloud115MembershipRequiredError    # 接口需要 VIP 会员（errno=406 "需要VIP会员"）
+├── Cloud115VideoNotReadyError         # 视频转码未完成或失败（file_status != 1）；附 file_status
 ├── Cloud115NotFoundError              # 文件不存在 / pickcode 无效 / 被封禁
 ├── Cloud115RequestError               # HTTP 层错、5xx 重试耗尽、非 JSON 响应
 ├── Cloud115CipherError                # RSA 解密失败（响应结构异常）
@@ -365,12 +478,17 @@ from src.lib.cloud115 import (
     Cloud115AuthError,
     Cloud115NotFoundError,
     Cloud115RateLimitedError,
+    Cloud115VideoNotReadyError,
 )
 
 try:
     segments = await client.get_video_segments(pickcode)
 except Cloud115MembershipRequiredError:
     # 引导用户升级 VIP；cookies 是好的，重新登录没用
+    ...
+except Cloud115VideoNotReadyError as e:
+    # 转码未完成：把任务丢回 APS 重试队列（新上传视频通常几分钟内转好）
+    # e.file_status: 0=转码中，其他=失败/未知
     ...
 except Cloud115AuthError:
     # 通知用户 cookies 过期，触发重新填 cookies 流程
@@ -434,7 +552,7 @@ except Cloud115Error:
 
 ## 手动测试 CLI
 
-跟 SDK 平级的 `__main__.py` 提供 6 个子命令。cookies 支持三种传入方式：命令行参数、环境变量、交互 prompt。
+跟 SDK 平级的 `__main__.py` 提供多个子命令。cookies 支持三种传入方式：命令行参数、环境变量、交互 prompt。
 
 ```fish
 # 推荐：环境变量方式，重复执行方便
@@ -444,8 +562,12 @@ uv run python -m src.lib.cloud115 check-alive
 uv run python -m src.lib.cloud115 list-dir --cid 0 --limit 20
 uv run python -m src.lib.cloud115 list-dir --cid 3428707991046116541  # 子目录
 uv run python -m src.lib.cloud115 file-info --file-id 3471260435703924578
+uv run python -m src.lib.cloud115 pickcode-info --pickcode bijccwbcsacpi842c
+uv run python -m src.lib.cloud115 dir-info --cid 0                    # 根目录哨兵
+uv run python -m src.lib.cloud115 dir-info --cid 3428707991046116541  # 子目录面包屑
 uv run python -m src.lib.cloud115 downurl --pickcode bijccwbcsacpi842c
 uv run python -m src.lib.cloud115 downurl --pickcode xxx --user-agent "Mozilla/5.0 CustomPlayer/1.0"
+uv run python -m src.lib.cloud115 snapshot-cookies   # 打印 Set-Cookie merge 后的完整 cookies
 
 # VIP 专属：视频信息 + HLS 分段列表
 uv run python -m src.lib.cloud115 video-info --pickcode bijccwbcsacpi842c
@@ -471,14 +593,14 @@ uv run python -m src.lib.cloud115 list-dir --help
 
 ## 集成测试
 
-`tests/lib/cloud115/test_integration.py` 提供 4 条端到端用例，默认 skip，需显式 flag + `COOKIE_115` 环境变量：
+`tests/lib/cloud115/test_integration.py` 提供 10 条端到端用例（含 cookies 保活刷新验证），默认 skip，需显式 flag + `COOKIE_115` 环境变量：
 
 ```fish
 set -x COOKIE_115 "UID=...; CID=...; SEID=...; KID=..."
 uv run pytest tests/lib/cloud115/ --run-cloud115-integration -n0 -v
 ```
 
-无 flag 时正常 `uv run pytest` 会跳过集成用例（不影响 CI），只跑 67 个单元测试。
+无 flag 时正常 `uv run pytest` 会跳过集成用例（不影响 CI），只跑单元测试（cipher + client 共约 100 条）。
 
 **意义**：cipher 单元测试无法端到端验证（`rsa_encode` / `rsa_decode` 不是数学逆变换，见下面协议注解），所以集成测试是 cipher 正确性的唯一权威证据。
 

@@ -1,15 +1,21 @@
 """115 网盘极简异步客户端。
 
-覆盖播放/查找/缩略图上层需求的 HTTP 接口：
+覆盖播放/查找/缩略图/离线下载上层需求的 HTTP 接口：
     - check_cookies_alive
     - list_dir
-    - file_info
+    - file_info                 （by file_id）
+    - pickcode_info             （by pickcode，业务侧持久化的稳定 ID 通常是 pickcode）
+    - dir_info                  （目录元信息 + 面包屑）
     - get_download_url          （非会员亦可，但直链限速 100KB/s + CDN 多请求拉黑）
     - get_video_info            （VIP 专属：拿视频 master m3u8 + 清晰度列表）
     - get_video_segments        （VIP 专属：拿指定/最高清晰度的 HLS ts 分段列表）
+    - list_offline_tasks / offline_quota / default_download_dir      （离线下载：读）
+    - add_offline_urls / delete_offline_tasks / clear_offline_tasks  （离线下载：写）
+    - restart_offline_task                                           （离线下载：失败重试）
+    - snapshot_cookies / update_cookies （cookies 保活/热替换，见 _merge_set_cookies）
     - 构造函数（cookies 字符串 -> httpx.AsyncClient）
 
-不含：二维码登录、离线下载、上传、分享、事件订阅、图片 CDN 等。
+不含：二维码登录、上传、分享、事件订阅、图片 CDN 等。
 不依赖任何业务 model / service / schema，纯 HTTP + RSA 层。
 """
 
@@ -17,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import httpx
@@ -29,13 +35,21 @@ from src.lib.cloud115.exceptions import (
     Cloud115Error,
     Cloud115MembershipRequiredError,
     Cloud115NotFoundError,
+    Cloud115OfflineQuotaExceededError,
     Cloud115RateLimitedError,
     Cloud115RequestError,
+    Cloud115VideoNotReadyError,
 )
 from src.lib.cloud115.types import (
+    DirBreadcrumb,
     DirectUrl,
     DirEntry,
+    DirMeta,
     FileMeta,
+    OfflineQuota,
+    OfflineTask,
+    OfflineTaskAddResult,
+    OfflineTaskPage,
     VideoDefinition,
     VideoInfo,
     VideoSegment,
@@ -56,6 +70,26 @@ _NOT_FOUND_ERRNOS: frozenset[int] = frozenset({
 _REQUEST_ERRNOS: frozenset[int] = frozenset({990005})
 # 需要 VIP 会员：视频在线播放、m3u8 转码等 VIP 专属接口的策略拒绝。
 _MEMBERSHIP_REQUIRED_ERRNOS: frozenset[int] = frozenset({406})
+# 离线下载月度配额用尽：账号本月离线次数已达上限。observed errno = 10008（未 VIP）/ 10004（少数场景）。
+# 不与 RateLimited 混淆：这个不是限速、不能靠退避恢复。
+_OFFLINE_QUOTA_EXCEEDED_ERRNOS: frozenset[int] = frozenset({10004, 10008})
+
+# clear_offline_tasks 支持的 scope 及对应服务端 flag。
+# 参见 clouddownload_task_clear 文档：
+#   0=已完成 / 1=全部 / 2=已失败 / 3=进行中 / 4=已完成+删源 / 5=全部+删源
+_CLEAR_SCOPE_TO_FLAG: dict[str, int] = {
+    "finished": 0,
+    "all": 1,
+    "failed": 2,
+    "running": 3,
+    "finished_with_source": 4,
+    "all_with_source": 5,
+}
+
+ClearScope = Literal[
+    "finished", "all", "failed", "running",
+    "finished_with_source", "all_with_source",
+]
 
 
 class Cloud115Client:
@@ -100,8 +134,10 @@ class Cloud115Client:
         if not cookies or "UID=" not in cookies:
             # cookies 缺失或不含 UID：SDK 层直接判死，不做延迟报错
             raise Cloud115AuthError("cookies missing or has no UID field")
-        self._cookies = cookies
-        self._user_id = self._parse_user_id(cookies)
+        # cookies 存成 dict（保序）便于响应到达后 merge 服务端 Set-Cookie 更新
+        self._cookies_dict: dict[str, str] = self._parse_cookies(cookies)
+        self._user_id = self._parse_user_id_from_dict(self._cookies_dict)
+        self._cookies_lock = asyncio.Lock()
         self._user_agent = user_agent or self._DEFAULT_UA
         # 外部注入的 client 由调用方负责关闭（不做 owned/borrowed 引用计数简化状态）
         self._owns_client = http_client is None
@@ -113,12 +149,81 @@ class Cloud115Client:
 
     # ---- 构造与生命周期 ----
 
+    @staticmethod
+    def _parse_cookies(cookies: str) -> dict[str, str]:
+        """把 'K1=V1; K2=V2' 解析成保序 dict。忽略无 '=' 的碎片。"""
+        out: dict[str, str] = {}
+        for part in cookies.split(";"):
+            part = part.strip()
+            if not part or "=" not in part:
+                continue
+            key, _, value = part.partition("=")
+            key = key.strip()
+            if key:
+                out[key] = value.strip()
+        return out
+
     @classmethod
-    def _parse_user_id(cls, cookies: str) -> str:
-        match = cls._UID_PATTERN.search(cookies)
+    def _parse_user_id_from_dict(cls, cookies_dict: dict[str, str]) -> str:
+        uid = cookies_dict.get("UID", "")
+        match = cls._UID_PATTERN.match(f"UID={uid}") if uid else None
         if not match:
             raise Cloud115AuthError("UID missing or malformed (expected 'UID=<int>_A1_<ts>')")
         return match.group(1)
+
+    @property
+    def user_id(self) -> str:
+        """当前登录用户的数字 ID（从 UID cookie 前段解出）。只读。"""
+        return self._user_id
+
+    def snapshot_cookies(self) -> str:
+        """拿当前完整 cookies 字符串（含服务端最新推送的 acw_tc 等临时字段）。
+
+        上层业务应定期调用并落盘，进程重启时用最新快照初始化 SDK，避免每次首启都撞
+        acw_tc 已过期需要服务端重种一次的额外往返。
+        """
+        return "; ".join(f"{k}={v}" for k, v in self._cookies_dict.items())
+
+    def update_cookies(self, cookies: str) -> None:
+        """整体覆盖当前 cookies（配置面板改了 cookies 后热生效）。
+
+        cookies 必须包含合法的 UID 字段；不合法时抛 Cloud115AuthError，
+        原 cookies 不被破坏。
+        """
+        if not cookies or "UID=" not in cookies:
+            raise Cloud115AuthError("cookies missing or has no UID field")
+        new_dict = self._parse_cookies(cookies)
+        new_user_id = self._parse_user_id_from_dict(new_dict)   # 校验 UID 合法性
+        self._cookies_dict = new_dict
+        self._user_id = new_user_id
+
+    def _merge_set_cookies(self, response: httpx.Response) -> None:
+        """把响应的 Set-Cookie 头 merge 进 self._cookies_dict。
+
+        115 服务端的 acw_tc 走 Max-Age=1800（30 分钟）阿里云 WAF token；不 merge 就
+        30 分钟后被 WAF 拦截。响应 Set-Cookie 里的 Domain 属性对 115 场景不可靠
+        （不带 Domain 只绑到子域），所以我们跨子域一律 merge，用真实验证过的
+        "acw_tc 是账号级 token" 事实（webapi.115.com 拿 my.115.com 塞的 acw_tc 也认账）。
+
+        只提取 `key=value` 的正文部分，忽略 `path` / `max-age` / `httponly` 等属性。
+        """
+        set_cookies = response.headers.get_list("set-cookie") if hasattr(response.headers, "get_list") else []
+        if not set_cookies:
+            return
+        for line in set_cookies:
+            # 取第一个 ';' 之前的 key=value 段
+            head = line.split(";", 1)[0].strip()
+            if not head or "=" not in head:
+                continue
+            key, _, value = head.partition("=")
+            key = key.strip()
+            if not key:
+                continue
+            # deleted 语义：value 为空 + 服务端塞过来通常带 Max-Age=0，我们本地也删掉
+            if value == "" or value == '""':
+                self._cookies_dict.pop(key, None)
+            else:
+                self._cookies_dict[key] = value.strip()
 
     async def close(self) -> None:
         # 只关掉自建的 client；外部注入的由调用方管
@@ -139,6 +244,8 @@ class Cloud115Client:
         契约：只返 bool，不抛业务异常。
         alive: 200 + JSON state=True；
         dead: 302 到登录页 / JSON state=False / 非 JSON / 任何异常。
+
+        副作用：成功响应会 merge Set-Cookie（若干 acw_tc 刷新经常从这个端点回来）。
         """
         url = f"{self._BASE_MY}/"
         params = {"ct": "guide", "ac": "status"}
@@ -152,6 +259,9 @@ class Cloud115Client:
             # 网络错、超时、协议错等：探活语义上都算 "不 alive"，不上抛
             logger.debug("check_cookies_alive request failed: {}", exc)
             return False
+        # 无论探活成功与否，只要拿到响应就 merge Set-Cookie（服务端可能塞新 acw_tc）
+        async with self._cookies_lock:
+            self._merge_set_cookies(response)
         # follow_redirects=False，所以 302 到登录页会体现为 status_code=302
         if response.status_code != 200:
             return False
@@ -194,19 +304,67 @@ class Cloud115Client:
         return entries, total
 
     async def file_info(self, file_id: str) -> FileMeta:
-        """取单文件元信息。file_id 是整数字符串（list_dir 结果里的 entry_id）。"""
+        """取单文件元信息。file_id 是整数字符串（list_dir 结果里的 entry_id）。
+
+        业务侧通常持久化的是 pickcode（跨会话稳定）而不是 file_id；如果只有 pickcode
+        请用 pickcode_info。
+        """
+        if not file_id:
+            raise ValueError("file_id is required")
+        return await self._get_info(param_key="file_id", param_value=file_id, human_id=file_id)
+
+    async def pickcode_info(self, pickcode: str) -> FileMeta:
+        """按 pickcode 查文件元信息。走同一 /files/get_info 端点，只是参数名换成 pick_code。
+
+        pickcode 是业务侧的稳定 ID；file_id 会因 115 内部存储位置变动而变化。
+        """
+        if not pickcode:
+            raise ValueError("pickcode is required")
+        return await self._get_info(param_key="pick_code", param_value=pickcode, human_id=pickcode)
+
+    async def _get_info(self, *, param_key: str, param_value: str, human_id: str) -> FileMeta:
         url = f"{self._BASE_WEBAPI}/files/get_info"
-        params = {"file_id": file_id}
-        payload = await self._request_json("GET", url, params=params)
+        payload = await self._request_json("GET", url, params={param_key: param_value})
         if not payload.get("state"):
             raise self._map_errno(payload, endpoint=url)
         data = payload.get("data") or []
         if not data:
-            # state=True 但 data 空 = file_id 无效
             raise Cloud115NotFoundError(
-                f"file_id {file_id} not found", endpoint=url
+                f"{param_key}={human_id} not found", endpoint=url
             )
         return self._parse_file_meta(data[0])
+
+    async def dir_info(self, cid: str) -> DirMeta:
+        """取目录元信息 + 面包屑。
+
+        cid="0" 会被 115 服务端拒（errNo=1001），SDK 层直接构造哨兵返回（name="根目录"、
+        pickcode=""、paths=()），调用方不必特判。
+
+        端点：GET webapi.115.com/category/get?cid=<cid>
+        """
+        if not cid:
+            raise ValueError("cid is required")
+        if cid == "0":
+            # 根目录哨兵
+            return DirMeta(
+                cid="0",
+                name="根目录",
+                pickcode="",
+                parent_id="",
+                file_count=0,
+                folder_count=0,
+                play_long_seconds=0,
+                mtime=0,
+                ctime=0,
+                paths=(),
+            )
+        url = f"{self._BASE_WEBAPI}/category/get"
+        payload = await self._request_json("GET", url, params={"cid": cid})
+        # category/get 的失败态：state=false + errNo=1001 参数错 / cid 不存在
+        # 与 list_dir 的 state 判定风格保持一致
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=url)
+        return self._parse_dir_meta(cid, payload)
 
     async def get_download_url(self, pickcode: str, user_agent: str) -> DirectUrl:
         """取 302 直链。
@@ -282,7 +440,10 @@ class Cloud115Client:
           1) GET https://webapi.115.com/files/video?pickcode=... → 视频元数据 + master m3u8 URL
           2) GET master m3u8 → 解析出 variant 清晰度列表
 
-        errno=406 "需要VIP会员" → Cloud115MembershipRequiredError
+        错误映射：
+          - errno=406 "需要VIP会员" → Cloud115MembershipRequiredError
+          - state=True 但 file_status != 1 → Cloud115VideoNotReadyError（转码中/失败）
+          - state=True + file_status=1 但 video_url 缺 → Cloud115NotFoundError（非视频文件）
         """
         if not pickcode:
             raise ValueError("pickcode is required")
@@ -292,10 +453,25 @@ class Cloud115Client:
         if not payload.get("state"):
             raise self._map_errno(payload, endpoint=url)
 
+        # file_status：0=转码中/未完成，1=完成。缺字段视为"完成"以兼容老响应格式。
+        # 校验放在 video_url 检查之前，避免"转码中" 被误判为"非视频"（后者的语义是永久 invalid）。
+        raw_status = payload.get("file_status")
+        if raw_status is not None:
+            try:
+                file_status = int(raw_status)
+            except (TypeError, ValueError):
+                file_status = 1   # 无法解析时按已完成处理，避免误判
+            if file_status != 1:
+                raise Cloud115VideoNotReadyError(
+                    f"video not ready for pickcode {pickcode} (file_status={file_status})",
+                    file_status=file_status,
+                    endpoint=url,
+                )
+
         master_m3u8_url = str(payload.get("video_url", "") or "")
         if not master_m3u8_url:
             raise Cloud115NotFoundError(
-                f"video_url missing for pickcode {pickcode} (not a video or未转码?)",
+                f"video_url missing for pickcode {pickcode} (not a video)",
                 endpoint=url,
             )
 
@@ -336,12 +512,222 @@ class Cloud115Client:
         variant_text = await self._get_text(variant.m3u8_url)
         return self._parse_variant_m3u8(variant_text, base_url=variant.m3u8_url)
 
+    # ---- 离线下载 ----
+    #
+    # 端点选型：全部走 https://115.com/web/lixian/?ct=lixian&ac=<action> 明文端点。
+    # 加密备用端点 https://clouddownload.115.com/lixianssp/?ac=<action> 复用 cipher.py 可用，
+    # 但目前明文足以覆盖，避免不必要的复杂度。
+    #
+    # 配额：非 VIP 5 次/月，VIP 200 次/月。每提交 1 条 add 扣 1 次，配额用尽 → Cloud115OfflineQuotaExceededError。
+    # 任务完成后 file_id/pickcode 有值，直接可接 pickcode_info / get_download_url。
+
+    _LIXIAN_URL = "https://115.com/web/lixian/"
+    _OFFLINE_SPACE_URL = "https://115.com/"     # ?ct=offline&ac=space 拿全局离线目录大小配额（本 SDK 不暴露）
+    _OFFLINE_DOWNPATH_URL = "https://webapi.115.com/offine/downpath"   # 115 端点名字确实少个 l（不是 offline）
+
+    async def list_offline_tasks(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 30,
+    ) -> OfflineTaskPage:
+        """分页列离线任务。
+
+        page: 从 1 开始。page_size 服务端默认 30，上限没实测；实用范围 10-50。
+        返回按 add_time 倒序（最新添加的在前）。
+        """
+        if page < 1:
+            raise ValueError(f"page must be >= 1, got {page}")
+        if page_size < 1:
+            raise ValueError(f"page_size must be >= 1, got {page_size}")
+        payload = await self._request_json(
+            "GET",
+            self._LIXIAN_URL,
+            params={"ct": "lixian", "ac": "task_lists", "page": page, "page_size": page_size},
+        )
+        # task_lists 成功时不返 state 字段（响应直接是数据），失败时才有 state=false + errno
+        if payload.get("state") is False:
+            raise self._map_errno(payload, endpoint=self._LIXIAN_URL)
+        tasks_raw = payload.get("tasks") or []
+        return OfflineTaskPage(
+            page=int(payload.get("page") or page),
+            page_count=int(payload.get("page_count") or 1),
+            page_size=int(payload.get("page_size") or page_size),
+            total_tasks=int(payload.get("total") or 0),
+            tasks=[self._parse_offline_task(raw) for raw in tasks_raw],
+        )
+
+    async def offline_quota(self) -> OfflineQuota:
+        """拿本月离线下载次数配额。返回 total（月配额）+ remaining（剩余次数）。
+
+        实现：从 task_lists 的第 1 页响应里读 total/quota 字段（走同一端点 -> 减少一次请求）。
+        避免走 lixianssp 加密端点。
+        """
+        payload = await self._request_json(
+            "GET",
+            self._LIXIAN_URL,
+            params={"ct": "lixian", "ac": "task_lists", "page": 1, "page_size": 1},
+        )
+        if payload.get("state") is False:
+            raise self._map_errno(payload, endpoint=self._LIXIAN_URL)
+        # 实测响应字段：total=200（月配额），quota=剩余次数
+        return OfflineQuota(
+            total=int(payload.get("total") or 0),
+            remaining=int(payload.get("quota") or 0),
+        )
+
+    async def default_download_dir(self) -> DirEntry:
+        """拿"云下载"默认保存目录信息。返回一个 DirEntry（is_dir=True）。
+
+        115 服务端可以同时配多个候选目录，本方法返回其中 `is_selected=1` 的那一个。
+        用途：上层 UI 在"新建离线任务"时预填 save_dir_id，或作为默认值兜底。
+        """
+        payload = await self._request_json("GET", self._OFFLINE_DOWNPATH_URL)
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=self._OFFLINE_DOWNPATH_URL)
+        candidates = payload.get("data") or []
+        # 挑 is_selected=1 的；如果都没标就取第一个
+        selected = next(
+            (c for c in candidates if str(c.get("is_selected", "")) == "1"),
+            candidates[0] if candidates else None,
+        )
+        if selected is None:
+            raise Cloud115NotFoundError(
+                "no default cloud download dir configured",
+                endpoint=self._OFFLINE_DOWNPATH_URL,
+            )
+        # DirEntry 结构对齐：目录 entry_id = file_id
+        return DirEntry(
+            entry_id=str(selected.get("file_id", "")),
+            parent_id="",
+            name=str(selected.get("file_name", "")),
+            is_dir=True,
+            size=0,
+            sha1=None,
+            pickcode="",
+            mtime=int(selected.get("update_time") or 0),
+            ctime=0,
+            is_video=False,
+        )
+
+    async def add_offline_urls(
+        self,
+        urls: list[str],
+        *,
+        save_dir_id: str,
+    ) -> list[OfflineTaskAddResult]:
+        """批量提交离线下载任务。
+
+        urls: 支持 http://, https://, ftp://, magnet:?xt=urn:btih:..., ed2k://。
+              空列表抛 ValueError；单条空 URL 会被服务端拒绝但不预校验（115 自己有格式检查）。
+        save_dir_id: 保存到的目录 cid（必填）。用 default_download_dir().entry_id 拿默认目录。
+
+        返回：每个 URL 对应的 OfflineTaskAddResult（含 info_hash + 原 URL）。批量提交时
+        个别 URL 失败（比如无效磁力）也不会整体失败，失败项 info_hash 为空串。
+
+        配额相关：每条 URL 扣 1 次月配额；配额用尽抛 Cloud115OfflineQuotaExceededError
+        且**整批都不生效**（服务端事务性拒绝）。
+        """
+        if not urls:
+            raise ValueError("urls must not be empty")
+        if not save_dir_id:
+            raise ValueError("save_dir_id is required")
+
+        data: dict[str, Any] = {"wp_path_id": save_dir_id}
+        for i, url in enumerate(urls):
+            data[f"url[{i}]"] = url
+
+        payload = await self._request_json(
+            "POST",
+            self._LIXIAN_URL,
+            params={"ct": "lixian", "ac": "add_task_urls"},
+            data=data,
+        )
+        if payload.get("state") is False:
+            raise self._map_errno(payload, endpoint=self._LIXIAN_URL)
+
+        # 成功响应结构：{"state":true, "errno":0, "errcode":0, "result":[{info_hash, url}, ...]}
+        results_raw = payload.get("result") or []
+        return [
+            OfflineTaskAddResult(
+                info_hash=str(item.get("info_hash", "")),
+                url=str(item.get("url", "")),
+            )
+            for item in results_raw
+        ]
+
+    async def delete_offline_tasks(
+        self,
+        info_hashes: list[str],
+        *,
+        delete_source_files: bool = False,
+    ) -> None:
+        """批量删除离线任务（不管是否已完成）。
+
+        info_hashes: 空列表抛 ValueError。
+        delete_source_files: True 时同时把云盘里已下载的文件也删掉（不可逆！）。
+        """
+        if not info_hashes:
+            raise ValueError("info_hashes must not be empty")
+        data: dict[str, Any] = {"flag": "1" if delete_source_files else "0"}
+        for i, ih in enumerate(info_hashes):
+            data[f"hash[{i}]"] = ih
+        payload = await self._request_json(
+            "POST",
+            self._LIXIAN_URL,
+            params={"ct": "lixian", "ac": "task_del"},
+            data=data,
+        )
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=self._LIXIAN_URL)
+
+    async def clear_offline_tasks(self, scope: ClearScope = "finished") -> None:
+        """按范围清空离线任务列表。
+
+        scope 取值：
+          - "finished"            清已完成
+          - "failed"              清已失败
+          - "running"             清进行中（会中断任务！）
+          - "all"                 全部
+          - "finished_with_source"  清已完成 + 删源文件
+          - "all_with_source"       全部 + 删源文件
+        """
+        if scope not in _CLEAR_SCOPE_TO_FLAG:
+            raise ValueError(
+                f"unknown scope {scope!r}; expected one of {sorted(_CLEAR_SCOPE_TO_FLAG)}"
+            )
+        flag = _CLEAR_SCOPE_TO_FLAG[scope]
+        payload = await self._request_json(
+            "POST",
+            self._LIXIAN_URL,
+            params={"ct": "lixian", "ac": "task_clear"},
+            data={"flag": str(flag)},
+        )
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=self._LIXIAN_URL)
+
+    async def restart_offline_task(self, info_hash: str) -> None:
+        """重试一条失败/停滞的离线任务。
+
+        对已完成任务无效（服务端会 state=false）。上层可以先 list 出 status=-1 的再批量 restart。
+        """
+        if not info_hash:
+            raise ValueError("info_hash is required")
+        payload = await self._request_json(
+            "POST",
+            self._LIXIAN_URL,
+            params={"ct": "lixian", "ac": "restart"},
+            data={"info_hash": info_hash},
+        )
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=self._LIXIAN_URL)
+
     # ---- 内部工具 ----
 
     def _base_headers(self) -> dict[str, str]:
-        # Cookie 逐字节透传，不用 httpx cookies= 参数（避免重排、破坏服务端签名）
+        # Cookie 从内部 dict 动态拼串（保序，便于 acw_tc 等被服务端 Set-Cookie 更新后透传）
         return {
-            "Cookie": self._cookies,
+            "Cookie": self.snapshot_cookies(),
             "User-Agent": self._user_agent,
         }
 
@@ -359,13 +745,16 @@ class Cloud115Client:
         - 429：直接抛 Cloud115RateLimitedError（不重试，避免账号信号升级）
         - 5xx / TimeoutException / NetworkError：最多 2 次退避重试
         - 4xx（401/403）：401/403 → Cloud115AuthError；其它 → Cloud115RequestError
-        """
-        request_headers = self._base_headers()
-        if headers:
-            request_headers.update(headers)
 
+        每次成功响应到达后会 merge Set-Cookie 到内部 cookies dict（保活 acw_tc 等）。
+        401/403 抛异常前也会 merge（可能带着新 acw_tc / logout 信号）。
+        """
         last_error: Exception | None = None
         for attempt in range(self._MAX_RETRIES + 1):
+            # 每次重试前重新拼 headers（因为上一次响应可能 merge 了新的 acw_tc）
+            request_headers = self._base_headers()
+            if headers:
+                request_headers.update(headers)
             try:
                 response = await self._client.request(
                     method,
@@ -384,6 +773,10 @@ class Cloud115Client:
                     break
                 await asyncio.sleep(self._RETRY_BACKOFF_STEP * (attempt + 1))
                 continue
+
+            # 无论后续是否抛异常，Set-Cookie 都可以 merge（服务端可能同时塞新 acw_tc + 拒绝请求）
+            async with self._cookies_lock:
+                self._merge_set_cookies(response)
 
             status = response.status_code
             if status == 429:
@@ -476,6 +869,10 @@ class Cloud115Client:
             return Cloud115MembershipRequiredError(
                 f"{message} (errno={errno_int})", errno=errno_int, endpoint=endpoint
             )
+        if errno_int in _OFFLINE_QUOTA_EXCEEDED_ERRNOS:
+            return Cloud115OfflineQuotaExceededError(
+                f"{message} (errno={errno_int})", errno=errno_int, endpoint=endpoint
+            )
         if errno_int in _NOT_FOUND_ERRNOS:
             return Cloud115NotFoundError(
                 f"{message} (errno={errno_int})", errno=errno_int, endpoint=endpoint
@@ -531,6 +928,71 @@ class Cloud115Client:
             mtime=int(raw.get("te") or 0),
             ctime=int(raw.get("tp") or 0),
             is_video=bool(raw.get("iv")),
+        )
+
+    @staticmethod
+    def _parse_offline_task(raw: dict[str, Any]) -> OfflineTask:
+        """task_lists 单条 -> OfflineTask。字段名对齐 2026-07-12 观察的真实响应。"""
+        # percentDone 服务端一般是 0-100 的数字（可能 int 或 float）
+        try:
+            percent = float(raw.get("percentDone") or raw.get("display_percent") or 0)
+        except (TypeError, ValueError):
+            percent = 0.0
+        return OfflineTask(
+            info_hash=str(raw.get("info_hash", "")),
+            name=str(raw.get("name", "")),
+            size=int(raw.get("size") or 0),
+            status=int(raw.get("status") if raw.get("status") is not None else 0),
+            status_text=str(raw.get("status_text", "") or raw.get("display_status", "")),
+            percent_done=percent,
+            rate_download=int(raw.get("rateDownload") or 0),
+            peers=int(raw.get("peers") or 0),
+            left_time_seconds=int(raw.get("left_time") or 0),
+            add_time=int(raw.get("add_time") or 0),
+            last_update=int(raw.get("last_update") or 0),
+            file_id=str(raw.get("file_id", "") or ""),
+            pickcode=str(raw.get("pick_code", "") or ""),
+            save_dir_id=str(raw.get("wp_path_id", "") or ""),
+            source_url=str(raw.get("url", "") or ""),
+            retry_count=int(raw.get("retry_count") or 0),
+            retry_limit=int(raw.get("retry_limit") or 0),
+        )
+
+    @staticmethod
+    def _parse_dir_meta(cid: str, payload: dict[str, Any]) -> DirMeta:
+        """/category/get 响应 -> DirMeta。
+
+        字段名（观察自 2026-07-12 真实响应）：
+            file_name / pick_code / paths[] / count / folder_count / play_long / ctime / utime
+        parent_id 从 paths 末尾解析；paths 是从根目录到当前目录父级的面包屑链。
+        """
+        raw_paths = payload.get("paths") or []
+        crumbs: list[DirBreadcrumb] = []
+        for item in raw_paths:
+            if not isinstance(item, dict):
+                continue
+            # 根目录 file_id 是数字 0，不能用 `x or ""` 吞掉；显式挑存在的字段
+            fid_raw = item.get("file_id") if "file_id" in item else item.get("cid")
+            name_raw = item.get("file_name") if "file_name" in item else item.get("name")
+            crumbs.append(
+                DirBreadcrumb(
+                    file_id="" if fid_raw is None else str(fid_raw),
+                    name="" if name_raw is None else str(name_raw),
+                )
+            )
+        # 父目录 cid 从面包屑末尾拿；如果 paths 为空（少见）则空串
+        parent_id = crumbs[-1].file_id if crumbs else ""
+        return DirMeta(
+            cid=cid,
+            name=str(payload.get("file_name", "") or ""),
+            pickcode=str(payload.get("pick_code", "") or ""),
+            parent_id=parent_id,
+            file_count=int(payload.get("count") or 0),
+            folder_count=int(payload.get("folder_count") or 0),
+            play_long_seconds=int(payload.get("play_long") or 0),
+            mtime=int(payload.get("utime") or 0),
+            ctime=int(payload.get("ctime") or 0),
+            paths=tuple(crumbs),
         )
 
     @staticmethod

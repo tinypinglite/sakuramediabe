@@ -40,6 +40,27 @@ class Cloud115MembershipRequiredError(Cloud115Error):
     """
 
 
+class Cloud115VideoNotReadyError(Cloud115Error):
+    """视频未就绪：转码未完成或已失败（响应 file_status != 1）。
+
+    与 NotFoundError 严格区分：文件真实存在、cookies 也有效，只是 115 服务端
+    还没把它转成可播放的 HLS 流（新上传的视频通常要几分钟到几十分钟）。上层可以
+    提示"稍后再试"并把任务排到重试队列，而不是像 NotFound 那样把资源标 invalid。
+
+    附字段 file_status：0=转码中/未完成，其他非 1 值为失败或未知。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        file_status: int | None = None,
+        endpoint: str | None = None,
+    ):
+        self.file_status = file_status
+        super().__init__(message, endpoint=endpoint)
+
+
 class Cloud115RequestError(Cloud115Error):
     """HTTP 层错误、超时、5xx 重试耗尽后的最终失败。
 
@@ -75,3 +96,13 @@ class Cloud115RateLimitedError(Cloud115Error):
     def __init__(self, message: str, *, retry_after_seconds: int | None = None):
         self.retry_after_seconds = retry_after_seconds
         super().__init__(message)
+
+
+class Cloud115OfflineQuotaExceededError(Cloud115Error):
+    """离线下载本月配额用尽。
+
+    非 VIP 账号一般 5 次/月，VIP 200 次/月。errno 常见 10004 / 10008 等（"离线数已达上限"）。
+    与 RateLimitedError 严格区分：不是限速、不是可以退避重试的；本月配额清 0 就是清 0。
+    上层应引导用户：等下月 / 升级 VIP / 删除已完成任务腾出配额（配额不会因删除任务恢复，
+    但已完成任务清理后 UI 观感更清爽）。
+    """
