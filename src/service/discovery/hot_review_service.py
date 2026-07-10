@@ -136,7 +136,7 @@ class HotReviewSyncService:
     @staticmethod
     def _build_javdb_provider() -> JavdbProvider:
         from src.metadata.factory import build_javdb_provider
-        return build_javdb_provider(use_metadata_proxy=True)
+        return build_javdb_provider()
 
     def _provider_for_source(self, source_key: str) -> Any:
         provider = self.providers.get(source_key)

@@ -126,20 +126,24 @@ def refresh_gfriends_filetree(*, force: bool = False) -> dict[str, Any]:
     return resolver.refresh(force=force)
 
 
-def build_javdb_provider(*, use_metadata_proxy: bool = False) -> GfriendsAvatarJavdbProvider:
-    """构建 JavDB provider，演员头像继续优先 GFriends。"""
-    metadata_proxy = settings.metadata.normalized_proxy
-    provider_proxy = metadata_proxy if use_metadata_proxy else None
-    gfriends_proxy = metadata_proxy if use_metadata_proxy else settings.metadata.gfriends_proxy
+def build_javdb_provider() -> GfriendsAvatarJavdbProvider:
+    """构建 JavDB provider，演员头像继续优先 GFriends。
+
+    JavDB 请求永远不走 metadata proxy：站点访问依托 ``settings.metadata.javdb_host``
+    自身的直连/反代能力，叠加代理反而绕远路甚至失败。GFriends CDN 单独沿用
+    ``settings.metadata.gfriends_proxy``，与 JavDB 无关。
+    """
     provider = JavdbProvider(
         host=settings.metadata.javdb_host,
-        proxy=provider_proxy,
+        proxy=None,
         username=settings.metadata.javdb_username,
         password=settings.metadata.javdb_password,
     )
     return GfriendsAvatarJavdbProvider(
         provider=provider,
-        actor_image_resolver=_build_gfriends_resolver(proxy=gfriends_proxy),
+        actor_image_resolver=_build_gfriends_resolver(
+            proxy=settings.metadata.gfriends_proxy,
+        ),
     )
 
 

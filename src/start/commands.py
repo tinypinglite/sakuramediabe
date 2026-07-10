@@ -400,18 +400,12 @@ def test_translation(
 
 @main.command(name="test-javdb")
 @click.option("--movie-number", required=True, type=str, help="Movie number to query from JavDB.")
-@click.option(
-    "--use-metadata-proxy/--no-use-metadata-proxy",
-    default=False,
-    show_default=True,
-    help="Whether to route JavDB via metadata proxy settings.",
-)
 @click.option("--json", "output_json", is_flag=True, help="Print structured JSON output.")
-def test_javdb(movie_number: str, use_metadata_proxy: bool, output_json: bool):
+def test_javdb(movie_number: str, output_json: bool):
     with _suppress_logs_for_json_output(output_json):
         if not output_json:
-            logger.info("CLI test-javdb start movie_number={} use_metadata_proxy={}", movie_number, use_metadata_proxy)
-        provider = build_javdb_provider(use_metadata_proxy=use_metadata_proxy)
+            logger.info("CLI test-javdb start movie_number={}", movie_number)
+        provider = build_javdb_provider()
         try:
             detail = provider.get_movie_by_number(movie_number)
         except (MetadataNotFoundError, MetadataRequestError) as exc:
@@ -429,7 +423,6 @@ def test_javdb(movie_number: str, use_metadata_proxy: bool, output_json: bool):
             "tags_count": len(detail.tags),
             "summary": summary_excerpt,
             "release_date": detail.release_date,
-            "use_metadata_proxy": use_metadata_proxy,
         }
         _emit_command_success(
             output_json=output_json,

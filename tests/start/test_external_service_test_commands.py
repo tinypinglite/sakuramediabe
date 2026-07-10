@@ -181,7 +181,7 @@ def test_test_trans_command_outputs_json_success(monkeypatch):
     }
 
 
-def test_test_javdb_command_prints_movie_summary_and_uses_proxy_flag(monkeypatch):
+def test_test_javdb_command_prints_movie_summary(monkeypatch):
     captured = {}
 
     class FakeJavdbProvider:
@@ -205,16 +205,12 @@ def test_test_javdb_command_prints_movie_summary_and_uses_proxy_flag(monkeypatch
                 plot_images=[],
             )
 
-    def fake_build_javdb_provider(*, use_metadata_proxy: bool = False):
-        captured["use_metadata_proxy"] = use_metadata_proxy
-        return FakeJavdbProvider()
-
-    monkeypatch.setattr("src.start.commands.build_javdb_provider", fake_build_javdb_provider)
+    monkeypatch.setattr("src.start.commands.build_javdb_provider", lambda: FakeJavdbProvider())
 
     runner = CliRunner()
     result = runner.invoke(
         main,
-        ["test-javdb", "--movie-number", "ABP-123", "--use-metadata-proxy"],
+        ["test-javdb", "--movie-number", "ABP-123"],
     )
 
     assert result.exit_code == 0
@@ -222,10 +218,7 @@ def test_test_javdb_command_prints_movie_summary_and_uses_proxy_flag(monkeypatch
     assert "movie_number=ABP-123" in result.output
     assert "title=Test Movie" in result.output
     assert "summary=这是 JavDB 简介" in result.output
-    assert captured == {
-        "use_metadata_proxy": True,
-        "movie_number": "ABP-123",
-    }
+    assert captured == {"movie_number": "ABP-123"}
 
 
 def test_test_javdb_command_outputs_json_success(monkeypatch):
@@ -244,7 +237,7 @@ def test_test_javdb_command_outputs_json_success(monkeypatch):
                 plot_images=[],
             )
 
-    monkeypatch.setattr("src.start.commands.build_javdb_provider", lambda **kwargs: FakeJavdbProvider())
+    monkeypatch.setattr("src.start.commands.build_javdb_provider", lambda: FakeJavdbProvider())
 
     runner = CliRunner()
     result = runner.invoke(main, ["test-javdb", "--movie-number", "IPZZ-001", "--json"])
@@ -261,7 +254,6 @@ def test_test_javdb_command_outputs_json_success(monkeypatch):
         "summary": "结构化 JavDB 简介",
         "tags_count": 0,
         "title": "JSON Movie",
-        "use_metadata_proxy": False,
     }
 
 
@@ -270,7 +262,7 @@ def test_test_javdb_command_outputs_json_error_when_provider_fails(monkeypatch):
         def get_movie_by_number(self, movie_number: str):
             raise MetadataRequestError("GET", "https://javdb.example/api", "boom")
 
-    monkeypatch.setattr("src.start.commands.build_javdb_provider", lambda **kwargs: FakeJavdbProvider())
+    monkeypatch.setattr("src.start.commands.build_javdb_provider", lambda: FakeJavdbProvider())
 
     runner = CliRunner()
     result = runner.invoke(
