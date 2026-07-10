@@ -1,12 +1,13 @@
 import json
 from pathlib import Path
-from typing import Optional, Set
+from typing import Dict, Optional, Set
 
 from loguru import logger
+from peewee import JOIN
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
-from src.model import BackgroundTaskRun, DownloadTask, ImportJob
+from src.model import BackgroundTaskRun, DownloadTask, Image, ImportJob, Movie
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
     DownloadTaskActionResponse,
@@ -15,7 +16,11 @@ from src.schema.transfers.downloads import (
 )
 from src.service.system import ActivityService
 from src.service.transfers.common import (
+    ALLOWED_DOWNLOAD_STATES,
+    DOWNLOAD_COMPLETE_STATES,
     build_task_movie_filter,
+    is_download_complete,
+    normalize_state_filter,
     require_task,
     require_client,
     resolve_task_sort,
@@ -52,6 +57,7 @@ class DownloadTaskService:
         page_size: int = 20,
         client_id: int | None = None,
         movie_number: str | None = None,
+        download_state: str | None = None,
         sort: str | None = None,
     ) -> PageResponse[DownloadTaskResource]:
         validate_page(page, page_size)
@@ -61,17 +67,38 @@ class DownloadTaskService:
             query = query.where(DownloadTask.client == client_id)
         if movie_number and movie_number.strip():
             query = query.where(build_task_movie_filter(movie_number))
+        normalized_state = normalize_state_filter(
+            download_state,
+            field_name="download_state",
+            allowed_values=ALLOWED_DOWNLOAD_STATES,
+        )
+        if normalized_state is not None:
+            query = query.where(DownloadTask.download_state == normalized_state)
 
         total = query.count()
         tasks = list(
             query.order_by(*resolve_task_sort(sort)).paginate(page, page_size)
         )
+        movies_by_number = cls._load_movies_for_tasks(tasks)
         return PageResponse[DownloadTaskResource](
-            items=DownloadTaskResource.from_models(tasks),
+            items=DownloadTaskResource.from_models(tasks, movies_by_number=movies_by_number),
             page=page,
             page_size=page_size,
             total=total,
         )
+
+    @staticmethod
+    def _load_movies_for_tasks(tasks) -> Dict[str, Movie]:
+        """按番号批量 JOIN 影片元数据（标题 + 封面），保证列表接口只做一趟 JOIN 而非 N+1。"""
+        numbers = list({task.movie for task in tasks if task.movie})
+        if not numbers:
+            return {}
+        movies = (
+            Movie.select(Movie, Image)
+            .join(Image, JOIN.LEFT_OUTER, on=(Movie.cover_image == Image.id))
+            .where(Movie.movie_number.in_(numbers))
+        )
+        return {movie.movie_number: movie for movie in movies}
 
     @classmethod
     def pause_task(
@@ -193,7 +220,7 @@ class DownloadTaskService:
         trigger_type: str = "manual",
     ) -> DownloadTaskImportResponse:
         task = require_task(task_id)
-        if task.download_state != "completed":
+        if not is_download_complete(task.download_state):
             raise ApiError(
                 422,
                 "invalid_download_task_import",

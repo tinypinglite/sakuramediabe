@@ -10,6 +10,7 @@ from src.schema.transfers.downloads import DownloadClientSyncResponse
 from src.service.system import ActivityService
 from src.service.transfers.common import (
     ALLOWED_DOWNLOAD_STATES,
+    DOWNLOAD_COMPLETE_STATES,
     map_download_state,
     map_remote_path,
     require_client,
@@ -148,7 +149,7 @@ class DownloadSyncService:
         recovered_count = self._recover_orphaned_imports()
         queued_count = 0
         for task in DownloadTask.select().where(
-            (DownloadTask.download_state == "completed")
+            DownloadTask.download_state.in_(DOWNLOAD_COMPLETE_STATES)
             & (DownloadTask.import_status == IMPORT_STATUS_PENDING)
         ):
             try:

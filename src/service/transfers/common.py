@@ -14,12 +14,16 @@ from src.common.media_import_status import ALLOWED_IMPORT_STATUSES
 ALLOWED_DOWNLOAD_STATES = {
     "downloading",
     "completed",
+    "seeding",
     "paused",
     "failed",
     "stalled",
     "checking",
     "queued",
 }
+# 下载已完成的状态集合：completed（下完但不做种）与 seeding（做种中）在业务上都算文件已写定，
+# 可触发自动导入 / 允许手动导入。所有需要判"任务是否已完成下载"的地方走 is_download_complete。
+DOWNLOAD_COMPLETE_STATES = {"completed", "seeding"}
 TASK_SORT_FIELDS = {
     "created_at:desc": (DownloadTask.created_at.desc(), DownloadTask.id.desc()),
     "created_at:asc": (DownloadTask.created_at.asc(), DownloadTask.id.asc()),
@@ -55,8 +59,13 @@ def map_download_state(raw_state: str) -> str:
     # 因此绝不能仅凭 progress>=1 判完成，否则自动导入会读到未写完的文件，内容指纹抽样到不稳定
     # 字节导致去重失效，把同一份内容反复导入成多条媒体记录。qB 只有在搬运与校验都结束后才会进入
     # *UP 状态，这才是文件写定的可靠信号（与 qbittorrent-api 的 is_complete 判定一致）。
-    if normalized in {"uploading", "stalledUP", "queuedUP", "pausedUP", "stoppedUP", "forcedUP"}:
-        return "completed"
+    # 归一化拆分：真正在上传/做种的 *UP 落到 seeding，下游 is_download_complete 会把 seeding
+    # 与 completed 视为等价"已完成"参与自动导入判定。前端因此可以单独把做种态用不同 badge 展示。
+    # 而 pausedUP / stoppedUP 是"下完之后被用户手动暂停"，语义上是暂停而不是做种，归到 paused；
+    # 暂停态本就不该走自动导入（未来用户恢复后再由同步流转到 seeding/completed 触发），所以
+    # is_download_complete 不覆盖 paused 是符合预期的。
+    if normalized in {"uploading", "stalledUP", "queuedUP", "forcedUP"}:
+        return "seeding"
     if normalized in {"pausedDL", "pausedUP", "stoppedDL", "stoppedUP"}:
         return "paused"
     if normalized in {"error", "missingFiles"}:
@@ -72,6 +81,11 @@ def map_download_state(raw_state: str) -> str:
     if normalized.lower() in ALLOWED_DOWNLOAD_STATES:
         return normalized.lower()
     return "queued"
+
+
+def is_download_complete(state: str) -> bool:
+    """判断下载状态是否已进入"文件写定"阶段（含做种）。"""
+    return state in DOWNLOAD_COMPLETE_STATES
 
 
 def require_client(client_id: int) -> DownloadClient:

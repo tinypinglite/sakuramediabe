@@ -1,11 +1,16 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from pydantic import Field, computed_field
 
 from src.schema.common.base import SchemaModel
+from src.schema.catalog.actors import ImageResource
 # 把下载任务的 import_status 原始码转换成中文展示文案，取值集中在 media_import_status 模块。
 from src.common.media_import_status import describe_import_status
+
+if TYPE_CHECKING:
+    # 仅在类型检查时引入 Movie，避免 schema 层反向依赖 model 层。
+    from src.model import Movie
 
 
 class DownloadClientResource(SchemaModel):
@@ -191,6 +196,11 @@ class DownloadTaskResource(SchemaModel):
     progress: float
     download_state: str
     import_status: str
+    # 内联影片元数据：让前端下载卡片可以直接展示中文标题与封面缩略图，
+    # 避免每张卡片再打一次 GET /movies/search/local 二次查。仅当 movie_number 命中本地
+    # 影片库时才会有值；未入库的番号（比如 predownload）保持 None，前端做 placeholder 处理。
+    movie_title: Optional[str] = None
+    movie_cover: Optional[ImageResource] = None
     created_at: datetime
     updated_at: datetime
 
@@ -201,26 +211,41 @@ class DownloadTaskResource(SchemaModel):
         return describe_import_status(self.import_status)
 
     @classmethod
-    def from_model(cls, task) -> "DownloadTaskResource":
-        return cls.model_validate(
-            {
-                "id": task.id,
-                "client_id": task.client_id,
-                "movie_number": task.movie,
-                "name": task.name,
-                "info_hash": task.info_hash,
-                "save_path": task.save_path,
-                "progress": task.progress,
-                "download_state": task.download_state,
-                "import_status": task.import_status,
-                "created_at": task.created_at,
-                "updated_at": task.updated_at,
-            }
-        )
+    def from_model(cls, task, *, movie: "Optional[Movie]" = None) -> "DownloadTaskResource":
+        data = {
+            "id": task.id,
+            "client_id": task.client_id,
+            "movie_number": task.movie,
+            "name": task.name,
+            "info_hash": task.info_hash,
+            "save_path": task.save_path,
+            "progress": task.progress,
+            "download_state": task.download_state,
+            "import_status": task.import_status,
+            "created_at": task.created_at,
+            "updated_at": task.updated_at,
+        }
+        if movie is not None:
+            # 中文标题优先，回落到原始标题；两者都为空时保持 None（前端会 fallback 到 task.name）。
+            title_zh = (movie.title_zh or "").strip()
+            title = (movie.title or "").strip()
+            data["movie_title"] = title_zh or title or None
+            # cover_image 是可空 FK；有值才组装 ImageResource，让签名逻辑走 field_validator。
+            if movie.cover_image is not None:
+                data["movie_cover"] = ImageResource.from_attributes_model(movie.cover_image)
+        return cls.model_validate(data)
 
     @classmethod
-    def from_models(cls, tasks) -> List["DownloadTaskResource"]:
-        return [cls.from_model(task) for task in tasks]
+    def from_models(
+        cls,
+        tasks,
+        *,
+        movies_by_number: "Optional[Dict[str, Movie]]" = None,
+    ) -> List["DownloadTaskResource"]:
+        # movies_by_number 由调用方在 service 层批量查出（按 movie_number 索引），
+        # 单次列表只做一趟 JOIN，避免 N+1。未传时退化为原有行为，兼容单任务/事件路径。
+        index = movies_by_number or {}
+        return [cls.from_model(task, movie=index.get(task.movie)) for task in tasks]
 
 
 class DownloadTasksQuery(SchemaModel):
@@ -228,6 +253,9 @@ class DownloadTasksQuery(SchemaModel):
     page_size: int = Field(default=20, ge=1, le=100)
     client_id: Optional[int] = Field(default=None, gt=0)
     movie_number: Optional[str] = None
+    # 按下载状态精确筛选（如 downloading / seeding / paused / failed）。取值集合与
+    # ALLOWED_DOWNLOAD_STATES 一致；空串 / null 表示不过滤。
+    download_state: Optional[str] = None
     sort: Optional[str] = None
 
 

@@ -131,6 +131,7 @@ def list_download_tasks(
         page_size=query.page_size,
         client_id=query.client_id,
         movie_number=query.movie_number,
+        download_state=query.download_state,
         sort=query.sort,
     )
 

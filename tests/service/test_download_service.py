@@ -162,19 +162,35 @@ def test_qbittorrent_client_rejects_unmanaged_torrent_control():
 @pytest.mark.parametrize(
     "raw_state, expected",
     [
-        # qBittorrent 5.x 改名后的停止状态
+        # qBittorrent 5.x 改名后的停止状态：无论下载中还是完成后被暂停，语义都是 paused
         ("stoppedDL", "paused"),
-        ("stoppedUP", "completed"),
+        ("stoppedUP", "paused"),
         # 旧名称继续兼容
         ("pausedDL", "paused"),
-        ("pausedUP", "completed"),
-        # 做种态都算下载完成
-        ("uploading", "completed"),
-        ("stalledUP", "completed"),
+        ("pausedUP", "paused"),
+        # 真正在上传/做种的状态归到 seeding，让前端能与 completed 区分展示
+        ("uploading", "seeding"),
+        ("stalledUP", "seeding"),
+        ("queuedUP", "seeding"),
+        ("forcedUP", "seeding"),
     ],
 )
 def test_map_download_state_handles_qb5_stopped_states(raw_state, expected):
     assert map_download_state(raw_state) == expected
+
+
+@pytest.mark.parametrize("seeding_raw", ["uploading", "stalledUP", "queuedUP", "forcedUP"])
+def test_is_download_complete_covers_seeding(seeding_raw):
+    from src.service.transfers.common import is_download_complete
+
+    normalized = map_download_state(seeding_raw)
+    assert normalized == "seeding"
+    # 做种态在业务上等价于"下载已完成、文件已写定"，可参与自动导入判定。
+    assert is_download_complete(normalized) is True
+    assert is_download_complete("completed") is True
+    assert is_download_complete("downloading") is False
+    # 暂停态即使发生在下载完成后，也不应被视作可自动导入的"完成"状态。
+    assert is_download_complete("paused") is False
 
 
 @pytest.mark.parametrize(
@@ -1404,7 +1420,8 @@ def test_download_sync_service_maps_remote_tasks_and_updates_existing(download_t
     assert summary.created_count == 1
     assert summary.updated_count == 1
     assert task.movie == "ABC-001"
-    assert task.download_state == "completed"
+    # qB 原始 state=uploading 归一到 seeding（做种态即"下载完成 + 正在做种"），前端可用不同 badge 展示。
+    assert task.download_state == "seeding"
     assert task.save_path == "/mnt/downloads/a/ABC-001"
 
 
@@ -1510,6 +1527,58 @@ def test_download_sync_service_enqueues_auto_imports(download_tables, monkeypatc
 
     assert summary == {"queued_count": 1, "recovered_count": 0}
     assert called == [(completed.id, {"pending"}, "internal")]
+
+
+def test_download_sync_service_enqueues_seeding_tasks_alongside_completed(
+    download_tables, monkeypatch, tmp_path
+):
+    # 做种态在业务上等价于"下载完成，正在做种"，同样应被 auto_import 拾起，避免用户开启做种后
+    # 任务卡在 seeding 状态里永远进不去导入流程。
+    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    client = DownloadClient.create(
+        name="client-a",
+        base_url="http://localhost:8080",
+        username="alice",
+        password="secret",
+        client_save_path="/downloads/a",
+        local_root_path=str(tmp_path / "downloads"),
+        media_library=library,
+    )
+    (tmp_path / "downloads" / "ABC-100").mkdir(parents=True)
+    (tmp_path / "downloads" / "ABC-101").mkdir(parents=True)
+    seeding_task = DownloadTask.create(
+        client=client,
+        movie="ABC-100",
+        name="ABC-100",
+        info_hash="hash-seed",
+        save_path=str(tmp_path / "downloads" / "ABC-100"),
+        progress=1.0,
+        download_state="seeding",
+        import_status="pending",
+    )
+    completed_task = DownloadTask.create(
+        client=client,
+        movie="ABC-101",
+        name="ABC-101",
+        info_hash="hash-done",
+        save_path=str(tmp_path / "downloads" / "ABC-101"),
+        progress=1.0,
+        download_state="completed",
+        import_status="pending",
+    )
+    called = []
+    monkeypatch.setattr(
+        DownloadTaskService,
+        "trigger_import",
+        classmethod(
+            lambda cls, task_id, allowed_statuses=None, trigger_type="manual": called.append(task_id)
+        ),
+    )
+
+    summary = DownloadSyncService().enqueue_auto_imports()
+
+    assert summary == {"queued_count": 2, "recovered_count": 0}
+    assert sorted(called) == sorted([seeding_task.id, completed_task.id])
 
 
 def test_download_sync_service_recovers_orphaned_running_import_before_requeue(
@@ -2393,6 +2462,18 @@ def test_download_task_service_lists_filters_and_controls_tasks(download_tables)
     assert page.total == 1
     assert page.items[0].id == first.id
 
+    # 按 download_state 精确筛选：downloading 只匹配 first，queued 只匹配另一条
+    downloading_page = DownloadTaskService.list_tasks(download_state="downloading")
+    assert [item.id for item in downloading_page.items] == [first.id]
+    queued_page = DownloadTaskService.list_tasks(download_state="queued")
+    assert [item.movie_number for item in queued_page.items] == ["DEF-002"]
+    # 空字符串等价于不过滤
+    assert DownloadTaskService.list_tasks(download_state="  ").total == 2
+    # 非法值直接抛 422
+    with pytest.raises(ApiError) as exc_info:
+        DownloadTaskService.list_tasks(download_state="not-a-state")
+    assert exc_info.value.code == "invalid_download_task_filter"
+
     calls = []
 
     class FakeQBittorrentClient:
@@ -2424,6 +2505,69 @@ def test_download_task_service_lists_filters_and_controls_tasks(download_tables)
         ("resume", "hash-1", first_client.id),
         ("delete", "hash-1", first_client.id, True),
     ]
+
+
+def test_list_download_tasks_inlines_movie_title_and_cover(download_tables):
+    # 让前端下载卡片能直接展示中文标题 + 封面，不再逐张卡片二次查 GET /movies/search/local。
+    library = _create_library()
+    client = _create_client(library)
+    cover = Image.create(
+        origin="/files/images/orig.jpg",
+        small="/files/images/s.jpg",
+        medium="/files/images/m.jpg",
+        large="/files/images/l.jpg",
+    )
+    movie = Movie.create(
+        javdb_id="javdb-ABC-001",
+        movie_number="ABC-001",
+        title="ABC-001 Original",
+        title_zh="中文标题",
+        cover_image=cover,
+        is_subscribed=False,
+    )
+    DownloadTask.create(
+        client=client,
+        movie=movie.movie_number,
+        name="ABC-001 raw",
+        info_hash="hash-with-movie",
+        save_path="/downloads/a/ABC-001",
+        progress=1.0,
+        download_state="seeding",
+        import_status="pending",
+    )
+    # 番号在库里查不到的下载任务：movie_title / movie_cover 应保持 None，前端 fallback 到 task.name
+    DownloadTask.create(
+        client=client,
+        movie="NOEXIST-999",
+        name="unknown movie",
+        info_hash="hash-no-movie",
+        save_path="/downloads/a/NOEXIST-999",
+        progress=0.5,
+        download_state="downloading",
+        import_status="pending",
+    )
+    # 无番号的下载任务（predownload 场景）：不应把它算进 movie JOIN 的 IN 列表里
+    DownloadTask.create(
+        client=client,
+        movie=None,
+        name="raw torrent",
+        info_hash="hash-no-number",
+        save_path="/downloads/a/raw",
+        progress=0.1,
+        download_state="downloading",
+        import_status="pending",
+    )
+
+    page = DownloadTaskService.list_tasks(page=1, page_size=20)
+    by_hash = {item.info_hash: item for item in page.items}
+
+    assert by_hash["hash-with-movie"].movie_title == "中文标题"
+    assert by_hash["hash-with-movie"].movie_cover is not None
+    assert by_hash["hash-with-movie"].movie_cover.origin == "/files/images/orig.jpg"
+    assert by_hash["hash-no-movie"].movie_title is None
+    assert by_hash["hash-no-movie"].movie_cover is None
+    assert by_hash["hash-no-number"].movie_title is None
+    assert by_hash["hash-no-number"].movie_cover is None
 
 
 def test_download_task_service_rejects_delete_while_import_running(download_tables):
