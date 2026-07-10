@@ -23,6 +23,7 @@ class _FakeOrtSession:
         self.disable_fallback_called = False
         self.execution_provider = self.default_execution_provider
         self.run_calls = 0
+        self.run_batch_sizes: list[int] = []
         self.fail_on_run = self.default_fail_on_run
         _FakeOrtSession.last_instance = self
 
@@ -44,6 +45,7 @@ class _FakeOrtSession:
             raise RuntimeError("probe failed")
         batch = next(iter(inputs.values()))
         batch_size = int(batch.shape[0])
+        self.run_batch_sizes.append(batch_size)
         return [np.ones((batch_size, 768), dtype=np.float32)]
 
 
@@ -433,6 +435,36 @@ def test_openvino_cpu_runs_inference_in_single_batch(monkeypatch, tmp_path):
 
     assert len(vectors) == 4
     assert infer_request.infer_calls - calls_before == 1
+
+
+# ----- ORT CPU 分支测试 -----
+
+
+def test_cpu_runs_inference_one_image_at_a_time(monkeypatch, tmp_path):
+    # 回归测试:上游 inference_batch_size=16 会把整批打到服务端,而 ViT-448 的 attention
+    # 中间张量按 batch×seq² 增长,整批推理的峰值内存足以打爆容器。CPU 后端必须逐张跑。
+    monkeypatch.setattr(runtime_module, "ort", _FakeOrtModule)
+    _FakeOrtModule.available_providers = ["CPUExecutionProvider"]
+    _FakeOrtSession.default_execution_provider = "CPUExecutionProvider"
+
+    runtime = JoyTagOnnxRuntime(
+        JoyTagInferSettings(
+            backend="cpu",
+            model_path=_create_model_file(tmp_path),
+        )
+    )
+
+    assert runtime._infer_chunk_size == 1
+    session = _FakeOrtSession.last_instance
+    run_calls_before = session.run_calls
+    session.run_batch_sizes.clear()
+
+    vectors = runtime.embed_image_batch([_make_png_bytes() for _ in range(16)])
+
+    assert len(vectors) == 16
+    # 16 张图 -> 16 次 infer，每次只喂 1 张，而非 1 次整批 16 张。
+    assert session.run_calls - run_calls_before == 16
+    assert session.run_batch_sizes == [1] * 16
 
 
 # ----- CUDA 分支测试(仍走 ORT,不改) -----

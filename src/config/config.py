@@ -326,7 +326,8 @@ class IndexerSettings(BaseModel):
 
 class ImageSearch(BaseModel):
     inference_base_url: str = "http://joytag-infer:8001"
-    inference_timeout_seconds: float = 30.0
+    # CPU 后端逐张推理，一批 16 张会串行跑满 16 次；30s 不足以覆盖，中途超时会让整批作废。
+    inference_timeout_seconds: float = 120.0
     inference_connect_timeout_seconds: float = 3.0
     inference_api_key: str | None = None
     inference_batch_size: int = 16
