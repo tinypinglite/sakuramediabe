@@ -36,6 +36,11 @@ class QdrantThumbnailStore:
     HNSW_M = 16
     HNSW_EF_CONSTRUCT = 128
     HNSW_EF_SEARCH = 128
+    # 后台 HNSW rebuild 默认会用满所有 CPU 核，这里显式限死并发，避免索引任务时把宿主机拖垮。
+    MAX_OPTIMIZATION_THREADS = 1
+    HNSW_MAX_INDEXING_THREADS = 2
+    # 提高触发阈值降低 rebuild 频率，代价是"未索引区"变大、部分搜索走暴力扫描。
+    INDEXING_THRESHOLD = 50000
 
     def __init__(
         self,
@@ -82,6 +87,8 @@ class QdrantThumbnailStore:
         client = self._get_client()
         if self._collection_exists():
             self._validate_collection(vector_size)
+            # 历史部署可能没设线程/阈值参数，走升级路径把配置对齐到当前期望值。
+            self._apply_runtime_config()
             return
         client.create_collection(
             collection_name=self.collection_name,
@@ -94,7 +101,12 @@ class QdrantThumbnailStore:
             hnsw_config=models.HnswConfigDiff(
                 m=self.HNSW_M,
                 ef_construct=self.HNSW_EF_CONSTRUCT,
+                max_indexing_threads=self.HNSW_MAX_INDEXING_THREADS,
                 on_disk=True,
+            ),
+            optimizers_config=models.OptimizersConfigDiff(
+                max_optimization_threads=self.MAX_OPTIMIZATION_THREADS,
+                indexing_threshold=self.INDEXING_THRESHOLD,
             ),
             # payload 也落盘，避免百万级元数据索引额外抬高常驻内存。
             on_disk_payload=True,
@@ -122,6 +134,62 @@ class QdrantThumbnailStore:
             raise ValueError(
                 f"Qdrant collection `{self.collection_name}` vector dtype mismatch: "
                 f"expected=float16, actual={actual_dtype}"
+            )
+
+    def _apply_runtime_config(self) -> None:
+        """把现有集合的 optimizer / hnsw 关键参数对齐到当前期望值。
+
+        HNSW 线程/阈值仅影响 *未来* 触发的 rebuild，历史已建好的图不会被强制重建，
+        因此升级本身零 CPU 冲击。任何一步失败都只 warn，不阻塞后续索引流程。
+        """
+        client = self._get_client()
+        try:
+            info = client.get_collection(self.collection_name)
+        except Exception as exc:
+            logger.warning(
+                "Skip qdrant runtime config diff collection={} detail={}",
+                self.collection_name,
+                exc,
+            )
+            return
+
+        config = getattr(info, "config", None)
+        optimizer_cfg = getattr(config, "optimizer_config", None)
+        hnsw_cfg = getattr(config, "hnsw_config", None)
+
+        optimizers_patch: dict[str, Any] = {}
+        if optimizer_cfg is not None:
+            if getattr(optimizer_cfg, "max_optimization_threads", None) != self.MAX_OPTIMIZATION_THREADS:
+                optimizers_patch["max_optimization_threads"] = self.MAX_OPTIMIZATION_THREADS
+            if getattr(optimizer_cfg, "indexing_threshold", None) != self.INDEXING_THRESHOLD:
+                optimizers_patch["indexing_threshold"] = self.INDEXING_THRESHOLD
+
+        hnsw_patch: dict[str, Any] = {}
+        if hnsw_cfg is not None:
+            if getattr(hnsw_cfg, "max_indexing_threads", None) != self.HNSW_MAX_INDEXING_THREADS:
+                hnsw_patch["max_indexing_threads"] = self.HNSW_MAX_INDEXING_THREADS
+
+        if not optimizers_patch and not hnsw_patch:
+            return
+
+        logger.info(
+            "Upgrading qdrant collection config collection={} optimizers_patch={} hnsw_patch={}",
+            self.collection_name,
+            optimizers_patch,
+            hnsw_patch,
+        )
+        kwargs: dict[str, Any] = {"collection_name": self.collection_name}
+        if optimizers_patch:
+            kwargs["optimizers_config"] = models.OptimizersConfigDiff(**optimizers_patch)
+        if hnsw_patch:
+            kwargs["hnsw_config"] = models.HnswConfigDiff(**hnsw_patch)
+        try:
+            client.update_collection(**kwargs)
+        except Exception as exc:
+            logger.warning(
+                "Qdrant collection config upgrade failed collection={} detail={}",
+                self.collection_name,
+                exc,
             )
 
     @staticmethod
