@@ -30,6 +30,7 @@ from src.service.catalog.movie_desc_translation_test_support import (
     DEFAULT_TEST_TRANSLATION_PROMPT,
 )
 from src.service.playback import MediaFileScanService, MediaLibraryService
+from src.service.playback.jav_layout_migration_service import JavLayoutMigrationService
 from src.service.system import TaskRunConflictError
 from src.start.initdb import create_tables
 
@@ -630,6 +631,41 @@ def scan_media_files():
         f"failed_media={stats['failed_media']} "
         f"invalidated_media={stats['invalidated_media']} "
         f"revived_media={stats['revived_media']}"
+    )
+
+
+@main.command(name="migrate-jav-layout")
+@click.option("--library-id", type=int, default=None,
+              help="只迁移指定 library；缺省时处理全部媒体库。")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="只统计不改任何东西，用于升级前预览规模。")
+def migrate_jav_layout(library_id: int | None, dry_run: bool):
+    """把 JAV 从 <root>/番号/ 迁到 <root>/jav/番号/。
+
+    单文件 4 步流程 + DB update 原子提交点，Ctrl+C / crash 后重跑可自动收敛：
+    已达 F 的走 fast-path skip，中间态的会被恢复。
+    """
+    logger.info("CLI migrate-jav-layout start library_id={} dry_run={}", library_id, dry_run)
+    _ensure_database_ready()
+
+    def _progress(current: int, total: int, current_library_id: int) -> None:
+        # 每 50 条打一次点，加上末尾一次；避免大库时 stderr 静默
+        if current % 50 == 0 or current == total:
+            click.echo(
+                f"  library_id={current_library_id}  {current}/{total}",
+                err=True,
+            )
+
+    stats = JavLayoutMigrationService.run(
+        library_id=library_id,
+        dry_run=dry_run,
+        progress_callback=_progress,
+    )
+    payload = stats.to_dict()
+    logger.info("CLI migrate-jav-layout finished dry_run={} stats={}", dry_run, payload)
+    click.echo(
+        "jav layout migrate finished "
+        f"(dry_run={str(dry_run).lower()}): {payload}"
     )
 
 

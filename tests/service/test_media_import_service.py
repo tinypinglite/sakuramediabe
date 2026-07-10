@@ -218,10 +218,12 @@ def test_import_media_groups_by_number_and_creates_one_version_per_video(
     assert len(media_items) == 2
     parent_directories = {Path(item.path).parent.name for item in media_items}
     assert len(parent_directories) == 2
+    # JAV 实体目录：库根/jav/番号/版本；番号目录在 parent.parent，其父目录 jav 在 parent.parent.parent
     assert all(Path(item.path).parent.parent.name == "ABP-123" for item in media_items)
+    assert all(Path(item.path).parent.parent.parent.name == "jav" for item in media_items)
     assert {Path(item.path).name for item in media_items} == {"ABP-123.mkv", "ABP-123.mp4"}
     subtitle_paths = sorted(path.relative_to(library_root).as_posix() for path in library_root.rglob("*.srt"))
-    assert subtitle_paths == ["ABP-123/1730000000000/ABP-123.srt"]
+    assert subtitle_paths == ["jav/ABP-123/1730000000000/ABP-123.srt"]
     assert set(media.special_tags for media in media_items) == {"中字 无码", "普通"}
     assert set(media.storage_mode for media in media_items).issubset({"hardlink", "copy"})
 
@@ -785,9 +787,10 @@ def test_import_media_duplicate_check_happens_before_version_directory_creation(
     )
 
     service.import_from_source(str(source_dir), library.id)
-    first_versions = sorted(path.name for path in (library_root / "ABP-123").iterdir() if path.is_dir())
+    # JAV 布局：库根/jav/番号/版本
+    first_versions = sorted(path.name for path in (library_root / "jav" / "ABP-123").iterdir() if path.is_dir())
     service.import_from_source(str(source_dir), library.id)
-    second_versions = sorted(path.name for path in (library_root / "ABP-123").iterdir() if path.is_dir())
+    second_versions = sorted(path.name for path in (library_root / "jav" / "ABP-123").iterdir() if path.is_dir())
 
     assert first_versions == ["1730000000000"]
     assert second_versions == ["1730000000000"]
@@ -1424,7 +1427,8 @@ def test_import_media_merges_multi_file_vr_into_single_media(
     assert media.special_tags == "中字 VR"
     assert media.file_size_bytes == len(b"merged-video")
     assert Path(media.path).name == "SIVR-001.mp4"
-    assert (library_root / "SIVR-001" / "1730000000000" / "SIVR-001.srt").read_text(encoding="utf-8") == "subtitle"
+    # JAV 布局：库根/jav/番号/版本
+    assert (library_root / "jav" / "SIVR-001" / "1730000000000" / "SIVR-001.srt").read_text(encoding="utf-8") == "subtitle"
 
 
 def test_import_media_cleanup_source_removes_vr_fragments_after_merge(

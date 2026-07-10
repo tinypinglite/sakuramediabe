@@ -24,6 +24,7 @@ from src.service.playback.media_metadata_probe_service import MediaMetadataProbe
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 from src.service.transfers.file_transfer import (
+    JAV_LIBRARY_SUBDIR,
     create_version_directory,
     delete_source_files,
     transfer_file,
@@ -140,7 +141,7 @@ def import_vr_media_group(
         return False, 0
 
     target_directory = create_version_directory(
-        Path(library.root_path).expanduser() / movie.movie_number,
+        Path(library.root_path).expanduser() / JAV_LIBRARY_SUBDIR / movie.movie_number,
         now_ms=now_ms(),
     )
     target_path = target_directory / f"{movie.movie_number}{group.files[0].path.suffix.lower()}"
@@ -273,8 +274,11 @@ def _import_single_media_file(
 ) -> Tuple[str, Path]:
     """为单个媒体文件创建目标版本目录并完成文件传输。"""
     library_root = Path(library.root_path).expanduser()
-    # 复用共享版本目录工具，JAV 实体目录为“库根/番号”。
-    target_directory = create_version_directory(library_root / movie_number, now_ms=now_ms())
+    # 复用共享版本目录工具，JAV 实体目录为“库根/jav/番号”，和 videos 平级。
+    target_directory = create_version_directory(
+        library_root / JAV_LIBRARY_SUBDIR / movie_number,
+        now_ms=now_ms(),
+    )
     target_filename = f"{movie_number}{file_path.suffix.lower()}"
     target_path = target_directory / target_filename
     storage_mode = transfer_file(file_path, target_path, transfer_mode=transfer_mode)
