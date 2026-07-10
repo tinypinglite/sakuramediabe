@@ -41,6 +41,7 @@ dev = [
     "pytest>=7.4.0,<8.0.0",
     "pytest-xdist>=3.5.0,<4.0.0",
     "pytest-testmon>=2.1.0,<3.0.0",
+    "pytest-asyncio>=0.23.0,<0.24.0",
     "pylint>=3.3.7,<4.0.0",
 ]
 
@@ -49,6 +50,11 @@ dev = [
 # 调试单个用例需要 -s / pdb / 断点时，用 `-n0` 关闭并行：uv run pytest -n0 path::case
 addopts = "-n auto"
 testpaths = ["tests"]
+# pytest-asyncio auto 模式：所有 async def test_* 自动按协程执行，免逐个 @pytest.mark.asyncio。
+asyncio_mode = "auto"
+markers = [
+    "cloud115_integration: hits real 115 API using COOKIE_115 env var; skip by default",
+]
 
 [tool.uv]
 environments = [
