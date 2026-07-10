@@ -29,6 +29,20 @@ ensure_app_identity() {
     usermod -o -u "${target_uid}" "${APP_USER}"
 }
 
+chown_if_mismatch() {
+    # 目录属主已经是目标 UID/GID 时直接返回，正常重启零开销；只在不匹配时 chown，且仅改 inode 本身。
+    local target_uid="$1"
+    local target_gid="$2"
+    local path="$3"
+    [ -e "${path}" ] || return 0
+    local cur_uid cur_gid
+    cur_uid="$(stat -c '%u' "${path}")"
+    cur_gid="$(stat -c '%g' "${path}")"
+    if [ "${cur_uid}" != "${target_uid}" ] || [ "${cur_gid}" != "${target_gid}" ]; then
+        chown "${target_uid}:${target_gid}" "${path}" || true
+    fi
+}
+
 bootstrap_data_dirs() {
     mkdir -p \
         "${DATA_ROOT}/config" \
@@ -37,6 +51,23 @@ bootstrap_data_dirs() {
         "${DATA_ROOT}/cache/gfriends" \
         "${DATA_ROOT}/media-clips" \
         "${DATA_ROOT}/logs"
+
+    # bind mount 上来的 /data 可能属主是 root 或宿主机用户，导致切到 app 用户后写不进 config.toml/日志。
+    # 只把我们自己 mkdir 的目录节点归给 app，非递归——volume 里的历史缓存/媒体文件保持原样，避免海量文件被扫。
+    # 顶层 ${DATA_ROOT} 是用户挂载点，此处不动；app 用户只需要在下列子目录内新建文件即可。
+    local target_uid="${PUID:-1000}"
+    local target_gid="${PGID:-1000}"
+    local dir
+    for dir in \
+        "${DATA_ROOT}/config" \
+        "${DATA_ROOT}/cache" \
+        "${DATA_ROOT}/cache/assets" \
+        "${DATA_ROOT}/cache/subtitles" \
+        "${DATA_ROOT}/cache/gfriends" \
+        "${DATA_ROOT}/media-clips" \
+        "${DATA_ROOT}/logs"; do
+        chown_if_mismatch "${target_uid}" "${target_gid}" "${dir}"
+    done
 }
 
 wait_for_database() {

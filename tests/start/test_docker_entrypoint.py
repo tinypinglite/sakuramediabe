@@ -15,6 +15,26 @@ def _build_fake_bin(bin_dir: Path) -> None:
     _write_executable(bin_dir / "usermod", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(bin_dir / "groupmod", "#!/usr/bin/env bash\nexit 0\n")
     _write_executable(bin_dir / "useradd", "#!/usr/bin/env bash\nexit 0\n")
+    # entrypoint 用 GNU stat -c 语法查目录属主，macOS 上 BSD stat 参数不同，必须桩掉；
+    # 固定回 0 让属主检查始终视为不匹配，从而触发下方 chown 桩记录调用。
+    _write_executable(
+        bin_dir / "stat",
+        "#!/usr/bin/env bash\n"
+        "if [ \"$1\" = \"-c\" ] && { [ \"$2\" = \"%u\" ] || [ \"$2\" = \"%g\" ]; }; then\n"
+        "  echo 0\n"
+        "  exit 0\n"
+        "fi\n"
+        "exit 1\n",
+    )
+    # 默认 no-op；只在设了 CHOWN_LOG_PATH 时把参数写进独立日志，避免污染 su/supervisord 日志的行数断言。
+    _write_executable(
+        bin_dir / "chown",
+        "#!/usr/bin/env bash\n"
+        "if [ -n \"${CHOWN_LOG_PATH:-}\" ]; then\n"
+        "  printf 'chown:%s\\n' \"$*\" >> \"$CHOWN_LOG_PATH\"\n"
+        "fi\n"
+        "exit 0\n",
+    )
     _write_executable(
         bin_dir / "su",
         "#!/usr/bin/env bash\n"
@@ -40,6 +60,7 @@ def _run_entrypoint(
     fail_wait_db: bool = False,
     args: list[str] | None = None,
     create_config: bool = True,
+    chown_log: bool = False,
 ):
     repo_root = Path(__file__).resolve().parents[2]
     script_path = repo_root / "docker" / "backend" / "docker-entrypoint.sh"
@@ -68,6 +89,9 @@ def _run_entrypoint(
             "SAKURAMEDIA_SUPERVISORD_CONFIG": str(tmp_path / "supervisord.conf"),
         }
     )
+    chown_log_path = tmp_path / "chown.log"
+    if chown_log:
+        env["CHOWN_LOG_PATH"] = str(chown_log_path)
     command = ["bash", str(script_path), *(args or ["start"])]
     result = subprocess.run(command, capture_output=True, text=True, env=env)
     lines = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
@@ -134,3 +158,33 @@ def test_docker_entrypoint_passthrough_for_non_start_commands(tmp_path):
     assert result.returncode == 0
     assert result.stdout.strip() == "hello"
     assert lines == []
+
+
+def test_docker_entrypoint_chowns_managed_dirs_only(tmp_path):
+    # 用户可能在 /data 下放无关目录（备份、其它项目共享数据等），入口脚本必须一根汗毛不动。
+    data_root = tmp_path / "data"
+    (data_root / "user-stuff").mkdir(parents=True, exist_ok=True)
+    (data_root / "backup").mkdir(parents=True, exist_ok=True)
+
+    result, _ = _run_entrypoint(tmp_path, chown_log=True)
+    assert result.returncode == 0, result.stderr
+
+    chown_log = (tmp_path / "chown.log").read_text(encoding="utf-8").splitlines()
+    chown_targets = {line.split()[-1] for line in chown_log if line.startswith("chown:")}
+    expected = {
+        str(data_root / sub)
+        for sub in (
+            "config",
+            "cache",
+            "cache/assets",
+            "cache/subtitles",
+            "cache/gfriends",
+            "media-clips",
+            "logs",
+        )
+    }
+    assert chown_targets == expected, chown_targets
+    # 顶层 DATA_ROOT 和用户自建目录都不能被 chown 触碰。
+    assert str(data_root) not in chown_targets
+    assert str(data_root / "user-stuff") not in chown_targets
+    assert str(data_root / "backup") not in chown_targets
