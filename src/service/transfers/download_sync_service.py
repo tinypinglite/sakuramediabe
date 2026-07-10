@@ -60,12 +60,14 @@ class DownloadSyncService:
         created_count = 0
         updated_count = 0
         unchanged_count = 0
+        remote_hashes: set[str] = set()
         for remote_task in remote_tasks:
             normalized_state = map_download_state(remote_task.get("state", ""))
             movie_number = parse_movie_number_from_text(
                 f"{remote_task.get('name', '')} {remote_task.get('save_path', '')}"
             ) or None
             mapped_path = map_remote_path(client, remote_task.get("save_path") or client.client_save_path)
+            remote_hashes.add(remote_task["info_hash"])
             task, created = DownloadTask.get_or_create(
                 client=client,
                 info_hash=remote_task["info_hash"],
@@ -104,19 +106,70 @@ class DownloadSyncService:
             else:
                 unchanged_count += 1
 
+        removed_count = self._prune_ghost_tasks(client.id, remote_hashes)
+
         return DownloadClientSyncResponse(
             client_id=client.id,
             scanned_count=len(remote_tasks),
             created_count=created_count,
             updated_count=updated_count,
             unchanged_count=unchanged_count,
+            removed_count=removed_count,
         )
+
+    @staticmethod
+    def _prune_ghost_tasks(client_id: int, remote_hashes: set[str]) -> int:
+        """把 qB 侧已消失的下载任务从本地清掉，作为 sync 的反向对账。
+
+        白名单（保留不删）：
+        - import_status == running：runner 正在处理，删了会破坏 in-flight 状态
+        - 有 state IN (pending, running) 的关联 ImportJob：导入队列还没消化完
+
+        保底：qB 返回空列表时直接跳过，避免 tag 被误清 / 异常空返回一次抹掉所有本地记录。
+        真需要清空的极端场景后续可加显式接口处理。ImportJob.download_task 是 SET NULL FK，
+        清理 DownloadTask 不影响 ImportJob 里已导入的历史台账。
+
+        用单条 DELETE 让白名单条件在 DB 层原子求值，关掉"先 SELECT ghost_ids、再按 id
+        DELETE"中间被并发的 trigger_import 插队的 race——那种场景下正在启动导入的任务会被
+        误删，runner 后续 require_task 会抛错。
+
+        已知遗留：SSE hub 的 _task_index 有该 client 的 info_hash→task_id 内存索引，本函数
+        不主动 evict。用户在活跃 SSE 会话期间恰好重新下载被 prune 掉的同一种子时，实时进度
+        事件可能带旧 task_id，刷新页面即恢复。要闭环该窗口需要把 hub 引用穿透进本服务，暂
+        不在本 PR 处理。
+        """
+        if not remote_hashes:
+            logger.warning(
+                "Skip ghost download task prune: qBittorrent returned empty list "
+                "for client_id={} — check tag / auth state before manual cleanup",
+                client_id,
+            )
+            return 0
+
+        active_import_task_ids = ImportJob.select(ImportJob.download_task).where(
+            ImportJob.state.in_((IMPORT_JOB_STATE_PENDING, IMPORT_JOB_STATE_RUNNING))
+            & ImportJob.download_task.is_null(False)
+        )
+        removed_count = DownloadTask.delete().where(
+            (DownloadTask.client == client_id)
+            & DownloadTask.info_hash.not_in(list(remote_hashes))
+            & (DownloadTask.import_status != IMPORT_STATUS_RUNNING)
+            & DownloadTask.id.not_in(active_import_task_ids)
+        ).execute()
+        if removed_count:
+            logger.info(
+                "Pruned {} ghost download tasks for client_id={}",
+                removed_count,
+                client_id,
+            )
+        return removed_count
 
     def sync_all_clients(self) -> Dict[str, int]:
         total_scanned = 0
         total_created = 0
         total_updated = 0
         total_unchanged = 0
+        total_removed = 0
         total_clients = 0
         failed_client_ids: list[int] = []
         for client in DownloadClient.select().order_by(DownloadClient.id.asc()):
@@ -135,12 +188,14 @@ class DownloadSyncService:
             total_created += summary.created_count
             total_updated += summary.updated_count
             total_unchanged += summary.unchanged_count
+            total_removed += summary.removed_count
         return {
             "total_clients": total_clients,
             "scanned_count": total_scanned,
             "created_count": total_created,
             "updated_count": total_updated,
             "unchanged_count": total_unchanged,
+            "removed_count": total_removed,
             "failed_count": len(failed_client_ids),
             "failed_client_ids": failed_client_ids,
         }

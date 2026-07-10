@@ -1425,6 +1425,171 @@ def test_download_sync_service_maps_remote_tasks_and_updates_existing(download_t
     assert task.save_path == "/mnt/downloads/a/ABC-001"
 
 
+def test_download_sync_service_prunes_ghost_tasks_missing_from_remote(download_tables):
+    # qB 侧手动删掉的种子（本系统 API 没走过），本地会残留 DownloadTask 幽灵记录，前端列表接口
+    # 一直返回；sync 后应做反向对账把不在 remote 集合里的本地任务清掉。
+    library = _create_library()
+    client = _create_client(library)
+    kept = DownloadTask.create(
+        client=client, movie="ABC-001", name="ABC-001", info_hash="hash-live",
+        save_path="/mnt/downloads/a/ABC-001", progress=1.0,
+        download_state="downloading", import_status="pending",
+    )
+    ghost_pending = DownloadTask.create(
+        client=client, movie="GHOST-1", name="ghost pending", info_hash="hash-ghost-pending",
+        save_path="/mnt/downloads/a/ghost1", progress=0.4,
+        download_state="downloading", import_status="pending",
+    )
+    # 方案 A：completed 也一起清（历史查 ImportJob 表，不靠 DownloadTask 台账）
+    ghost_completed = DownloadTask.create(
+        client=client, movie="GHOST-2", name="ghost completed", info_hash="hash-ghost-completed",
+        save_path="/mnt/downloads/a/ghost2", progress=1.0,
+        download_state="completed", import_status="completed",
+    )
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls()
+
+        def list_torrents(self, *, client_id=None):
+            return [{
+                "info_hash": "hash-live", "name": "ABC-001", "progress": 1.0,
+                "state": "downloading", "save_path": "/downloads/a/ABC-001",
+            }]
+
+    summary = DownloadSyncService(qbittorrent_client_cls=FakeQBittorrentClient).sync_client(client.id)
+
+    assert summary.removed_count == 2
+    assert DownloadTask.get_or_none(DownloadTask.id == kept.id) is not None
+    assert DownloadTask.get_or_none(DownloadTask.id == ghost_pending.id) is None
+    assert DownloadTask.get_or_none(DownloadTask.id == ghost_completed.id) is None
+
+
+def test_download_sync_service_keeps_ghost_when_import_running_or_pending_job(download_tables):
+    # 白名单：import_status=running 或有 pending/running ImportJob 的任务，即使 qB 侧已消失
+    # 也不能清，删了会破坏 in-flight 的导入状态；等 runner 走完再由后续 sync 收尾。
+    library = _create_library()
+    client = _create_client(library)
+    running_task = DownloadTask.create(
+        client=client, movie="RUN-1", name="running", info_hash="hash-running",
+        save_path="/mnt/downloads/a/run1", progress=1.0,
+        download_state="completed", import_status="running",
+    )
+    pending_job_task = DownloadTask.create(
+        client=client, movie="RUN-2", name="pending job", info_hash="hash-pending-job",
+        save_path="/mnt/downloads/a/run2", progress=1.0,
+        download_state="completed", import_status="pending",
+    )
+    running_job_task = DownloadTask.create(
+        client=client, movie="RUN-3", name="running job", info_hash="hash-running-job",
+        save_path="/mnt/downloads/a/run3", progress=1.0,
+        download_state="completed", import_status="pending",
+    )
+    # 已完成的 ImportJob 不算白名单 —— 关联的 DownloadTask 依然会被清（方案 A）
+    finished_job_task = DownloadTask.create(
+        client=client, movie="OLD-1", name="finished job", info_hash="hash-finished-job",
+        save_path="/mnt/downloads/a/old1", progress=1.0,
+        download_state="completed", import_status="completed",
+    )
+    ImportJob.create(source_path="/x/run2", library=library, download_task=pending_job_task, state="pending")
+    ImportJob.create(source_path="/x/run3", library=library, download_task=running_job_task, state="running")
+    finished_job = ImportJob.create(
+        source_path="/x/old1", library=library, download_task=finished_job_task, state="completed",
+    )
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls()
+
+        def list_torrents(self, *, client_id=None):
+            # 远端只保留一个非白名单种子，避免 remote_hashes 为空触发保底跳过。
+            return [{
+                "info_hash": "hash-live", "name": "keep-alive", "progress": 0.1,
+                "state": "downloading", "save_path": "/downloads/a/live",
+            }]
+
+    summary = DownloadSyncService(qbittorrent_client_cls=FakeQBittorrentClient).sync_client(client.id)
+
+    # 只有 finished_job_task 被清；其余 3 个都进白名单
+    assert summary.removed_count == 1
+    assert DownloadTask.get_or_none(DownloadTask.id == running_task.id) is not None
+    assert DownloadTask.get_or_none(DownloadTask.id == pending_job_task.id) is not None
+    assert DownloadTask.get_or_none(DownloadTask.id == running_job_task.id) is not None
+    assert DownloadTask.get_or_none(DownloadTask.id == finished_job_task.id) is None
+    # 关联 ImportJob 的 FK 是 SET NULL：DownloadTask 删掉后 ImportJob 台账仍在，只是断链
+    finished_job = ImportJob.get_by_id(finished_job.id)
+    assert finished_job.download_task_id is None
+    assert finished_job.state == "completed"
+
+
+def test_download_sync_service_skips_prune_when_qb_returns_empty(download_tables):
+    # 保底：qB 返 0 条时不 prune，避免 tag 被误清 / 异常空返回一次抹掉所有本地记录。
+    library = _create_library()
+    client = _create_client(library)
+    survivor = DownloadTask.create(
+        client=client, movie="ABC-001", name="ABC-001", info_hash="hash-1",
+        save_path="/mnt/downloads/a/ABC-001", progress=0.5,
+        download_state="downloading", import_status="pending",
+    )
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls()
+
+        def list_torrents(self, *, client_id=None):
+            return []
+
+    summary = DownloadSyncService(qbittorrent_client_cls=FakeQBittorrentClient).sync_client(client.id)
+
+    assert summary.scanned_count == 0
+    assert summary.removed_count == 0
+    assert DownloadTask.get_or_none(DownloadTask.id == survivor.id) is not None
+
+
+def test_download_sync_service_prune_isolates_by_client(download_tables):
+    # sync 只 prune 当前 client 的幽灵；另一个 client 的记录即使 hash 不在本次 remote 列表里
+    # 也不能被误删——DELETE WHERE 条件里必须带 DownloadTask.client == client_id。
+    library = _create_library()
+    client_a = _create_client(library, name="client-a")
+    client_b = _create_client(library, name="client-b")
+    ghost_a = DownloadTask.create(
+        client=client_a, movie="A-001", name="ghost-a", info_hash="hash-ghost-a",
+        save_path="/mnt/downloads/a/ghost", progress=0.3,
+        download_state="downloading", import_status="pending",
+    )
+    # client_b 的记录 hash 恰好不在 A 的 remote 列表里；不能被 A 的 sync 误伤
+    kept_b = DownloadTask.create(
+        client=client_b, movie="B-001", name="untouched-b", info_hash="hash-only-b",
+        save_path="/mnt/downloads/b/kept", progress=0.7,
+        download_state="downloading", import_status="pending",
+    )
+
+    class FakeQBittorrentClient:
+        @classmethod
+        def from_download_client(cls, download_client):
+            return cls(download_client.id)
+
+        def __init__(self, client_id=None):
+            self.client_id = client_id
+
+        def list_torrents(self, *, client_id=None):
+            # A 只报一个 live 种子（remote_hashes 非空，触发 prune）
+            return [{
+                "info_hash": "hash-a-live", "name": "A-alive", "progress": 0.9,
+                "state": "downloading", "save_path": "/downloads/a/live",
+            }]
+
+    summary = DownloadSyncService(qbittorrent_client_cls=FakeQBittorrentClient).sync_client(client_a.id)
+
+    assert summary.removed_count == 1
+    assert DownloadTask.get_or_none(DownloadTask.id == ghost_a.id) is None
+    # 关键断言：B 的记录必须完好保留
+    assert DownloadTask.get_or_none(DownloadTask.id == kept_b.id) is not None
+
+
 def test_download_sync_service_sync_all_clients_continues_when_one_client_fails(download_tables):
     library = _create_library()
     failing_client = _create_client(library, name="client-failing")

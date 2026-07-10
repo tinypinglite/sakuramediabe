@@ -299,6 +299,8 @@ class DownloadClientSyncResponse(SchemaModel):
     created_count: int
     updated_count: int
     unchanged_count: int
+    # 本次同步中因 qB 侧已删除、本地也无 in-flight 导入而清理掉的幽灵任务数。
+    removed_count: int = 0
 
 
 class DownloadTaskImportResponse(SchemaModel):
