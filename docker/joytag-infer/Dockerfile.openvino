@@ -9,7 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libdrm2 \
     libglib2.0-0 \
     libtbb12 \
-    && rm -rf /var/lib/apt/lists/*
+    libjemalloc2 \
+    && rm -rf /var/lib/apt/lists/* \
+    # jemalloc 在不同架构下位于 /usr/lib/<triplet>/,统一软链到固定路径,避免 LD_PRELOAD 硬编码架构。
+    && ln -sf "$(dpkg -L libjemalloc2 | grep -E 'libjemalloc\.so\.2$' | head -n1)" /usr/local/lib/libjemalloc.so.2
 
 COPY docker/joytag-infer/requirements.openvino.txt /tmp/requirements.openvino.txt
 COPY docker/joytag-infer/requirements.base.txt /tmp/requirements.base.txt
@@ -18,6 +21,8 @@ RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.openvino.txt
 COPY docker/joytag-infer/app /app
 
 ENV PYTHONPATH=/app
+# jemalloc 收紧 Python + numpy 长运行下的堆碎片,长期驻留内存更低。
+ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so.2
 EXPOSE 8001
 
 CMD ["python3", "-m", "joytag_infer"]

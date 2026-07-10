@@ -1,4 +1,6 @@
 import io
+import logging
+import os
 import threading
 import time
 from pathlib import Path
@@ -15,12 +17,18 @@ except ImportError:
     ort = None
 
 try:
+    import openvino as ov
     from openvino import Core as OpenVinoCore
 except ImportError:
     try:
+        import openvino.runtime as ov  # type: ignore[no-redef]
         from openvino.runtime import Core as OpenVinoCore
     except ImportError:
+        ov = None  # type: ignore[assignment]
         OpenVinoCore = None
+
+
+_logger = logging.getLogger(__name__)
 
 
 def _bicubic_resample():
@@ -49,39 +57,27 @@ class JoyTagOnnxRuntime:
         self.device_full_name: str | None = None
         self._openvino_visible_devices: list[str] = []
         self._openvino_selected_device_name: str | None = None
+        self._openvino_core: Any = None
 
-        if ort is None:
-            raise RuntimeError("onnxruntime is not installed")
+        # 二选一的推理引擎持有物：openvino 走原生 OV，cpu/cuda 走 ORT。
+        self.session: Any = None
+        self._ov_compiled_model: Any = None
+        self._ov_infer_request: Any = None
+        self._ov_output_port: Any = None
+        self._output_shape: list[Any] = []
+
         if not self.model_path.is_file():
             raise FileNotFoundError(f"Missing required file: {self.model_path}")
+
         if self.backend == "openvino":
             self._inspect_openvino_device()
+            self._init_openvino_native()
+        elif self.backend in ("cpu", "cuda"):
+            self._init_ort_backend()
+        else:
+            raise RuntimeError(f"Unsupported JOYTAG_INFER_BACKEND: {self.backend}")
 
-        self.available_providers = [str(item) for item in list(ort.get_available_providers() or [])]
-        if self.backend == "cuda":
-            self._validate_cuda_provider_available()
-        providers = self._build_providers()
-        self.session = ort.InferenceSession(str(self.model_path), providers=providers)
-        if (
-            self.backend == "openvino"
-            and self.settings.openvino_device_type == "GPU"
-            and hasattr(self.session, "disable_fallback")
-        ):
-            # GPU 模式必须是硬约束，不允许 ORT 静默回退到 CPU。
-            self.session.disable_fallback()
-        self.input_name = str(self.session.get_inputs()[0].name)
-        self.output_name = str(self.session.get_outputs()[0].name)
-        self.execution_provider = str(self.session.get_providers()[0])
-        if self.backend == "openvino" and self.execution_provider != "OpenVINOExecutionProvider":
-            raise RuntimeError(
-                "OpenVINO backend initialization failed: "
-                f"unexpected execution provider {self.execution_provider}"
-            )
-        if self.backend == "cuda" and self.execution_provider != "CUDAExecutionProvider":
-            raise RuntimeError(
-                "CUDA backend initialization failed: "
-                f"unexpected execution provider {self.execution_provider}"
-            )
+        self._infer_chunk_size = self._resolve_infer_chunk_size()
         self.device = self._resolve_device()
         self.vector_size = self._resolve_vector_size()
         if self.backend == "openvino" and self.settings.openvino_device_type == "GPU":
@@ -89,19 +85,148 @@ class JoyTagOnnxRuntime:
         if self.backend == "cuda":
             self._validate_cuda_probe()
 
-    def _build_providers(self) -> list[str | tuple[str, dict[str, Any]]]:
+    # ------------------------------------------------------------------
+    # ORT 分支：cpu / cuda
+    # ------------------------------------------------------------------
+
+    def _init_ort_backend(self) -> None:
+        if ort is None:
+            raise RuntimeError("onnxruntime is not installed")
+        self.available_providers = [str(item) for item in list(ort.get_available_providers() or [])]
+        if self.backend == "cuda":
+            self._validate_cuda_provider_available()
+        providers = self._build_ort_providers()
+        self.session = ort.InferenceSession(str(self.model_path), providers=providers)
+        self.input_name = str(self.session.get_inputs()[0].name)
+        self.output_name = str(self.session.get_outputs()[0].name)
+        self.execution_provider = str(self.session.get_providers()[0])
+        if self.backend == "cuda" and self.execution_provider != "CUDAExecutionProvider":
+            raise RuntimeError(
+                "CUDA backend initialization failed: "
+                f"unexpected execution provider {self.execution_provider}"
+            )
+        self._output_shape = list(self.session.get_outputs()[0].shape or [])
+
+    def _build_ort_providers(self) -> list[str | tuple[str, dict[str, Any]]]:
         if self.backend == "cpu":
             return ["CPUExecutionProvider"]
-        if self.backend == "openvino":
-            return [
-                (
-                    "OpenVINOExecutionProvider",
-                    {"device_type": self.settings.openvino_device_type},
-                )
-            ]
         if self.backend == "cuda":
             return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        raise RuntimeError(f"Unsupported JOYTAG_INFER_BACKEND: {self.backend}")
+        raise RuntimeError(f"ORT backend does not support: {self.backend}")
+
+    def _validate_cuda_provider_available(self) -> None:
+        if "CUDAExecutionProvider" in self.available_providers:
+            return
+        visible_providers = ", ".join(self.available_providers) or "<none>"
+        raise RuntimeError(
+            "Requested CUDA execution provider is unavailable. "
+            f"Visible providers: {visible_providers}"
+        )
+
+    def _validate_cuda_probe(self) -> None:
+        try:
+            self._probe_vector()
+        except Exception as exc:
+            raise RuntimeError(f"CUDA validation probe failed: {exc}") from exc
+
+    # ------------------------------------------------------------------
+    # OpenVINO 原生分支：openvino
+    # ------------------------------------------------------------------
+
+    def _init_openvino_native(self) -> None:
+        if ov is None or OpenVinoCore is None:
+            raise RuntimeError("OpenVINO Python runtime is not installed")
+        # 复用 _inspect_openvino_device 里已经构造好的 Core,避免二次初始化。
+        core = self._openvino_core
+        if core is None:
+            try:
+                core = OpenVinoCore()
+            except Exception as exc:
+                raise RuntimeError(f"Failed to initialize OpenVINO runtime: {exc}") from exc
+
+        selected_device = self._openvino_selected_device_name or self.settings.openvino_device_type
+
+        # 编译产物落盘缓存，避免每次冷启动重跑 4~5s 的核显编译。
+        cache_dir = str(self.model_path.parent / "ov_cache")
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            core.set_property({"CACHE_DIR": cache_dir})
+        except Exception as exc:
+            _logger.warning("OpenVINO CACHE_DIR unavailable dir=%s error=%s", cache_dir, exc)
+
+        model = self._read_openvino_model(core)
+
+        # GPU 静态化 batch=1：彻底消除动态 shape 导致的 pinned 共享内存膨胀。
+        if self.settings.openvino_device_type == "GPU":
+            try:
+                input_port = model.inputs[0]
+                model.reshape(
+                    {
+                        input_port.get_any_name(): ov.PartialShape(
+                            [1, 3, self.image_size, self.image_size]
+                        )
+                    }
+                )
+            except Exception as exc:
+                raise RuntimeError(f"Failed to reshape model to static batch=1: {exc}") from exc
+
+        compile_config = {"PERFORMANCE_HINT": "LATENCY", "NUM_STREAMS": "1"}
+        try:
+            self._ov_compiled_model = core.compile_model(model, selected_device, compile_config)
+        except Exception as exc:
+            raise RuntimeError(f"OpenVINO compile_model failed: {exc}") from exc
+        self._ov_infer_request = self._ov_compiled_model.create_infer_request()
+
+        self.input_name = str(model.inputs[0].get_any_name())
+        self.output_name = str(model.outputs[0].get_any_name())
+        self._ov_output_port = self._ov_compiled_model.outputs[0]
+        self._output_shape = list(model.outputs[0].get_partial_shape())
+
+        # 原生 OV 不经过 ORT，用虚构值兼容对外 API 消费者。
+        self.available_providers = ["OpenVINOExecutionProvider"]
+        self.execution_provider = "OpenVINOExecutionProvider"
+
+    def _read_openvino_model(self, core: Any) -> Any:
+        if self.model_path.suffix.lower() == ".xml":
+            return core.read_model(str(self.model_path))
+        # 复用/生成同目录 FP16 IR，权重从 fp32 减半。
+        ir_xml = self.model_path.with_suffix(".fp16.xml")
+        if ir_xml.is_file():
+            try:
+                return core.read_model(str(ir_xml))
+            except Exception as exc:
+                _logger.warning("Failed to read FP16 IR path=%s error=%s", ir_xml, exc)
+        model = core.read_model(str(self.model_path))
+        # 覆盖前先清理可能残留的部分文件,避免 write-then-crash 留下的损坏 IR 反复挡道。
+        for stale in (ir_xml, ir_xml.with_suffix(".bin")):
+            try:
+                stale.unlink(missing_ok=True)
+            except OSError as exc:
+                _logger.warning("Failed to unlink stale IR path=%s error=%s", stale, exc)
+        try:
+            ov.save_model(model, str(ir_xml), compress_to_fp16=True)
+            _logger.info("Saved FP16 IR path=%s", ir_xml)
+            return core.read_model(str(ir_xml))
+        except Exception as exc:
+            _logger.warning(
+                "Failed to save FP16 IR path=%s error=%s (falling back to ONNX)", ir_xml, exc
+            )
+            return model
+
+    def _validate_openvino_gpu_probe(self) -> None:
+        if not self._openvino_selected_device_name or not self._match_openvino_device_family(
+            self._openvino_selected_device_name,
+            "GPU",
+        ):
+            raise RuntimeError("OpenVINO GPU validation failed: GPU device is not available")
+        try:
+            self._probe_vector()
+        except Exception as exc:
+            raise RuntimeError(f"OpenVINO GPU validation probe failed: {exc}") from exc
+
+    # ------------------------------------------------------------------
+    # 通用
+    # ------------------------------------------------------------------
 
     @staticmethod
     def _match_openvino_device_family(device_name: str, family: str) -> bool:
@@ -116,6 +241,7 @@ class JoyTagOnnxRuntime:
             core = OpenVinoCore()
         except Exception as exc:
             raise RuntimeError(f"Failed to initialize OpenVINO runtime: {exc}") from exc
+        self._openvino_core = core
 
         raw_devices = [str(item).strip() for item in list(getattr(core, "available_devices", []) or [])]
         self._openvino_visible_devices = [device for device in raw_devices if device]
@@ -140,32 +266,6 @@ class JoyTagOnnxRuntime:
         except Exception:
             full_name = None
         self.device_full_name = str(full_name) if full_name else None
-
-    def _validate_openvino_gpu_probe(self) -> None:
-        if not self._openvino_selected_device_name or not self._match_openvino_device_family(
-            self._openvino_selected_device_name,
-            "GPU",
-        ):
-            raise RuntimeError("OpenVINO GPU validation failed: GPU device is not available")
-        try:
-            self._probe_vector()
-        except Exception as exc:
-            raise RuntimeError(f"OpenVINO GPU validation probe failed: {exc}") from exc
-
-    def _validate_cuda_provider_available(self) -> None:
-        if "CUDAExecutionProvider" in self.available_providers:
-            return
-        visible_providers = ", ".join(self.available_providers) or "<none>"
-        raise RuntimeError(
-            "Requested CUDA execution provider is unavailable. "
-            f"Visible providers: {visible_providers}"
-        )
-
-    def _validate_cuda_probe(self) -> None:
-        try:
-            self._probe_vector()
-        except Exception as exc:
-            raise RuntimeError(f"CUDA validation probe failed: {exc}") from exc
 
     @staticmethod
     def _resolve_cuda_device_name() -> str | None:
@@ -195,7 +295,6 @@ class JoyTagOnnxRuntime:
 
     def _resolve_device(self) -> str:
         if self.execution_provider == "CUDAExecutionProvider":
-            # 显卡名称仅用于展示，获取失败不影响 CUDA 硬校验。
             cuda_device_name = self._resolve_cuda_device_name()
             if cuda_device_name:
                 self.device_full_name = cuda_device_name
@@ -215,16 +314,31 @@ class JoyTagOnnxRuntime:
             return str(self.settings.openvino_device_type).lower()
         return "cpu"
 
+    def _resolve_infer_chunk_size(self) -> int | None:
+        # 核显(OpenVINO GPU)静态化 batch=1 后，推理端就必须逐张跑；CPU/CUDA 无此约束。
+        if self.backend == "openvino" and self.settings.openvino_device_type == "GPU":
+            return 1
+        return None
+
     def _resolve_vector_size(self) -> int:
-        output = self.session.get_outputs()[0]
-        shape = list(output.shape or [])
+        shape = list(self._output_shape or [])
         if len(shape) < 2:
             raise RuntimeError(f"Unexpected JoyTag output shape: {shape}")
         feature_dim = shape[-1]
+        # openvino Dimension 对象：静态直接取值，动态回退到 probe。
+        if hasattr(feature_dim, "is_static"):
+            try:
+                feature_dim = int(feature_dim.get_length()) if feature_dim.is_static else None
+            except Exception:
+                feature_dim = None
         if feature_dim in (None, "None"):
             probe = self._probe_vector()
             return int(probe.shape[0])
-        vector_size = int(feature_dim)
+        try:
+            vector_size = int(feature_dim)
+        except (TypeError, ValueError):
+            probe = self._probe_vector()
+            return int(probe.shape[0])
         if vector_size <= 0:
             raise RuntimeError(f"Invalid JoyTag vector size: {shape}")
         return vector_size
@@ -259,19 +373,51 @@ class JoyTagOnnxRuntime:
         ]
         batch = np.concatenate(inputs, axis=0).astype(np.float32, copy=False)
         with self._infer_lock:
-            outputs = self.session.run([self.output_name], {self.input_name: batch})
-        vector_array = np.asarray(outputs[0], dtype=np.float32)
+            vector_array = self._run_inference(batch)
         if vector_array.ndim != 2:
             raise RuntimeError(f"Unexpected JoyTag output rank: {vector_array.shape}")
         if vector_array.shape[1] != self.vector_size:
             raise RuntimeError(
                 f"JoyTag vector size mismatch: expected={self.vector_size}, actual={vector_array.shape[1]}"
             )
-        # 服务端统一做 L2 归一化，确保主服务与向量库口径一致。
+        # 服务端统一 L2 归一化，与向量库口径保持一致。
         return [
             _l2_normalize_vector(vector).astype(float).tolist()
             for vector in vector_array
         ]
+
+    def _run_inference(self, batch: np.ndarray) -> np.ndarray:
+        if self._ov_infer_request is not None:
+            return self._run_openvino(batch)
+        return self._run_ort(batch)
+
+    def _run_ort(self, batch: np.ndarray) -> np.ndarray:
+        chunk_size = self._infer_chunk_size
+        if not chunk_size or chunk_size >= batch.shape[0]:
+            outputs = self.session.run([self.output_name], {self.input_name: batch})
+            return np.asarray(outputs[0], dtype=np.float32)
+        chunks: list[np.ndarray] = []
+        for start in range(0, batch.shape[0], chunk_size):
+            sub_batch = batch[start : start + chunk_size]
+            outputs = self.session.run([self.output_name], {self.input_name: sub_batch})
+            chunks.append(np.asarray(outputs[0], dtype=np.float32))
+        return np.concatenate(chunks, axis=0)
+
+    def _run_openvino(self, batch: np.ndarray) -> np.ndarray:
+        # OpenVINO InferRequest 的输出 tensor 是同一块内部 buffer 的视图，下一次 infer 会覆写它。
+        # 必须立即 .copy() 到独立内存，否则:
+        #   - 逐块循环里 chunks[] 全部指向最后一次 infer 的 buffer,拼出来是 N 份重复向量;
+        #   - 即便单次 infer,并发调用者拿到 view 后,后续请求也会踩坏它。
+        chunk_size = self._infer_chunk_size
+        if not chunk_size or chunk_size >= batch.shape[0]:
+            result = self._ov_infer_request.infer({self.input_name: batch})
+            return np.array(result[self._ov_output_port], dtype=np.float32, copy=True)
+        chunks: list[np.ndarray] = []
+        for start in range(0, batch.shape[0], chunk_size):
+            sub_batch = batch[start : start + chunk_size]
+            result = self._ov_infer_request.infer({self.input_name: sub_batch})
+            chunks.append(np.array(result[self._ov_output_port], dtype=np.float32, copy=True))
+        return np.concatenate(chunks, axis=0)
 
     def runtime_info(self, *, probe: bool = True) -> dict[str, Any]:
         probe_latency_ms: int | None = None
