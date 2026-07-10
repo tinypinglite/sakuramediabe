@@ -106,3 +106,26 @@ class Cloud115OfflineQuotaExceededError(Cloud115Error):
     上层应引导用户：等下月 / 升级 VIP / 删除已完成任务腾出配额（配额不会因删除任务恢复，
     但已完成任务清理后 UI 观感更清爽）。
     """
+
+
+class Cloud115OfflineTaskExistsError(Cloud115Error):
+    """离线任务已存在：相同 info_hash / URL 已在离线列表里（重复提交）。
+
+    与 Cloud115OfflineQuotaExceededError 严格区分——两者数字都可能是 10008，但字段不同：
+      - 配额用尽：落在 **errno**（10004 / 10008），是硬失败。
+      - 任务已存在：落在 **errcode**（10008，errtype="war"，error_msg="任务已存在"），是良性告警，
+        不扣配额、旧任务仍在。add_task_bt 真机实测确认。
+    上层通常可当幂等成功处理（复用旧任务 info_hash），或提示"该种子已在下载列表"；
+    若要改文件选择，必须先 delete_offline_tasks 删旧任务再重加。附 info_hash 便于定位旧任务。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        info_hash: str | None = None,
+        errno: int | None = None,
+        endpoint: str | None = None,
+    ):
+        self.info_hash = info_hash
+        super().__init__(message, errno=errno, endpoint=endpoint)

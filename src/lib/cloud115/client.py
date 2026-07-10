@@ -12,10 +12,11 @@
     - list_offline_tasks / offline_quota / default_download_dir      （离线下载：读）
     - add_offline_urls / delete_offline_tasks / clear_offline_tasks  （离线下载：写）
     - restart_offline_task                                           （离线下载：失败重试）
+    - upload_torrent / torrent_info / add_task_bt                    （离线 BT：传种子/解析文件列表/按选择建任务）
     - snapshot_cookies / update_cookies （cookies 保活/热替换，见 _merge_set_cookies）
     - 构造函数（cookies 字符串 -> httpx.AsyncClient）
 
-不含：二维码登录、上传、分享、事件订阅、图片 CDN 等。
+不含：二维码登录、通用文件上传（仅 .torrent 的 sample 上传用于离线选文件）、分享、事件订阅、图片 CDN 等。
 不依赖任何业务 model / service / schema，纯 HTTP + RSA 层。
 """
 
@@ -36,6 +37,7 @@ from src.lib.cloud115.exceptions import (
     Cloud115MembershipRequiredError,
     Cloud115NotFoundError,
     Cloud115OfflineQuotaExceededError,
+    Cloud115OfflineTaskExistsError,
     Cloud115RateLimitedError,
     Cloud115RequestError,
     Cloud115VideoNotReadyError,
@@ -50,6 +52,8 @@ from src.lib.cloud115.types import (
     OfflineTask,
     OfflineTaskAddResult,
     OfflineTaskPage,
+    TorrentFileEntry,
+    TorrentInfo,
     VideoDefinition,
     VideoInfo,
     VideoSegment,
@@ -525,6 +529,10 @@ class Cloud115Client:
     _OFFLINE_SPACE_URL = "https://115.com/"     # ?ct=offline&ac=space 拿全局离线目录大小配额（本 SDK 不暴露）
     _OFFLINE_DOWNPATH_URL = "https://webapi.115.com/offine/downpath"   # 115 端点名字确实少个 l（不是 offline）
 
+    # 离线 BT（选文件）：sample 上传 .torrent 拿 pickcode/sha1（免 userkey 签名），
+    # 再走上面 _LIXIAN_URL 的 ac=torrent 解析文件列表、ac=add_task_bt 按选中 index 建任务。
+    _SAMPLE_INIT_UPLOAD_URL = "https://uplb.115.com/3.0/sampleinitupload.php"
+
     async def list_offline_tasks(
         self,
         *,
@@ -722,6 +730,188 @@ class Cloud115Client:
         if not payload.get("state"):
             raise self._map_errno(payload, endpoint=self._LIXIAN_URL)
 
+    # ---- 离线 BT（种子 + 选文件）----
+    #
+    # 三步（全程真机验证，2026-07-12）：
+    #   1. upload_torrent(bytes)          sample 上传 .torrent -> (pickcode, sha1)，免 userkey 签名
+    #   2. torrent_info(pickcode, sha1)   ac=torrent -> info_hash + 文件列表（每项带默认勾选态）
+    #   3. add_task_bt(info_hash, wanted) ac=add_task_bt -> 只下选中的文件
+    # 选择由中间的 torrent_info 拿到列表、上层交互勾选、再把选中 index 交给 add_task_bt 完成，
+    # SDK 只提供这三个原语，不做"一步到位"封装（选择本身需要一次人机交互往返）。
+
+    async def upload_torrent(self, data: bytes, *, save_dir_id: str) -> tuple[str, str]:
+        """上传一个 .torrent 文件，返回 (pickcode, sha1)，供 torrent_info 解析。
+
+        走 115 的 sample 上传（**免 userkey 签名**）：先 sampleinitupload 拿阿里云 OSS
+        PostObject 表单，再把种子字节 POST 到 OSS，115 回调直接返回 pickcode + sha1。
+
+        data: .torrent 文件原始字节（不能为空）。
+        save_dir_id: 种子文件的落脚目录 cid。纯落脚点——选文件只认 pickcode/sha1，与存哪无关；
+            可用 default_download_dir().entry_id 或一个专门的种子暂存目录。
+            注意：种子文件会**留在**该目录，SDK 不自动清理，需要的话上层自行删。
+
+        失败：初始化缺字段 / OSS 非 200 / 回调无 pickcode -> Cloud115RequestError。
+        """
+        if not data:
+            raise ValueError("torrent data must not be empty")
+        if not save_dir_id:
+            raise ValueError("save_dir_id is required")
+
+        # 1) 初始化：拿 OSS PostObject 表单（115 host，走带 cookies 的通道）
+        form = await self._request_json(
+            "POST",
+            self._SAMPLE_INIT_UPLOAD_URL,
+            data={
+                "userid": self._user_id,
+                "filename": "upload.torrent",
+                "filesize": str(len(data)),
+                "target": f"U_1_{save_dir_id}",
+            },
+        )
+        required = ("host", "object", "accessid", "policy", "signature", "callback")
+        if not all(form.get(k) for k in required):
+            raise Cloud115RequestError(
+                "sample upload init missing OSS fields",
+                method="POST",
+                url=self._SAMPLE_INIT_UPLOAD_URL,
+                detail=str(form)[:200],
+            )
+
+        # 2) 把种子字节 POST 到阿里云 OSS（外部 host，不带 115 cookies；success_action_status=200
+        #    让 OSS 直接回 200 + 115 回调体，避免 302；file 字段放最后是 OSS PostObject 的要求）
+        oss_resp = await self._client.post(
+            form["host"],
+            data={
+                "key": form["object"],
+                "policy": form["policy"],
+                "OSSAccessKeyId": form["accessid"],
+                "success_action_status": "200",
+                "signature": form["signature"],
+                "callback": form["callback"],
+            },
+            files={"file": ("upload.torrent", data, "application/octet-stream")},
+        )
+        if oss_resp.status_code != 200:
+            raise Cloud115RequestError(
+                f"OSS upload failed http {oss_resp.status_code}",
+                method="POST",
+                url=str(form["host"]),
+                detail=oss_resp.text[:200],
+            )
+        try:
+            body = oss_resp.json()
+        except Exception as exc:
+            raise Cloud115RequestError(
+                "OSS upload returned non-json body",
+                method="POST",
+                url=str(form["host"]),
+                detail=oss_resp.text[:200],
+            ) from exc
+        file_data = body.get("data") or {}
+        pickcode = str(file_data.get("pick_code") or file_data.get("pickcode") or "")
+        sha1 = str(file_data.get("sha1") or "")
+        if not pickcode or not sha1:
+            raise Cloud115RequestError(
+                "OSS upload callback missing pickcode/sha1",
+                method="POST",
+                url=str(form["host"]),
+                detail=str(body)[:200],
+            )
+        return pickcode, sha1
+
+    async def torrent_info(self, pickcode: str, sha1: str) -> TorrentInfo:
+        """用已上传种子的 pickcode + sha1 解析出 info_hash 和文件列表。
+
+        pickcode/sha1 来自 upload_torrent。返回的 files 每项带 115 默认勾选态 wanted，
+        上层展示给用户勾选，最终把选中的 index 列表交给 add_task_bt。
+        """
+        if not pickcode:
+            raise ValueError("pickcode is required")
+        if not sha1:
+            raise ValueError("sha1 is required")
+        payload = await self._request_json(
+            "POST",
+            self._LIXIAN_URL,
+            params={"ct": "lixian", "ac": "torrent"},
+            data={"pickcode": pickcode, "sha1": sha1},
+        )
+        if payload.get("state") is False:
+            raise self._map_errno(payload, endpoint=self._LIXIAN_URL)
+        filelist = payload.get("torrent_filelist_web") or []
+        files = [
+            TorrentFileEntry(
+                index=i,
+                path=str(item.get("path", "")),
+                size=int(item.get("size") or 0),
+                wanted=bool(item.get("wanted")),
+            )
+            for i, item in enumerate(filelist)
+        ]
+        return TorrentInfo(
+            info_hash=str(payload.get("info_hash", "")),
+            name=str(payload.get("torrent_name", "")),
+            file_count=int(payload.get("file_count") or len(files)),
+            files=files,
+        )
+
+    async def add_task_bt(
+        self,
+        info_hash: str,
+        wanted: list[int],
+        *,
+        save_dir_id: str,
+        savepath: str,
+    ) -> str:
+        """按选中的文件创建一个 BT 离线任务，返回任务 info_hash。
+
+        info_hash: 来自 torrent_info。
+        wanted: 选中要下载的文件 **index 列表**（对应 torrent_info().files[i].index），
+            SDK 内部拼成逗号串。空列表抛 ValueError（115 不接受"一个都不选"）。
+        save_dir_id: 保存目录 cid（wp_path_id），任务在其下新建 savepath 文件夹。
+        savepath: 新建的顶层文件夹名，通常用 TorrentInfo.name。
+
+        扣 1 次月配额。行为要点（均真机实测）：
+        - 相同 info_hash 已在离线列表 -> Cloud115OfflineTaskExistsError（errcode=10008，良性重复，
+          不扣配额）；要改选择须先 delete_offline_tasks 删旧任务再重加。
+        - 建成后 list_offline_tasks 里那条的 size 是**整个种子**大小占位、不反映本次选择，
+          但实际只会下载选中的文件（传 wanted=[1] 实测只落地索引 1 那个文件）。
+        - 内容已在 115 服务端时会秒完成（status=2），不占用户带宽。
+        """
+        if not info_hash:
+            raise ValueError("info_hash is required")
+        if not wanted:
+            raise ValueError("wanted must not be empty (115 rejects a task with no file selected)")
+        if not save_dir_id:
+            raise ValueError("save_dir_id is required")
+        if not savepath:
+            raise ValueError("savepath is required")
+
+        payload = await self._request_json(
+            "POST",
+            self._LIXIAN_URL,
+            params={"ct": "lixian", "ac": "add_task_bt"},
+            data={
+                "info_hash": info_hash,
+                "wanted": ",".join(str(i) for i in wanted),
+                "savepath": savepath,
+                "wp_path_id": save_dir_id,
+            },
+        )
+        if payload.get("state") is False:
+            # "任务已存在"落在 errcode（不是 errno），且数字 10008 与配额 errno 撞号 -> 单独判，
+            # 别经 _map_errno 误映射成 Cloud115OfflineQuotaExceededError。
+            errcode = payload.get("errcode")
+            msg = payload.get("error_msg") or payload.get("error") or "unknown"
+            if errcode == 10008 or "已存在" in str(msg):
+                raise Cloud115OfflineTaskExistsError(
+                    f"{msg} (errcode={errcode})",
+                    info_hash=str(payload.get("info_hash") or info_hash),
+                    errno=errcode if isinstance(errcode, int) else None,
+                    endpoint=self._LIXIAN_URL,
+                )
+            raise self._map_errno(payload, endpoint=self._LIXIAN_URL)
+        return str(payload.get("info_hash") or info_hash)
+
     # ---- 内部工具 ----
 
     def _base_headers(self) -> dict[str, str]:
@@ -855,7 +1045,13 @@ class Cloud115Client:
     def _map_errno(payload: dict[str, Any], *, endpoint: str) -> Cloud115Error:
         """把 state=False 的响应按 errno 映射到具体异常子类。"""
         errno = payload.get("errno") or payload.get("errNo") or payload.get("code")
-        message = payload.get("error") or payload.get("message") or payload.get("msg") or "unknown"
+        message = (
+            payload.get("error")
+            or payload.get("error_msg")
+            or payload.get("message")
+            or payload.get("msg")
+            or "unknown"
+        )
         try:
             errno_int = int(errno) if errno is not None else None
         except (TypeError, ValueError):

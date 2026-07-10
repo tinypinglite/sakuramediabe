@@ -208,3 +208,33 @@ class OfflineTaskAddResult:
 
     info_hash: str                     # 服务端分配的任务 ID；提交失败时为空串
     url: str                           # 原提交 URL（回传，便于上层 map URL -> info_hash）
+
+
+@dataclass(frozen=True, slots=True)
+class TorrentFileEntry:
+    """种子内的单个文件条目（来自 ac=torrent 响应的 torrent_filelist_web[i]）。
+
+    index 就是数组下标（0-based）——add_task_bt 的 wanted 参数用的正是这个下标。
+    wanted 是 115 给的**默认勾选态**：True=默认下载，False=115 已自动反选
+    （常见于广告/引流类垃圾文件，真机实测 `manko.fun.url` 42B 会被默认反选）。
+    上层把这个默认态展示给用户勾选，最终选中的 index 列表回传 add_task_bt。
+    """
+
+    index: int
+    path: str                          # 种子内相对路径（可能带子目录）
+    size: int                          # 字节
+    wanted: bool                       # 115 默认是否勾选下载
+
+
+@dataclass(frozen=True, slots=True)
+class TorrentInfo:
+    """ac=torrent 解析一个已上传种子后的结果。
+
+    info_hash 是后续 add_task_bt 的唯一入参之一（40 字符 hex，与本地对种子 info 段
+    算 sha1 一致，真机已核对）。name 是种子顶层目录名，建任务时常直接用作 savepath。
+    """
+
+    info_hash: str
+    name: str
+    file_count: int
+    files: list["TorrentFileEntry"]
