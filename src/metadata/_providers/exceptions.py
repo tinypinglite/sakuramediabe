@@ -30,32 +30,3 @@ class MetadataProviderUnavailable(MetadataProviderError):
         self.provider = provider
         self.detail = detail or "provider unavailable"
         super().__init__(f"metadata provider unavailable: {provider} ({self.detail})")
-
-
-class MissavThumbnailError(MetadataProviderError):
-    pass
-
-
-class MissavThumbnailNotFoundError(MissavThumbnailError):
-    def __init__(self, movie_number: str, detail: str | None = None):
-        self.movie_number = movie_number
-        self.detail = detail or "thumbnail config not found"
-        super().__init__(f"missav thumbnail not found: {movie_number} ({self.detail})")
-
-
-class MissavThumbnailRequestError(MissavThumbnailError):
-    def __init__(self, url: str, detail: str):
-        self.url = url
-        self.detail = detail
-        super().__init__(f"missav thumbnail request failed: {url} ({detail})")
-
-
-class MissavRankingError(MetadataProviderError):
-    pass
-
-
-class MissavRankingRequestError(MissavRankingError):
-    def __init__(self, url: str, detail: str):
-        self.url = url
-        self.detail = detail
-        super().__init__(f"missav ranking request failed: {url} ({detail})")

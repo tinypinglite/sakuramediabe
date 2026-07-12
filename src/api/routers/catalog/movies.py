@@ -215,26 +215,6 @@ def list_similar_movies(
     )
 
 
-@router.get("/{movie_number}/thumbnails/missav/stream")
-def stream_missav_movie_thumbnails(movie_number: str, refresh: bool = False):
-    def stream():
-        for event, event_payload in MovieTaskService.stream_missav_thumbnails(
-            movie_number=movie_number,
-            refresh=refresh,
-        ):
-            yield to_sse_event(event, event_payload)
-
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
 @router.post("/search/javdb/stream")
 def search_javdb_movies_stream(payload: MovieJavdbSearchRequest):
     def stream():

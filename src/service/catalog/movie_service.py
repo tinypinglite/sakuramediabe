@@ -2,7 +2,7 @@
 
 负责影片列表、详情组装、订阅状态维护与合集标记这类"以本地记录为主"的查询和小型状态流转。
 远端元数据刷新与 JavDB 流式导入见 ``movie_metadata_refresh_service``；
-翻译/互动/热度/Missav 截图等异步任务见 ``movie_task_service``。
+翻译/互动/热度等异步任务见 ``movie_task_service``。
 """
 
 from datetime import datetime

@@ -1,23 +1,13 @@
 """影片异步任务 service。
 
-聚合翻译、互动同步、热度重算、Missav 截图流这几类需要通过 ``ActivityService.run_task`` 或线程 + Queue
-异步驱动的能力。从 ``MovieService`` 拆出，避免主查询 service 承担过多副作用。
+聚合翻译、互动同步、热度重算这几类需要通过 ``ActivityService.run_task`` 异步驱动的能力。
+从 ``MovieService`` 拆出，避免主查询 service 承担过多副作用。
 """
-
-from queue import Queue
-from threading import Thread
-from typing import Iterator
 
 from loguru import logger
 
 from src.api.exception.errors import ApiError
-from src.common import normalize_movie_number
-from src.metadata._providers.exceptions import (
-    MissavThumbnailNotFoundError,
-    MissavThumbnailRequestError,
-)
 from src.schema.catalog.movies import MovieDetailResource
-from src.service.catalog.missav_thumbnail_service import MissavThumbnailService
 from src.service.catalog.movie_desc_translation_client import MovieDescTranslationClientError
 from src.service.catalog.movie_desc_translation_service import (
     MovieDescTranslationService,
@@ -30,7 +20,7 @@ from src.service.system.activity_service import ActivityService
 
 
 class MovieTaskService:
-    """聚合影片相关的异步任务与流式副作用。"""
+    """聚合影片相关的异步任务。"""
 
     @staticmethod
     def _build_movie_desc_translation_service() -> MovieDescTranslationService:
@@ -39,10 +29,6 @@ class MovieTaskService:
     @staticmethod
     def _build_movie_interaction_sync_service() -> MovieInteractionSyncService:
         return MovieInteractionSyncService()
-
-    @staticmethod
-    def _build_missav_thumbnail_service() -> MissavThumbnailService:
-        return MissavThumbnailService()
 
     @classmethod
     def translate_movie_desc(cls, movie_number: str) -> MovieDetailResource:
@@ -130,87 +116,3 @@ class MovieTaskService:
                 {"movie_number": movie.movie_number, "movie_id": movie.id, "detail": str(exc)},
             ) from exc
         return MovieService.get_movie_detail(movie.movie_number)
-
-    @classmethod
-    def stream_missav_thumbnails(
-        cls,
-        movie_number: str,
-        *,
-        refresh: bool = False,
-    ) -> Iterator[tuple[str, dict]]:
-        normalized_movie_number = normalize_movie_number(movie_number)
-        yield "search_started", {
-            "movie_number": normalized_movie_number or movie_number,
-            "refresh": refresh,
-        }
-        if not normalized_movie_number:
-            yield "completed", {
-                "success": False,
-                "reason": "missav_thumbnail_not_found",
-                "detail": "movie number is invalid",
-            }
-            return
-
-        progress_queue: Queue[tuple[str, dict] | None] = Queue()
-        worker_result: dict[str, object] = {}
-        worker_error: dict[str, Exception] = {}
-
-        def _handle_progress(event: str, payload: dict) -> None:
-            progress_queue.put((event, payload))
-
-        def _run_fetch() -> None:
-            try:
-                worker_result["resource"] = cls._build_missav_thumbnail_service().get_movie_thumbnails(
-                    normalized_movie_number,
-                    refresh=refresh,
-                    progress_callback=_handle_progress,
-                )
-            except Exception as exc:
-                worker_error["error"] = exc
-            finally:
-                progress_queue.put(None)
-
-        worker = Thread(target=_run_fetch, name="missav-thumbnail-stream", daemon=True)
-        worker.start()
-
-        while True:
-            queued_event = progress_queue.get()
-            if queued_event is None:
-                break
-            yield queued_event
-
-        worker.join()
-        error = worker_error.get("error")
-        if isinstance(error, MissavThumbnailNotFoundError):
-            yield "completed", {
-                "success": False,
-                "reason": "missav_thumbnail_not_found",
-                "detail": str(error),
-            }
-            return
-        if isinstance(error, MissavThumbnailRequestError):
-            yield "completed", {
-                "success": False,
-                "reason": "missav_thumbnail_fetch_failed",
-                "detail": str(error),
-            }
-            return
-        if error is not None:
-            logger.exception(
-                "Missav thumbnail stream failed movie_number={} detail={}",
-                normalized_movie_number,
-                error,
-            )
-            yield "completed", {
-                "success": False,
-                "reason": "missav_thumbnail_fetch_failed",
-                "detail": str(error),
-            }
-            return
-
-        resource = worker_result["resource"]
-
-        yield "completed", {
-            "success": True,
-            "result": resource.model_dump(),
-        }

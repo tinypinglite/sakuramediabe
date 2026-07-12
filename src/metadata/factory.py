@@ -10,10 +10,6 @@ from loguru import logger
 from src.config.config import settings
 from src.metadata._providers.dmm import DmmProvider
 from src.metadata._providers.javdb import JavdbProvider
-from src.metadata._providers.missav import (
-    MissavRankingProvider,
-    MissavThumbnailProvider,
-)
 from src.metadata.gfriends import GfriendsActorImageResolver
 
 # Resolver 单例缓存：预热任务与业务代码共享同一实例的内存 index，
@@ -149,17 +145,5 @@ def build_javdb_provider() -> GfriendsAvatarJavdbProvider:
 
 def build_dmm_provider() -> DmmProvider:
     return DmmProvider(
-        proxy=settings.metadata.normalized_proxy,
-    )
-
-
-def build_missav_thumbnail_provider() -> MissavThumbnailProvider:
-    return MissavThumbnailProvider(
-        proxy=settings.metadata.normalized_proxy,
-    )
-
-
-def build_missav_ranking_provider() -> MissavRankingProvider:
-    return MissavRankingProvider(
         proxy=settings.metadata.normalized_proxy,
     )

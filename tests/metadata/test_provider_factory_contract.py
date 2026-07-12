@@ -10,8 +10,6 @@ from src.metadata.factory import (
     GfriendsAvatarJavdbProvider,
     build_dmm_provider,
     build_javdb_provider,
-    build_missav_ranking_provider,
-    build_missav_thumbnail_provider,
     refresh_gfriends_filetree,
 )
 
@@ -87,13 +85,6 @@ def test_build_javdb_provider_passes_account_credentials(monkeypatch):
 
     assert provider.provider.username == "user@example.com"
     assert provider.provider.password == "secret"
-
-
-def test_build_missav_providers_pass_site_proxy(monkeypatch):
-    monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
-
-    assert build_missav_thumbnail_provider() is not None
-    assert build_missav_ranking_provider() is not None
 
 
 def test_javdb_adapter_prefers_gfriends_avatar():

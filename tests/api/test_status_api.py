@@ -396,7 +396,7 @@ def test_metadata_provider_test_endpoint_rejects_invalid_provider(client, accoun
     token = _login(client, username=account_user.username)
 
     response = client.get(
-        "/status/metadata-providers/missav/test",
+        "/status/metadata-providers/unknown/test",
         headers={"Authorization": f"Bearer {token}"},
     )
 

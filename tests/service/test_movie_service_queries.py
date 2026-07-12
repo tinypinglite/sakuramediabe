@@ -4,7 +4,6 @@ import pytest
 
 from src.api.exception.errors import ApiError
 from src.config.config import settings
-from src.metadata._providers.exceptions import MissavThumbnailRequestError
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import (
     Actor,
@@ -32,8 +31,6 @@ from src.metadata._providers.models import (
     JavdbMovieTagResource,
 )
 from src.schema.catalog.movies import (
-    MissavThumbnailItemResource,
-    MissavThumbnailResource,
     MovieCollectionMarkType,
     MovieCollectionType,
     MovieListStatus,
@@ -43,7 +40,6 @@ from src.schema.catalog.movies import (
 from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
 from src.service.catalog.movie_metadata_refresh_service import MovieMetadataRefreshService
 from src.service.catalog.movie_service import MovieService
-from src.service.catalog.movie_task_service import MovieTaskService
 
 
 def _capture_queries(test_db):
@@ -1988,81 +1984,3 @@ def test_refresh_movie_metadata_maps_refresh_failure_to_502(app, monkeypatch):
         "normalized_movie_number": "ABP-123",
         "detail": "image refresh failed",
     }
-
-
-def test_stream_missav_thumbnails_emits_progress_and_completed_result(monkeypatch):
-    class FakeService:
-        def get_movie_thumbnails(self, movie_number: str, *, refresh: bool = False, progress_callback=None):
-            if progress_callback is not None:
-                progress_callback(
-                    "manifest_resolved",
-                    {"movie_number": movie_number, "sprite_total": 2, "thumbnail_total": 3},
-                )
-                progress_callback("download_started", {"total": 2})
-                progress_callback("download_progress", {"completed": 1, "total": 2})
-                progress_callback("download_finished", {"completed": 2, "total": 2})
-                progress_callback("slice_started", {"total": 3})
-                progress_callback("slice_progress", {"completed": 3, "total": 3})
-                progress_callback("slice_finished", {"completed": 3, "total": 3})
-            return MissavThumbnailResource(
-                movie_number=movie_number,
-                source="missav",
-                total=3,
-                items=[
-                    MissavThumbnailItemResource(index=0, url="/files/images/movies/SSNI-888/missav-seek/frames/0.jpg"),
-                    MissavThumbnailItemResource(index=1, url="/files/images/movies/SSNI-888/missav-seek/frames/1.jpg"),
-                    MissavThumbnailItemResource(index=2, url="/files/images/movies/SSNI-888/missav-seek/frames/2.jpg"),
-                ],
-            )
-
-    monkeypatch.setattr(MovieTaskService, "_build_missav_thumbnail_service", lambda: FakeService())
-
-    events = list(MovieTaskService.stream_missav_thumbnails("SSNI-888", refresh=True))
-
-    assert [event for event, _ in events] == [
-        "search_started",
-        "manifest_resolved",
-        "download_started",
-        "download_progress",
-        "download_finished",
-        "slice_started",
-        "slice_progress",
-        "slice_finished",
-        "completed",
-    ]
-    assert events[0][1] == {"movie_number": "SSNI-888", "refresh": True}
-    assert events[-1][1] == {
-        "success": True,
-        "result": {
-            "movie_number": "SSNI-888",
-            "source": "missav",
-            "total": 3,
-            "items": [
-                {"index": 0, "url": "/files/images/movies/SSNI-888/missav-seek/frames/0.jpg"},
-                {"index": 1, "url": "/files/images/movies/SSNI-888/missav-seek/frames/1.jpg"},
-                {"index": 2, "url": "/files/images/movies/SSNI-888/missav-seek/frames/2.jpg"},
-            ],
-        },
-    }
-
-
-def test_stream_missav_thumbnails_maps_fetch_error_to_failed_completed(monkeypatch):
-    class FakeService:
-        def get_movie_thumbnails(self, movie_number: str, *, refresh: bool = False, progress_callback=None):
-            raise MissavThumbnailRequestError("https://missav.ws/cn/SSNI-888", "bad gateway")
-
-    monkeypatch.setattr(MovieTaskService, "_build_missav_thumbnail_service", lambda: FakeService())
-
-    events = list(MovieTaskService.stream_missav_thumbnails("SSNI-888"))
-
-    assert events == [
-        ("search_started", {"movie_number": "SSNI-888", "refresh": False}),
-        (
-            "completed",
-            {
-                "success": False,
-                "reason": "missav_thumbnail_fetch_failed",
-                "detail": "missav thumbnail request failed: https://missav.ws/cn/SSNI-888 (bad gateway)",
-            },
-        ),
-    ]

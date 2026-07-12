@@ -61,17 +61,6 @@ class FakeRankingProvider:
         return self.details[movie_number]
 
 
-class FakeMissavRankingProvider:
-    def __init__(self):
-        self.rankings: dict[str, list[str]] = {}
-
-    def set_ranking(self, period: str, numbers: list[str]) -> None:
-        self.rankings[period] = numbers
-
-    def fetch_rank_numbers(self, period: str) -> list[str]:
-        return list(self.rankings.get(period, []))
-
-
 class FakeCatalogImportService:
     def __init__(self, fail_on: set[str] | None = None):
         self.fail_on = fail_on or set()
@@ -217,90 +206,6 @@ def test_ranking_sync_service_skips_failed_import_items(app):
         for item in RankingItem.select().where(
             RankingItem.source_key == "javdb",
             RankingItem.board_key == "censored",
-            RankingItem.period == "daily",
-        ).order_by(RankingItem.rank.asc())
-    ] == ["ABP-001", "ABP-002"]
-
-
-def test_ranking_sync_service_supports_missav_source(app):
-    missav_provider = FakeMissavRankingProvider()
-    missav_provider.set_ranking("daily", ["ABP-001", "ABP-002"])
-    javdb_provider = FakeRankingProvider()
-    javdb_provider.set_detail("ABP-001", "MovieA1")
-    javdb_provider.set_detail("ABP-002", "MovieA2")
-    service = RankingSyncService(
-        import_service=FakeCatalogImportService(),
-        providers={"missav": missav_provider, "javdb": javdb_provider},
-    )
-
-    stats = service.sync_board_period("missav", "all", "daily")
-
-    assert stats["fetched_numbers"] == 2
-    assert stats["imported_movies"] == 2
-    assert stats["skipped_movies"] == 0
-    assert stats["stored_items"] == 2
-    assert [
-        item.movie_number
-        for item in RankingItem.select().where(
-            RankingItem.source_key == "missav",
-            RankingItem.board_key == "all",
-            RankingItem.period == "daily",
-        ).order_by(RankingItem.rank.asc())
-    ] == ["ABP-001", "ABP-002"]
-
-
-def test_ranking_sync_service_supports_missav_scope_replace(app):
-    missav_provider = FakeMissavRankingProvider()
-    missav_provider.set_ranking("daily", ["ABP-001", "ABP-002"])
-    javdb_provider = FakeRankingProvider()
-    javdb_provider.set_detail("ABP-001", "MovieA1")
-    javdb_provider.set_detail("ABP-002", "MovieA2")
-    javdb_provider.set_detail("ABP-003", "MovieA3")
-    service = RankingSyncService(
-        import_service=FakeCatalogImportService(),
-        providers={"missav": missav_provider, "javdb": javdb_provider},
-    )
-
-    first_stats = service.sync_board_period("missav", "all", "daily")
-    assert first_stats["stored_items"] == 2
-
-    missav_provider.set_ranking("daily", ["ABP-003"])
-    second_stats = service.sync_board_period("missav", "all", "daily")
-
-    assert second_stats["stored_items"] == 1
-    assert [
-        item.movie_number
-        for item in RankingItem.select().where(
-            RankingItem.source_key == "missav",
-            RankingItem.board_key == "all",
-            RankingItem.period == "daily",
-        ).order_by(RankingItem.rank.asc())
-    ] == ["ABP-003"]
-
-
-def test_ranking_sync_service_skips_failed_import_items_for_missav(app):
-    missav_provider = FakeMissavRankingProvider()
-    missav_provider.set_ranking("daily", ["ABP-001", "ABP-404", "ABP-002"])
-    javdb_provider = FakeRankingProvider()
-    javdb_provider.set_detail("ABP-001", "MovieA1")
-    javdb_provider.set_detail("ABP-404", "MovieA404")
-    javdb_provider.set_detail("ABP-002", "MovieA2")
-    service = RankingSyncService(
-        import_service=FakeCatalogImportService(fail_on={"ABP-404"}),
-        providers={"missav": missav_provider, "javdb": javdb_provider},
-    )
-
-    stats = service.sync_board_period("missav", "all", "daily")
-
-    assert stats["fetched_numbers"] == 3
-    assert stats["imported_movies"] == 2
-    assert stats["skipped_movies"] == 1
-    assert stats["stored_items"] == 2
-    assert [
-        item.movie_number
-        for item in RankingItem.select().where(
-            RankingItem.source_key == "missav",
-            RankingItem.board_key == "all",
             RankingItem.period == "daily",
         ).order_by(RankingItem.rank.asc())
     ] == ["ABP-001", "ABP-002"]
@@ -672,8 +577,8 @@ def test_ranking_sync_service_sync_board_period_supports_playback_boards(app):
     ] == ["ABP-102"]
 
 
-def test_ranking_sync_service_sync_all_rankings_includes_playback_and_missav_targets(app, monkeypatch):
-    # 未配账号时 top250 被排除：javdb 普通 3 榜 + 播放 2 榜各 3 周期，加 missav 1 榜 3 周期 = 18。
+def test_ranking_sync_service_sync_all_rankings_includes_playback_targets(app, monkeypatch):
+    # 未配账号时 top250 被排除：javdb 普通 3 榜 + 播放 2 榜各 3 周期 = 15。
     monkeypatch.setattr(settings.metadata, "javdb_username", None)
     monkeypatch.setattr(settings.metadata, "javdb_password", None)
 
@@ -683,19 +588,15 @@ def test_ranking_sync_service_sync_all_rankings_includes_playback_and_missav_tar
     javdb_provider.set_detail("ABP-001", "MovieA1")
     javdb_provider.set_detail("ABP-003", "MovieA3")
 
-    missav_provider = FakeMissavRankingProvider()
-    missav_provider.set_ranking("daily", ["ABP-002"])
-    javdb_provider.set_detail("ABP-002", "MovieA2")
-
     service = RankingSyncService(
         import_service=FakeCatalogImportService(),
-        providers={"javdb": javdb_provider, "missav": missav_provider},
+        providers={"javdb": javdb_provider},
     )
 
     stats = service.sync_all_rankings()
 
-    assert stats["total_targets"] == 18
-    assert stats["success_targets"] == 18
+    assert stats["total_targets"] == 15
+    assert stats["success_targets"] == 15
     assert stats["failed_targets"] == 0
     # 未配账号：top250 从不抓取。
     assert javdb_provider.top_calls == []
@@ -760,10 +661,9 @@ def test_sync_all_rankings_top250_skips_existing_historical_year(app, monkeypatc
     )
 
     javdb_provider = FakeRankingProvider()  # 所有 top 子榜默认返回空，专注于“调用与否”
-    missav_provider = FakeMissavRankingProvider()
     service = RankingSyncService(
         import_service=FakeCatalogImportService(),
-        providers={"javdb": javdb_provider, "missav": missav_provider},
+        providers={"javdb": javdb_provider},
     )
 
     service.sync_all_rankings()
@@ -801,10 +701,9 @@ def test_sync_all_rankings_notifies_once_on_top250_login_failure(app, monkeypatc
 
     javdb_provider = FakeRankingProvider()
     javdb_provider.top_auth_error = True
-    missav_provider = FakeMissavRankingProvider()
     service = RankingSyncService(
         import_service=FakeCatalogImportService(),
-        providers={"javdb": javdb_provider, "missav": missav_provider},
+        providers={"javdb": javdb_provider},
     )
 
     stats = service.sync_all_rankings(task_run_id=7)

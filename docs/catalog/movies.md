@@ -13,7 +13,6 @@
 - `GET /movies/{movie_number}/reviews`：按影片番号读取 JavDB 评论
 - `GET /movies/{movie_number}/subtitles`：按影片番号读取字幕列表
 - `GET /movies/{movie_number}/similar`：读取离线预计算的相似影片列表
-- `GET /movies/{movie_number}/thumbnails/missav/stream`：按番号流式读取 MissAV seek 缩略图
 - `POST /movies/search/javdb/stream`：JavDB 按番号搜索并流式入库
 - `POST /movies/series/{series_id}/javdb/import/stream`：按本地系列 ID 抓取 JavDB 系列影片并流式入库
 - `POST /movies/{movie_number}/metadata-refresh`：严格刷新本地已有影片的远端元数据
@@ -175,7 +174,6 @@
 | `GET` | `/movies/{movie_number}/reviews` | 读取影片评论（按本地影片映射到 javdb_id） |
 | `GET` | `/movies/{movie_number}/subtitles` | 查询影片字幕列表 |
 | `GET` | `/movies/{movie_number}/similar` | 查询相似影片列表 |
-| `GET` | `/movies/{movie_number}/thumbnails/missav/stream` | 流式读取 MissAV seek 缩略图 |
 | `POST` | `/movies/search/javdb/stream` | JavDB 按番号搜索并流式入库（SSE） |
 | `POST` | `/movies/series/{series_id}/javdb/import/stream` | JavDB 按本地系列 ID 抓取系列影片并流式入库（SSE） |
 | `POST` | `/movies/{movie_number}/metadata-refresh` | 严格刷新本地已有影片的远端元数据 |
@@ -1039,68 +1037,6 @@ Authorization: Bearer <token>
   ]
 }
 ```
-
-### `GET /movies/{movie_number}/thumbnails/missav/stream`
-
-- 鉴权：需要 Bearer Token
-- 响应：
-  - `200 OK`
-  - `Content-Type: text/event-stream`
-- Query：
-  - `refresh`：是否强制刷新 missav 缓存，默认 `false`
-- 行为：
-  - 不依赖本地 `Movie` 记录，直接按番号请求 missav 中文页面
-  - 只解析播放器 `thumbnail`/`seek` 缩略图配置，不读取剧情图
-  - 后端会把 missav 精灵图缓存到本地并切成单张图
-  - 中间通过 SSE 推送阶段进度，最终在 `completed` 事件里返回全部签名 URL
-
-示例请求：
-
-```http
-GET /movies/SSNI-888/thumbnails/missav/stream?refresh=false
-Authorization: Bearer <token>
-```
-
-示例事件流：
-
-```text
-event: search_started
-data: {"movie_number":"SSNI-888","refresh":false}
-
-event: manifest_resolved
-data: {"movie_number":"SSNI-888","sprite_total":135,"thumbnail_total":4854}
-
-event: download_started
-data: {"total":135}
-
-event: download_progress
-data: {"completed":17,"total":135}
-
-event: download_finished
-data: {"completed":135,"total":135}
-
-event: slice_started
-data: {"total":4854}
-
-event: slice_progress
-data: {"completed":325,"total":4854}
-
-event: slice_finished
-data: {"completed":4854,"total":4854}
-
-event: completed
-data: {"success":true,"result":{"movie_number":"SSNI-888","source":"missav","total":3,"items":[{"index":0,"url":"/files/images/movies/SSNI-888/missav-seek/frames/0.jpg?expires=1700000900&signature=<signature>"}]}}
-```
-
-可能的错误码：
-
-- SSE `completed` 事件里的 `reason=missav_thumbnail_not_found`
-- SSE `completed` 事件里的 `reason=missav_thumbnail_fetch_failed`
-
-错误：
-
-- `404 movie_not_found`：影片不存在，或 JavDB 评论接口返回 not found
-- `502 movie_review_fetch_failed`：JavDB 评论接口请求失败
 
 ### `PUT /movies/{movie_number}/subscription`
 

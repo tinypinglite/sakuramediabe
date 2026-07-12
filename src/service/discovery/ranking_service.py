@@ -12,7 +12,6 @@ from src.common.service_helpers import with_movie_card_relations
 from src.config.config import settings
 from src.metadata._providers.exceptions import JavdbAuthError
 from src.metadata._providers.javdb import JavdbProvider
-from src.metadata._providers.missav import MissavRankingProvider
 from src.model import Media, Movie, RankingItem, get_database
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.discovery import (
@@ -144,23 +143,8 @@ JAVDB_SOURCE = RankingSourceDefinition(
     ),
 )
 
-MISSAV_SOURCE = RankingSourceDefinition(
-    key="missav",
-    name="MissAV",
-    boards=(
-        RankingBoardDefinition(
-            key="all",
-            name="综合",
-            provider_raw_key="all",
-            supported_periods=("daily", "weekly", "monthly"),
-            default_period="daily",
-        ),
-    ),
-)
-
 RANKING_SOURCES: dict[str, RankingSourceDefinition] = {
     JAVDB_SOURCE.key: JAVDB_SOURCE,
-    MISSAV_SOURCE.key: MISSAV_SOURCE,
 }
 
 
@@ -388,22 +372,12 @@ class RankingSyncService:
         from src.metadata.factory import build_javdb_provider
         return build_javdb_provider()
 
-    @staticmethod
-    def _build_missav_ranking_provider() -> MissavRankingProvider:
-        from src.metadata.factory import build_missav_ranking_provider
-
-        return build_missav_ranking_provider()
-
     def _provider_for_source(self, source_key: str) -> Any:
         provider = self.providers.get(source_key)
         if provider is not None:
             return provider
         if source_key == "javdb":
             provider = self._build_javdb_provider()
-            self.providers[source_key] = provider
-            return provider
-        if source_key == "missav":
-            provider = self._build_missav_ranking_provider()
             self.providers[source_key] = provider
             return provider
         raise ValueError(f"unsupported ranking source: {source_key}")
@@ -430,14 +404,10 @@ class RankingSyncService:
                 video_type=board.provider_raw_key,
                 period=period,
             )
-        if source_key == "missav":
-            provider = self._provider_for_source("missav")
-            return provider.fetch_rank_numbers(period)
         raise ValueError(f"unsupported ranking source: {source_key}")
 
     def _get_movie_detail(self, source_key: str, movie_number: str) -> Any:
-        # MissAV 只提供榜单番号，影片详情统一继续走 JavDB。
-        if source_key in {"javdb", "missav"}:
+        if source_key == "javdb":
             return self._provider_for_source("javdb").get_movie_by_number(movie_number)
         raise ValueError(f"unsupported ranking source: {source_key}")
 
