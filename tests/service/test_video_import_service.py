@@ -62,7 +62,7 @@ def _stub_cover(monkeypatch):
 def _make_library(tmp_path) -> MediaLibrary:
     root = tmp_path / "lib"
     root.mkdir()
-    return MediaLibrary.create(name="videos-lib", root_path=str(root))
+    return MediaLibrary.create(name="videos-lib", backend="local", backend_config={"root_path": str(root)})
 
 
 def _make_video_file(directory: Path, name: str) -> Path:
@@ -88,7 +88,7 @@ def test_import_hardlinks_into_library_and_creates_media(video_import_tables, tm
     assert VideoItem.select().count() == 2
     assert Media.select().count() == 2
 
-    library_root = Path(library.root_path)
+    library_root = Path(library.backend_config["root_path"])
     for media in Media.select():
         assert media.video_item_id is not None
         assert media.movie_number is None
@@ -137,7 +137,7 @@ def test_library_required(video_import_tables, tmp_path):
 
 def test_cleanup_source_inside_library_rejected(video_import_tables, tmp_path):
     library = _make_library(tmp_path)
-    inside = Path(library.root_path) / "incoming"
+    inside = Path(library.backend_config["root_path"]) / "incoming"
     inside.mkdir()
     _make_video_file(inside, "x.mp4")
     with pytest.raises(ApiError) as exc:

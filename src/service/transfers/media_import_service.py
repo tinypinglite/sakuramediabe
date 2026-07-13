@@ -219,7 +219,7 @@ class MediaImportService:
                     "Import rejected cleanup-source inside media library source_path={} matched_library_id={} matched_library_root={}",
                     str(source_entry),
                     matched_library.id,
-                    matched_library.root_path,
+                    matched_library.backend_config.get("root_path"),
                 )
                 raise ValueError("cleanup_source_inside_media_library")
 
@@ -237,7 +237,7 @@ class MediaImportService:
             "Import start source_path={} library_id={} library_root={} download_task_id={}",
             str(source_entry),
             library_id,
-            library.root_path,
+            library.backend_config.get("root_path"),
             download_task_id,
         )
         # 支持创建新任务，也支持复用已有 ImportJob 做重试，后者需要把统计字段全部重置。

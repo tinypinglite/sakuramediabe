@@ -190,7 +190,7 @@ def test_import_media_groups_by_number_and_creates_one_version_per_video(
 
     library_root = tmp_path / "library"
     image_root = tmp_path / "images"
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(image_root))
@@ -265,7 +265,7 @@ def test_import_media_cleanup_source_removes_imported_media_but_keeps_subtitle(
     source_subtitle = source_dir / "ABP-123-C.srt"
     source_video.write_bytes(b"video-content")
     source_subtitle.write_text("subtitle", encoding="utf-8")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -297,7 +297,7 @@ def test_import_media_cleanup_source_removes_duplicate_but_keeps_failed_media(
     failed_video = source_dir / "BAD-NAME.mp4"
     duplicate_video.write_bytes(b"duplicate-content")
     failed_video.write_bytes(b"failed-content")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     existing_path = tmp_path / "library" / "existing.mp4"
     existing_path.parent.mkdir(parents=True)
     existing_path.write_bytes(b"duplicate-content")
@@ -338,7 +338,7 @@ def test_import_media_cleanup_source_marks_failed_when_duplicate_delete_fails(
     source_dir.mkdir(parents=True)
     duplicate_video = source_dir / "ABP-123-duplicate.mp4"
     duplicate_video.write_bytes(b"duplicate-content")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     existing_path = tmp_path / "library" / "existing.mp4"
     existing_path.parent.mkdir(parents=True)
     existing_path.write_bytes(b"duplicate-content")
@@ -383,7 +383,7 @@ def test_import_media_cleanup_source_marks_failed_when_duplicate_delete_fails(
 def test_import_media_cleanup_source_rejects_media_library_root(import_tables, tmp_path):
     library_root = tmp_path / "library"
     library_root.mkdir(parents=True)
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
     service = MediaImportService(provider=FakeJavdbProvider({}), image_downloader=_fake_downloader)
 
     with pytest.raises(ValueError, match="cleanup_source_inside_media_library"):
@@ -399,8 +399,8 @@ def test_import_media_cleanup_source_rejects_any_media_library_child_path(import
     source_file.parent.mkdir(parents=True)
     source_file.write_bytes(b"video-content")
     target_library_root.mkdir(parents=True)
-    target_library = MediaLibrary.create(name="Target", root_path=str(target_library_root))
-    MediaLibrary.create(name="Other", root_path=str(other_library_root))
+    target_library = MediaLibrary.create(name="Target", backend="local", backend_config={"root_path": str(target_library_root)})
+    MediaLibrary.create(name="Other", backend="local", backend_config={"root_path": str(other_library_root)})
     service = MediaImportService(provider=FakeJavdbProvider({}), image_downloader=_fake_downloader)
 
     with pytest.raises(ValueError, match="cleanup_source_inside_media_library"):
@@ -423,7 +423,7 @@ def test_import_media_cleanup_source_skips_media_library_when_source_parent_cont
     source_video = incoming_dir / "ABP-124.mp4"
     library_video.write_bytes(b"existing-library-video")
     source_video.write_bytes(b"incoming-video")
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
     existing_movie = Movie.create(movie_number="ABP-123", title="existing")
     Media.create(
         movie=existing_movie,
@@ -459,7 +459,7 @@ def test_import_media_auto_allows_source_inside_media_library(import_tables, tmp
     source_dir.mkdir(parents=True)
     source_video = source_dir / "ABP-123.mp4"
     source_video.write_bytes(b"video-content")
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -482,7 +482,7 @@ def test_import_media_marks_4k_from_real_video_info_even_when_file_name_has_no_4
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-124-plain.mp4").write_bytes(b"x" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -511,7 +511,7 @@ def test_import_media_reuses_existing_import_job_and_updates_download_task_statu
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
     (source_dir / "ABP-123.srt").write_text("subtitle", encoding="utf-8")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -566,7 +566,7 @@ def test_import_media_ignores_non_srt_sidecar_subtitles(import_tables, tmp_path,
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
     (source_dir / "ABP-123.ass").write_text("ignored", encoding="utf-8")
     library_root = tmp_path / "library"
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -589,7 +589,7 @@ def test_import_media_accepts_single_file_source_path(import_tables, tmp_path, m
     target_file.write_bytes(b"x" * 10)
     (source_dir / "ABP-124.mp4").write_bytes(b"y" * 10)
     library_root = tmp_path / "library"
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -612,7 +612,7 @@ def test_import_media_skips_small_files(import_tables, tmp_path, monkeypatch: py
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123-small.mp4").write_bytes(b"x")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1024)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -636,7 +636,7 @@ def test_import_media_records_failures_and_continues(import_tables, tmp_path, mo
     (source_dir / "no_number_here.mkv").write_bytes(b"x" * 10)
     (source_dir / "ABP-124.mkv").write_bytes(b"y" * 10)
     (source_dir / "ABP-123.mp4").write_bytes(b"z" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -662,7 +662,7 @@ def test_import_media_records_image_download_failed_reason(import_tables, tmp_pa
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -686,7 +686,7 @@ def test_import_media_is_idempotent_for_catalog_links(import_tables, tmp_path, m
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -715,7 +715,7 @@ def test_import_media_counts_duplicate_source_file_as_skipped(import_tables, tmp
     source_dir.mkdir(parents=True)
     video_path = source_dir / "ABP-123.mp4"
     video_path.write_bytes(b"x" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -747,7 +747,7 @@ def test_import_media_counts_same_batch_duplicate_file_as_skipped(
     shared_bytes = b"x" * 10
     first.write_bytes(shared_bytes)
     second.write_bytes(shared_bytes)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -774,7 +774,7 @@ def test_import_media_duplicate_check_happens_before_version_directory_creation(
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
     library_root = tmp_path / "library"
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -801,7 +801,7 @@ def test_import_media_cleanup_source_imports_when_duplicate_record_path_missing(
     source_video = source_dir / "ABP-123.mp4"
     source_video.write_bytes(b"video-content")
     library_root = tmp_path / "library"
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
     stale_movie = Movie.create(movie_number="ABP-123", title="stale")
     stale_path = tmp_path / "missing" / "ABP-123.mp4"
     Media.create(
@@ -842,7 +842,7 @@ def test_import_media_still_imports_when_same_movie_number_but_different_source_
     second = source_dir / "ABP-123-cd2.mp4"
     first.write_bytes(b"x" * 10)
     second.write_bytes(b"y" * 11)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -863,7 +863,7 @@ def test_content_fingerprint_is_saved_on_media_record(import_tables, tmp_path, m
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -894,7 +894,7 @@ def test_import_media_persists_probe_metadata_on_create(
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-190.mp4").write_bytes(b"x" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -933,7 +933,7 @@ def test_import_media_revive_invalid_media_persists_probe_metadata(
     old_path = tmp_path / "old-library" / "ABP-191" / "video.mp4"
     old_path.parent.mkdir(parents=True, exist_ok=True)
     old_path.write_bytes(b"old")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     movie = Movie.create(javdb_id="javdb-ABP-191", movie_number="ABP-191", title="old-title")
     invalid_media = Media.create(
         movie=movie,
@@ -987,7 +987,7 @@ def test_import_vr_media_group_marks_4k_from_merged_video_info(
     (source_dir / "SIVR-010-part1.mp4").write_bytes(b"first")
     (source_dir / "SIVR-010-part2.mp4").write_bytes(b"second")
     library_root = tmp_path / "library"
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1024,7 +1024,7 @@ def test_import_media_revive_invalid_media_keeps_existing_video_info_when_probe_
     old_path = tmp_path / "old-library" / "ABP-192" / "video.mp4"
     old_path.parent.mkdir(parents=True, exist_ok=True)
     old_path.write_bytes(b"old")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     movie = Movie.create(javdb_id="javdb-ABP-192", movie_number="ABP-192", title="old-title")
     existing_video_info = {
         "container": {"format_name": "mp4", "duration_seconds": 120},
@@ -1093,7 +1093,7 @@ def test_import_media_revives_invalid_media_and_preserves_thumbnail(
     old_path = tmp_path / "old-library" / "ABP-123" / "video.mp4"
     old_path.parent.mkdir(parents=True, exist_ok=True)
     old_path.write_bytes(b"old")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     movie = Movie.create(javdb_id="javdb-ABP-123", movie_number="ABP-123", title="old-title")
     image = Image.create(origin="thumb.jpg", small="thumb.jpg", medium="thumb.jpg", large="thumb.jpg")
     invalid_media = Media.create(
@@ -1162,7 +1162,7 @@ def test_import_media_delegates_catalog_upsert_to_catalog_import_service(
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1189,7 +1189,7 @@ def test_import_media_marks_existing_unsubscribed_movie_as_subscribed(
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     Movie.create(
         javdb_id="javdb-ABP-123",
         movie_number="ABP-123",
@@ -1220,7 +1220,7 @@ def test_import_media_keeps_existing_subscribed_at_for_already_subscribed_movie(
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     original_timestamp = datetime(2026, 3, 8, 9, 0, 0)
     Movie.create(
         javdb_id="javdb-ABP-123",
@@ -1251,7 +1251,7 @@ def test_import_media_fetches_metadata_with_thread_pool(import_tables, tmp_path,
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
     (source_dir / "ABP-124.mp4").write_bytes(b"y" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1309,7 +1309,7 @@ def test_import_media_keeps_file_import_order_when_metadata_finishes_out_of_orde
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
     (source_dir / "ABP-124.mp4").write_bytes(b"y" * 10)
     library_root = tmp_path / "library"
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1336,7 +1336,7 @@ def test_import_media_keeps_file_import_order_when_metadata_finishes_out_of_orde
 
     def _record_import(file_path: Path, library: MediaLibrary, movie_number: str, **kwargs):
         imported_movie_numbers.append(movie_number)
-        target_directory = Path(library.root_path) / movie_number / str(service.now_ms())
+        target_directory = Path(library.backend_config["root_path"]) / movie_number / str(service.now_ms())
         target_directory.mkdir(parents=True, exist_ok=True)
         target_path = target_directory / f"{movie_number}{file_path.suffix.lower()}"
         target_path.write_bytes(file_path.read_bytes())
@@ -1357,7 +1357,7 @@ def test_import_media_parallel_metadata_failure_still_imports_other_movies(
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123.mp4").write_bytes(b"x" * 10)
     (source_dir / "ABP-124.mp4").write_bytes(b"y" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1392,7 +1392,7 @@ def test_import_media_merges_multi_file_vr_into_single_media(
     second.write_bytes(b"first-fragment")
     (source_dir / "SIVR-001-part1.srt").write_text("subtitle", encoding="utf-8")
     library_root = tmp_path / "library"
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1438,7 +1438,7 @@ def test_import_media_cleanup_source_removes_vr_fragments_after_merge(
     first.write_bytes(b"first-fragment")
     second.write_bytes(b"second-fragment")
     subtitle.write_text("subtitle", encoding="utf-8")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1469,7 +1469,7 @@ def test_import_media_cleanup_source_reports_delete_failure_after_import(
     source_dir.mkdir(parents=True)
     source_video = source_dir / "ABP-123.mp4"
     source_video.write_bytes(b"video-content")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1507,7 +1507,7 @@ def test_import_media_keeps_non_vr_multi_file_as_separate_media(
     source_dir.mkdir(parents=True)
     (source_dir / "ABP-123-cd2.mp4").write_bytes(b"second")
     (source_dir / "ABP-123-cd1.mp4").write_bytes(b"first")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1569,7 +1569,7 @@ def test_import_media_skips_duplicate_fragments_inside_vr_group(
     source_dir.mkdir(parents=True)
     (source_dir / "SIVR-001-part1.mp4").write_bytes(b"same-fragment")
     (source_dir / "SIVR-001-part2.mp4").write_bytes(b"same-fragment")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1606,7 +1606,7 @@ def test_import_media_skips_multiple_subtitles_for_merged_vr_group(
     (source_dir / "SIVR-001-part1.srt").write_text("subtitle-1", encoding="utf-8")
     (source_dir / "SIVR-001-part2.srt").write_text("subtitle-2", encoding="utf-8")
     library_root = tmp_path / "library"
-    library = MediaLibrary.create(name="Main", root_path=str(library_root))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(library_root)})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1634,7 +1634,7 @@ def test_import_media_marks_group_failed_when_vr_merge_raises(
     source_dir.mkdir(parents=True)
     (source_dir / "SIVR-001-part1.mp4").write_bytes(b"first")
     (source_dir / "SIVR-001-part2.mp4").write_bytes(b"second")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1669,7 +1669,7 @@ def test_import_media_only_files_imports_subset_and_ignores_others(
     other = source_dir / "ABP-456.mp4"
     selected.write_bytes(b"x" * 10)
     other.write_bytes(b"y" * 10)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
@@ -1705,7 +1705,7 @@ def test_import_media_only_files_all_missing_marks_failed(
     # 子集重导时若选中文件都已不在源目录，应判 failed 并记 retry_sources_missing，而非静默 completed。
     source_dir = tmp_path / "source"
     source_dir.mkdir(parents=True)
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
     monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))

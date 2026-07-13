@@ -48,7 +48,7 @@ def test_get_movie_subtitles_is_read_only(movie_subtitle_tables, tmp_path, monke
 
 def test_sync_movie_subtitles_rejects_symlink_outside_media_directory(movie_subtitle_tables, tmp_path):
     movie = _create_movie("ABC-402", "Movie402")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     outside_subtitle_path = tmp_path / "outside.srt"
     outside_subtitle_path.write_text("secret", encoding="utf-8")
     media_dir = tmp_path / "movie"
@@ -70,7 +70,7 @@ def test_sync_movie_subtitles_rejects_symlink_outside_media_directory(movie_subt
 
 def test_sync_movie_subtitles_discovers_new_sidecar_subtitle(movie_subtitle_tables, tmp_path):
     movie = _create_movie("ABC-403", "Movie403")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     media_dir = tmp_path / "movie-403"
     media_dir.mkdir()
     media_path = media_dir / "video.mp4"

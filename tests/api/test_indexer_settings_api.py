@@ -43,7 +43,7 @@ def isolated_indexer_settings(tmp_path, monkeypatch):
 
 
 def _create_client(name: str = "client-a") -> DownloadClient:
-    library = MediaLibrary.create(name=f"library-{name}", root_path=f"/library/{name}")
+    library = MediaLibrary.create(name=f"library-{name}", backend="local", backend_config={"root_path": f"/library/{name}"})
     return DownloadClient.create(
         name=name,
         base_url="http://localhost:8080",

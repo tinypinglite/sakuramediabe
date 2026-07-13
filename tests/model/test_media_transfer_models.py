@@ -37,18 +37,17 @@ def media_transfer_tables(test_db):
     test_db.drop_tables(list(reversed(models)))
 
 
-def test_media_library_name_and_root_path_must_be_unique(media_transfer_tables):
-    MediaLibrary.create(name="A", root_path="/media/a")
+def test_media_library_name_must_be_unique(media_transfer_tables):
+    # name 唯一走 DB 约束；root_path 唯一下沉到 service 层（backend_config 是 JSON，
+    # DB 层不管），见 tests/service/test_media_library_service.py::test_create_library_rejects_root_path_conflict。
+    MediaLibrary.create(name="A", backend="local", backend_config={"root_path": "/media/a"})
 
     with pytest.raises(IntegrityError):
-        MediaLibrary.create(name="A", root_path="/media/b")
-
-    with pytest.raises(IntegrityError):
-        MediaLibrary.create(name="B", root_path="/media/a")
+        MediaLibrary.create(name="A", backend="local", backend_config={"root_path": "/media/b"})
 
 
 def test_download_task_requires_unique_info_hash_per_client(media_transfer_tables):
-    library = MediaLibrary.create(name="A", root_path="/library/a")
+    library = MediaLibrary.create(name="A", backend="local", backend_config={"root_path": "/library/a"})
     client_a = DownloadClient.create(
         name="client-a",
         base_url="https://qb-a.example.com:8080",
@@ -94,7 +93,7 @@ def test_download_task_requires_unique_info_hash_per_client(media_transfer_table
 
 
 def test_import_job_can_link_download_task_and_store_failed_files(media_transfer_tables):
-    library = MediaLibrary.create(name="A", root_path="/library/a")
+    library = MediaLibrary.create(name="A", backend="local", backend_config={"root_path": "/library/a"})
     client = DownloadClient.create(
         name="client-a",
         base_url="https://qb-a.example.com:8080",
@@ -127,7 +126,7 @@ def test_import_job_can_link_download_task_and_store_failed_files(media_transfer
 
 
 def test_indexer_name_must_be_unique_and_belongs_to_download_client(media_transfer_tables):
-    library = MediaLibrary.create(name="A", root_path="/library/a")
+    library = MediaLibrary.create(name="A", backend="local", backend_config={"root_path": "/library/a"})
     client = DownloadClient.create(
         name="client-a",
         base_url="https://qb-a.example.com:8080",
@@ -155,7 +154,7 @@ def test_indexer_name_must_be_unique_and_belongs_to_download_client(media_transf
 
 
 def test_media_keeps_absolute_path_and_library(media_transfer_tables):
-    library = MediaLibrary.create(name="A", root_path="/library/a")
+    library = MediaLibrary.create(name="A", backend="local", backend_config={"root_path": "/library/a"})
     movie = Movie.create(javdb_id="MovieA1", movie_number="ABC-001", title="ABC-001")
 
     media = Media.create(
@@ -171,7 +170,7 @@ def test_media_keeps_absolute_path_and_library(media_transfer_tables):
 
 
 def test_media_special_tags_defaults_and_supports_space_separated_values(media_transfer_tables):
-    library = MediaLibrary.create(name="A", root_path="/library/a")
+    library = MediaLibrary.create(name="A", backend="local", backend_config={"root_path": "/library/a"})
     movie = Movie.create(javdb_id="MovieA1", movie_number="ABC-001", title="ABC-001")
 
     default_media = Media.create(
@@ -193,7 +192,7 @@ def test_media_special_tags_defaults_and_supports_space_separated_values(media_t
 
 
 def test_media_can_store_content_fingerprint(media_transfer_tables):
-    library = MediaLibrary.create(name="A", root_path="/library/a")
+    library = MediaLibrary.create(name="A", backend="local", backend_config={"root_path": "/library/a"})
     movie = Movie.create(javdb_id="MovieA1", movie_number="ABC-001", title="ABC-001")
 
     media = Media.create(

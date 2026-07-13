@@ -2,6 +2,7 @@ import pytest
 
 from src.api.exception.errors import ApiError
 from src.model import BackgroundTaskRun, DownloadClient, DownloadTask, Image, ImportJob, Media, MediaLibrary, Movie, MovieSeries, VideoItem
+from src.model.enums import MediaLibraryBackend
 from src.schema.playback.media_libraries import (
     MediaLibraryCreateRequest,
     MediaLibraryUpdateRequest,
@@ -19,8 +20,12 @@ def media_library_tables(test_db):
 
 
 def test_list_libraries_returns_created_at_desc_then_id_desc(media_library_tables):
-    first = MediaLibrary.create(name="A", root_path="/library/a")
-    second = MediaLibrary.create(name="B", root_path="/library/b")
+    first = MediaLibrary.create(
+        name="A", backend="local", backend_config={"root_path": "/library/a"}
+    )
+    second = MediaLibrary.create(
+        name="B", backend="local", backend_config={"root_path": "/library/b"}
+    )
 
     items = MediaLibraryService.list_libraries()
 
@@ -29,18 +34,26 @@ def test_list_libraries_returns_created_at_desc_then_id_desc(media_library_table
 
 def test_create_library_strips_and_persists_normalized_fields(media_library_tables):
     resource = MediaLibraryService.create_library(
-        MediaLibraryCreateRequest(name="  Main  ", root_path="  /library/main  ")
+        MediaLibraryCreateRequest(
+            name="  Main  ",
+            backend=MediaLibraryBackend.LOCAL,
+            backend_config={"root_path": "  /library/main  "},
+        )
     )
 
     assert resource.name == "Main"
-    assert resource.root_path == "/library/main"
+    assert resource.backend_config["root_path"] == "/library/main"
     assert MediaLibrary.get_by_id(resource.id).name == "Main"
 
 
 def test_create_library_rejects_empty_name(media_library_tables):
     with pytest.raises(ApiError) as exc_info:
         MediaLibraryService.create_library(
-            MediaLibraryCreateRequest(name="   ", root_path="/library/main")
+            MediaLibraryCreateRequest(
+                name="   ",
+                backend=MediaLibraryBackend.LOCAL,
+                backend_config={"root_path": "/library/main"},
+            )
         )
 
     assert exc_info.value.status_code == 422
@@ -50,7 +63,11 @@ def test_create_library_rejects_empty_name(media_library_tables):
 def test_create_library_rejects_invalid_root_path(media_library_tables):
     with pytest.raises(ApiError) as exc_info:
         MediaLibraryService.create_library(
-            MediaLibraryCreateRequest(name="Main", root_path="relative/path")
+            MediaLibraryCreateRequest(
+                name="Main",
+                backend=MediaLibraryBackend.LOCAL,
+                backend_config={"root_path": "relative/path"},
+            )
         )
 
     assert exc_info.value.status_code == 422
@@ -58,11 +75,17 @@ def test_create_library_rejects_invalid_root_path(media_library_tables):
 
 
 def test_create_library_rejects_name_conflict(media_library_tables):
-    MediaLibrary.create(name="Main", root_path="/library/main")
+    MediaLibrary.create(
+        name="Main", backend="local", backend_config={"root_path": "/library/main"}
+    )
 
     with pytest.raises(ApiError) as exc_info:
         MediaLibraryService.create_library(
-            MediaLibraryCreateRequest(name="Main", root_path="/library/other")
+            MediaLibraryCreateRequest(
+                name="Main",
+                backend=MediaLibraryBackend.LOCAL,
+                backend_config={"root_path": "/library/other"},
+            )
         )
 
     assert exc_info.value.status_code == 409
@@ -70,11 +93,17 @@ def test_create_library_rejects_name_conflict(media_library_tables):
 
 
 def test_create_library_rejects_root_path_conflict(media_library_tables):
-    MediaLibrary.create(name="Main", root_path="/library/main")
+    MediaLibrary.create(
+        name="Main", backend="local", backend_config={"root_path": "/library/main"}
+    )
 
     with pytest.raises(ApiError) as exc_info:
         MediaLibraryService.create_library(
-            MediaLibraryCreateRequest(name="Other", root_path="/library/main")
+            MediaLibraryCreateRequest(
+                name="Other",
+                backend=MediaLibraryBackend.LOCAL,
+                backend_config={"root_path": "/library/main"},
+            )
         )
 
     assert exc_info.value.status_code == 409
@@ -82,7 +111,9 @@ def test_create_library_rejects_root_path_conflict(media_library_tables):
 
 
 def test_update_library_rejects_empty_payload(media_library_tables):
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
+    library = MediaLibrary.create(
+        name="Main", backend="local", backend_config={"root_path": "/library/main"}
+    )
 
     with pytest.raises(ApiError) as exc_info:
         MediaLibraryService.update_library(library.id, MediaLibraryUpdateRequest())
@@ -103,8 +134,12 @@ def test_update_library_rejects_missing_library(media_library_tables):
 
 
 def test_update_library_rejects_name_conflict(media_library_tables):
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
-    MediaLibrary.create(name="Other", root_path="/library/other")
+    library = MediaLibrary.create(
+        name="Main", backend="local", backend_config={"root_path": "/library/main"}
+    )
+    MediaLibrary.create(
+        name="Other", backend="local", backend_config={"root_path": "/library/other"}
+    )
 
     with pytest.raises(ApiError) as exc_info:
         MediaLibraryService.update_library(
@@ -116,22 +151,30 @@ def test_update_library_rejects_name_conflict(media_library_tables):
     assert exc_info.value.code == "media_library_name_conflict"
 
 
-def test_update_library_rejects_root_path_conflict(media_library_tables):
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
-    MediaLibrary.create(name="Other", root_path="/library/other")
+def test_update_library_ignores_unknown_fields_and_yields_empty_update(media_library_tables):
+    # root_path 已不再是 update 支持字段，pydantic 会忽略未知键，
+    # 于是 update_data 为空 -> 422 empty_media_library_update。
+    library = MediaLibrary.create(
+        name="Main", backend="local", backend_config={"root_path": "/library/main"}
+    )
+    MediaLibrary.create(
+        name="Other", backend="local", backend_config={"root_path": "/library/other"}
+    )
 
     with pytest.raises(ApiError) as exc_info:
         MediaLibraryService.update_library(
             library.id,
-            MediaLibraryUpdateRequest(root_path="/library/other"),
+            MediaLibraryUpdateRequest.model_validate({"root_path": "/library/other"}),
         )
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.code == "media_library_root_path_conflict"
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "empty_media_library_update"
 
 
 def test_delete_library_rejects_when_media_exists(media_library_tables):
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
+    library = MediaLibrary.create(
+        name="Main", backend="local", backend_config={"root_path": "/library/main"}
+    )
     movie = Movie.create(javdb_id="MovieA1", movie_number="ABC-001", title="ABC-001")
     Media.create(movie=movie, path="/library/main/video.mp4", library=library)
 
@@ -143,7 +186,9 @@ def test_delete_library_rejects_when_media_exists(media_library_tables):
 
 
 def test_delete_library_rejects_when_download_client_exists(media_library_tables):
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
+    library = MediaLibrary.create(
+        name="Main", backend="local", backend_config={"root_path": "/library/main"}
+    )
     DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -162,7 +207,9 @@ def test_delete_library_rejects_when_download_client_exists(media_library_tables
 
 
 def test_delete_library_rejects_when_import_job_exists(media_library_tables):
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
+    library = MediaLibrary.create(
+        name="Main", backend="local", backend_config={"root_path": "/library/main"}
+    )
     ImportJob.create(source_path="/downloads/a", library=library)
 
     with pytest.raises(ApiError) as exc_info:

@@ -88,8 +88,8 @@ def test_status_endpoint_returns_aggregated_summary(client, account_user, monkey
     movie_b = _create_movie("ABC-002", "MovieA2", is_subscribed=False)
     movie_c = _create_movie("ABC-003", "MovieA3", is_subscribed=True)
 
-    library_main = MediaLibrary.create(name="Main", root_path="/library/main")
-    library_archive = MediaLibrary.create(name="Archive", root_path="/library/archive")
+    library_main = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": "/library/main"})
+    library_archive = MediaLibrary.create(name="Archive", backend="local", backend_config={"root_path": "/library/archive"})
 
     Media.create(
         movie=movie_a,

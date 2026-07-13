@@ -29,7 +29,7 @@ def test_video_import_requires_authentication(client):
 
 def test_trigger_video_import_returns_202(client, account_user, tmp_path):
     token = _login(client, account_user.username)
-    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Videos", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     source = tmp_path / "incoming"
     source.mkdir()
 
@@ -60,7 +60,7 @@ def test_trigger_video_import_missing_library_is_422(client, account_user, tmp_p
 
 def test_get_video_import_job(client, account_user, tmp_path):
     token = _login(client, account_user.username)
-    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Videos", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     job = VideoImportJob.create(source_path=str(tmp_path), library=library, state="completed", imported_count=3)
 
     response = client.get(
@@ -77,7 +77,7 @@ def test_get_video_import_job(client, account_user, tmp_path):
 
 def test_list_video_import_jobs(client, account_user, tmp_path):
     token = _login(client, account_user.username)
-    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Videos", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     older = VideoImportJob.create(source_path=str(tmp_path / "a"), library=library, state="completed")
     newer = VideoImportJob.create(source_path=str(tmp_path / "b"), library=library, state="failed")
 
@@ -93,7 +93,7 @@ def test_list_video_import_jobs(client, account_user, tmp_path):
 
 def test_retry_video_import_failed_files_returns_202(client, account_user, tmp_path):
     token = _login(client, account_user.username)
-    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Videos", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     source = tmp_path / "incoming"
     source.mkdir()
     failed_file = source / "clip.mp4"
@@ -124,7 +124,7 @@ def test_retry_video_import_failed_files_returns_202(client, account_user, tmp_p
 
 def test_retry_rejects_path_not_in_failed_list(client, account_user, tmp_path):
     token = _login(client, account_user.username)
-    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Videos", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     job = VideoImportJob.create(
         source_path=str(tmp_path),
         library=library,
@@ -144,7 +144,7 @@ def test_retry_rejects_path_not_in_failed_list(client, account_user, tmp_path):
 
 def test_delete_video_import_failed_file(client, account_user, tmp_path):
     token = _login(client, account_user.username)
-    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Videos", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     source = tmp_path / "incoming"
     source.mkdir()
     failed_file = source / "clip.mp4"
@@ -173,7 +173,7 @@ def test_delete_video_import_failed_file(client, account_user, tmp_path):
 
 def test_rename_video_import_failed_file(client, account_user, tmp_path):
     token = _login(client, account_user.username)
-    library = MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Videos", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     source = tmp_path / "incoming"
     source.mkdir()
     failed_file = source / "raw.mp4"

@@ -37,7 +37,7 @@ from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorr
 
 @dataclass
 class _MediaLibraryView:
-    root_path: str
+    backend_config: dict
 
 
 @dataclass
@@ -204,7 +204,7 @@ class DownloadClientService:
         start_at = time.time()
         probe_id = probe_id or uuid.uuid4().hex
         local_root = Path(client.local_root_path).expanduser()
-        library_root = Path(client.media_library.root_path).expanduser()
+        library_root = Path(client.media_library.backend_config["root_path"]).expanduser()
         local_probe_dir = local_root / cls.DIAGNOSTIC_DIR_NAME / probe_id
         library_probe_dir = library_root / cls.DIAGNOSTIC_DIR_NAME / probe_id
         local_diagnostic_dir = local_probe_dir.parent
@@ -410,8 +410,10 @@ class DownloadClientService:
             client_save_path=existing.client_save_path if existing is not None else "",
             local_root_path=existing.local_root_path if existing is not None else "",
             media_library=_MediaLibraryView(
-                root_path=(
-                    existing.media_library.root_path if existing is not None else ""
+                backend_config=(
+                    dict(existing.media_library.backend_config)
+                    if existing is not None
+                    else {"root_path": ""}
                 ),
             ),
         )
@@ -449,7 +451,7 @@ class DownloadClientService:
             password=password,
             client_save_path=client_save_path,
             local_root_path=local_root_path,
-            media_library=_MediaLibraryView(root_path=library.root_path),
+            media_library=_MediaLibraryView(backend_config=dict(library.backend_config)),
         )
 
     @staticmethod

@@ -28,7 +28,7 @@ def stub_runner_submit(monkeypatch):
 
 
 def _create_library(tmp_path) -> MediaLibrary:
-    return MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    return MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
 
 def test_media_import_endpoints_require_authentication(client):

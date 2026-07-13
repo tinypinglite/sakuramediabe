@@ -259,7 +259,7 @@ def download_tables(test_db):
 
 
 def _create_library(name: str = "Main", root_path: str = "/library/main") -> MediaLibrary:
-    return MediaLibrary.create(name=name, root_path=root_path)
+    return MediaLibrary.create(name=name, backend="local", backend_config={"root_path": root_path})
 
 
 def _create_client(
@@ -1644,7 +1644,7 @@ def test_download_client_delete_rejects_when_indexer_exists(download_tables):
 
 
 def test_download_sync_service_enqueues_auto_imports(download_tables, monkeypatch, tmp_path):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1699,7 +1699,7 @@ def test_download_sync_service_enqueues_seeding_tasks_alongside_completed(
 ):
     # 做种态在业务上等价于"下载完成，正在做种"，同样应被 auto_import 拾起，避免用户开启做种后
     # 任务卡在 seeding 状态里永远进不去导入流程。
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1749,7 +1749,7 @@ def test_download_sync_service_enqueues_seeding_tasks_alongside_completed(
 def test_download_sync_service_recovers_orphaned_running_import_before_requeue(
     download_tables, monkeypatch, tmp_path
 ):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1817,7 +1817,7 @@ def test_download_sync_service_recovers_orphaned_running_import_before_requeue(
 def test_download_sync_service_recover_orphaned_imports_only_does_not_enqueue_new_imports(
     download_tables, monkeypatch, tmp_path
 ):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1883,7 +1883,7 @@ def test_download_sync_service_recover_orphaned_imports_only_does_not_enqueue_ne
 def test_download_sync_service_does_not_backfill_missing_task_run_id_for_legacy_jobs(
     download_tables, monkeypatch, tmp_path
 ):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1934,7 +1934,7 @@ def test_download_sync_service_does_not_backfill_missing_task_run_id_for_legacy_
 
 
 def test_download_sync_service_keeps_activity_running_when_owner_process_is_still_alive(download_tables, monkeypatch, tmp_path):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1985,7 +1985,7 @@ def test_download_sync_service_keeps_activity_running_when_owner_process_is_stil
 
 
 def test_download_task_service_trigger_import_marks_running_and_creates_job(download_tables, monkeypatch, tmp_path):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -2033,7 +2033,7 @@ def test_download_task_service_trigger_import_marks_running_and_creates_job(down
 def test_download_task_service_trigger_import_preserves_single_file_source_path(
     download_tables, monkeypatch, tmp_path
 ):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -2068,7 +2068,7 @@ def test_download_task_service_trigger_import_preserves_single_file_source_path(
 
 
 def test_download_task_service_trigger_import_rejects_non_completed_or_duplicate(download_tables, tmp_path):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -2489,7 +2489,7 @@ def test_subscribed_movie_auto_download_treats_non_created_request_as_skipped(do
 
 
 def test_download_task_service_run_import_job_marks_failure_when_bootstrap_fails(download_tables, tmp_path):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",

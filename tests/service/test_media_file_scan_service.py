@@ -42,7 +42,7 @@ def _build_video_info(width: int, height: int) -> dict:
 
 def test_scan_media_files_invalidates_missing_media(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-301", "Movie301")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     media = Media.create(
         movie=movie,
         library=library,
@@ -63,7 +63,7 @@ def test_scan_media_files_invalidates_missing_media(media_file_scan_tables, tmp_
 
 def test_check_media_file_invalidates_missing_media(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-311", "Movie311")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     media = Media.create(
         movie=movie,
         library=library,
@@ -88,7 +88,7 @@ def test_check_media_file_invalidates_missing_media(media_file_scan_tables, tmp_
 
 def test_scan_media_files_revives_media_and_backfills_video_info(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-302", "Movie302")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     file_path = tmp_path / "abc-302.mp4"
     file_path.write_bytes(b"video-bytes")
     probe_result = MediaMetadataProbeResult(
@@ -133,7 +133,7 @@ def test_scan_media_files_revives_media_and_backfills_video_info(media_file_scan
 
 def test_check_media_file_revives_media_and_backfills_video_info(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-312", "Movie312")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     file_path = tmp_path / "ABC-312-4K-C.mp4"
     file_path.write_bytes(b"video-bytes")
     file_path.with_suffix(".srt").write_text("subtitle", encoding="utf-8")
@@ -176,7 +176,7 @@ def test_check_media_file_revives_media_and_backfills_video_info(media_file_scan
 
 def test_scan_media_files_skips_probe_when_video_info_exists(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-303", "Movie303")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     file_path = tmp_path / "abc-303.mp4"
     file_path.write_bytes(b"video-bytes")
     existing_video_info = {
@@ -210,7 +210,7 @@ def test_scan_media_files_skips_probe_when_video_info_exists(media_file_scan_tab
 
 def test_check_media_file_returns_unchanged_when_valid_state_matches(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-313", "Movie313")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     file_path = tmp_path / "abc-313.mp4"
     file_path.write_bytes(b"video-bytes")
     media = Media.create(
@@ -246,7 +246,7 @@ def test_check_media_file_returns_not_found_for_missing_media(media_file_scan_ta
 
 def test_scan_media_files_removes_4k_when_real_video_info_is_not_4k(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-305", "Movie305")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     file_path = tmp_path / "ABC-305-4K.mp4"
     file_path.write_bytes(b"video-bytes")
     media = Media.create(
@@ -271,7 +271,7 @@ def test_scan_media_files_removes_4k_when_real_video_info_is_not_4k(media_file_s
 
 def test_scan_media_files_adds_4k_when_real_video_info_is_4k(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-306", "Movie306")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     file_path = tmp_path / "abc-306.mp4"
     file_path.write_bytes(b"video-bytes")
     media = Media.create(
@@ -296,7 +296,7 @@ def test_scan_media_files_adds_4k_when_real_video_info_is_4k(media_file_scan_tab
 
 def test_scan_media_files_is_idempotent_when_probe_returns_empty_video_info(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-304", "Movie304")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     file_path = tmp_path / "abc-304.mp4"
     file_path.write_bytes(b"video-bytes")
     media = Media.create(
@@ -326,7 +326,7 @@ def test_scan_media_files_is_idempotent_when_probe_returns_empty_video_info(medi
 
 def test_scan_media_files_rebuilds_special_tags_after_probe(media_file_scan_tables, tmp_path):
     movie = _create_movie("ABC-307", "Movie307")
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     file_path = tmp_path / "ABC-307-4K-C.mp4"
     file_path.write_bytes(b"video-bytes")
     file_path.with_suffix(".srt").write_text("subtitle", encoding="utf-8")

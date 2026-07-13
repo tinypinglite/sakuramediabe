@@ -140,7 +140,7 @@ def import_vr_media_group(
         return False, 0
 
     target_directory = create_version_directory(
-        Path(library.root_path).expanduser() / movie.movie_number,
+        Path(library.backend_config["root_path"]).expanduser() / movie.movie_number,
         now_ms=now_ms(),
     )
     target_path = target_directory / f"{movie.movie_number}{group.files[0].path.suffix.lower()}"
@@ -272,7 +272,7 @@ def _import_single_media_file(
     now_ms: Callable[[], int],
 ) -> Tuple[str, Path]:
     """为单个媒体文件创建目标版本目录并完成文件传输。"""
-    library_root = Path(library.root_path).expanduser()
+    library_root = Path(library.backend_config["root_path"]).expanduser()
     # 复用共享版本目录工具，JAV 实体目录为“库根/番号”。
     target_directory = create_version_directory(library_root / movie_number, now_ms=now_ms())
     target_filename = f"{movie_number}{file_path.suffix.lower()}"

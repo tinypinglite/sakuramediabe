@@ -42,9 +42,7 @@ def _create_media(
         title="Movie 1",
         duration_minutes=duration_minutes,
     )
-    library = MediaLibrary.create(
-        name=f"Main-{movie_number}",
-        root_path=str(tmp_path / f"library-{movie_number}"),
+    library = MediaLibrary.create(name=f"Main-{movie_number}", backend="local", backend_config={"root_path": str(tmp_path / f"library-{movie_number}")},
     )
     video_path = tmp_path / f"{movie_number}.mp4"
     video_path.write_bytes(b"video")

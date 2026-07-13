@@ -40,7 +40,7 @@ def test_download_endpoints_require_authentication(client):
 
 def test_download_client_crud_api(client, account_user):
     token = _login(client, username=account_user.username)
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": "/library/main"})
 
     create_response = client.post(
         "/download-clients",
@@ -88,7 +88,7 @@ def test_download_client_crud_api(client, account_user):
 
 def test_download_client_api_reports_expected_errors(client, account_user):
     token = _login(client, username=account_user.username)
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": "/library/main"})
     DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",

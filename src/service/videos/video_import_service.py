@@ -173,7 +173,7 @@ class VideoImportService:
         video = VideoItem.create(title=file_path.stem, release_date=probe.creation_time)
         target_path: Path | None = None
         try:
-            entity_directory = Path(library.root_path).expanduser() / "videos" / str(video.id)
+            entity_directory = Path(library.backend_config["root_path"]).expanduser() / "videos" / str(video.id)
             target_directory = create_version_directory(entity_directory, now_ms=self.now_ms())
             target_path = target_directory / file_path.name
             storage_mode = transfer_file(file_path, target_path, transfer_mode=transfer_mode)

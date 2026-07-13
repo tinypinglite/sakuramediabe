@@ -50,7 +50,7 @@ def stub_runner_submit(monkeypatch):
 
 
 def _create_library(tmp_path) -> MediaLibrary:
-    return MediaLibrary.create(name="Videos", root_path=str(tmp_path / "library"))
+    return MediaLibrary.create(name="Videos", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
 
 def test_trigger_creates_job_and_task_run(video_import_job_tables, tmp_path, stub_runner_submit):

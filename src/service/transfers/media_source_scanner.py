@@ -112,7 +112,7 @@ def find_media_library_containing_path(source_entry: Path) -> MediaLibrary | Non
     """查找 source_entry 是否落在任一已配置媒体库根目录内。"""
     resolved_source = source_entry.expanduser().resolve()
     for media_library in MediaLibrary.select():
-        library_root = Path(media_library.root_path).expanduser().resolve()
+        library_root = Path(media_library.backend_config["root_path"]).expanduser().resolve()
         # cleanup-source 会删除源视频，禁止对任何媒体库目录或其子路径执行。
         if resolved_source == library_root or resolved_source.is_relative_to(library_root):
             return media_library
@@ -123,7 +123,7 @@ def media_library_roots() -> List[Path]:
     """返回当前已配置媒体库根目录，供 cleanup-source 扫描排除使用。"""
     roots: List[Path] = []
     for media_library in MediaLibrary.select():
-        roots.append(Path(media_library.root_path).expanduser().resolve())
+        roots.append(Path(media_library.backend_config["root_path"]).expanduser().resolve())
     return roots
 
 
