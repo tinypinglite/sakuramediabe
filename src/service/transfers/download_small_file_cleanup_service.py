@@ -18,6 +18,8 @@ class DownloadSmallFileCleanupService:
 
     针对带 sakuramedia 标签、仍在下载的种子，把小于阈值的文件设为不下载并打上待删除标记，
     再物理删除下载暂存目录里这些被标记的残留文件，避免种子夹带的 sample / 小垃圾文件拖住整个任务。
+
+    没有下载中种子时不会遍历下载目录：标记文件只可能由下载中种子产生，空扫除了唤醒硬盘没有任何产出。
     """
 
     def __init__(self, qbittorrent_client_cls=QBittorrentClient):
@@ -37,16 +39,21 @@ class DownloadSmallFileCleanupService:
                 qb_client = self.qbittorrent_client_cls.from_download_client(client)
                 # 只处理本系统添加（带 sakuramedia 标签）的种子，手动加入 qb 的种子不受影响。
                 torrents = qb_client.list_torrents(client_id=client.id)
+                client_scanned_torrents = 0
                 for torrent in torrents:
                     # 已完成的种子无需再清理小文件。
                     if torrent.get("progress", 0.0) >= 1.0:
                         continue
-                    scanned_torrents += 1
+                    client_scanned_torrents += 1
                     deselected_files += self._clean_torrent(
                         qb_client, torrent["info_hash"], threshold_bytes
                     )
-                # 每个 client 处理完后，物理删除其下载暂存目录里被标记的小文件。
-                deleted_files += self._delete_marked_files(client.local_root_path)
+                scanned_torrents += client_scanned_torrents
+                # 待删除标记只可能由下载中种子产生；没有下载中种子时跳过物理清理，
+                # 避免高频任务空扫下载目录、无谓唤醒硬盘（下载盘常与媒体盘同盘）。
+                if client_scanned_torrents:
+                    # 每个 client 处理完后，物理删除其下载暂存目录里被标记的小文件。
+                    deleted_files += self._delete_marked_files(client.local_root_path)
             except Exception as exc:
                 failed_count += 1
                 logger.exception(

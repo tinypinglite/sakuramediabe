@@ -259,11 +259,13 @@ class Scheduler(BaseModel):
     movie_interaction_sync_cron: str = "0 5 * * *"
     ranking_sync_cron: str = "45 1 * * *"
     hot_review_sync_cron: str = "20 1 * * *"
-    media_file_scan_cron: str = "0 */6 * * *"
+    # 全量巡检会 stat 媒体库里每个文件，放到每天凌晨集中一次，避免高频唤醒媒体盘。
+    media_file_scan_cron: str = "0 4 * * *"
     movie_desc_sync_cron: str = "0 4 * * *"
     movie_desc_translation_cron: str = "15 4 * * *"
     movie_title_translation_cron: str = "20 4 * * *"
-    media_thumbnail_cron: str = "*/5 * * * *"
+    # 空跑只查 DB 不读盘，30 分钟一次足够；有新导入时缩略图会在同一活跃窗口内跟上。
+    media_thumbnail_cron: str = "*/30 * * * *"
     image_search_index_cron: str = "0 0 * * *"
     image_search_optimize_cron: str = "0 3 * * *"
     movie_similarity_recompute_cron: str = "30 3 * * *"

@@ -66,7 +66,8 @@ def test_settings_can_be_built_without_config_file(tmp_path, monkeypatch):
     assert settings.media.max_thumbnail_process_count == max(
         1, math.ceil(((config_module.os.cpu_count() or 1) / 2))
     )
-    assert settings.scheduler.media_thumbnail_cron == "*/5 * * * *"
+    assert settings.scheduler.media_thumbnail_cron == "*/30 * * * *"
+    assert settings.scheduler.media_file_scan_cron == "0 4 * * *"
     assert settings.scheduler.image_search_index_cron == "0 0 * * *"
     assert settings.scheduler.image_search_optimize_cron == "0 3 * * *"
     assert settings.scheduler.movie_desc_sync_cron == "0 4 * * *"
