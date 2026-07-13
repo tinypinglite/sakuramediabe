@@ -1260,21 +1260,19 @@ def test_import_media_fetches_metadata_with_thread_pool(import_tables, tmp_path,
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
     monkeypatch.setattr(settings.metadata, "import_metadata_max_workers", 2)
 
-    ready = threading.Event()
-    release = threading.Event()
+    # 两个 provider 调用都到 barrier 才放行：并发下秒过，串行下第一个 wait 会超时 BrokenBarrierError。
+    barrier = threading.Barrier(2)
     lock = threading.Lock()
     started_movie_numbers: List[str] = []
 
-    class BlockingProvider(FakeJavdbProvider):
+    class BarrierProvider(FakeJavdbProvider):
         def get_movie_by_number(self, movie_number: str) -> JavdbMovieDetailResource:
             with lock:
                 started_movie_numbers.append(movie_number)
-                if len(started_movie_numbers) == 2:
-                    ready.set()
-            release.wait(timeout=2)
+            barrier.wait(timeout=2)
             return super().get_movie_by_number(movie_number)
 
-    provider = BlockingProvider(
+    provider = BarrierProvider(
         {
             "ABP-123": _build_detail("ABP-123"),
             "ABP-124": _build_detail("ABP-124"),
@@ -1286,22 +1284,11 @@ def test_import_media_fetches_metadata_with_thread_pool(import_tables, tmp_path,
         now_ms=lambda: 1730000000000,
     )
 
-    result: Dict[str, ImportJob] = {}
-    worker = threading.Thread(
-        target=lambda: result.setdefault("job", service.import_from_source(str(source_dir), library.id))
-    )
-    worker.start()
+    job = service.import_from_source(str(source_dir), library.id)
 
-    assert ready.wait(timeout=1), "expected metadata workers to overlap"
-    with lock:
-        assert set(started_movie_numbers) == {"ABP-123", "ABP-124"}
-
-    release.set()
-    worker.join(timeout=3)
-
-    assert not worker.is_alive()
-    assert result["job"].state == "completed"
-    assert result["job"].imported_count == 2
+    assert set(started_movie_numbers) == {"ABP-123", "ABP-124"}
+    assert job.state == "completed"
+    assert job.imported_count == 2
 
 
 def test_import_media_keeps_file_import_order_when_metadata_finishes_out_of_order(
