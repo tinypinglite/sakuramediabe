@@ -31,6 +31,7 @@ from src.common import parse_movie_number_from_path
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.common.media_import_status import (
     FAILURE_REASON_CLOUD115_FILE_CENSORED,
+    FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED,
     FAILURE_REASON_CLOUD115_RENAME_FAILED,
     FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED,
     FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
@@ -57,39 +58,39 @@ from src.service.playback.cloud115_backend_service import (
     find_or_create_subdir,
     require_cloud115_library,
 )
+from src.service.playback.media_metadata_probe_service import (
+    MediaMetadataProbeResult,
+    MediaMetadataProbeService,
+)
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 from src.service.transfers.file_transfer import JAV_LIBRARY_SUBDIR
+from src.service.transfers.cloud115_import_common import (
+    CLOUD_NAME_MAX_LENGTH,
+    CLOUD_NAME_SEPARATOR,
+    CLOUD115_METADATA_PROBE_MAX_BYTES,
+    CLOUD115_METADATA_PROBE_UA,
+    CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
+    CLOUD115_TRANSFER_MODE_COPY,
+    CLOUD115_TRANSFER_MODE_LEGACY_MOVE,
+    build_cloud115_dir_map,
+    cloud115_rel_dir_parts,
+    encode_cloud_file_name,
+    list_cloud115_target_files,
+    normalize_cloud115_transfer_mode,
+    probe_cloud115_media,
+    resolve_cloud115_copied_entry,
+    verify_cloud115_renamed_file,
+)
 from src.service.transfers.media_import_service import MediaImportService
 from src.service.transfers.tag_rules import build_media_special_tags
 
 
-# 相对路径段的编码连接符：全角下划线，避开 115 文件名里常见的半角符号。
-CLOUD_NAME_SEPARATOR = "＿"
-# 115 文件名长度上限未见官方文档（真机验证清单项），编码名保守按 200 字符截断。
-CLOUD_NAME_MAX_LENGTH = 200
 # 直链下载字幕的 UA（拿链接与 GET 由 SDK 保证同 UA）。
 SUBTITLE_DOWNLOAD_UA = "Mozilla/5.0 SakuraMedia-Cloud115-Import/1.0"
 # 字幕文件大小上限：.srt 纯文本，10MB 足够富余。
 SUBTITLE_MAX_BYTES = 10 * 1024 * 1024
-
 ImportProgressCallback = Callable[[dict], None]
-
-CLOUD115_TRANSFER_MODE_COPY = "copy"
-CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE = "cleanup-source"
-CLOUD115_TRANSFER_MODE_LEGACY_MOVE = "move"
-
-
-def normalize_cloud115_transfer_mode(transfer_mode: str) -> str:
-    """兼容旧 move 输入，但所有新作业和执行路径统一使用 cleanup-source。"""
-    if transfer_mode == CLOUD115_TRANSFER_MODE_LEGACY_MOVE:
-        return CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE
-    if transfer_mode in (
-        CLOUD115_TRANSFER_MODE_COPY,
-        CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
-    ):
-        return transfer_mode
-    raise ValueError("invalid_transfer_mode")
 
 
 @dataclass
@@ -131,38 +132,26 @@ class CloudImportGroup:
     files: List[CloudSourceFile] = field(default_factory=list)
 
 
-def encode_cloud_file_name(
-    rel_dir_parts: tuple[str, ...],
-    file_name: str,
-    *,
-    max_length: int = CLOUD_NAME_MAX_LENGTH,
-) -> str:
-    """把源内相对路径编码进文件名：``ABP-123/CD1/movie.mp4`` → ``ABP-123＿CD1＿movie.mp4``。
-
-    超长截断保尾不保头：优先丢最靠近源根的目录段（文件名 + 扩展名保持完整）；
-    只剩文件名仍超长时截 stem 尾部、保扩展名。
-    """
-    parts = [part for part in rel_dir_parts if part]
-    name = CLOUD_NAME_SEPARATOR.join([*parts, file_name]) if parts else file_name
-    while len(name) > max_length and parts:
-        parts.pop(0)
-        name = CLOUD_NAME_SEPARATOR.join([*parts, file_name]) if parts else file_name
-    if len(name) > max_length:
-        stem, dot, suffix = file_name.rpartition(".")
-        if dot:
-            keep = max(1, max_length - len(suffix) - 1)
-            name = f"{stem[:keep]}.{suffix}"
-        else:
-            name = file_name[:max_length]
-    return name
-
-
 class Cloud115ImportService:
     """115 源目录 → cloud115 媒体库的导入编排。"""
 
-    def __init__(self, media_import_service: MediaImportService | None = None) -> None:
+    def __init__(
+        self,
+        media_import_service: MediaImportService | None = None,
+        media_metadata_probe_service: MediaMetadataProbeService | None = None,
+    ) -> None:
         # 复用本地导入的 javdb 元数据抓取能力（线程池 worker + provider 工厂）。
         self._media_import_service = media_import_service or MediaImportService()
+        self._media_metadata_probe_service = (
+            media_metadata_probe_service or MediaMetadataProbeService()
+        )
+
+    # 兼容现有调用与测试；实现统一下沉到无 JAV 业务归属的公共模块。
+    _build_dir_map = staticmethod(build_cloud115_dir_map)
+    _rel_dir_parts = staticmethod(cloud115_rel_dir_parts)
+    _list_target_files = staticmethod(list_cloud115_target_files)
+    _resolve_copied_entry = staticmethod(resolve_cloud115_copied_entry)
+    _verify_renamed_file = staticmethod(verify_cloud115_renamed_file)
 
     # ---- 入口 ----
 
@@ -578,60 +567,7 @@ class Cloud115ImportService:
         )
         return list(grouped.values()), skipped_count, failed_count
 
-    @staticmethod
-    async def _build_dir_map(
-        client: Cloud115Client, source_cid: str
-    ) -> Dict[str, tuple[str, str]]:
-        """BFS 源目录树的目录结构，产出 cid -> (目录名, 父 cid) 映射（目录数远小于文件数）。"""
-        dir_map: Dict[str, tuple[str, str]] = {}
-        queue = [source_cid]
-        while queue:
-            cid = queue.pop(0)
-            offset = 0
-            while True:
-                entries, total = await client.list_dir(cid, offset=offset, limit=1150)
-                for entry in entries:
-                    if entry.is_dir:
-                        dir_map[entry.entry_id] = (entry.name, cid)
-                        queue.append(entry.entry_id)
-                offset += len(entries)
-                if not entries or offset >= total:
-                    break
-        return dir_map
-
-    @staticmethod
-    def _rel_dir_parts(
-        parent_cid: str, dir_map: Dict[str, tuple[str, str]], source_cid: str
-    ) -> tuple[str, ...]:
-        parts: List[str] = []
-        current = parent_cid
-        while current != source_cid:
-            mapped = dir_map.get(current)
-            if mapped is None:
-                break
-            name, parent = mapped
-            parts.append(name)
-            current = parent
-        return tuple(reversed(parts))
-
     # ---- 搬运 / 对账 / 登记 ----
-
-    @staticmethod
-    async def _list_target_files(
-        client: Cloud115Client, jav_cid: str
-    ) -> Dict[str, List[DirEntry]]:
-        """列目标 jav/ 目录（扁平一层）的全部文件，按 sha1 归组，供 copy 对账。"""
-        by_sha1: Dict[str, List[DirEntry]] = {}
-        offset = 0
-        while True:
-            entries, total = await client.list_dir(jav_cid, offset=offset, limit=1150)
-            for entry in entries:
-                if not entry.is_dir and entry.sha1:
-                    by_sha1.setdefault(entry.sha1.upper(), []).append(entry)
-            offset += len(entries)
-            if not entries or offset >= total:
-                break
-        return by_sha1
 
     async def _import_group(
         self,
@@ -738,7 +674,37 @@ class Cloud115ImportService:
                 )
                 return
 
-        # 4) 整组 Media 在同一事务登记；任一失败回滚整组。
+        # 4) 在数据库事务外探测最终受管文件。有效媒体必须带完整技术元数据入库；
+        # 已登记且已有 video_info 的清源重试直接复用，避免重复读取远端文件。
+        probe_results: Dict[str, MediaMetadataProbeResult | None] = {}
+        for cloud_file, _target_fid, target_pickcode, _current_name, _target_name in resolved:
+            existing_valid = self._find_library_media(library, cloud_file.sha1, valid=True)
+            if cloud_file.censored or (
+                existing_valid is not None and existing_valid.video_info is not None
+            ):
+                probe_results[cloud_file.sha1] = None
+                continue
+            try:
+                probe_results[cloud_file.sha1] = await self._probe_cloud115_media(
+                    client,
+                    pickcode=target_pickcode,
+                    file_size_bytes=cloud_file.size,
+                )
+            except Exception as exc:
+                self._record_group_failure(
+                    group,
+                    reason=FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED,
+                    detail=f"{cloud_file.rel_path}: {exc}",
+                    failure_items=failure_items,
+                    stats=stats,
+                )
+                logger.warning(
+                    "Cloud115 metadata probe failed movie_number={} rel_path={} detail={}",
+                    group.movie_number, cloud_file.rel_path, exc,
+                )
+                return
+
+        # 5) 整组 Media 在同一事务登记；任一失败回滚整组。
         registration_results: List[tuple[CloudSourceFile, bool]] = []
         try:
             with get_database().atomic():
@@ -750,6 +716,7 @@ class Cloud115ImportService:
                         target_fid=target_fid,
                         target_pickcode=target_pickcode,
                         encoded_name=target_name,
+                        metadata=probe_results[cloud_file.sha1],
                     )
                     registration_results.append((cloud_file, registered))
         except Exception as exc:
@@ -786,7 +753,7 @@ class Cloud115ImportService:
             else:
                 stats["skipped"] += 1
 
-        # 5) 字幕全部处理完才允许 cleanup-source。清源模式下字幕失败作为可重导文件失败。
+        # 6) 字幕全部处理完才允许 cleanup-source。清源模式下字幕失败作为可重导文件失败。
         subtitles_ready = True
         for cloud_file, _target_fid, _target_pickcode, _current_name, target_name in resolved:
             if cloud_file.subtitle is not None:
@@ -816,7 +783,7 @@ class Cloud115ImportService:
         if transfer_mode != CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE or not subtitles_ready:
             return
 
-        # 6) 清源严格放在复制、改名验证、入库、字幕之后；逐文件删除便于失败后精确重试。
+        # 7) 清源严格放在复制、改名验证、探测、入库、字幕之后；逐文件删除便于失败后精确重试。
         for cloud_file, _target_fid, _target_pickcode, _current_name, _encoded_name in resolved:
             try:
                 if cloud_file.subtitle is not None:
@@ -837,6 +804,25 @@ class Cloud115ImportService:
                     group.movie_number, cloud_file.rel_path, exc,
                 )
 
+    async def _probe_cloud115_media(
+        self,
+        client: Cloud115Client,
+        *,
+        pickcode: str,
+        file_size_bytes: int,
+    ) -> MediaMetadataProbeResult:
+        metadata, fetched_bytes = await probe_cloud115_media(
+            client,
+            self._media_metadata_probe_service,
+            pickcode=pickcode,
+            file_size_bytes=file_size_bytes,
+        )
+        logger.info(
+            "Cloud115 metadata probed pickcode={} fetched_bytes={} budget_bytes={}",
+            pickcode, fetched_bytes, CLOUD115_METADATA_PROBE_MAX_BYTES,
+        )
+        return metadata
+
     @staticmethod
     def _record_group_failure(
         group: CloudImportGroup,
@@ -849,42 +835,6 @@ class Cloud115ImportService:
         for cloud_file in group.files:
             stats["failed"] += 1
             failure_items.append(make_failure_item(cloud_file.rel_path, reason, detail))
-
-    @staticmethod
-    async def _verify_renamed_file(
-        client: Cloud115Client,
-        fid: str,
-        expected_name: str,
-    ) -> None:
-        last_detail = ""
-        for delay in (0.0, 0.5, 1.0):
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                meta = await client.file_info(fid)
-                if meta.name == expected_name:
-                    return
-                last_detail = f"actual_name={meta.name!r}"
-            except Exception as exc:
-                last_detail = str(exc)
-        raise RuntimeError(
-            f"rename did not become visible for fid={fid}, expected={expected_name!r}, {last_detail}"
-        )
-
-    @staticmethod
-    def _resolve_copied_entry(
-        target_entries_by_sha1: Dict[str, List[DirEntry]],
-        cloud_file: CloudSourceFile,
-        encoded_name: str,
-    ) -> DirEntry | None:
-        """复制对账：目标目录同 sha1 条目中优先挑名字匹配的（原名或编码名）。"""
-        candidates = target_entries_by_sha1.get(cloud_file.sha1) or []
-        if not candidates:
-            return None
-        for candidate in candidates:
-            if candidate.name in (cloud_file.name, encoded_name):
-                return candidate
-        return candidates[0]
 
     @staticmethod
     def _resolve_registered_entry(candidates: List[DirEntry], media: Media) -> DirEntry | None:
@@ -909,6 +859,7 @@ class Cloud115ImportService:
         target_fid: str,
         target_pickcode: str,
         encoded_name: str,
+        metadata: MediaMetadataProbeResult | None,
     ) -> bool:
         """按 sha1 指纹幂等登记一条 cloud115 Media；返回是否新登记（False = 已存在跳过）。"""
         fingerprint = f"sha1:{cloud_file.sha1}"
@@ -919,15 +870,28 @@ class Cloud115ImportService:
             "name": encoded_name,
             "source_path": cloud_file.rel_path,
         }
-        special_tags = build_media_special_tags(
-            [cloud_file.rel_path],
-            movie.movie_number,
-            video_info=None,
-            has_subtitle=cloud_file.subtitle is not None,
-        )
         valid = not cloud_file.censored
 
         existing_valid = self._find_library_media(library, cloud_file.sha1, valid=True)
+        effective_video_info = metadata.video_info if metadata is not None else None
+        if existing_valid is not None and effective_video_info is None:
+            effective_video_info = existing_valid.video_info
+        if valid and effective_video_info is None:
+            raise RuntimeError("valid cloud115 media requires video_info")
+        resolution = metadata.resolution if metadata is not None else None
+        if metadata is not None:
+            duration_seconds = metadata.duration_seconds or cloud_file.play_long or 0
+        elif existing_valid is not None:
+            duration_seconds = existing_valid.duration_seconds or cloud_file.play_long or 0
+        else:
+            duration_seconds = cloud_file.play_long or 0
+        special_tags = build_media_special_tags(
+            [cloud_file.rel_path],
+            movie.movie_number,
+            video_info=effective_video_info,
+            has_subtitle=cloud_file.subtitle is not None,
+        )
+
         if existing_valid is not None:
             # 目标可能由上次中断重跑生成，或用户删除旧目标后由本次重新复制；先把 locator
             # 对账到实际条目，成功落库后 cleanup-source 才能安全删除来源。
@@ -935,8 +899,13 @@ class Cloud115ImportService:
             locator["source_path"] = previous_locator.get("source_path") or cloud_file.rel_path
             existing_valid.backend_locator = locator
             existing_valid.file_size_bytes = cloud_file.size
-            if cloud_file.play_long:
-                existing_valid.duration_seconds = cloud_file.play_long
+            if resolution is not None:
+                existing_valid.resolution = resolution
+            if duration_seconds > 0:
+                existing_valid.duration_seconds = duration_seconds
+            if effective_video_info is not None:
+                existing_valid.video_info = effective_video_info
+            existing_valid.special_tags = special_tags
             existing_valid.updated_at = utc_now_for_db()
             existing_valid.save()
             return False
@@ -947,8 +916,12 @@ class Cloud115ImportService:
             invalid_media.library = library
             invalid_media.backend_locator = locator
             invalid_media.file_size_bytes = cloud_file.size
-            if cloud_file.play_long:
-                invalid_media.duration_seconds = cloud_file.play_long
+            if resolution is not None:
+                invalid_media.resolution = resolution
+            if duration_seconds > 0:
+                invalid_media.duration_seconds = duration_seconds
+            if effective_video_info is not None:
+                invalid_media.video_info = effective_video_info
             invalid_media.special_tags = special_tags
             invalid_media.valid = valid
             invalid_media.updated_at = utc_now_for_db()
@@ -963,7 +936,9 @@ class Cloud115ImportService:
             backend_locator=locator,
             content_fingerprint=fingerprint,
             file_size_bytes=cloud_file.size,
-            duration_seconds=cloud_file.play_long or 0,
+            resolution=resolution,
+            duration_seconds=duration_seconds,
+            video_info=effective_video_info,
             special_tags=special_tags,
             valid=valid,
         )

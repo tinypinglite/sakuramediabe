@@ -45,6 +45,7 @@ from src.service.transfers.cloud115_import_service import (
     Cloud115ImportService,
     normalize_cloud115_transfer_mode,
 )
+from src.service.transfers.cloud115_import_common import cloud115_import_mutex_key
 from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
 
 
@@ -104,7 +105,7 @@ class Cloud115ImportJobService(BaseImportJobService):
         # 服务端防御：源目录与管理目录互不包含（前端禁选只是第一道）。
         source_name = cls._validate_source_and_fetch_name(library, source_cid)
 
-        mutex_key = f"{cls.MUTEX_PREFIX}:{library_id}"
+        mutex_key = cloud115_import_mutex_key(library_id)
         return cls._launch_import(
             library=library,
             resolved_source=source_cid,   # cloud115 语境下 source 是 cid 字符串
@@ -162,7 +163,7 @@ class Cloud115ImportJobService(BaseImportJobService):
             raise ApiError(422, "no_retry_files", "没有可重导的失败文件", {cls.JOB_ID_FIELD: job_id})
 
         # 首次导入和所有失败重导共享同一个库级写锁；115 copy/rename/delete 不允许并发。
-        mutex_key = f"{cls.MUTEX_PREFIX}:{library.id}"
+        mutex_key = cloud115_import_mutex_key(library.id)
         return cls._launch_import(
             library=library,
             resolved_source=job.source_cid,

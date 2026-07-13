@@ -280,7 +280,7 @@ image_search_optimize_cron = "0 */6 * * *"
 当前实现说明：
 
 - JoyTag 推理由独立 `joytag-infer` 服务负责，主服务只保存检索会话、索引状态并访问 Qdrant
-- 媒体导入后会先产生 `media` 记录；后续媒体巡检任务会继续修正 `media.valid`，并为缺失记录补齐 `video_info`
+- 媒体技术信息在导入阶段写入 `media`；后续媒体巡检任务只修正 `media.valid`，不会补齐 `video_info`
 - 嵌入维度不是在 API 文档层硬编码的常量；主服务会通过远端运行时状态读取维度，并要求与 Qdrant collection 中的向量维度一致
 - 远端推理服务可按部署镜像选择 CPU、OpenVINO 或 CUDA 后端
 - Qdrant 向量 datatype 固定要求为 `float16`

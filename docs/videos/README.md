@@ -16,7 +16,7 @@
 | `VideoItem` | `video_item` | 视频条目（标题/简介/封面/发布时间），1:N 关联 `Media`；封面 `cover_image` 由导入时读取视频**第 0 帧**生成 |
 | `VideoCollection` | `video_collection` | 合集 |
 | `VideoCollectionItem` | `video_collection_item` | 合集成员，`position` 决定顺序播放次序 |
-| `VideoImportJob` | `video_import_job` | 异步视频导入作业：源路径、归属媒体库、导入模式、统计与失败文件，关联 `BackgroundTaskRun` 供进度可观测 |
+| `VideoImportJob` | `video_import_job` | 异步视频导入作业：本地路径或 115 CID/FID、归属媒体库、导入模式、统计与失败文件，关联 `BackgroundTaskRun` 供进度可观测 |
 
 ### 播放底座解耦
 
@@ -47,11 +47,13 @@
 
 ### 导入 `/video-imports`
 
-- `POST /video-imports`：**异步触发**，返回 `202` + `{video_import_job_id, task_run_id, status}`。body 含 `source_path`（目录或单文件）、**必填** `library_id`、`transfer_mode`（`auto`/`cleanup-source`，默认 `auto`）、可选 `collection_id`。
-- `GET /video-imports/{video_import_job_id}`：查询作业状态、各计数与 `failed_files`。
+- `POST /video-imports`：**异步触发**，返回 `202` + `{video_import_job_id, task_run_id, status}`。`source_path`（本地目录或单文件）、`source_cid`（115 目录）、`source_fid`（115 单文件）必须恰好提供一个，`library_id` 必填，`collection_id` 可选。
+- 本地来源默认 `transfer_mode=auto`，只接受 `auto | cleanup-source`；115 来源默认 `copy`，只接受 `copy | cleanup-source`。来源与模式不匹配返回 `422 invalid_transfer_mode`。
+- `GET /video-imports`、`GET /video-imports/{video_import_job_id}`：列表与详情均返回 `source_cid`、`source_fid`；本地作业两者为 `null`。`source_path` 是展示路径：本地为绝对路径，115 为可读面包屑路径。
+- `POST /video-imports/{id}/retry`、`DELETE /video-imports/{id}/failed-files`、`POST /video-imports/{id}/failed-files/rename`：失败文件重导、删除和重命名。115 作业的失败路径为源内相对路径，操作时按 FID/相对路径重新确认文件且再次检查来源不在媒体库管理目录内；删除已不存在的文件视为成功。
 - 进度实时查看：复用系统活动流 `GET /system/events/stream`（SSE，`task_run_updated` 事件）与 `GET /system/task-runs`，无需 videos 域另造推送。
 
-导入语义（与 JAV 导入共用一套文件落库语义）：
+本地导入语义（与 JAV 导入共用文件落库底座）：
 
 - **文件搬运**：与 JAV 共用 `src/service/transfers/file_transfer.py` 的 `transfer_file`——`auto` 硬链接优先、失败回退复制；`cleanup-source` 复制后删除源文件（禁止作用于任一媒体库目录内，触发时即拒绝）。文件落入 `library_root/videos/<video_item_id>/<timestamp>/<filename>`。
 - **媒体库归属**：`library_id` 必填，每条 `Media.library` 指向该库。
@@ -60,3 +62,14 @@
 - **缩略图接手**：落库后 `ResourceTaskStateService.reset_for_requeue(...)` 置缩略图任务为待处理，由 `generate-media-thumbnails` 后台补齐。
 - **去重**：先按 `Media.path` 命中跳过，再按内容指纹（`src/common/content_fingerprint.py`）跳过；探测复用 `MediaMetadataProbeService`。
 - 后台执行复用 `DownloadImportRunner` 线程池 + `ActivityService.run_task`，触发防重依赖 `BackgroundTaskRun.mutex_key`；启动时 `recover_orphaned_jobs` 回收中断作业。
+
+115 导入语义：
+
+- 递归枚举目录或读取单个 FID，只接受现有视频扩展名；按源内相对路径排序后逐文件创建独立的 `VideoItem + Media`，并按相同顺序追加到可选合集。标题取原文件名 stem，不根据目录自动创建合集，也不处理外挂字幕。
+- 目标采用扁平 `sakuramedia/videos/` 布局，文件名编码源内相对路径。复制后重新枚举目标目录，并按 SHA1/FID/pickcode 对账和确认改名；重试会复用已经复制或改名的目标文件。
+- 有效视频必须通过复制后目标 pickcode 获取直链，由 `Cloud115RangeReader` 在累计 **64 MiB** Range 响应预算内调用 `MediaMetadataProbeService.probe_source`。只有返回非空 `video_info` 才允许入库；直链、预算或探测失败记 `cloud115_metadata_probe_failed`，当前文件不创建 `VideoItem/Media`、不清源，目录内其它文件继续处理。
+- 探测结果写入 `resolution`、`duration_seconds`、`video_info` 和由真实视频流信息计算的标签；容器 `creation_time` 写入 `VideoItem.release_date`。仅当探测时长为 0 时回退 115 `play_long`，发布时间不回退 115 mtime。
+- 115 标记违规的文件不取直链、不探测、不生成封面，仍创建 `valid=false` 的 Media 并记 `cloud115_file_censored` 告警。
+- 首帧封面同样通过受预算的 RangeReader 读取目标文件；封面失败只记日志。Media 事务成功后重置缩略图任务。
+- `copy` 保留源文件；`cleanup-source` 仅在探测、Media/VideoItem 事务及合集关联全部成功后删除源文件。库内或同批 SHA1 重复项只记 `duplicate_fingerprint`，即使是 `cleanup-source` 也保留源文件。
+- 115 videos 与 115 JAV 共用 `media_import:cloud115:{library_id}` 互斥键，同一库的两类云端复制、改名或删除不能并发；不同库互不影响。

@@ -321,6 +321,40 @@ def test_run_pending_migrations_creates_video_import_job_on_existing_database(te
     assert "20260613_01_add_videos_and_decouple_media" in _schema_migration_names(test_db)
 
 
+def test_run_pending_migrations_adds_video_import_job_cloud_sources_idempotently(test_db):
+    test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(TEST_MODELS)
+    library = MediaLibrary.create(name="local-videos", backend="local", backend_config={})
+    job = VideoImportJob.create(source_path="/mnt/incoming", library=library)
+    # 模拟迁移中途只加了一列：重跑时必须只补缺失列，并保留历史作业。
+    test_db.execute_sql('ALTER TABLE "video_import_job" DROP COLUMN "source_fid"')
+
+    summary = run_pending_migrations(test_db)
+
+    execution = next(
+        item
+        for item in summary.executed
+        if item.name == "20260714_05_add_video_import_job_cloud_source"
+    )
+    assert execution.applied is True
+    columns = {column.name: column for column in test_db.get_columns("video_import_job")}
+    assert columns["source_cid"].null is True
+    assert columns["source_fid"].null is True
+    row = test_db.execute_sql(
+        "SELECT id, source_path, source_cid, source_fid FROM video_import_job WHERE id = %s",
+        (job.id,),
+    ).fetchone()
+    assert row == (job.id, "/mnt/incoming", None, None)
+
+    second_summary = run_pending_migrations(test_db)
+    second_execution = next(
+        item
+        for item in second_summary.executed
+        if item.name == "20260714_05_add_video_import_job_cloud_source"
+    )
+    assert second_execution.applied is False
+
+
 def test_load_migration_module_uses_package_import():
     module = _load_migration_module(
         Path("src/start/migrations/versions/20260421_01_add_movie_title_zh.py")

@@ -8,8 +8,6 @@ from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.model import Media
 from src.service.catalog.movie_subtitle_service import MovieSubtitleService
-from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
-from src.service.transfers.tag_rules import build_scanned_media_special_tags
 
 
 @dataclass(frozen=True)
@@ -27,9 +25,6 @@ class MediaFileCheckResult:
 
 class MediaFileScanService:
     DEFAULT_BATCH_SIZE = 100
-
-    def __init__(self, metadata_probe_service: MediaMetadataProbeService | None = None):
-        self.metadata_probe_service = metadata_probe_service or MediaMetadataProbeService()
 
     @staticmethod
     def _build_candidate_query(last_media_id: int = 0):
@@ -126,29 +121,6 @@ class MediaFileScanService:
             result["invalidated"] = not file_exists
             result["revived"] = file_exists
 
-        if file_exists and media.video_info is None:
-            # 只在缺失 video_info 时重新探测，避免每轮全量解析媒体文件。
-            metadata = self.metadata_probe_service.probe_file(file_path)
-            file_size_bytes = file_path.stat().st_size
-            if media.file_size_bytes != file_size_bytes:
-                updates[Media.file_size_bytes] = file_size_bytes
-            if metadata.resolution and media.resolution != metadata.resolution:
-                updates[Media.resolution] = metadata.resolution
-            if metadata.duration_seconds > 0 and media.duration_seconds != metadata.duration_seconds:
-                updates[Media.duration_seconds] = metadata.duration_seconds
-            if metadata.video_info is not None and media.video_info != metadata.video_info:
-                updates[Media.video_info] = metadata.video_info
-
-        if file_exists:
-            effective_video_info = updates.get(Media.video_info, media.video_info)
-            special_tags = build_scanned_media_special_tags(
-                media.special_tags,
-                video_info=effective_video_info,
-                has_subtitle=self._has_sidecar_subtitle(file_path),
-            )
-            if media.special_tags != special_tags:
-                updates[Media.special_tags] = special_tags
-
         if not updates:
             # 字幕同步是 JAV 影片维度能力，非 JAV 媒体跳过。
             if media.movie_number:
@@ -189,21 +161,6 @@ class MediaFileScanService:
             revived=bool(result["revived"]),
             checked_at=result["checked_at"],
         )
-
-    @staticmethod
-    def _has_sidecar_subtitle(media_path: Path) -> bool:
-        media_directory = media_path.parent
-        if not media_directory.exists() or not media_directory.is_dir():
-            return False
-
-        media_stem = media_path.stem.lower()
-        for subtitle_path in media_directory.iterdir():
-            if not subtitle_path.is_file() or subtitle_path.suffix.lower() != ".srt":
-                continue
-            subtitle_stem = subtitle_path.stem.lower()
-            if subtitle_stem == media_stem or subtitle_stem.startswith(f"{media_stem}."):
-                return True
-        return False
 
     def scan_media_files(
         self,

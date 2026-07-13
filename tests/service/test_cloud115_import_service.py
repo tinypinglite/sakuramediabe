@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from src.lib.cloud115.types import DirBreadcrumb, DirEntry, DirMeta, FileMeta
+from src.lib.cloud115.types import DirectUrl, DirBreadcrumb, DirEntry, DirMeta, FileMeta
 from src.model import (
     BackgroundTaskRun,
     DownloadClient,
@@ -35,6 +35,7 @@ from src.service.transfers.cloud115_import_service import (
     encode_cloud_file_name,
 )
 from src.service.transfers.media_import_service import MediaImportService, MetadataImportResult
+from src.service.playback.media_metadata_probe_service import MediaMetadataProbeResult
 
 COOKIES = "UID=12345678_A1_1700000000; CID=abc; SEID=xyz"
 
@@ -186,6 +187,19 @@ class FakeCloud115FS:
             raise self.subtitle_error
         return self.subtitle_content
 
+    async def get_download_url(self, pickcode, user_agent):
+        matched = next(f for f in self.files.values() if f.pickcode == pickcode)
+        return DirectUrl(
+            file_id=matched.fid,
+            file_name=matched.name,
+            file_size=matched.size,
+            sha1=matched.sha1,
+            pickcode=matched.pickcode,
+            url=f"https://cdn.115.example/{matched.fid}",
+            user_agent=user_agent,
+            expires_at=-1,
+        )
+
 
 class FakeMetadataService:
     """替身元数据服务：为每个番号造一部 Movie 并返回成功结果。"""
@@ -210,6 +224,35 @@ class FakeMetadataService:
             defaults={"movie_number": movie_number, "title": movie_number},
         )
         return MetadataImportResult(movie_number=movie_number, movie_id=movie.id)
+
+
+class FakeMediaMetadataProbeService:
+    def __init__(self, result: MediaMetadataProbeResult | None = None):
+        self.result = result or MediaMetadataProbeResult(
+            resolution="1920x1080",
+            duration_seconds=1700,
+            video_info={
+                "container": {
+                    "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                    "duration_seconds": 1700,
+                    "bit_rate": 5_000_000,
+                    "size_bytes": 4 * 1024 * 1024 * 1024,
+                },
+                "video": {
+                    "codec_name": "h264",
+                    "profile": "High",
+                    "width": 1920,
+                    "height": 1080,
+                },
+                "audio": {"codec_name": "aac", "channels": 2},
+                "subtitles": [],
+            },
+        )
+        self.called_sources: list[tuple[int, str]] = []
+
+    def probe_source(self, _source, *, file_size_bytes: int, source_label: str):
+        self.called_sources.append((file_size_bytes, source_label))
+        return self.result
 
 
 # ---------------------------------------------------------------------------
@@ -268,9 +311,10 @@ def subtitle_root(monkeypatch, tmp_path):
 
 
 def _run_import(library, source_cid="src-1", **kwargs):
+    probe_result = kwargs.pop("probe_result", None)
     service = Cloud115ImportService(media_import_service=FakeMetadataService(
         fail_numbers=kwargs.pop("fail_numbers", None),
-    ))
+    ), media_metadata_probe_service=FakeMediaMetadataProbeService(probe_result))
     return service.import_from_cloud115(library.id, source_cid, **kwargs)
 
 
@@ -327,7 +371,9 @@ def test_cleanup_source_import_registers_then_deletes_source(
     assert media.backend_locator["fid"] != "f-1"
     assert media.backend_locator["pickcode"] != video.pickcode
     assert media.content_fingerprint == "sha1:AAA111"
-    assert media.duration_seconds == 1800
+    assert media.resolution == "1920x1080"
+    assert media.duration_seconds == 1700
+    assert media.video_info["video"]["codec_name"] == "h264"
     assert media.valid is True
     assert media.library_id == cloud_library.id
     # 字幕：先下载登记，整组成功后与源视频一起清理。
@@ -338,6 +384,50 @@ def test_cleanup_source_import_registers_then_deletes_source(
     assert ("f-1",) in fs.delete_calls
     # 缩略图任务已排队
     assert ResourceTaskState.select().count() >= 0
+
+
+def test_import_fails_before_register_and_cleanup_when_media_probe_is_empty(
+    cloud_library, patched_client
+):
+    fs = patched_client
+    fs.add_dir("d-abp", "ABP-124", "src-1")
+    fs.add_file(fid="f-probe", parent="d-abp", name="ABP-124.mp4", sha1="AAA124")
+
+    job = _run_import(cloud_library, probe_result=MediaMetadataProbeResult())
+
+    assert job.state == "failed"
+    assert "cloud115_metadata_probe_failed" in job.failed_files
+    assert Media.select().count() == 0
+    assert "f-probe" in fs.files
+    assert fs.delete_calls == []
+
+
+def test_import_builds_4k_tag_from_probed_video_info(cloud_library, patched_client):
+    fs = patched_client
+    fs.add_dir("d-abp", "ABP-125", "src-1")
+    fs.add_file(fid="f-4k", parent="d-abp", name="ABP-125.mp4", sha1="AAA125")
+    video_info = {
+        "container": {"format_name": "matroska", "duration_seconds": 3600},
+        "video": {"codec_name": "hevc", "width": 3840, "height": 2160},
+        "audio": None,
+        "subtitles": [],
+    }
+
+    job = _run_import(
+        cloud_library,
+        probe_result=MediaMetadataProbeResult(
+            resolution="3840x2160",
+            duration_seconds=3600,
+            video_info=video_info,
+        ),
+    )
+
+    media = Media.get()
+    assert job.state == "completed"
+    assert media.resolution == "3840x2160"
+    assert media.duration_seconds == 3600
+    assert media.video_info == video_info
+    assert media.special_tags == "4K"
 
 
 def test_copy_import_reconciles_new_fid_and_pickcode(cloud_library, patched_client):

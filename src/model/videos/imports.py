@@ -10,6 +10,9 @@ from src.model.videos.collections import VideoCollection
 class VideoImportJob(TimestampedMixin, BaseModel):
     # 非 JAV 视频目录导入作业：记录源路径、归属媒体库、导入模式与统计，并关联后台任务运行用于进度可观测。
     source_path = peewee.CharField(max_length=1024)
+    # cloud115 来源：目录导入记录 source_cid，单文件导入记录 source_fid；本地作业均为 NULL。
+    source_cid = peewee.CharField(max_length=64, null=True)
+    source_fid = peewee.CharField(max_length=64, null=True)
     library = peewee.ForeignKeyField(
         MediaLibrary,
         backref="video_import_jobs",

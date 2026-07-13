@@ -9,6 +9,7 @@ InvalidData。本类是纪要拍板的替代方案：一次只发一个 Range �
 - 拿直链时绑定的 UA 与本类发出的每个 Range 请求必须一字不差一致（构造参数 user_agent）。
 - 直链有 t= 过期（实测十几小时），本类不做刷新：403/过期抛 Cloud115RequestError，
   由上层决定重新拿链重试还是判失败。
+- `max_fetched_bytes` 可限制累计响应字节数；超预算抛错，且超大 HTTP 200 整体响应不会读 body。
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ class Cloud115RangeReader:
         user_agent: str,
         file_size: int,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
+        max_fetched_bytes: int | None = None,
         timeout: float = 30.0,
         http_client: httpx.Client | None = None,
     ) -> None:
@@ -49,10 +51,13 @@ class Cloud115RangeReader:
             raise ValueError("file_size must be positive")
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
+        if max_fetched_bytes is not None and max_fetched_bytes <= 0:
+            raise ValueError("max_fetched_bytes must be positive when provided")
         self._url = url
         self._user_agent = user_agent
         self._file_size = file_size
         self._chunk_size = chunk_size
+        self._max_fetched_bytes = max_fetched_bytes
         self._owns_client = http_client is None
         self._client = http_client or httpx.Client(timeout=timeout, trust_env=False)
         self._position = 0
@@ -60,6 +65,7 @@ class Cloud115RangeReader:
         self._buffer_start = 0
         # 观测用：外部可断言请求次数（受控性验证）。
         self.request_count = 0
+        self.fetched_bytes = 0
 
     # ---- file-like 协议 ----
 
@@ -71,6 +77,10 @@ class Cloud115RangeReader:
 
     def writable(self) -> bool:
         return False
+
+    @property
+    def file_size(self) -> int:
+        return self._file_size
 
     def tell(self) -> int:
         return self._position
@@ -118,44 +128,89 @@ class Cloud115RangeReader:
 
     def _fetch(self, start: int, want: int) -> None:
         """拉一个覆盖 [start, ...) 的块进缓冲。want 超过 chunk_size 时一次拉够，避免碎请求。"""
-        end = min(start + max(self._chunk_size, want), self._file_size) - 1
+        fetch_size = max(self._chunk_size, want)
+        if self._max_fetched_bytes is not None:
+            remaining_budget = self._max_fetched_bytes - self.fetched_bytes
+            if remaining_budget <= 0:
+                raise Cloud115RequestError(
+                    f"range read budget exceeded ({self._max_fetched_bytes} bytes)",
+                    method="GET",
+                    url=self._url,
+                    detail=f"fetched_bytes={self.fetched_bytes}",
+                )
+            fetch_size = min(fetch_size, remaining_budget)
+        end = min(start + fetch_size, self._file_size) - 1
         try:
-            response = self._client.get(
+            with self._client.stream(
+                "GET",
                 self._url,
                 headers={
                     "User-Agent": self._user_agent,
                     "Range": f"bytes={start}-{end}",
                 },
-            )
+            ) as response:
+                if response.status_code not in (200, 206):
+                    # 403 常见于直链过期或 UA 不一致；上层决定重取直链或判失败。
+                    raise Cloud115RequestError(
+                        f"http {response.status_code} on range {start}-{end} (expired url or UA mismatch?)",
+                        method="GET", url=self._url,
+                        detail=f"status={response.status_code}",
+                    )
+
+                raw_content_range = response.headers.get("Content-Range", "")
+                if response.status_code == 206:
+                    match = _CONTENT_RANGE_PATTERN.fullmatch(raw_content_range.strip())
+                    if match is None:
+                        raise Cloud115RequestError(
+                            f"invalid Content-Range on range {start}-{end}",
+                            method="GET", url=self._url, detail=raw_content_range,
+                        )
+                    actual_start, actual_end, actual_total = map(int, match.groups())
+                    expected_length = actual_end - actual_start + 1
+                    if (
+                        actual_start != start
+                        or actual_end < actual_start
+                        or actual_end > end
+                        or actual_total != self._file_size
+                    ):
+                        raise Cloud115RequestError(
+                            f"inconsistent range response for {start}-{end}",
+                            method="GET",
+                            url=self._url,
+                            detail=(
+                                f"content_range={raw_content_range!r}, "
+                                f"file_size={self._file_size}"
+                            ),
+                        )
+                else:
+                    # 有预算时先看文件总大小，拒绝读取忽略 Range 的超大 200 响应体。
+                    remaining_budget = (
+                        None
+                        if self._max_fetched_bytes is None
+                        else self._max_fetched_bytes - self.fetched_bytes
+                    )
+                    if start != 0 or (
+                        remaining_budget is not None and self._file_size > remaining_budget
+                    ):
+                        raise Cloud115RequestError(
+                            f"unsafe http 200 response for range {start}-{end}",
+                            method="GET",
+                            url=self._url,
+                            detail=(
+                                f"file_size={self._file_size}, "
+                                f"remaining_budget={remaining_budget}"
+                            ),
+                        )
+
+                content = response.read()
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
             raise Cloud115RequestError(
                 f"range request failed at {start}-{end}: {exc}",
                 method="GET", url=self._url, detail=str(exc),
             ) from exc
-        if response.status_code not in (200, 206):
-            # 403 常见于直链过期或 UA 不一致；上层决定重取直链或判失败。
-            raise Cloud115RequestError(
-                f"http {response.status_code} on range {start}-{end} (expired url or UA mismatch?)",
-                method="GET", url=self._url,
-                detail=f"status={response.status_code}",
-            )
-        content = response.content
         if response.status_code == 206:
-            raw_content_range = response.headers.get("Content-Range", "")
-            match = _CONTENT_RANGE_PATTERN.fullmatch(raw_content_range.strip())
-            if match is None:
-                raise Cloud115RequestError(
-                    f"invalid Content-Range on range {start}-{end}",
-                    method="GET", url=self._url, detail=raw_content_range,
-                )
-            actual_start, actual_end, actual_total = map(int, match.groups())
-            expected_length = actual_end - actual_start + 1
             if (
-                actual_start != start
-                or actual_end < actual_start
-                or actual_end > end
-                or actual_total != self._file_size
-                or len(content) != expected_length
+                len(content) != expected_length
                 or not content
             ):
                 raise Cloud115RequestError(
@@ -167,7 +222,7 @@ class Cloud115RangeReader:
                         f"file_size={self._file_size}"
                     ),
                 )
-        elif start != 0 or len(content) != self._file_size:
+        elif len(content) != self._file_size:
             # 仅兼容忽略 Range、但从 0 返回完整对象的服务端；部分 200 无法安全定位。
             raise Cloud115RequestError(
                 f"unsafe http 200 response for range {start}-{end}",
@@ -183,3 +238,4 @@ class Cloud115RangeReader:
         self._buffer = content
         self._buffer_start = start
         self.request_count += 1
+        self.fetched_bytes += len(content)

@@ -331,7 +331,7 @@ Authorization: Bearer <token>
 - 有效性定义与全量 `scan-media-files` 巡检一致：`Media.path` 指向的路径存在且是普通文件
 - 该接口不是只读检查；会根据当前文件状态同步修正 `Media.valid`
 - 原本 `valid=false` 的媒体如果文件已恢复，会被改回 `valid=true`，随后会从 `GET /media/invalid` 结果中消失
-- 文件恢复且 `video_info` 为空时，会沿用全量巡检逻辑补充文件大小、分辨率、时长、视频信息、特殊标签，并同步字幕
+- 巡检只修正 `Media.valid` 并同步影片字幕关系，不探测或补写文件大小、分辨率、时长、`video_info`、特殊标签
 - 接口同步执行，不创建后台任务、不写任务中心记录
 
 ### Example Request

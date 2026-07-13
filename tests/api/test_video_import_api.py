@@ -5,6 +5,7 @@ import pytest
 from src.config.config import settings
 from src.model import MediaLibrary, VideoImportJob
 from src.service.transfers.import_runner import DownloadImportRunner
+from src.service.videos import Cloud115VideoImportJobService
 
 
 def _login(client, username):
@@ -45,6 +46,57 @@ def test_trigger_video_import_returns_202(client, account_user, tmp_path):
     assert body["video_import_job_id"] > 0
     job = VideoImportJob.get_by_id(body["video_import_job_id"])
     assert job.state == "pending"
+
+
+def test_trigger_cloud115_video_import_dispatches_with_copy_default(
+    client, account_user, monkeypatch
+):
+    token = _login(client, account_user.username)
+    captured = {}
+
+    def fake_trigger(library_id, **kwargs):
+        captured.update({"library_id": library_id, **kwargs})
+        return {"video_import_job_id": 7, "task_run_id": 8, "status": "accepted"}
+
+    monkeypatch.setattr(
+        Cloud115VideoImportJobService,
+        "trigger_cloud115_import",
+        staticmethod(fake_trigger),
+    )
+    response = client.post(
+        "/video-imports",
+        json={"library_id": 2, "source_cid": "cid-1"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 202
+    assert response.json()["video_import_job_id"] == 7
+    assert captured == {
+        "library_id": 2,
+        "source_cid": "cid-1",
+        "source_fid": None,
+        "transfer_mode": "copy",
+        "collection_id": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"library_id": 1},
+        {"library_id": 1, "source_path": "/tmp", "source_cid": "cid"},
+        {"library_id": 1, "source_cid": "cid", "source_fid": "fid"},
+    ],
+)
+def test_trigger_video_import_requires_exactly_one_source(
+    client, account_user, payload
+):
+    token = _login(client, account_user.username)
+    response = client.post(
+        "/video-imports",
+        json=payload,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 422
 
 
 def test_trigger_video_import_rejects_cloud115_library(client, account_user, tmp_path):
@@ -95,6 +147,29 @@ def test_get_video_import_job(client, account_user, tmp_path):
     assert body["state"] == "completed"
     assert body["imported_count"] == 3
     assert body["failed_files"] == []
+
+
+def test_get_cloud_video_import_job_returns_source_ids(client, account_user, tmp_path):
+    token = _login(client, account_user.username)
+    library = MediaLibrary.create(
+        name="Cloud Videos",
+        backend="cloud115",
+        backend_account_key="cloud115:api-video-job",
+        backend_config={"cookies": "UID=x_A1_y", "root_cid": "root", "app": "web"},
+    )
+    job = VideoImportJob.create(
+        source_path="根目录/来源",
+        source_cid="cid-1",
+        library=library,
+        state="completed",
+    )
+    response = client.get(
+        f"/video-imports/{job.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["source_cid"] == "cid-1"
+    assert response.json()["source_fid"] is None
 
 
 def test_list_video_import_jobs(client, account_user, tmp_path):

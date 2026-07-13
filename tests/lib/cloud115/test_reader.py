@@ -12,7 +12,12 @@ FILE_CONTENT = bytes(range(256)) * 40  # 10240 字节
 UA = "SakuraMedia-Thumbnail-Test/1.0"
 
 
-def _make_reader(*, chunk_size: int = 1024, fail_status: int | None = None):
+def _make_reader(
+    *,
+    chunk_size: int = 1024,
+    fail_status: int | None = None,
+    max_fetched_bytes: int | None = None,
+):
     requests_seen: list[tuple[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -35,6 +40,7 @@ def _make_reader(*, chunk_size: int = 1024, fail_status: int | None = None):
         user_agent=UA,
         file_size=len(FILE_CONTENT),
         chunk_size=chunk_size,
+        max_fetched_bytes=max_fetched_bytes,
         http_client=client,
     )
     return reader, requests_seen
@@ -110,6 +116,72 @@ def test_reader_validates_constructor_args():
         Cloud115RangeReader("https://x", user_agent="", file_size=10)
     with pytest.raises(ValueError, match="file_size"):
         Cloud115RangeReader("https://x", user_agent=UA, file_size=0)
+    with pytest.raises(ValueError, match="max_fetched_bytes"):
+        Cloud115RangeReader(
+            "https://x", user_agent=UA, file_size=10, max_fetched_bytes=0
+        )
+
+
+def test_reader_enforces_cumulative_fetch_budget():
+    reader, seen = _make_reader(chunk_size=1024, max_fetched_bytes=2048)
+
+    assert reader.read(1024) == FILE_CONTENT[:1024]
+    assert reader.read(1024) == FILE_CONTENT[1024:2048]
+    assert reader.fetched_bytes == 2048
+    with pytest.raises(Cloud115RequestError, match="budget exceeded"):
+        reader.read(1)
+    assert len(seen) == 2
+
+
+def test_budget_rejects_large_http_200_before_accepting_full_object():
+    forty_gib = 40 * 1024 * 1024 * 1024
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=b"range ignored")
+        )
+    )
+    reader = Cloud115RangeReader(
+        "https://cdn.115.example/video.mp4",
+        user_agent=UA,
+        file_size=forty_gib,
+        max_fetched_bytes=64 * 1024 * 1024,
+        http_client=client,
+    )
+
+    with pytest.raises(Cloud115RequestError, match="unsafe http 200"):
+        reader.read(1)
+    assert reader.fetched_bytes == 0
+
+
+def test_budget_allows_sparse_range_reads_across_40g_file():
+    forty_gib = 40 * 1024 * 1024 * 1024
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        range_header = request.headers["Range"]
+        seen.append(range_header)
+        start_s, end_s = range_header.removeprefix("bytes=").split("-")
+        start, end = int(start_s), int(end_s)
+        return httpx.Response(
+            206,
+            content=b"x" * (end - start + 1),
+            headers={"Content-Range": f"bytes {start}-{end}/{forty_gib}"},
+        )
+
+    reader = Cloud115RangeReader(
+        "https://cdn.115.example/4k.mkv",
+        user_agent=UA,
+        file_size=forty_gib,
+        chunk_size=1024,
+        max_fetched_bytes=4096,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert reader.read(16) == b"x" * 16
+    reader.seek(-16, 2)
+    assert reader.read(16) == b"x" * 16
+    assert seen == ["bytes=0-1023", f"bytes={forty_gib - 16}-{forty_gib - 1}"]
+    assert reader.fetched_bytes == 1040
 
 
 def test_reader_is_file_like_for_pyav():

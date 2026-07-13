@@ -7,7 +7,7 @@
 ## 资源与边界
 
 - 导入源由用户浏览选择：本地库在后端文件系统中选目录；cloud115 库在 115 网盘目录树中选目录（浏览端点见 `docs/playback/media-libraries.md`）。导入目标为已配置的 `MediaLibrary`。
-- 本地导入复用 `MediaImportService.import_from_source`；cloud115 导入走 `Cloud115ImportService`（云端复制，文件不经过本机），两者共享 `ImportJob` 模型、任务中心进度与失败清单结构。
+- 本地导入复用 `MediaImportService.import_from_source`；cloud115 导入走 `Cloud115ImportService`（云端复制，仅技术元数据探测按预算 Range 读取，不完整下载落地），两者共享 `ImportJob` 模型、任务中心进度与失败清单结构。
 - 导入在后端**后台线程**（`DownloadImportRunner` 线程池）运行，客户端关闭不影响其运行；重连后通过任务中心查询进度。
 - 失败文件清单复用 `ImportJob.failed_files`；模型层含 `ImportJob.transfer_mode`（迁移 `20260607_01`）与 `ImportJob.source_cid`（迁移 `20260714_02`，cloud115 作业专用，本地作业为 NULL——前端可据此区分作业类型）。
 - `transfer_mode` 按库类型取值：本地 `auto`（默认，硬链接优先）/ `cleanup-source`（复制后删源）；cloud115 `cleanup-source`（默认，复制并确认入库后删源）/ `copy`（保留源文件）。旧 `move` 仅作为兼容输入，创建作业时统一保存为 `cleanup-source`。
@@ -67,7 +67,8 @@
 - `transfer_mode` 只接受 `cleanup-source`（默认）/ `copy`；旧 `move` 兼容为 `cleanup-source`，其它值返回 `422 invalid_transfer_mode`。
 - **服务端防御校验**（前端目录选择器已按浏览端点返回的 `root_cid` 禁选，这里兜底）：源目录不能是库管理目录、不能在其内部（`422 cloud115_source_inside_library`）、也不能包含它——含选中网盘根目录的情形（`422 cloud115_source_contains_library`）。
 - **防重按库锁**：mutex 为 `media_import:cloud115:{library_id}`——115 的云端写操作是账号级串行约束，同一 cloud115 库同时只允许一个导入任务（与本地"同库同源"锁粒度不同）。
-- 导入管线：递归枚举源目录 → 按「父目录名/文件名」识别番号 → 按 115 全量 sha1 对账 → 云端复制到 `sakuramedia/jav/` → 逐文件改名并按 fid 查询确认 → 事务登记 Media → 下载并登记字幕 → `cleanup-source` 逐项删除源字幕和源视频。任一改名未生效时整组不入库、不清源；重试按 SHA1 复用已经复制或改名的目标文件。
+- 导入管线：递归枚举源目录 → 按「父目录名/文件名」识别番号 → 按 115 全量 sha1 对账 → 云端复制到 `sakuramedia/jav/` → 逐文件改名并按 fid 查询确认 → 通过受控 RangeReader + PyAV 探测技术元数据 → 事务登记 Media → 下载并登记字幕 → `cleanup-source` 逐项删除源字幕和源视频。有效文件探测失败时整组不入库、不清源；重试按 SHA1 复用已经复制或改名的目标文件。
+- 技术元数据探测按累计 Range 响应设置 `64 MiB` 读取预算，与影片总大小无关；CDN 若忽略 Range 返回超预算整文件，会在读取响应体前拒绝。
 - 多分部（VR/FC2）**不做合并**：每个文件一条 Media 挂同一影片（云端无拼接能力）。
 - 配对的 `.srt` 字幕**不复制到 115**：下载到本地 `subtitle_root/{番号}/` 并登记 `Subtitle`；`cleanup-source` 仅在字幕成功后清掉源 srt 和视频，字幕失败时两者均保留。
 - 115 标记违规的文件（`ic=1`）按 `valid=false` 登记并记 `cloud115_file_censored` 告警（拿不到直链也播不了）。
@@ -130,6 +131,8 @@
 
 > **cloud115 作业不支持删除/重命名失败源文件**（那是对用户 115 目录的写操作），两端点对 cloud115 作业一律返回 `422 cloud115_failed_file_not_actionable`；请在 115 App 内处理后用重导。
 
+以上限制只针对 JAV 的 `/import-jobs`。非 JAV 普通视频使用 `/video-imports`，支持 `source_cid` 目录和 `source_fid` 单文件来源，也完整支持 115 失败文件的重导、删除和重命名。其有效文件在入库前必须通过复制后目标 pickcode 完成 64 MiB 预算内的技术元数据探测并得到非空 `video_info`；探测失败不创建条目、不执行 `cleanup-source`。详见 [Videos 域导入说明](../videos/README.md#导入-video-imports)。
+
 ## 状态枚举与中文说明
 
 影片导入相关的全部状态码、失败原因、条目分类，以及对应中文说明，统一收口在 `src/common/media_import_status.py`，作为“落库/序列化原始字符串”与“API 展示文案”的唯一权威来源。新增或调整取值时只改这一处，service 与 schema 两侧都引用它，避免散落的字符串字面量与文案漂移。
@@ -181,6 +184,7 @@
 | `cloud115_file_censored` | warning | 115 已封禁：文件被 115 标记违规，已登记为失效（拿不到直链也播不了） |
 | `cloud115_transfer_failed` | file | 115 搬运失败：云端复制或对账阶段异常 |
 | `cloud115_rename_failed` | file | 115 单文件改名未成功或查询到的实际名称不一致 |
+| `cloud115_metadata_probe_failed` | file | 115 媒体技术元数据无法在读取预算内完成探测 |
 | `cloud115_subtitle_download_failed` | warning | 字幕下载失败：影片已入库，但字幕从 115 下载失败（仅告警） |
 
 对外经 `failed_files[].reason_label` / `failed_files[].kind_label` 暴露中文说明；`kind` 的判定与可操作性见上文[失败条目分类表](#查询导入作业)。
