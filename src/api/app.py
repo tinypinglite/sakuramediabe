@@ -23,6 +23,7 @@ from src.api.routers.files.subtitles import router as file_subtitles_router
 from src.api.routers.playback.media import router as media_router
 from src.api.routers.playback.media_clips import router as media_clips_router
 from src.api.routers.playback.media_points import router as media_points_router
+from src.api.routers.playback.cloud115_libraries import router as cloud115_libraries_router
 from src.api.routers.playback.media_libraries import router as media_libraries_router
 from src.api.routers.transfers.downloads import router as downloads_router
 from src.api.routers.transfers.media_import import router as media_import_router
@@ -105,6 +106,7 @@ def create_app() -> FastAPI:
     app.include_router(media_clips_router)
     app.include_router(media_points_router)
     app.include_router(media_libraries_router)
+    app.include_router(cloud115_libraries_router)
     app.include_router(daily_recommendations_router)
     app.include_router(image_search_router)
     app.include_router(moment_recommendations_router)

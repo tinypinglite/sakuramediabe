@@ -185,6 +185,68 @@ async def test_list_dir_state_false_maps_to_auth_error() -> None:
     await client.close()
 
 
+# ---------------------------------------------------------------------------
+# mkdir
+# ---------------------------------------------------------------------------
+
+
+async def test_mkdir_builds_request_and_returns_cid() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.host == "webapi.115.com"
+        assert request.url.path == "/files/add"
+        # form 编码 body
+        body = dict(pair.split("=", 1) for pair in request.content.decode().split("&"))
+        assert body["pid"] == "0"
+        assert body["cname"] == "sakuramedia"
+        return httpx.Response(200, json={"state": True, "category_id": "3001234"})
+
+    client = _make_client(handler)
+    cid = await client.mkdir("0", "sakuramedia")
+    assert cid == "3001234"
+    await client.close()
+
+
+async def test_mkdir_accepts_alternate_cid_field() -> None:
+    """115 历史响应字段名有 category_id / cid / file_id 几种，SDK 兜住任一。"""
+    client = _make_client(
+        lambda r: httpx.Response(200, json={"state": True, "cid": "999"})
+    )
+    assert await client.mkdir("0", "sub") == "999"
+    await client.close()
+
+
+async def test_mkdir_rejects_empty_name() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={"state": True}))
+    with pytest.raises(ValueError, match="name"):
+        await client.mkdir("0", "")
+    await client.close()
+
+
+async def test_mkdir_rejects_empty_pid() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={"state": True}))
+    with pytest.raises(ValueError, match="pid"):
+        await client.mkdir("", "foo")
+    await client.close()
+
+
+async def test_mkdir_state_false_maps_to_auth_error() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={
+        "state": False, "errno": 990009, "error": "not logged in"
+    }))
+    with pytest.raises(Cloud115AuthError):
+        await client.mkdir("0", "foo")
+    await client.close()
+
+
+async def test_mkdir_success_without_cid_raises_request_error() -> None:
+    """state=True 但没返回 cid：SDK 抛 RequestError，不静默。"""
+    client = _make_client(lambda r: httpx.Response(200, json={"state": True}))
+    with pytest.raises(Cloud115RequestError, match="missing new cid"):
+        await client.mkdir("0", "foo")
+    await client.close()
+
+
 async def test_errno_99_maps_to_auth_error() -> None:
     """errno=99 "请重新登录"：短时高频调用 downurl 触发的账号级冷却。"""
     client = _make_client(lambda r: httpx.Response(200, json={

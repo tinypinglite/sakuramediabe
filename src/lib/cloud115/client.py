@@ -371,6 +371,39 @@ class Cloud115Client:
             raise self._map_errno(payload, endpoint=url)
         return self._parse_dir_meta(cid, payload)
 
+    async def mkdir(self, pid: str, name: str) -> str:
+        """在 pid 目录下建一个叫 name 的子目录，返回新目录 cid。
+
+        - pid: 父目录 cid，根用 "0"。name: 目录名（不做前后空格清理，上层负责）。
+        - 115 允许同目录同名共存 → 上层做 find-or-create 时必须先 list 判存在。
+        - 端点：POST webapi.115.com/files/add，body {pid, cname}。
+        """
+        if not name:
+            raise ValueError("name is required")
+        if not pid:
+            raise ValueError("pid is required (use '0' for root)")
+        url = f"{self._BASE_WEBAPI}/files/add"
+        payload = await self._request_json(
+            "POST", url, data={"pid": pid, "cname": name}
+        )
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=url)
+        # 115 成功响应字段名有 category_id / cid / file_id 三种历史写法，兜住任一
+        cid = str(
+            payload.get("category_id")
+            or payload.get("cid")
+            or payload.get("file_id")
+            or ""
+        )
+        if not cid:
+            raise Cloud115RequestError(
+                "mkdir response missing new cid",
+                method="POST",
+                url=url,
+                detail=str(payload)[:200],
+            )
+        return cid
+
     async def get_download_url(self, pickcode: str, user_agent: str) -> DirectUrl:
         """取 302 直链。
 
