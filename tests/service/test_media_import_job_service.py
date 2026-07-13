@@ -38,7 +38,6 @@ def import_job_tables(test_db):
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
-    test_db.drop_tables(list(reversed(models)))
 
 
 @pytest.fixture(autouse=True)

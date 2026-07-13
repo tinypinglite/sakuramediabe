@@ -9,7 +9,6 @@ def user_tables(test_db):
     test_db.bind([User], bind_refs=False, bind_backrefs=False)
     test_db.create_tables([User])
     yield test_db
-    test_db.drop_tables([User])
 
 
 def test_user_defaults_role_and_status(user_tables):

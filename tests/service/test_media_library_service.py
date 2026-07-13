@@ -23,7 +23,6 @@ def media_library_tables(test_db):
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
-    test_db.drop_tables(list(reversed(models)))
 
 
 def test_list_libraries_returns_created_at_desc_then_id_desc(media_library_tables):

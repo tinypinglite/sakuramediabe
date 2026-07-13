@@ -64,7 +64,6 @@ def clip_env(test_db, tmp_path, monkeypatch):
     for offset in (0, 10, 20, 30, 40):
         _create_thumbnail(media, offset)
     yield media
-    test_db.drop_tables(list(reversed(CLIP_MODELS)))
 
 
 def _thumb_id(media: Media, offset: int) -> int:

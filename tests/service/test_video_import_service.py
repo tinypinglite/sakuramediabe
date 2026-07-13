@@ -44,7 +44,6 @@ def video_import_tables(test_db):
     test_db.bind(_MODELS, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(_MODELS)
     yield test_db
-    test_db.drop_tables(list(reversed(_MODELS)))
     for model in _MODELS:
         model.bind(database_proxy, bind_refs=False, bind_backrefs=False)
 

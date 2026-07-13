@@ -36,8 +36,8 @@ from src.start.initdb import create_tables, init_system_playlists, init_user, in
 from tests.conftest import TEST_MODELS
 
 
-def _create_movie_table_missing_title_zh(test_db):
-    test_db.execute_sql(
+def _create_movie_table_missing_title_zh(clean_db):
+    clean_db.execute_sql(
         """
         CREATE TABLE movie (
             id SERIAL PRIMARY KEY,
@@ -83,7 +83,7 @@ def _column_is_nullable(database, table_name: str, column_name: str) -> bool:
     raise AssertionError(f"column not found: {table_name}.{column_name}")
 
 
-def test_create_tables_creates_system_tables(test_db, monkeypatch):
+def test_create_tables_creates_system_tables(clean_db, monkeypatch):
     create_tables()
 
     assert User.table_exists()
@@ -103,9 +103,9 @@ def test_create_tables_creates_system_tables(test_db, monkeypatch):
     assert Subtitle.table_exists()
 
 
-def test_create_tables_creates_videos_domain_tables_and_decoupled_media(test_db, monkeypatch):
+def test_create_tables_creates_videos_domain_tables_and_decoupled_media(clean_db, monkeypatch):
     # 组合运行时其他测试可能重绑 Peewee 模型；这里显式绑定当前库再验证实际建表结果。
-    test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
 
     database = create_tables()
 
@@ -123,7 +123,7 @@ def test_create_tables_creates_videos_domain_tables_and_decoupled_media(test_db,
     assert _column_is_nullable(database, "media", "movie_number") is True
 
 
-def test_create_tables_creates_daily_recommendation_unique_constraints(test_db, monkeypatch):
+def test_create_tables_creates_daily_recommendation_unique_constraints(clean_db, monkeypatch):
     create_tables()
 
     first_movie = Movie.create(movie_number="ABP-001", javdb_id="daily-1", title="Daily 1")
@@ -160,7 +160,7 @@ def test_create_tables_creates_daily_recommendation_unique_constraints(test_db, 
         raise AssertionError("daily recommendation movie unique constraint missing")
 
 
-def test_create_tables_creates_moment_recommendation_unique_constraints(test_db, monkeypatch):
+def test_create_tables_creates_moment_recommendation_unique_constraints(clean_db, monkeypatch):
     create_tables()
 
     first_movie = Movie.create(movie_number="ABP-101", javdb_id="moment-1", title="Moment 1")
@@ -218,9 +218,9 @@ def test_create_tables_creates_moment_recommendation_unique_constraints(test_db,
         raise AssertionError("moment recommendation thumbnail unique constraint missing")
 
 
-def test_create_tables_creates_current_schema_columns(test_db, monkeypatch):
+def test_create_tables_creates_current_schema_columns(clean_db, monkeypatch):
     # 组合运行时其他测试可能重绑 Peewee 模型；这里显式绑定当前库再验证实际建表结果。
-    test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
 
     database = create_tables()
     if database.is_closed():
@@ -233,7 +233,7 @@ def test_create_tables_creates_current_schema_columns(test_db, monkeypatch):
     assert ResourceTaskState.table_exists()
 
 
-def test_create_tables_creates_resource_task_state_unique_constraint(test_db, monkeypatch):
+def test_create_tables_creates_resource_task_state_unique_constraint(clean_db, monkeypatch):
     create_tables()
 
     ResourceTaskState.create(
@@ -253,7 +253,7 @@ def test_create_tables_creates_resource_task_state_unique_constraint(test_db, mo
         raise AssertionError("expected resource_task_state unique constraint to reject duplicate rows")
 
 
-def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(test_db, monkeypatch):
+def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(clean_db, monkeypatch):
     create_tables()
 
     BackgroundTaskRun.create(
@@ -276,9 +276,9 @@ def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(te
         raise AssertionError("expected mutex_key unique constraint to reject duplicate rows")
 
 
-def test_create_tables_does_not_patch_existing_legacy_movie_schema(test_db, monkeypatch):
+def test_create_tables_does_not_patch_existing_legacy_movie_schema(clean_db, monkeypatch):
     # 当前受支持的老用户 schema 只缺少 title_zh。
-    _create_movie_table_missing_title_zh(test_db)
+    _create_movie_table_missing_title_zh(clean_db)
 
     # 生产链路是先 migrate 再 initdb；老 schema 直接跑 create_tables 时，PostgreSQL 会因
     # 现有 movie 表缺少新版索引所需列（如 series_id）而报错，正好把用户挡在"必须先跑迁移"上，
@@ -287,7 +287,7 @@ def test_create_tables_does_not_patch_existing_legacy_movie_schema(test_db, monk
         create_tables()
 
     # 关键约束：即使建表流程中断，legacy movie 表本身必须保持原样，未被 initdb 悄悄补列。
-    movie_columns = {column.name for column in test_db.get_columns("movie")}
+    movie_columns = {column.name for column in clean_db.get_columns("movie")}
 
     assert "maker_name" in movie_columns
     assert "director_name" in movie_columns
@@ -298,7 +298,7 @@ def test_create_tables_does_not_patch_existing_legacy_movie_schema(test_db, monk
     assert "is_collection_overridden" in movie_columns
 
 
-def test_create_tables_creates_movie_series_schema(test_db, monkeypatch):
+def test_create_tables_creates_movie_series_schema(clean_db, monkeypatch):
     create_tables()
 
     assert MovieSeries.table_exists()
@@ -307,7 +307,7 @@ def test_create_tables_creates_movie_series_schema(test_db, monkeypatch):
     assert "series_name" not in Movie._meta.fields
 
 
-def test_init_user_creates_single_account_once(test_db, monkeypatch):
+def test_init_user_creates_single_account_once(clean_db, monkeypatch):
     monkeypatch.setattr("src.start.initdb.settings.auth.username", "account")
     monkeypatch.setattr("src.start.initdb.settings.auth.password", "account")
 
@@ -325,7 +325,7 @@ def test_init_user_creates_single_account_once(test_db, monkeypatch):
     assert User.select().count() == 1
 
 
-def test_init_system_playlists_creates_all_system_playlists_once(test_db, monkeypatch):
+def test_init_system_playlists_creates_all_system_playlists_once(clean_db, monkeypatch):
     create_tables()
 
     created = init_system_playlists()
@@ -342,7 +342,7 @@ def test_init_system_playlists_creates_all_system_playlists_once(test_db, monkey
     assert Playlist.select().count() == 3
 
 
-def test_init_system_playlists_backfills_missing_kinds_on_upgrade(test_db, monkeypatch):
+def test_init_system_playlists_backfills_missing_kinds_on_upgrade(clean_db, monkeypatch):
     create_tables()
     # 显式构造"老库仅有最近播放"的初始状态，不依赖建表后表为空。
     Playlist.delete().execute()

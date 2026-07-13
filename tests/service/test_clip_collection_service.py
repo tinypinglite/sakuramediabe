@@ -75,7 +75,6 @@ def collection_env(test_db, tmp_path, monkeypatch):
     media_a = _create_media("ABC-001", tmp_path)
     media_b = _create_media("ABC-002", tmp_path)
     yield {"media_a": media_a, "media_b": media_b}
-    test_db.drop_tables(list(reversed(CLIP_MODELS)))
 
 
 def test_create_collection_and_uniqueness(collection_env):

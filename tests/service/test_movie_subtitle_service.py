@@ -13,7 +13,6 @@ def movie_subtitle_tables(test_db):
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
-    test_db.drop_tables(list(reversed(models)))
 
 
 def _create_movie(movie_number: str, javdb_id: str, **kwargs):
