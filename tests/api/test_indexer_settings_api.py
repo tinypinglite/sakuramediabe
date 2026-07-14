@@ -62,6 +62,15 @@ def _create_client(name: str = "client-a") -> DownloadClient:
     )
 
 
+def _create_cloud115_client(name: str = "cloud115-a") -> DownloadClient:
+    library = MediaLibrary.create(
+        name=f"library-{name}",
+        backend="cloud115",
+        backend_config={"cookies": "UID=test_A1_1", "root_cid": "root"},
+    )
+    return DownloadClient.create(name=name, kind="cloud115", media_library=library)
+
+
 def test_indexer_settings_endpoints_require_authentication(client):
     get_response = client.get("/indexer-settings")
     patch_response = client.patch("/indexer-settings", json={"api_key": "updated-key"})
@@ -206,6 +215,40 @@ def test_patch_indexer_settings_rejects_unknown_download_client(
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "indexer_settings_download_client_not_found"
+
+
+def test_patch_indexer_settings_rejects_pt_binding_to_cloud115(
+    client,
+    account_user,
+    isolated_indexer_settings,
+):
+    cloud_client = _create_cloud115_client()
+    token = _login(client, username=account_user.username)
+
+    response = client.patch(
+        "/indexer-settings",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "indexers": [
+                {
+                    "name": "mteam",
+                    "url": "https://example.com/mteam",
+                    "kind": "pt",
+                    "download_client_ids": [cloud_client.id],
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == {
+        "code": "pt_indexer_cloud115_binding_unsupported",
+        "message": "PT 索引器不能绑定 115 下载入口",
+        "details": {
+            "indexer_name": "mteam",
+            "download_client_id": cloud_client.id,
+        },
+    }
 
 
 def test_indexer_settings_test_api_returns_healthy_result(

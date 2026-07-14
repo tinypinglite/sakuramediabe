@@ -31,7 +31,7 @@ class IndexerItemUpdatePayload(SchemaModel):
     name: str
     url: str
     kind: str
-    # 至少绑定一个下载器；重复 id 会被拒绝。
+    # 至少绑定一个下载器；重复 id 会被拒绝；PT 索引器不能绑定 cloud115。
     download_client_ids: List[int]
 
 

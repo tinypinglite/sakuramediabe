@@ -65,6 +65,15 @@ def _create_client(name: str = "client-a") -> DownloadClient:
     )
 
 
+def _create_cloud115_client(name: str = "cloud115-a") -> DownloadClient:
+    library = MediaLibrary.create(
+        name=f"library-{name}",
+        backend="cloud115",
+        backend_config={"cookies": "UID=test_A1_1", "root_cid": "root"},
+    )
+    return DownloadClient.create(name=name, kind="cloud115", media_library=library)
+
+
 def test_get_settings_returns_current_indexer_configuration(isolated_indexer_settings, indexer_tables):
     client = _create_client()
     _create_indexer(
@@ -267,6 +276,65 @@ def test_update_settings_rejects_unknown_download_client(isolated_indexer_settin
         )
 
     assert exc_info.value.code == "indexer_settings_download_client_not_found"
+
+
+def test_update_settings_rejects_pt_binding_to_cloud115(
+    isolated_indexer_settings, indexer_tables
+):
+    qb_client = _create_client()
+    cloud_client = _create_cloud115_client()
+    existing = _create_indexer(
+        name="existing",
+        url="https://example.com/existing",
+        kind="bt",
+        download_client=qb_client,
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        IndexerSettingsService.update_settings(
+            IndexerSettingsUpdateRequest(
+                indexers=[
+                    IndexerItemUpdatePayload(
+                        name="mteam",
+                        url="https://example.com/mteam",
+                        kind="pt",
+                        download_client_ids=[qb_client.id, cloud_client.id],
+                    )
+                ]
+            )
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "pt_indexer_cloud115_binding_unsupported"
+    assert exc_info.value.details == {
+        "indexer_name": "mteam",
+        "download_client_id": cloud_client.id,
+    }
+    # 校验发生在整体替换前，原配置不能被非法请求清空。
+    assert [item.id for item in Indexer.select()] == [existing.id]
+    assert IndexerDownloadClient.select().count() == 1
+
+
+def test_update_settings_allows_bt_binding_to_cloud115(
+    isolated_indexer_settings, indexer_tables
+):
+    cloud_client = _create_cloud115_client()
+
+    resource = IndexerSettingsService.update_settings(
+        IndexerSettingsUpdateRequest(
+            indexers=[
+                IndexerItemUpdatePayload(
+                    name="dmhy",
+                    url="https://example.com/dmhy",
+                    kind="bt",
+                    download_client_ids=[cloud_client.id],
+                )
+            ]
+        )
+    )
+
+    assert resource.indexers[0].kind.value == "bt"
+    assert resource.indexers[0].download_clients[0].kind == "cloud115"
 
 
 def test_test_connection_reports_healthy_with_result_count(isolated_indexer_settings, indexer_tables):

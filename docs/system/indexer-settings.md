@@ -6,8 +6,9 @@
 
 - `type` 与 `api_key` 持久化在 `config.toml`
 - `indexers` 明细持久化在数据库
-- 每个 `indexer` 至少绑定一个 `DownloadClient`，允许同时绑定多个（如 qBittorrent 与 115 离线各一）；
+- 每个 `indexer` 至少绑定一个 `DownloadClient`，BT 索引器允许同时绑定多个（如 qBittorrent 与 115 离线各一）；
   提交下载时按全局偏好 `[downloads].preferred_client_kinds` 从绑定集合中挑选，前端也可显式指定
+- PT 索引器只能绑定 qBittorrent，不能绑定 115 离线下载入口
 
 ## 资源模型
 
@@ -22,8 +23,7 @@
       "url": "http://host:port/api/v2.0/indexers/0magnet/results/torznab/",
       "kind": "pt",
       "download_clients": [
-        {"id": 2, "name": "qb-main", "kind": "qbittorrent"},
-        {"id": 3, "name": "115-主账号", "kind": "cloud115"}
+        {"id": 2, "name": "qb-main", "kind": "qbittorrent"}
       ]
     }
   ]
@@ -63,13 +63,13 @@
       "name": "mteam",
       "url": "http://host:port/api/v2.0/indexers/0magnet/results/torznab/",
       "kind": "pt",
-      "download_client_ids": [1, 3]
+      "download_client_ids": [1]
     },
     {
       "name": "dmhy",
       "url": "https://example.com/api/v2.0/indexers/dmhy/results/torznab/",
       "kind": "bt",
-      "download_client_ids": [2]
+      "download_client_ids": [2, 3]
     }
   ]
 }
@@ -88,6 +88,7 @@
 - `invalid_indexer_settings_download_client_ids`: `download_client_ids` 为空或含非法值
 - `duplicate_indexer_settings_download_client_id`: `download_client_ids` 含重复 id
 - `indexer_settings_download_client_not_found`: 绑定的下载客户端不存在
+- `pt_indexer_cloud115_binding_unsupported`: PT 索引器尝试绑定 115 下载入口
 
 ## `GET /indexer-settings/test`
 
@@ -139,6 +140,7 @@
 
 - 当前仅支持 `jackett`
 - `kind` 用于标记索引器类型，当前支持 `pt` 与 `bt`
+- PT 站的下载/做种规则要求使用 qBittorrent，因此禁止绑定 cloud115；BT 索引器不受此限制
 - `indexer.name` 是下载候选自动解析目标下载器的匹配键
 - 候选卡片上的 `resolved_client_*` 是按 `[downloads].preferred_client_kinds` 全局偏好从绑定集合预解析的默认下载器；偏好只影响挑选顺序，选中的下载器执行失败会直接报错、不自动降级
 - 配置更新成功后会立即刷新当前进程内存配置，无需重启服务
