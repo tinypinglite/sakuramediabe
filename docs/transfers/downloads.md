@@ -127,6 +127,10 @@
   "resolved_client_id": 1,
   "resolved_client_name": "client-a",
   "resolved_client_kind": "qbittorrent",
+  "download_clients": [
+    {"id": 1, "name": "client-a", "kind": "qbittorrent"},
+    {"id": 2, "name": "client-b", "kind": "qbittorrent"}
+  ],
   "movie_number": "ABC-001",
   "title": "ABC-001 4K 中文字幕",
   "size_bytes": 12884901888,
@@ -741,6 +745,7 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 - 服务读取 `/indexer-settings` 对应的当前运行时配置
 - 当 `movie_number` 以 `FC2` 开头（含 `FC2-PPV-xxxx`）时，调用 Jackett 会仅使用数字部分作为查询词
 - 结果为临时数据，不写入数据库
+- 每条候选通过 `download_clients` 返回对应索引器绑定的全部可选下载器，`resolved_client_*` 表示按全局偏好预选的默认下载器
 - 按“更高做种数优先，其次更大体积优先”排序返回
 
 ### Success Responses
@@ -757,6 +762,11 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
     "indexer_kind": "pt",
     "resolved_client_id": 1,
     "resolved_client_name": "client-a",
+    "resolved_client_kind": "qbittorrent",
+    "download_clients": [
+      {"id": 1, "name": "client-a", "kind": "qbittorrent"},
+      {"id": 2, "name": "client-b", "kind": "qbittorrent"}
+    ],
     "movie_number": "ABC-001",
     "title": "ABC-001 4K 中文字幕",
     "size_bytes": 12884901888,
@@ -807,7 +817,7 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 
 ### Behavior
 
-- 若请求体包含 `client_id`，优先使用显式指定的目标 `DownloadClient`
+- 若请求体包含 `client_id`，优先使用显式指定的目标 `DownloadClient`，但该下载器必须绑定到 `candidate.indexer_name` 对应的索引器
 - 若未传 `client_id`，根据 `candidate.indexer_name` 查找数据库中的 `Indexer`，并使用其绑定的 `DownloadClient`
 - 按候选资源优先使用 `magnet_url`，否则使用 `torrent_url`
 - 添加种子时，在 `DownloadClient.client_save_path` 下按番号拼出独立子目录传给 qBittorrent 作为保存路径（如 `/downloads/a/ABC-001`），避免内容平铺到下载根目录
@@ -851,7 +861,7 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 
 - `401 Unauthorized`: 未认证
 - `404 Not Found`: 显式传入的 `client_id` 不存在
-- `422 Unprocessable Entity`: 请求体非法，候选资源既无 `magnet_url` 也无 `torrent_url`，或 `candidate.indexer_name` 未配置
+- `422 Unprocessable Entity`: 请求体非法，候选资源既无 `magnet_url` 也无 `torrent_url`、`candidate.indexer_name` 未配置，或显式 `client_id` 未绑定到候选索引器
 - `502 Bad Gateway`: qBittorrent 或下载源请求失败
 
 ## 同步与导入策略

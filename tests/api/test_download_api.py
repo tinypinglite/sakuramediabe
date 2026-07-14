@@ -483,6 +483,9 @@ def test_download_candidates_api_uses_search_service(client, account_user, monke
                 "resolved_client_id": 1,
                 "resolved_client_name": "client-a",
                 "resolved_client_kind": "qbittorrent",
+                "download_clients": [
+                    {"id": 1, "name": "client-a", "kind": "qbittorrent"}
+                ],
                 "movie_number": movie_number,
                 "title": "ABC-001 4K",
                 "size_bytes": 123,
@@ -502,6 +505,9 @@ def test_download_candidates_api_uses_search_service(client, account_user, monke
 
     assert response.status_code == 200
     assert response.json()[0]["movie_number"] == "ABC-001"
+    assert response.json()[0]["download_clients"] == [
+        {"id": 1, "name": "client-a", "kind": "qbittorrent"}
+    ]
 
 
 def test_download_request_api_returns_201_or_200(client, account_user, monkeypatch):

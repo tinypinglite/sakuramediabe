@@ -368,6 +368,7 @@ JOB_REGISTRY: list[JobDefinition] = [
             ("pending_media", "pending_media", 0),
             ("successful_media", "successful_media", 0),
             ("generated_thumbnails", "generated_thumbnails", 0),
+            ("deferred_media", "deferred_media", 0),
             ("retryable_failed_media", "retryable_failed_media", 0),
             ("terminal_failed_media", "terminal_failed_media", 0),
         ),

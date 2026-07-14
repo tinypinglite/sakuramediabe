@@ -203,10 +203,10 @@ def test_aps_generate_media_thumbnails_command_runs_job(monkeypatch):
         "generate-media-thumbnails",
         {
             "pending_media": 3, "successful_media": 2, "generated_thumbnails": 6,
-            "retryable_failed_media": 1, "terminal_failed_media": 0,
+            "deferred_media": 0, "retryable_failed_media": 1, "terminal_failed_media": 0,
         },
         "thumbnail generation finished: pending_media=3 successful_media=2 "
-        "generated_thumbnails=6 retryable_failed_media=1 terminal_failed_media=0",
+        "generated_thumbnails=6 deferred_media=0 retryable_failed_media=1 terminal_failed_media=0",
     )
 
 

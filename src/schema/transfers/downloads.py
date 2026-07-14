@@ -156,6 +156,14 @@ class DownloadClientProbeStorageTestRequest(SchemaModel):
     client_id: Optional[int] = None
 
 
+class DownloadCandidateClientResource(SchemaModel):
+    """候选资源允许选择的下载器概要。"""
+
+    id: int
+    name: str
+    kind: str
+
+
 class DownloadCandidateResource(SchemaModel):
     source: str
     indexer_name: str
@@ -164,6 +172,8 @@ class DownloadCandidateResource(SchemaModel):
     resolved_client_id: int
     resolved_client_name: str
     resolved_client_kind: str
+    # 当前索引器绑定的全部下载器；前端以 resolved_client_id 为默认选项。
+    download_clients: List[DownloadCandidateClientResource]
     movie_number: str
     title: str
     size_bytes: int

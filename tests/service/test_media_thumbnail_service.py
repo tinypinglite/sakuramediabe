@@ -649,6 +649,7 @@ def test_generate_pending_thumbnails_logs_flow_for_success_and_terminal_failure(
         "pending_media": 2,
         "successful_media": 1,
         "generated_thumbnails": 1,
+        "deferred_media": 0,
         "retryable_failed_media": 0,
         "terminal_failed_media": 1,
     }
@@ -673,7 +674,7 @@ def test_generate_pending_thumbnails_logs_flow_for_success_and_terminal_failure(
     )
     assert any(
         level == "info"
-        and "Finished media thumbnail generation pending_media=2 successful_media=1 generated_thumbnails=1 retryable_failed_media=0 terminal_failed_media=1"
+        and "Finished media thumbnail generation pending_media=2 successful_media=1 generated_thumbnails=1 deferred_media=0 retryable_failed_media=0 terminal_failed_media=1"
         in message
         for level, message in events
     )
@@ -994,6 +995,34 @@ def test_generate_pending_thumbnails_cloud115_direct_url_failure_marks_retryable
     task_state = _get_task_state(media.id)
     assert task_state.state == "failed"
     assert "cloud115_direct_url_failed" in task_state.last_error
+
+
+def test_generate_pending_thumbnails_cloud115_system_failure_does_not_consume_retry(
+    thumbnail_tables, monkeypatch: pytest.MonkeyPatch
+):
+    from src.lib.cloud115 import Cloud115RateLimitedError
+    from src.service.playback.media_thumbnail_service import MediaThumbnailService
+
+    media = _create_cloud115_media(movie_number="ABC-118", fingerprint="sha1:DDD")
+
+    def fake_open_reader(_media):
+        raise Cloud115RateLimitedError("115 rate limited", retry_after_seconds=60)
+
+    monkeypatch.setattr(
+        MediaThumbnailService, "_open_cloud115_reader", staticmethod(fake_open_reader)
+    )
+    monkeypatch.setattr(
+        "src.service.playback.media_thumbnail_service.settings.media.max_thumbnail_process_count",
+        1,
+    )
+
+    stats = MediaThumbnailService.generate_pending_thumbnails()
+
+    assert stats["deferred_media"] == 1
+    assert stats["retryable_failed_media"] == 0
+    assert stats["terminal_failed_media"] == 0
+    # 系统性异常发生在任务开始前，不创建状态记录，也不增加媒体重试次数。
+    assert _get_task_state(media.id) is None
 
 
 def test_backfill_cloud115_resolution_reads_real_webp(thumbnail_tables, tmp_path):

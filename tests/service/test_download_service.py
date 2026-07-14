@@ -21,6 +21,7 @@ from src.model import (
 )
 from src.schema.transfers.downloads import (
     DownloadCandidateCreatePayload,
+    DownloadCandidateClientResource,
     DownloadCandidateResource,
     DownloadClientCreateRequest,
     DownloadClientProbeStorageTestRequest,
@@ -327,6 +328,9 @@ def _candidate(
         resolved_client_id=1,
         resolved_client_name="client-a",
         resolved_client_kind="qbittorrent",
+        download_clients=[
+            DownloadCandidateClientResource(id=1, name="client-a", kind="qbittorrent")
+        ],
         movie_number=movie_number,
         title=title,
         size_bytes=size_bytes,
@@ -899,12 +903,14 @@ def test_jackett_client_parses_and_sorts_candidates(download_tables):
 
     library = _create_library()
     download_client = _create_client(library)
-    _create_indexer(
+    indexer = _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
         download_client=download_client,
     )
+    other_client = _create_client(library, name="client-b")
+    IndexerDownloadClient.create(indexer=indexer, download_client=other_client)
     client = JackettClient(api_key="secret", client=FakeHttpClient())
     results = client.search("ABC-001")
 
@@ -913,6 +919,10 @@ def test_jackett_client_parses_and_sorts_candidates(download_tables):
     assert results[0].tags == ["中字", "4K"]
     assert results[0].resolved_client_id == download_client.id
     assert results[0].resolved_client_name == download_client.name
+    assert [item.id for item in results[0].download_clients] == [
+        download_client.id,
+        other_client.id,
+    ]
     assert results[0].indexer_name == "mteam"
 
 
@@ -1217,6 +1227,12 @@ def test_download_search_service_rejects_invalid_indexer_kind(download_tables):
 def test_download_request_service_adds_task_and_passes_movie_subdir(download_tables):
     library = _create_library()
     client = _create_client(library)
+    _create_indexer(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=client,
+    )
     called = {}
 
     class FakeQBittorrentClient:
@@ -1317,6 +1333,46 @@ def test_download_request_service_resolves_client_from_indexer_when_client_id_mi
     assert called["client_id"] == client.id
 
 
+def test_download_request_service_rejects_client_not_bound_to_indexer(download_tables):
+    library = _create_library()
+    bound_client = _create_client(library, name="client-bound")
+    other_client = _create_client(library, name="client-other")
+    _create_indexer(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=bound_client,
+    )
+
+    service = DownloadRequestService(qbittorrent_client_cls=object)
+    with pytest.raises(ApiError) as exc_info:
+        service.create_request(
+            DownloadRequestCreateRequest.model_validate(
+                {
+                    "client_id": other_client.id,
+                    "movie_number": "ABC-001",
+                    "candidate": {
+                        "source": "jackett",
+                        "indexer_name": "mteam",
+                        "indexer_kind": "pt",
+                        "title": "ABC-001",
+                        "size_bytes": 123,
+                        "seeders": 5,
+                        "magnet_url": "magnet:?xt=urn:btih:ABCDEF123456",
+                        "torrent_url": "",
+                        "tags": [],
+                    },
+                }
+            )
+        )
+
+    assert exc_info.value.code == "download_request_client_not_bound_to_indexer"
+    assert exc_info.value.details == {
+        "client_id": other_client.id,
+        "indexer_name": "mteam",
+    }
+
+
 def test_download_request_service_rejects_unknown_indexer_when_client_id_missing(download_tables):
     library = _create_library()
     _create_client(library)
@@ -1349,6 +1405,12 @@ def test_download_request_service_rejects_unknown_indexer_when_client_id_missing
 def test_download_request_service_is_idempotent_per_client(download_tables):
     library = _create_library()
     client = _create_client(library)
+    _create_indexer(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=client,
+    )
 
     class FakeQBittorrentClient:
         @classmethod
@@ -1894,6 +1956,54 @@ def test_download_sync_service_recover_orphaned_imports_only_does_not_enqueue_ne
     assert orphaned_job.finished_at is not None
     assert task_run.state == "failed"
     assert task_run.error_message == "下载导入线程已中断，任务已失败"
+
+
+def test_download_sync_service_does_not_recover_cloud115_running_import(
+    download_tables, monkeypatch
+):
+    library = MediaLibrary.create(
+        name="Cloud115",
+        backend="cloud115",
+        backend_config={"cookies": "UID=1_A1_1; CID=x; SEID=y", "root_cid": "100"},
+    )
+    client = DownloadClient.create(
+        name="cloud115-recovery-boundary",
+        kind="cloud115",
+        media_library=library,
+    )
+    task = DownloadTask.create(
+        client=client,
+        movie="ABC-115",
+        name="ABC-115",
+        info_hash="hash-cloud115-recovery",
+        save_path="/Cloud115/ABC-115",
+        target_ref={"cid": "cid-115"},
+        progress=1.0,
+        download_state="completed",
+        import_status="running",
+    )
+    completed_job = ImportJob.create(
+        source_path="/Cloud115/ABC-115",
+        source_cid="cid-115",
+        library=library,
+        download_task=task,
+        state="completed",
+    )
+    monkeypatch.setattr(
+        DownloadTaskService,
+        "trigger_import",
+        classmethod(
+            lambda cls, task_id, allowed_statuses=None, trigger_type="manual": (_ for _ in ()).throw(
+                AssertionError("cloud115 task should not enter qB auto import queue")
+            )
+        ),
+    )
+
+    summary = DownloadSyncService().enqueue_auto_imports()
+
+    assert summary == {"queued_count": 0, "recovered_count": 0}
+    assert DownloadTask.get_by_id(task.id).import_status == "running"
+    assert ImportJob.get_by_id(completed_job.id).state == "completed"
 
 
 def test_download_sync_service_does_not_backfill_missing_task_run_id_for_legacy_jobs(
@@ -3079,6 +3189,12 @@ def test_create_request_dispatches_to_cloud115_offline_service(download_tables, 
     cloud_client = DownloadClient.create(
         name="cloud115-entry", kind="cloud115", media_library=library
     )
+    _create_indexer(
+        name="mteam",
+        url="http://jackett/api",
+        kind="bt",
+        download_client=cloud_client,
+    )
     task = DownloadTask.create(
         client=cloud_client,
         movie="ABP-123",
@@ -3107,7 +3223,7 @@ def test_create_request_dispatches_to_cloud115_offline_service(download_tables, 
             candidate=DownloadCandidateCreatePayload(
                 source="jackett",
                 indexer_name="mteam",
-                indexer_kind="pt",
+                indexer_kind="bt",
                 title="ABP-123 4K",
                 size_bytes=1,
                 seeders=1,

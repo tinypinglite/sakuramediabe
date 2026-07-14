@@ -12,6 +12,13 @@ except ImportError:  # pragma: no cover - exercised by runtime environment, not 
     av = None
 
 from src.config.config import settings
+from src.lib.cloud115 import (
+    Cloud115AuthError,
+    Cloud115CipherError,
+    Cloud115MembershipRequiredError,
+    Cloud115RateLimitedError,
+    Cloud115RequestError,
+)
 from src.model import Image, Media, MediaThumbnail, ResourceTaskState, get_database
 from src.schema.catalog.actors import ImageResource
 from src.schema.playback.media import MediaThumbnailResource
@@ -38,6 +45,14 @@ class MediaThumbnailService:
     INTERRUPTED_GENERATION_ERROR_MESSAGE = "媒体缩略图生成任务中断，等待重试"
     # cloud115 抽帧 UA：拿直链与后续 Range 读必须同 UA（115 把 UA 绑进直链 f= 指纹）。
     CLOUD115_THUMBNAIL_UA = "Mozilla/5.0 SakuraMedia-Thumbnail/1.0"
+    # 账号或上游级故障与具体媒体无关，延后该媒体且不消耗它的有限重试次数。
+    CLOUD115_SYSTEM_FAILURES = (
+        Cloud115AuthError,
+        Cloud115CipherError,
+        Cloud115MembershipRequiredError,
+        Cloud115RateLimitedError,
+        Cloud115RequestError,
+    )
 
     @staticmethod
     def _ensure_worker_database_ready() -> None:
@@ -415,8 +430,8 @@ class MediaThumbnailService:
                 media.id,
             )
             return {}
-        ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
         if not media.content_fingerprint:
+            ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
             error_key = cls._mark_failure(media, "content_fingerprint_missing", terminal=True)
             cls._log_aborted(media, "content_fingerprint_missing", error_key)
             return {error_key: 1}
@@ -427,11 +442,25 @@ class MediaThumbnailService:
         if is_cloud115:
             try:
                 reader, source_label = cls._open_cloud115_reader(media)
+            except cls.CLOUD115_SYSTEM_FAILURES as exc:
+                # 直链解析失败前不进入 running，保留原任务状态和 attempt_count 供后续轮次重试。
+                logger.warning(
+                    "Deferred cloud115 media thumbnail generation media_id={} detail={} retry_count={}",
+                    media.id,
+                    exc,
+                    ResourceTaskStateService.get_state_or_default(
+                        cls.TASK_KEY, media.id
+                    ).attempt_count,
+                )
+                return {"deferred_media": 1}
             except Exception as exc:
+                ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
                 error_key = cls._mark_failure(media, f"cloud115_direct_url_failed: {exc}")
                 cls._log_aborted(media, "cloud115_direct_url_failed", error_key)
                 return {error_key: 1}
+            ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
         else:
+            ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
             video_path = Path(media.path).expanduser().resolve()
             if not video_path.exists() or not video_path.is_file():
                 error_key = cls._mark_failure(media, "video_file_missing")
@@ -568,6 +597,7 @@ class MediaThumbnailService:
             "pending_media": len(media_ids),
             "successful_media": 0,
             "generated_thumbnails": 0,
+            "deferred_media": 0,
             "retryable_failed_media": 0,
             "terminal_failed_media": 0,
         }
@@ -608,10 +638,11 @@ class MediaThumbnailService:
                 )
         elapsed_ms = int((time.time() - started_at) * 1000)
         logger.info(
-            "Finished media thumbnail generation pending_media={} successful_media={} generated_thumbnails={} retryable_failed_media={} terminal_failed_media={} elapsed_ms={}",
+            "Finished media thumbnail generation pending_media={} successful_media={} generated_thumbnails={} deferred_media={} retryable_failed_media={} terminal_failed_media={} elapsed_ms={}",
             stats["pending_media"],
             stats["successful_media"],
             stats["generated_thumbnails"],
+            stats["deferred_media"],
             stats["retryable_failed_media"],
             stats["terminal_failed_media"],
             elapsed_ms,

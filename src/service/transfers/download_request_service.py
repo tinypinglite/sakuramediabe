@@ -122,12 +122,23 @@ class DownloadRequestService:
         )
 
     def _resolve_client(self, payload: DownloadRequestCreateRequest):
-        # 显式 client_id 是用户覆盖，最高优先；否则从索引器绑定集合按全局 kind 偏好挑选。
-        if payload.client_id is not None:
-            return require_client(payload.client_id)
-
         indexer = require_indexer(payload.candidate.indexer_name)
         clients = list_indexer_clients(indexer)
+        # 显式 client_id 只能在当前索引器绑定集合内覆盖，避免绕过索引器种类约束。
+        if payload.client_id is not None:
+            client = require_client(payload.client_id)
+            if all(bound_client.id != client.id for bound_client in clients):
+                raise ApiError(
+                    422,
+                    "download_request_client_not_bound_to_indexer",
+                    "Download client is not bound to candidate indexer",
+                    {
+                        "client_id": client.id,
+                        "indexer_name": indexer.name,
+                    },
+                )
+            return client
+
         if not clients:
             raise ApiError(
                 422,

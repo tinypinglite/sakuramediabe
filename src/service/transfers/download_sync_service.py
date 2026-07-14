@@ -243,7 +243,17 @@ class DownloadSyncService:
     @staticmethod
     def _recover_orphaned_imports() -> int:
         recovered_count = 0
-        for task in DownloadTask.select().where(DownloadTask.import_status == IMPORT_STATUS_RUNNING).order_by(DownloadTask.id.asc()):
+        # qB 导入由本服务托管；115 导入状态由 Cloud115OfflineSyncService 独立对账，不能跨后端回收。
+        running_qb_tasks = (
+            DownloadTask.select(DownloadTask)
+            .join(DownloadClient)
+            .where(
+                DownloadTask.import_status == IMPORT_STATUS_RUNNING,
+                DownloadClient.kind == DownloadClientKind.QBITTORRENT.value,
+            )
+            .order_by(DownloadTask.id.asc())
+        )
+        for task in running_qb_tasks:
             running_jobs = list(
                 ImportJob.select()
                 .where(
@@ -283,4 +293,3 @@ class DownloadSyncService:
                 [job.id for job in running_jobs],
             )
         return recovered_count
-

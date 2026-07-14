@@ -8,7 +8,10 @@ from loguru import logger
 from src.config.config import settings
 from src.common.movie_numbers import normalize_movie_number
 from src.model import DownloadClient, Indexer, IndexerDownloadClient
-from src.schema.transfers.downloads import DownloadCandidateResource
+from src.schema.transfers.downloads import (
+    DownloadCandidateClientResource,
+    DownloadCandidateResource,
+)
 from src.service.transfers.common import resolve_preferred_client
 from src.service.transfers.tag_rules import detect_candidate_tags
 
@@ -38,11 +41,12 @@ class JackettClient:
         for indexer in Indexer.select().order_by(Indexer.id.asc()):
             if normalized_kind and indexer.kind != normalized_kind:
                 continue
-            resolved_client = self._resolve_indexer_client(indexer, clients_by_indexer)
-            if resolved_client is None:
+            download_clients = clients_by_indexer.get(indexer.id, [])
+            if not download_clients:
                 # 无绑定下载器的索引器仍参与搜索没有意义：候选无法提交，直接跳过。
                 logger.warning("Skip indexer without bound download clients name={}", indexer.name)
                 continue
+            resolved_client = resolve_preferred_client(download_clients)
             try:
                 response = self.client.get(
                     indexer.url,
@@ -74,6 +78,7 @@ class JackettClient:
                         item,
                         channel_title=channel_title,
                         resolved_client=resolved_client,
+                        download_clients=download_clients,
                     )
                 )
 
@@ -90,16 +95,6 @@ class JackettClient:
         ):
             clients_by_indexer.setdefault(link.indexer_id, []).append(link.download_client)
         return clients_by_indexer
-
-    @staticmethod
-    def _resolve_indexer_client(
-        indexer: Indexer,
-        clients_by_indexer: dict[int, list[DownloadClient]],
-    ) -> Optional[DownloadClient]:
-        clients = clients_by_indexer.get(indexer.id, [])
-        if not clients:
-            return None
-        return resolve_preferred_client(clients)
 
     @classmethod
     def _build_search_query(cls, movie_number: str) -> str:
@@ -119,6 +114,7 @@ class JackettClient:
         *,
         channel_title: str = "",
         resolved_client: DownloadClient,
+        download_clients: list[DownloadClient],
     ) -> DownloadCandidateResource:
         attr_map = self._coerce_attr_map(item.get("torznab:attr"))
         remote_indexer = self._extract_indexer_metadata(item, channel_title)
@@ -142,6 +138,14 @@ class JackettClient:
             resolved_client_id=resolved_client.id,
             resolved_client_name=resolved_client.name,
             resolved_client_kind=resolved_client.kind,
+            download_clients=[
+                DownloadCandidateClientResource(
+                    id=download_client.id,
+                    name=download_client.name,
+                    kind=download_client.kind,
+                )
+                for download_client in download_clients
+            ],
             movie_number=movie_number.upper(),
             title=full_title or title,
             size_bytes=size_bytes,
