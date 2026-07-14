@@ -1,3 +1,7 @@
+from src.metadata._providers.dmm import (
+    DmmMovieDescNotFoundError,
+    DmmMovieNumberNotFoundError,
+)
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Movie, ResourceTaskState
 from src.service.catalog.catalog_import_service import CatalogImportService
@@ -145,19 +149,17 @@ def test_movie_desc_sync_service_skips_terminal_failures(app):
     assert Movie.get(Movie.movie_number == "ABP-009").desc == "desc 9"
 
 
-def test_movie_desc_sync_service_retries_non_terminal_missing_description_failures(app):
+def test_movie_desc_sync_service_retries_request_failures(app):
     _create_movie("ABP-010", "MovieA10", desc="")
     _create_task_state(
         Movie.get(Movie.movie_number == "ABP-010"),
         state=ResourceTaskStateService.STATE_FAILED,
-        last_error="DMM 已找到对应番号但详情页没有描述: ABP-010",
+        last_error="DMM request failed",
         extra={"terminal": False},
     )
     service = MovieDescSyncService(
         catalog_import_service=CatalogImportService(
-            dmm_provider=FakeDmmProvider(
-                failures={"ABP-010": MetadataNotFoundError("movie_desc", "ABP-010")}
-            )
+            dmm_provider=FakeDmmProvider(failures={"ABP-010": _request_error()})
         )
     )
 
@@ -165,6 +167,44 @@ def test_movie_desc_sync_service_retries_non_terminal_missing_description_failur
 
     assert stats["candidate_movies"] == 1
     assert stats["failed_movies"] == 1
+
+
+def test_movie_desc_sync_service_does_not_retry_missing_movie_number(app):
+    movie = _create_movie("ABP-011", "MovieA11", desc="")
+    provider = CountingDmmProvider([DmmMovieNumberNotFoundError(movie.movie_number)])
+    service = MovieDescSyncService(
+        catalog_import_service=CatalogImportService(dmm_provider=provider)
+    )
+
+    first_stats = service.run()
+    second_stats = service.run()
+
+    state = ResourceTaskStateService.get_state(MovieDescSyncService.TASK_KEY, movie.id)
+    assert first_stats["failed_movies"] == 1
+    assert second_stats["candidate_movies"] == 0
+    assert provider.calls == [movie.movie_number]
+    assert state is not None
+    assert state.state == ResourceTaskStateService.STATE_FAILED
+    assert state.extra == {"terminal": True}
+
+
+def test_movie_desc_sync_service_does_not_retry_missing_description(app):
+    movie = _create_movie("ABP-012", "MovieA12", desc="")
+    provider = CountingDmmProvider([DmmMovieDescNotFoundError(movie.movie_number)])
+    service = MovieDescSyncService(
+        catalog_import_service=CatalogImportService(dmm_provider=provider)
+    )
+
+    first_stats = service.run()
+    second_stats = service.run()
+
+    state = ResourceTaskStateService.get_state(MovieDescSyncService.TASK_KEY, movie.id)
+    assert first_stats["failed_movies"] == 1
+    assert second_stats["candidate_movies"] == 0
+    assert provider.calls == [movie.movie_number]
+    assert state is not None
+    assert state.state == ResourceTaskStateService.STATE_FAILED
+    assert state.extra == {"terminal": True}
 
 
 def test_sync_movie_desc_opens_circuit_after_consecutive_request_errors(app):
