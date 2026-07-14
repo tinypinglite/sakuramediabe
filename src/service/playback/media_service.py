@@ -1,3 +1,4 @@
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
@@ -62,12 +63,20 @@ class MediaService:
         library = media.library
         return library is not None and library.backend == MediaLibraryBackend.CLOUD115.value
 
+    # 115 直链进程内缓存：键 (media_id, signature, user_agent)
+    # signature 由 /stream 签名 URL 提供，变了说明前端换了会话；UA 变要重取因为 115
+    # 用 f= 指纹绑 UA，共享会 403。TTL 6h 远小于直链 t= 实测寿命，留足播放余量。
+    _CLOUD115_URL_TTL_SECONDS = 6 * 60 * 60
+    _cloud115_url_cache: dict[tuple[int, str, str], tuple[str, float]] = {}
+
     @classmethod
-    async def resolve_cloud115_stream_url(cls, media: Media, user_agent: str) -> str:
-        """现拿一条绑定请求方 UA 的 115 直链（不缓存：直链有 t= 过期，seek 重取即重新请求）。
+    async def resolve_cloud115_stream_url(
+        cls, media: Media, user_agent: str, signature: str
+    ) -> str:
+        """按 (media_id, signature, user_agent) 复用直链；未命中才调 115 downurl。
 
         UA 绑定链路：播放器请求 /stream 的 UA → 绑进直链 f= 指纹 → 302 后播放器
-        跟随请求 CDN 时 UA 天然一致。
+        跟随请求 CDN 时 UA 天然一致；缓存命中直接复用该链。
         """
         from src.lib.cloud115 import Cloud115Error
         from src.service.playback.cloud115_backend_service import (
@@ -83,11 +92,34 @@ class MediaService:
                 "媒体缺少 cloud115 定位信息",
                 {"media_id": media.id},
             )
+
+        cache_key = (media.id, signature, user_agent)
+        now = time.monotonic()
+        cached = cls._cloud115_url_cache.get(cache_key)
+        if cached is not None:
+            url, expires_at = cached
+            if expires_at > now:
+                logger.info(
+                    "cloud115 stream url cache hit media_id={} pickcode={}",
+                    media.id, pickcode,
+                )
+                return url
+            cls._cloud115_url_cache.pop(cache_key, None)
+
+        # 惰性清理已过期项，避免 dict 长期运行下无限膨胀（signature 每 12h 换一批）。
+        for stale_key in [k for k, (_, exp) in cls._cloud115_url_cache.items() if exp <= now]:
+            cls._cloud115_url_cache.pop(stale_key, None)
+
         try:
             async with cloud115_client_for(media.library) as client:
                 direct = await client.get_download_url(pickcode, user_agent)
         except Cloud115Error as exc:
             raise map_cloud115_error(exc) from exc
+
+        cls._cloud115_url_cache[cache_key] = (
+            direct.url,
+            now + cls._CLOUD115_URL_TTL_SECONDS,
+        )
         return direct.url
 
     @staticmethod

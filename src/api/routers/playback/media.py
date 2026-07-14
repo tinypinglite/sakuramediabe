@@ -93,9 +93,12 @@ async def stream_media_file(
         raise ApiError(404, "media_not_found", "媒体不存在")
 
     # cloud115 库：现拿绑定请求方 UA 的直链后 302（签名 URL 保护 /stream，302 之后是 115 CDN）。
+    # signature 参与直链缓存键：换一次签名 URL（前端换会话/超 12h 续签）就重取。
     if MediaService.is_cloud115_media(media):
         user_agent = request.headers.get("user-agent") or "SakuraMedia-Player/1.0"
-        direct_url = await MediaService.resolve_cloud115_stream_url(media, user_agent)
+        direct_url = await MediaService.resolve_cloud115_stream_url(
+            media, user_agent, signature
+        )
         return RedirectResponse(direct_url, status_code=status.HTTP_302_FOUND)
 
     if not media.path:
