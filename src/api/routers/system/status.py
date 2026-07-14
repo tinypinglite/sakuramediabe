@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.system.status import (
+    StatusCloud115CookiesResource,
     StatusImageSearchResource,
     StatusMetadataProviderTestResource,
     StatusResource,
@@ -18,6 +19,15 @@ router = APIRouter(
 @router.get("/status", response_model=StatusResource)
 def get_status():
     return StatusService.get_status()
+
+
+@router.get(
+    "/status/media-libraries/cloud115",
+    response_model=StatusCloud115CookiesResource,
+)
+async def get_cloud115_cookies_status():
+    """实时返回所有 115 媒体库的 cookies 三态探测结果。"""
+    return await StatusService.get_cloud115_cookies_status()
 
 
 @router.get("/status/image-search", response_model=StatusImageSearchResource)

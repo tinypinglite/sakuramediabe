@@ -202,9 +202,27 @@ class Cloud115KeepaliveService:
         )
 
     @classmethod
+    async def probe_library_cookies_status(
+        cls,
+        library: MediaLibrary,
+    ) -> Cloud115CookieStatus:
+        """探测单个 cloud115 库，并把异常归一为稳定的三态结果。"""
+        try:
+            async with cloud115_client_for(library) as client:
+                return await client.probe_cookies_status()
+        except Cloud115AuthError:
+            return Cloud115CookieStatus.EXPIRED
+        except Exception as exc:
+            logger.warning(
+                "cloud115 cookies probe raised library_id={} name={} detail={}",
+                library.id, library.name, exc,
+            )
+            return Cloud115CookieStatus.UNAVAILABLE
+
+    @classmethod
     async def _check_library(cls, library: MediaLibrary) -> Cloud115CookieStatus:
-        async with cloud115_client_for(library) as client:
-            return await client.probe_cookies_status()
+        """兼容既有调用和测试替换点；新调用方使用公开探测方法。"""
+        return await cls.probe_library_cookies_status(library)
 
     @classmethod
     def run(cls, progress_callback=None) -> dict:

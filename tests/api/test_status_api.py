@@ -1,6 +1,8 @@
+from src.lib.cloud115 import Cloud115CookieStatus
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Actor, Media, MediaLibrary, Movie
 from src.service.discovery.joytag_embedder_client import JoyTagInferenceUnavailableError
+from src.service.playback.cloud115_backend_service import Cloud115KeepaliveService
 from src.service.system.status_service import StatusService
 
 
@@ -24,6 +26,13 @@ def _create_movie(movie_number: str, javdb_id: str, **kwargs):
 
 def test_status_endpoint_requires_authentication(client):
     response = client.get("/status")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_cloud115_cookies_status_endpoint_requires_authentication(client):
+    response = client.get("/status/media-libraries/cloud115")
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"
@@ -73,6 +82,91 @@ def test_status_endpoint_returns_zero_summary_when_library_is_empty(client, acco
             "total": 0,
         },
     }
+
+
+def test_cloud115_cookies_status_endpoint_returns_empty_summary(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    response = client.get(
+        "/status/media-libraries/cloud115",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == {
+        "total": 0,
+        "alive": 0,
+        "expired": 0,
+        "unavailable": 0,
+    }
+    assert body["libraries"] == []
+    assert body["checked_at"]
+
+
+def test_cloud115_cookies_status_endpoint_returns_all_libraries_and_isolates_failures(
+    client,
+    account_user,
+    monkeypatch,
+):
+    MediaLibrary.create(
+        name="local",
+        backend="local",
+        backend_config={"root_path": "/library/local"},
+    )
+    for index, name in enumerate(("alive-lib", "expired-lib", "down-lib"), start=1):
+        MediaLibrary.create(
+            name=name,
+            backend="cloud115",
+            backend_account_key=f"cloud115:{index}",
+            backend_config={
+                "cookies": f"UID={index}_A1_1700000000; CID=secret; SEID=secret",
+                "root_cid": f"root-{index}",
+                "app": "alipaymini",
+            },
+        )
+
+    async def fake_probe(_cls, library):
+        if library.name == "alive-lib":
+            return Cloud115CookieStatus.ALIVE
+        if library.name == "expired-lib":
+            return Cloud115CookieStatus.EXPIRED
+        raise RuntimeError("temporary upstream failure")
+
+    monkeypatch.setattr(
+        Cloud115KeepaliveService,
+        "probe_library_cookies_status",
+        classmethod(fake_probe),
+    )
+    token = _login(client, username=account_user.username)
+
+    response = client.get(
+        "/status/media-libraries/cloud115",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["summary"] == {
+        "total": 3,
+        "alive": 1,
+        "expired": 1,
+        "unavailable": 1,
+    }
+    assert [
+        (item["name"], item["cookie_status"])
+        for item in body["libraries"]
+    ] == [
+        ("alive-lib", "alive"),
+        ("expired-lib", "expired"),
+        ("down-lib", "unavailable"),
+    ]
+    assert all(
+        set(item) == {"library_id", "name", "cookie_status"}
+        for item in body["libraries"]
+    )
+    assert "cookies" not in response.text.lower()
+    assert "secret" not in response.text
 
 
 def test_status_endpoint_returns_aggregated_summary(client, account_user, monkeypatch):

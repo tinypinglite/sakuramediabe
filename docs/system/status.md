@@ -39,6 +39,7 @@
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/status` | 获取系统汇总统计 |
+| `GET` | `/status/media-libraries/cloud115` | 实时探测所有 115 媒体库的 cookies 状态 |
 | `GET` | `/status/image-search` | 获取 JoyTag/Qdrant 运行状态与索引计数 |
 | `GET` | `/status/metadata-providers/{provider}/test` | 测试内置 Provider 提供的 JavDB/DMM 外部站点实际可用性 |
 
@@ -63,6 +64,50 @@
 - `media_libraries.total`: `MediaLibrary` 总数
 - `thumbnails.pending_media`: 待生成缩略图的媒体文件数量（复用 `MediaThumbnailService` 的待处理判定：`Media.valid == true` 且缩略图任务状态为未登记、`pending` 或可重试的 `failed`）
 - `thumbnails.total`: 已生成的缩略图文件总数（`MediaThumbnail` 总行数）
+
+## `GET /status/media-libraries/cloud115`
+
+需要 Bearer Token。
+
+实时并发探测所有 `backend=cloud115` 的媒体库，并返回逐库状态和汇总。单个库探测失败不会中断整个响应；接口不会返回 cookies 或其它认证凭据，也不会创建登录失效通知。
+
+成功响应：
+
+- `200 OK`：始终返回本轮检测结果
+
+示例响应：
+
+```json
+{
+  "checked_at": "2026-07-14T10:00:00",
+  "summary": {
+    "total": 3,
+    "alive": 1,
+    "expired": 1,
+    "unavailable": 1
+  },
+  "libraries": [
+    {
+      "library_id": 1,
+      "name": "115 主库",
+      "cookie_status": "alive"
+    },
+    {
+      "library_id": 2,
+      "name": "115 备用库",
+      "cookie_status": "expired"
+    }
+  ]
+}
+```
+
+状态含义：
+
+- `alive`：115 明确确认登录态有效
+- `expired`：115 明确拒绝 cookies，需要重新扫码登录
+- `unavailable`：超时、限流、5xx、非法响应或其它瞬时异常，不能据此判断 cookies 已失效
+
+探测过程中 115 响应若刷新了 `Set-Cookie`，会沿用媒体库客户端的安全快照回写机制；通知仍只由定时保活任务负责。
 
 ## `GET /status/image-search`
 

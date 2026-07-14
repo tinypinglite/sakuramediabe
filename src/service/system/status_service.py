@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 
@@ -5,17 +6,23 @@ from peewee import fn
 
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
+from src.lib.cloud115 import Cloud115AuthError, Cloud115CookieStatus
 from src.metadata.factory import build_dmm_provider, build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Actor, Media, MediaLibrary, MediaThumbnail, Movie
+from src.model.enums import MediaLibraryBackend
 from src.service.discovery.joytag_embedder_client import (
     JoyTagInferenceClientError,
     get_joytag_embedder_client,
 )
 from src.service.discovery.qdrant_thumbnail_store import get_qdrant_thumbnail_store
+from src.service.playback.cloud115_backend_service import Cloud115KeepaliveService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.schema.system.status import (
     StatusActorSummary,
+    StatusCloud115CookieSummary,
+    StatusCloud115CookiesResource,
+    StatusCloud115LibraryCookieResource,
     StatusImageSearchIndexingSummary,
     StatusImageSearchResource,
     StatusJoyTagSummary,
@@ -86,6 +93,52 @@ class StatusService:
                 pending_media=int(pending_thumbnail_media),
                 total=int(thumbnail_total),
             ),
+        )
+
+    @classmethod
+    async def get_cloud115_cookies_status(cls) -> StatusCloud115CookiesResource:
+        """并发探测所有 cloud115 库，返回逐库状态与本轮汇总。"""
+        libraries = list(
+            MediaLibrary.select()
+            .where(MediaLibrary.backend == MediaLibraryBackend.CLOUD115.value)
+            .order_by(MediaLibrary.id)
+        )
+        items = await asyncio.gather(
+            *(cls._probe_cloud115_library(library) for library in libraries)
+        )
+        counts = {
+            status: sum(item.cookie_status is status for item in items)
+            for status in Cloud115CookieStatus
+        }
+        return StatusCloud115CookiesResource(
+            checked_at=utc_now_for_db(),
+            summary=StatusCloud115CookieSummary(
+                total=len(items),
+                alive=counts[Cloud115CookieStatus.ALIVE],
+                expired=counts[Cloud115CookieStatus.EXPIRED],
+                unavailable=counts[Cloud115CookieStatus.UNAVAILABLE],
+            ),
+            libraries=items,
+        )
+
+    @staticmethod
+    async def _probe_cloud115_library(
+        library: MediaLibrary,
+    ) -> StatusCloud115LibraryCookieResource:
+        """隔离单库探测异常，避免一个账号阻断整个集合响应。"""
+        try:
+            cookie_status = await Cloud115KeepaliveService.probe_library_cookies_status(
+                library
+            )
+        except Cloud115AuthError:
+            cookie_status = Cloud115CookieStatus.EXPIRED
+        except Exception:
+            # 单库异常不能中断整个集合响应；上游/本地瞬时故障统一视为暂不可用。
+            cookie_status = Cloud115CookieStatus.UNAVAILABLE
+        return StatusCloud115LibraryCookieResource(
+            library_id=library.id,
+            name=library.name,
+            cookie_status=cookie_status,
         )
 
     @classmethod
