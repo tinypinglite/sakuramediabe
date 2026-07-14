@@ -259,11 +259,13 @@ class Scheduler(BaseModel):
     movie_interaction_sync_cron: str = "0 5 * * *"
     ranking_sync_cron: str = "45 1 * * *"
     hot_review_sync_cron: str = "20 1 * * *"
-    media_file_scan_cron: str = "0 */6 * * *"
+    # 全量巡检会 stat 媒体库里每个文件，放到每天凌晨集中一次，避免高频唤醒媒体盘。
+    media_file_scan_cron: str = "0 4 * * *"
     movie_desc_sync_cron: str = "0 4 * * *"
     movie_desc_translation_cron: str = "15 4 * * *"
     movie_title_translation_cron: str = "20 4 * * *"
-    media_thumbnail_cron: str = "*/5 * * * *"
+    # 空跑只查 DB 不读盘，30 分钟一次足够；有新导入时缩略图会在同一活跃窗口内跟上。
+    media_thumbnail_cron: str = "*/30 * * * *"
     image_search_index_cron: str = "0 0 * * *"
     image_search_optimize_cron: str = "0 3 * * *"
     movie_similarity_recompute_cron: str = "30 3 * * *"
@@ -273,6 +275,8 @@ class Scheduler(BaseModel):
     # cloud115 cookies 保活：acw_tc（阿里云 WAF token）30 分钟过期，每 20 分钟探活一次
     # 并把 SDK merge 到的最新快照回写库配置；长效凭据失效时发通知引导重新扫码。
     cloud115_keepalive_cron: str = "*/20 * * * *"
+    # GFriends Filetree 缓存刷新：默认每周一 04:00，对齐 disk cache 默认 7 天 TTL。
+    gfriends_filetree_refresh_cron: str = "0 4 * * 1"
     # 活动中心三张表的保留期：事件流只保留最近 N 天，每个 task_key 只保留最近 N 条运行记录，
     # 已读通知保留最近 N 天。具体语义见 ActivityCleanupService。
     activity_event_retention_days: int = 1
@@ -327,7 +331,8 @@ class IndexerSettings(BaseModel):
 
 class ImageSearch(BaseModel):
     inference_base_url: str = "http://joytag-infer:8001"
-    inference_timeout_seconds: float = 30.0
+    # CPU 后端逐张推理，一批 16 张会串行跑满 16 次；30s 不足以覆盖，中途超时会让整批作废。
+    inference_timeout_seconds: float = 120.0
     inference_connect_timeout_seconds: float = 3.0
     inference_api_key: str | None = None
     inference_batch_size: int = 16

@@ -20,6 +20,12 @@ from src.common.media_import_status import (
 )
 
 
+# 媒体库根下按内容分类的子目录名，两者平级：库根/jav/番号/... 和 库根/videos/<id>/...
+# 新增此类子目录时也在此处集中声明，避免字符串字面量散落。
+JAV_LIBRARY_SUBDIR = "jav"
+VIDEOS_LIBRARY_SUBDIR = "videos"
+
+
 def transfer_file(source_path: Path, target_path: Path, *, transfer_mode: str = "auto") -> str:
     """按导入模式把源文件落到目标路径，返回实际存储模式（hardlink/copy）。"""
     if transfer_mode == "cleanup-source":
@@ -48,7 +54,7 @@ def transfer_file(source_path: Path, target_path: Path, *, transfer_mode: str = 
 def create_version_directory(entity_directory: Path, *, now_ms: int) -> Path:
     """在实体目录下创建唯一时间戳版本子目录，避免重复导入相互覆盖。
 
-    ``entity_directory`` 是某个媒体实体的根目录（JAV 为 ``库根/番号``，视频为 ``库根/videos/<id>``）。
+    ``entity_directory`` 是某个媒体实体的根目录（JAV 为 ``库根/jav/番号``，视频为 ``库根/videos/<id>``）。
     """
     entity_directory.mkdir(parents=True, exist_ok=True)
 

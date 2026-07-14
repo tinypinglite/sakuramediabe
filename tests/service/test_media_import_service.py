@@ -218,10 +218,12 @@ def test_import_media_groups_by_number_and_creates_one_version_per_video(
     assert len(media_items) == 2
     parent_directories = {Path(item.path).parent.name for item in media_items}
     assert len(parent_directories) == 2
+    # JAV 实体目录：库根/jav/番号/版本；番号目录在 parent.parent，其父目录 jav 在 parent.parent.parent
     assert all(Path(item.path).parent.parent.name == "ABP-123" for item in media_items)
+    assert all(Path(item.path).parent.parent.parent.name == "jav" for item in media_items)
     assert {Path(item.path).name for item in media_items} == {"ABP-123.mkv", "ABP-123.mp4"}
     subtitle_paths = sorted(path.relative_to(library_root).as_posix() for path in library_root.rglob("*.srt"))
-    assert subtitle_paths == ["ABP-123/1730000000000/ABP-123.srt"]
+    assert subtitle_paths == ["jav/ABP-123/1730000000000/ABP-123.srt"]
     assert set(media.special_tags for media in media_items) == {"中字 无码", "普通"}
     assert set(media.storage_mode for media in media_items).issubset({"hardlink", "copy"})
 
@@ -785,9 +787,10 @@ def test_import_media_duplicate_check_happens_before_version_directory_creation(
     )
 
     service.import_from_source(str(source_dir), library.id)
-    first_versions = sorted(path.name for path in (library_root / "ABP-123").iterdir() if path.is_dir())
+    # JAV 布局：库根/jav/番号/版本
+    first_versions = sorted(path.name for path in (library_root / "jav" / "ABP-123").iterdir() if path.is_dir())
     service.import_from_source(str(source_dir), library.id)
-    second_versions = sorted(path.name for path in (library_root / "ABP-123").iterdir() if path.is_dir())
+    second_versions = sorted(path.name for path in (library_root / "jav" / "ABP-123").iterdir() if path.is_dir())
 
     assert first_versions == ["1730000000000"]
     assert second_versions == ["1730000000000"]
@@ -1257,21 +1260,19 @@ def test_import_media_fetches_metadata_with_thread_pool(import_tables, tmp_path,
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "images"))
     monkeypatch.setattr(settings.metadata, "import_metadata_max_workers", 2)
 
-    ready = threading.Event()
-    release = threading.Event()
+    # 两个 provider 调用都到 barrier 才放行：并发下秒过，串行下第一个 wait 会超时 BrokenBarrierError。
+    barrier = threading.Barrier(2)
     lock = threading.Lock()
     started_movie_numbers: List[str] = []
 
-    class BlockingProvider(FakeJavdbProvider):
+    class BarrierProvider(FakeJavdbProvider):
         def get_movie_by_number(self, movie_number: str) -> JavdbMovieDetailResource:
             with lock:
                 started_movie_numbers.append(movie_number)
-                if len(started_movie_numbers) == 2:
-                    ready.set()
-            release.wait(timeout=2)
+            barrier.wait(timeout=2)
             return super().get_movie_by_number(movie_number)
 
-    provider = BlockingProvider(
+    provider = BarrierProvider(
         {
             "ABP-123": _build_detail("ABP-123"),
             "ABP-124": _build_detail("ABP-124"),
@@ -1283,24 +1284,11 @@ def test_import_media_fetches_metadata_with_thread_pool(import_tables, tmp_path,
         now_ms=lambda: 1730000000000,
     )
 
-    result: Dict[str, ImportJob] = {}
-    worker = threading.Thread(
-        target=lambda: result.setdefault("job", service.import_from_source(str(source_dir), library.id))
-    )
-    worker.start()
+    job = service.import_from_source(str(source_dir), library.id)
 
-    assert ready.wait(timeout=1), "expected metadata workers to overlap"
-    with lock:
-        assert set(started_movie_numbers) == {"ABP-123", "ABP-124"}
-
-    release.set()
-    # 元数据写库还会串行落图片、演员和标签；慢速 CI/PostgreSQL 上 3 秒不足以完成，
-    # 这里只验证两个抓取 worker 确实重叠，不应把后续落库耗时当成并发失败。
-    worker.join(timeout=15)
-
-    assert not worker.is_alive()
-    assert result["job"].state == "completed"
-    assert result["job"].imported_count == 2
+    assert set(started_movie_numbers) == {"ABP-123", "ABP-124"}
+    assert job.state == "completed"
+    assert job.imported_count == 2
 
 
 def test_import_media_keeps_file_import_order_when_metadata_finishes_out_of_order(
@@ -1426,7 +1414,8 @@ def test_import_media_merges_multi_file_vr_into_single_media(
     assert media.special_tags == "中字 VR"
     assert media.file_size_bytes == len(b"merged-video")
     assert Path(media.path).name == "SIVR-001.mp4"
-    assert (library_root / "SIVR-001" / "1730000000000" / "SIVR-001.srt").read_text(encoding="utf-8") == "subtitle"
+    # JAV 布局：库根/jav/番号/版本
+    assert (library_root / "jav" / "SIVR-001" / "1730000000000" / "SIVR-001.srt").read_text(encoding="utf-8") == "subtitle"
 
 
 def test_import_media_cleanup_source_removes_vr_fragments_after_merge(

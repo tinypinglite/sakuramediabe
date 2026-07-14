@@ -273,13 +273,9 @@ def test_metadata_provider_test_endpoint_returns_javdb_success_payload(
 
             return _Detail()
 
-    def _build_javdb_provider(*, use_metadata_proxy: bool = False):
-        assert use_metadata_proxy is False
-        return _FakeJavdbProvider()
-
     monkeypatch.setattr(
         "src.service.system.status_service.build_javdb_provider",
-        _build_javdb_provider,
+        lambda: _FakeJavdbProvider(),
     )
 
     response = client.get(
@@ -348,7 +344,7 @@ def test_metadata_provider_test_endpoint_returns_request_failure_payload(
 
     monkeypatch.setattr(
         "src.service.system.status_service.build_javdb_provider",
-        lambda use_metadata_proxy=False: _FailingProvider(),
+        lambda: _FailingProvider(),
     )
 
     response = client.get(
@@ -400,7 +396,7 @@ def test_metadata_provider_test_endpoint_rejects_invalid_provider(client, accoun
     token = _login(client, username=account_user.username)
 
     response = client.get(
-        "/status/metadata-providers/missav/test",
+        "/status/metadata-providers/unknown/test",
         headers={"Authorization": f"Bearer {token}"},
     )
 

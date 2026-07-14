@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Callable
 
 from apscheduler.executors.pool import ThreadPoolExecutor
@@ -201,6 +202,64 @@ def _bootstrap_first_playback_ranking(scheduler: BlockingScheduler) -> None:
         logger.exception("Skip bootstrap ranking due to unexpected error")
 
 
+def _bootstrap_gfriends_filetree_refresh(scheduler: BlockingScheduler) -> None:
+    """首次部署/缓存缺失时的引导：立刻拉一次 GFriends Filetree 到 disk cache。
+
+    - 目的：避免首个 JavDB 详情请求触发同步网络阻塞
+    - 触发条件：disk cache 不存在或已超过 TTL（等 cron 又要一周太久）
+    - 与 cron 定时任务共享 task_key/mutex，不会重复触发
+    - 任何异常都吞掉：GFriends 只是头像美化，不能让引导逻辑打崩 APS 启动
+    """
+    try:
+        from pathlib import Path
+
+        from src.metadata.factory import refresh_gfriends_filetree
+
+        gfriends_refresh_def = JOB_REGISTRY_BY_KEY.get("gfriends_filetree_refresh")
+        if gfriends_refresh_def is None:
+            return
+
+        cache_path = Path(settings.metadata.gfriends_filetree_cache_path).expanduser()
+        if cache_path.exists():
+            age_seconds = time.time() - cache_path.stat().st_mtime
+            ttl_seconds = max(settings.metadata.gfriends_filetree_cache_ttl_hours, 1) * 3600
+            if age_seconds <= ttl_seconds:
+                # cache 仍新鲜，业务侧秒读，等 cron 定期刷新即可
+                return
+
+        logger.info("首次部署检测：GFriends Filetree 缓存缺失或过期，安排一次预热拉取")
+
+        def _runner() -> None:
+            ensure_database_ready()
+
+            def _fetch(_reporter):
+                return refresh_gfriends_filetree(force=False)
+
+            try:
+                ActivityService.run_task(
+                    task_key=gfriends_refresh_def.task_key,
+                    trigger_type="startup",
+                    func=_fetch,
+                    log_task_name=gfriends_refresh_def.log_name,
+                    mutex_key=f"aps:{gfriends_refresh_def.task_key}",
+                    conflict_policy="skip",
+                )
+            except Exception:
+                logger.exception("Bootstrap gfriends filetree refresh failed")
+
+        # misfire_grace_time=None：避免默认 1s 宽限期把这次"立刻执行"的 date job
+        # 在启动瞬时忙碌时静默判成 missed 而丢弃。
+        scheduler.add_job(
+            _runner,
+            trigger="date",
+            id="bootstrap_gfriends_filetree_refresh",
+            replace_existing=True,
+            misfire_grace_time=None,
+        )
+    except Exception:
+        logger.exception("Skip bootstrap gfriends filetree refresh due to unexpected error")
+
+
 def build_scheduler() -> BlockingScheduler:
     timezone = get_runtime_timezone()
     scheduler = BlockingScheduler(
@@ -234,6 +293,7 @@ def aps():
     )
     scheduler = build_scheduler()
     _bootstrap_first_playback_ranking(scheduler)
+    _bootstrap_gfriends_filetree_refresh(scheduler)
     cron_info = " ".join(
         f"{j.cron_setting}={_resolve_scheduler_cron_expr(j.cron_setting)}" for j in JOB_REGISTRY
     )

@@ -59,13 +59,11 @@ from src.service.playback.cloud115_backend_service import (
 )
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
+from src.service.transfers.file_transfer import JAV_LIBRARY_SUBDIR
 from src.service.transfers.media_import_service import MediaImportService
 from src.service.transfers.tag_rules import build_media_special_tags
 
 
-# 库根（sakuramedia/）下的 JAV 子树目录名，与 videos/ 平级（纪要 Q2 拍板的云端结构）。
-# main 分支已把本地版常量收敛到 file_transfer.py（JAV_LIBRARY_SUBDIR），合流后统一引用。
-JAV_LIBRARY_SUBDIR = "jav"
 # 相对路径段的编码连接符：全角下划线，避开 115 文件名里常见的半角符号。
 CLOUD_NAME_SEPARATOR = "＿"
 # 115 文件名长度上限未见官方文档（真机验证清单项），编码名保守按 200 字符截断。

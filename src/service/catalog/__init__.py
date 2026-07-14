@@ -1,6 +1,5 @@
 from .actor_service import ActorService
 from .catalog_import_service import CatalogImportService, ImageDownloadError
-from .missav_thumbnail_service import MissavThumbnailService
 from .movie_collection_service import MovieCollectionService
 from .movie_desc_translation_service import MovieDescTranslationService
 from .movie_desc_sync_service import MovieDescSyncService
@@ -19,7 +18,6 @@ __all__ = [
     "ActorService",
     "CatalogImportService",
     "ImageDownloadError",
-    "MissavThumbnailService",
     "MovieCollectionService",
     "MovieDescTranslationService",
     "MovieDescSyncService",

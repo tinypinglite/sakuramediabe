@@ -61,9 +61,10 @@
 
 - 仅处理带 `sakuramedia` 系统标签（即经本系统添加）的种子；手动加入 qBittorrent 的种子不受影响
 - 仅处理未完成（`progress < 1.0`）的种子
-- 把种子内小于阈值的文件设为不下载（priority=0），并重命名为 `need_delete_<uuid>` 标记
-- 随后遍历下载客户端的 `local_root_path`，物理删除文件名含 `need_delete` 的残留文件
+- 把种子内小于阈值的文件设为不下载（priority=0），并重命名为 `sakuramedia_need_delete_<uuid>` 标记
+- 随后遍历下载客户端的 `local_root_path`，物理删除文件名含 `sakuramedia_need_delete` 的残留文件
 - 已是 priority=0 的文件会跳过，保证反复执行的幂等性
+- 没有下载中种子时跳过目录遍历：标记文件只可能由下载中种子产生，空扫只会无谓唤醒硬盘（下载盘常与媒体盘同盘）；若个别标记文件因删除失败遗留，会在下次出现下载中种子时补删
 
 配置与运行：
 

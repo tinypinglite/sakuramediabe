@@ -32,8 +32,6 @@ dependencies = [
     "httpx>=0.28.1,<0.29.0",
     "qdrant-client>=1.12,<1.13",
     "numpy>=1.26,<3",
-    "curl-cffi>=0.15.0,<0.16.0",
-    "lxml>=6.1.0,<7.0.0",
 ]
 
 [dependency-groups]

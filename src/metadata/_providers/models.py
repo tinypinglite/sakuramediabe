@@ -103,23 +103,6 @@ class JavdbMovieDetail(JavdbMovieBase):
     plot_images: List[str] = Field(default_factory=list)
 
 
-class MissavThumbnailManifest(ProviderModel):
-    movie_number: str
-    page_url: str
-    pic_num: int
-    width: int
-    height: int
-    col: int
-    row: int
-    offset_x: int
-    offset_y: int
-    urls: list[str]
-
-    @classmethod
-    def from_dict(cls, payload: dict) -> "MissavThumbnailManifest":
-        return cls.model_validate(payload)
-
-
 JavdbMovieBaseResource = JavdbMovieBase
 JavdbMovieListItemResource = JavdbMovieListItem
 JavdbMovieActorResource = JavdbMovieActor

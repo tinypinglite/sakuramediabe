@@ -249,15 +249,3 @@ class MovieCollectionMarkResponse(SchemaModel):
 class MovieCollectionStatusResource(SchemaModel):
     movie_number: str
     is_collection: bool
-
-
-class MissavThumbnailItemResource(SchemaModel):
-    index: int
-    url: str
-
-
-class MissavThumbnailResource(SchemaModel):
-    movie_number: str
-    source: str
-    total: int
-    items: List[MissavThumbnailItemResource] = Field(default_factory=list)

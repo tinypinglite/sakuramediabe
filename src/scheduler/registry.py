@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict
 
+from src.metadata.factory import refresh_gfriends_filetree
 from src.service.catalog import (
     MovieCollectionService,
     MovieDescTranslationService,
@@ -432,6 +433,20 @@ JOB_REGISTRY: list[JobDefinition] = [
         format_stats=_build_stats_formatter(
             "image search optimize finished:",
             ("optimized", "optimized", False),
+        ),
+    ),
+    JobDefinition(
+        task_key="gfriends_filetree_refresh",
+        log_name="gfriends-filetree-refresh",
+        cli_name="refresh-gfriends-filetree",
+        cli_help="拉取一次 GFriends Filetree 并写入本地缓存",
+        cron_setting="gfriends_filetree_refresh_cron",
+        service_factory=lambda _reporter: refresh_gfriends_filetree(force=True),
+        format_stats=_build_stats_formatter(
+            "gfriends filetree refresh finished:",
+            ("entries", "entries", 0),
+            ("source", "source", "unknown"),
+            ("bytes_written", "bytes_written", 0),
         ),
     ),
     JobDefinition(

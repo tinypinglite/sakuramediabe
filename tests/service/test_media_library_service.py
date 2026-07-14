@@ -288,6 +288,9 @@ class _FakeCloud115Client:
             else Cloud115CookieStatus.EXPIRED
         )
 
+    def snapshot_cookies(self) -> str:
+        return self.cookies
+
     async def list_dir(self, cid: str, *, offset: int = 0, limit: int = 1000):
         return self._entries_by_offset.get(offset, ([], 0))
 

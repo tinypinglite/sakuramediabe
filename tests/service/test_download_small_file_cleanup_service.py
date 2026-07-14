@@ -126,7 +126,7 @@ def test_skips_completed_torrents(cleanup_tables, tmp_path, _threshold_256mb):
 
 
 def test_physical_delete_removes_marked_files(cleanup_tables, tmp_path, _threshold_256mb):
-    # 暂存目录里含 need_delete 标记的文件应被物理删除，其它文件保留
+    # 存在下载中种子时，暂存目录里含 need_delete 标记的文件应被物理删除，其它文件保留
     marked = tmp_path / "sub" / f"{NEED_DELETE_MARKER}_abc.mkv"
     marked.parent.mkdir(parents=True)
     marked.write_text("x")
@@ -134,7 +134,16 @@ def test_physical_delete_removes_marked_files(cleanup_tables, tmp_path, _thresho
     keep.write_text("y")
 
     client = _create_client(name="a", local_root_path=str(tmp_path))
-    registry = {client.id: {"torrents": []}}
+    registry = {
+        client.id: {
+            "torrents": [{"info_hash": "hash-a", "progress": 0.5}],
+            "files": {
+                "hash-a": [
+                    {"index": 0, "name": "movie.mkv", "size": 700 * MB, "priority": 1},
+                ]
+            },
+        }
+    }
     service = DownloadSmallFileCleanupService(
         qbittorrent_client_cls=_fake_qb_cls(registry, {"set": [], "rename": []})
     )
@@ -144,6 +153,31 @@ def test_physical_delete_removes_marked_files(cleanup_tables, tmp_path, _thresho
     assert not marked.exists()
     assert keep.exists()
     assert stats["deleted_files"] == 1
+
+
+def test_skips_directory_walk_when_no_incomplete_torrents(
+    cleanup_tables, tmp_path, _threshold_256mb
+):
+    # 没有下载中种子时不遍历下载目录（避免高频空扫唤醒硬盘）,历史遗留标记文件保持原样
+    leftover = tmp_path / f"{NEED_DELETE_MARKER}_old.mkv"
+    leftover.write_text("x")
+
+    client = _create_client(name="a", local_root_path=str(tmp_path))
+    registry = {
+        client.id: {
+            # 一个已完成种子 + 空列表都属于"无下载中种子"
+            "torrents": [{"info_hash": "hash-done", "progress": 1.0}],
+        }
+    }
+    service = DownloadSmallFileCleanupService(
+        qbittorrent_client_cls=_fake_qb_cls(registry, {"set": [], "rename": []})
+    )
+
+    stats = service.cleanup_small_files()
+
+    assert leftover.exists()
+    assert stats["scanned_torrents"] == 0
+    assert stats["deleted_files"] == 0
 
 
 def test_failed_client_is_counted_and_does_not_block_others(

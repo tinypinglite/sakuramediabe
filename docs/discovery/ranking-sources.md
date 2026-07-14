@@ -4,8 +4,8 @@
 
 排行榜能力使用分层资源建模：
 
-- `ranking sources`：榜单来源站点（如 `javdb`、`missav`）
-- `boards`：来源下的榜单（如 `censored`、`uncensored`、`fc2`、`all`）
+- `ranking sources`：榜单来源站点（如 `javdb`）
+- `boards`：来源下的榜单（如 `censored`、`uncensored`、`fc2`）
 - `items`：榜单条目（按 `rank` 升序），返回影片列表风格字段并额外包含 `rank`
 
 当前实现特征：
@@ -13,12 +13,9 @@
 - 所有接口都需要 `Authorization: Bearer <token>`
 - API 只读本地已同步数据，不实时请求外部站点
 - 榜单数据由定时任务或 CLI `aps sync-rankings` 同步
-- `missav` 仅抓取榜单第一页的番号，不翻页
-- `missav` 只提供榜单番号，影片详情字段仍统一以 JavDB 数据为准
 - 当前开放来源：
   - `javdb`：播放榜 `playback_all`（热播）/ `playback_high_score`（高评分），常规榜 `censored` / `uncensored` / `fc2`，TOP250 榜 `top250`
-  - `missav`：综合榜 `all`
-- `daily` / `weekly` / `monthly` 适用于播放榜、常规榜与 missav；`top250` 的 period 维度不同（见下）
+- `daily` / `weekly` / `monthly` 适用于播放榜与常规榜；`top250` 的 period 维度不同（见下）
 - `javdb` 的 `top250` 需要登录：依赖 `[metadata]` 的 `javdb_username` / `javdb_password`：
   - 该 board 在 API 列表中**始终可见**，与是否配置账号无关
   - 同步时未配置账号则整 board 跳过抓取（不报错、不发通知、不清空已有数据）
@@ -34,7 +31,6 @@
 | `javdb` | JavDB | `uncensored` | 无码 | `daily` / `weekly` / `monthly` |
 | `javdb` | JavDB | `fc2` | FC2 | `daily` / `weekly` / `monthly` |
 | `javdb` | JavDB | `top250` | TOP250 | `all` / `uncensored` / `censored` / `fc2` / 年份（`2008`~当前年） |
-| `missav` | MissAV | `all` | 综合 | `daily` / `weekly` / `monthly` |
 
 > `playback_all` / `playback_high_score` 为免登录的 JavDB 播放榜，`provider_raw_key` 对应播放榜接口的 `filter_by`（`all` / `high_score`）。
 >
@@ -57,10 +53,6 @@
   {
     "source_key": "javdb",
     "name": "JavDB"
-  },
-  {
-    "source_key": "missav",
-    "name": "MissAV"
   }
 ]
 ```
@@ -70,7 +62,6 @@
 示例：
 
 - `GET /ranking-sources/javdb/boards`
-- `GET /ranking-sources/missav/boards`
 
 返回示例：
 
@@ -82,13 +73,6 @@
     "name": "有码",
     "supported_periods": ["daily", "weekly", "monthly"],
     "default_period": "daily"
-  },
-  {
-    "source_key": "missav",
-    "board_key": "all",
-    "name": "综合",
-    "supported_periods": ["daily", "weekly", "monthly"],
-    "default_period": "daily"
   }
 ]
 ```
@@ -98,21 +82,12 @@
 示例：
 
 - `GET /ranking-sources/javdb/boards/censored/items?period=daily&page=1&page_size=20`
-- `GET /ranking-sources/missav/boards/all/items?period=daily&page=1&page_size=20`
 
 ### Query 参数
 
 - `period`: 必填（当该榜单支持时间维度时）
 - `page`: 可选，默认 `1`
 - `page_size`: 可选，默认 `20`
-
-### MissAV 说明
-
-- `missav` 当前只有一个榜单 `all`
-- `period=daily` 对应 MissAV 日榜
-- `period=weekly` 对应 MissAV 周榜
-- `period=monthly` 对应 MissAV 月榜
-- 榜单条目的 `movie_number` 来自 MissAV 页面，其他影片详情字段来自本地已同步的 JavDB 入库结果
 
 ### 成功响应
 
@@ -148,38 +123,6 @@
   "page_size": 20,
   "total": 1,
   "synced_at": "2026-03-22T06:30:00"
-}
-```
-
-MissAV 返回示例：
-
-```json
-{
-  "items": [
-    {
-      "rank": 1,
-      "javdb_id": "7ybveb",
-      "movie_number": "FNS-196",
-      "title": "ヤったら終わりとわかってるのに好きな人の親友が距離感近すぎて巨乳と巨尻の魅力に負けてしまった最低の僕 浜辺やよい 生写真5枚付き",
-      "series_name": null,
-      "cover_image": null,
-      "thin_cover_image": null,
-      "release_date": "2026-05-07",
-      "duration_minutes": 135,
-      "score": 4.2,
-      "watched_count": 78,
-      "want_watch_count": 393,
-      "comment_count": 3,
-      "score_number": 471,
-      "is_collection": false,
-      "is_subscribed": false,
-      "can_play": false
-    }
-  ],
-  "page": 1,
-  "page_size": 20,
-  "total": 12,
-  "synced_at": "2026-05-08T09:00:00"
 }
 ```
 

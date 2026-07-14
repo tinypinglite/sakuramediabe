@@ -153,8 +153,8 @@ class StatusService:
 
     @classmethod
     def _test_javdb_provider(cls, *, start_at: float) -> StatusMetadataProviderTestResource:
-        # JavDB 联通性以真实按番号搜索并拉取详情为准，默认保持 CLI 的直连策略。
-        detail = build_javdb_provider(use_metadata_proxy=False).get_movie_by_number(
+        # JavDB 联通性以真实按番号搜索并拉取详情为准；JavDB 请求永远直连（不叠 metadata proxy）。
+        detail = build_javdb_provider().get_movie_by_number(
             cls.METADATA_PROVIDER_TEST_MOVIE_NUMBER
         )
         return StatusMetadataProviderTestResource(

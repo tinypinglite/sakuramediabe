@@ -71,25 +71,106 @@ def _build_resolver(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Gfriends
     return resolver
 
 
-def test_resolve_uses_fresh_local_cache_without_remote_fetch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+# ---------------------------------------------------------------------------
+# resolve() 契约：只读内存 index，永不发网络请求
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_never_calls_network_even_when_index_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resolver = _build_resolver(tmp_path, monkeypatch)
+
+    def _unexpected_fetch(method: str, url: str):
+        raise AssertionError("resolve() must not trigger network requests")
+
+    monkeypatch.setattr(resolver, "request_json", _unexpected_fetch)
+
+    # 无内存 index、无 disk cache：返回 None，不阻塞、不抛异常
+    assert resolver.resolve(["三上悠亚"]) is None
+
+
+def test_resolve_hydrates_from_disk_cache_when_index_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     resolver = _build_resolver(tmp_path, monkeypatch)
     resolver.cache_path.parent.mkdir(parents=True, exist_ok=True)
     resolver.cache_path.write_text(
-        '{"name":"root","type":"directory","children":[{"name":"三上悠亚.jpg","type":"file","fullPath":"女优头像/三上悠亚.jpg"}]}',
+        '{"name":"root","type":"directory","children":['
+        '{"name":"三上悠亚.jpg","type":"file","fullPath":"女优头像/三上悠亚.jpg"}]}',
         encoding="utf-8",
     )
 
     def _unexpected_fetch(method: str, url: str):
-        raise AssertionError("remote fetch should not be called when cache is fresh")
+        raise AssertionError("resolve() must not trigger network requests")
 
     monkeypatch.setattr(resolver, "request_json", _unexpected_fetch)
 
-    url = resolver.resolve(["三上悠亚"])
+    assert (
+        resolver.resolve(["三上悠亚"])
+        == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/三上悠亚.jpg"
+    )
 
-    assert url == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/三上悠亚.jpg"
+
+def test_resolve_returns_none_when_no_actor_image_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resolver = _build_resolver(tmp_path, monkeypatch)
+    resolver._index = resolver._build_index(_build_filetree_payload())
+
+    def _unexpected_fetch(method: str, url: str):
+        raise AssertionError("resolve() must not trigger network requests")
+
+    monkeypatch.setattr(resolver, "request_json", _unexpected_fetch)
+
+    assert resolver.resolve(["不存在女优"]) is None
 
 
-def test_resolve_fetches_remote_filetree_and_writes_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_resolve_matches_multiple_candidate_names_and_normalizes_whitespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resolver = _build_resolver(tmp_path, monkeypatch)
+    resolver._index = resolver._build_index(_build_filetree_payload())
+
+    def _unexpected_fetch(method: str, url: str):
+        raise AssertionError("resolve() must not trigger network requests")
+
+    monkeypatch.setattr(resolver, "request_json", _unexpected_fetch)
+
+    assert (
+        resolver.resolve(["相泽南"])
+        == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/相泽南.webp"
+    )
+    assert (
+        resolver.resolve(["桥本有菜", "三上悠亚"])
+        == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/nested/桥本有菜.png"
+    )
+    assert (
+        resolver.resolve(["  三上  悠亚  "])
+        == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/三上悠亚.jpg"
+    )
+
+
+def test_resolve_supports_actual_gfriends_content_mapping_format(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resolver = _build_resolver(tmp_path, monkeypatch)
+    resolver._index = resolver._build_index(_build_mapping_filetree_payload())
+
+    assert (
+        resolver.resolve(["三上悠亚"])
+        == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Content/z-ラグジュTV/AI-Fix-三上悠亚.jpg?t=1607433809"
+    )
+
+
+# ---------------------------------------------------------------------------
+# refresh() 契约：唯一网络入口 + 缓存策略
+# ---------------------------------------------------------------------------
+
+
+def test_refresh_fetches_remote_filetree_and_writes_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     resolver = _build_resolver(tmp_path, monkeypatch)
     payload = _build_filetree_payload()
     called = {"count": 0}
@@ -102,21 +183,58 @@ def test_resolve_fetches_remote_filetree_and_writes_cache(tmp_path: Path, monkey
 
     monkeypatch.setattr(resolver, "request_json", _fetch)
 
-    url = resolver.resolve(["三上悠亚"])
+    stats = resolver.refresh(force=True)
 
     assert called["count"] == 1
-    assert url == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/三上悠亚.jpg"
+    assert stats["source"] == "network"
+    assert stats["entries"] == 3
+    assert stats["bytes_written"] > 0
+    assert stats["force"] is True
     assert resolver.cache_path.exists()
     assert '"fullPath": "女优头像/三上悠亚.jpg"' in resolver.cache_path.read_text(encoding="utf-8")
 
+    # refresh 后 resolve 立即命中内存 index
+    assert (
+        resolver.resolve(["三上悠亚"])
+        == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/三上悠亚.jpg"
+    )
 
-def test_resolve_uses_stale_cache_when_remote_refresh_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+
+def test_refresh_skips_network_when_cache_fresh_and_not_forced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     resolver = _build_resolver(tmp_path, monkeypatch)
     resolver.cache_path.parent.mkdir(parents=True, exist_ok=True)
     resolver.cache_path.write_text(
-        '{"name":"root","type":"directory","children":[{"name":"桥本有菜.png","type":"file","fullPath":"女优头像/nested/桥本有菜.png"}]}',
+        '{"name":"root","type":"directory","children":['
+        '{"name":"三上悠亚.jpg","type":"file","fullPath":"女优头像/三上悠亚.jpg"}]}',
         encoding="utf-8",
     )
+
+    def _unexpected_fetch(method: str, url: str):
+        raise AssertionError("refresh(force=False) must skip network when cache is fresh")
+
+    monkeypatch.setattr(resolver, "request_json", _unexpected_fetch)
+
+    stats = resolver.refresh(force=False)
+
+    assert stats["source"] == "cache_fresh"
+    assert stats["entries"] == 1
+    assert stats["bytes_written"] == 0
+    assert stats["force"] is False
+
+
+def test_refresh_uses_stale_cache_when_remote_fetch_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    resolver = _build_resolver(tmp_path, monkeypatch)
+    resolver.cache_path.parent.mkdir(parents=True, exist_ok=True)
+    resolver.cache_path.write_text(
+        '{"name":"root","type":"directory","children":['
+        '{"name":"桥本有菜.png","type":"file","fullPath":"女优头像/nested/桥本有菜.png"}]}',
+        encoding="utf-8",
+    )
+    # 让 cache 显得已过期，强制走网络路径
     current_timestamp = resolver.cache_path.stat().st_mtime + resolver.cache_ttl_seconds + 20
     monkeypatch.setattr("src.metadata.gfriends.time.time", lambda: current_timestamp)
 
@@ -125,38 +243,37 @@ def test_resolve_uses_stale_cache_when_remote_refresh_fails(tmp_path: Path, monk
 
     monkeypatch.setattr(resolver, "request_json", _broken_fetch)
 
-    url = resolver.resolve(["桥本有菜"])
+    stats = resolver.refresh(force=False)
 
-    assert url == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/nested/桥本有菜.png"
+    assert stats["source"] == "stale_cache"
+    assert stats["entries"] == 1
+    # stale cache 已 hydrate 到内存 index，业务 resolve 立即可用
+    assert (
+        resolver.resolve(["桥本有菜"])
+        == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/nested/桥本有菜.png"
+    )
 
 
-def test_resolve_matches_name_name_zht_and_other_name_in_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_refresh_raises_when_remote_fetch_fails_and_no_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     resolver = _build_resolver(tmp_path, monkeypatch)
-    payload = _build_filetree_payload()
-    monkeypatch.setattr(resolver, "request_json", lambda method, url: payload)
 
-    assert resolver.resolve(["相泽南"]) == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/相泽南.webp"
-    assert resolver.resolve(["桥本有菜", "三上悠亚"]) == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/nested/桥本有菜.png"
-    assert resolver.resolve(["  三上  悠亚  "]) == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/女优头像/三上悠亚.jpg"
+    def _broken_fetch(method: str, url: str):
+        raise RuntimeError("network down")
 
+    monkeypatch.setattr(resolver, "request_json", _broken_fetch)
 
-def test_resolve_returns_none_when_no_actor_image_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    resolver = _build_resolver(tmp_path, monkeypatch)
-    monkeypatch.setattr(resolver, "request_json", lambda method, url: _build_filetree_payload())
+    with pytest.raises(RuntimeError, match="network down"):
+        resolver.refresh(force=True)
 
-    assert resolver.resolve(["不存在女优"]) is None
+    # 业务 resolve 依然安全，只是返回 None
+    assert resolver.resolve(["三上悠亚"]) is None
 
 
-def test_resolve_supports_actual_gfriends_content_mapping_format(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    resolver = _build_resolver(tmp_path, monkeypatch)
-    monkeypatch.setattr(resolver, "request_json", lambda method, url: _build_mapping_filetree_payload())
-
-    url = resolver.resolve(["三上悠亚"])
-
-    assert url == "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Content/z-ラグジュTV/AI-Fix-三上悠亚.jpg?t=1607433809"
-
-
-def test_gfriends_resolver_uses_longer_timeout_than_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_gfriends_resolver_uses_longer_timeout_than_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     created_kwargs = []
 
     class FakeHttpClient:
@@ -177,4 +294,3 @@ def test_gfriends_resolver_uses_longer_timeout_than_default(tmp_path: Path, monk
     )
 
     assert created_kwargs[0]["timeout"] == 60.0
-
