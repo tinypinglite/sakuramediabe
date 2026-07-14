@@ -31,6 +31,11 @@ from src.lib.cloud115 import (
 from src.model import MediaLibrary
 from src.model.enums import MediaLibraryBackend
 
+# 库管理目录（jav/videos 子树的父级）与离线下载缓冲目录，两者在 115 根目录下平级。
+# 下载缓冲目录不属于库子树：离线产物先落这里，完成后经导入管线（cleanup-source）搬进库。
+CLOUD115_LIBRARY_ROOT_NAME = "sakuramedia"
+CLOUD115_DOWNLOADS_ROOT_NAME = "sakuramedia_downloads"
+
 
 def require_cloud115_library(library: MediaLibrary) -> dict:
     """校验库是 cloud115 backend 且配置形状完整，返回 backend_config。
@@ -151,6 +156,35 @@ async def find_or_create_subdir(
         if not entries or offset >= total:
             break
     return await client.mkdir(parent_cid, name)
+
+
+async def ensure_download_root_cid(
+    library: MediaLibrary, client: Cloud115Client
+) -> str:
+    """取库的离线下载缓冲目录 cid；存量库缺失时 find-or-create 并回写 backend_config。
+
+    建库时（create_cloud115_library）已同步创建；本函数兜住升级前创建的存量库。
+    回写只在 download_root_cid 仍缺失时进行，避免覆盖并发 reauth 更新的 cookies。
+    """
+    config = dict(library.backend_config or {})
+    existing = config.get("download_root_cid")
+    if existing:
+        return existing
+    download_root_cid = await find_or_create_subdir(
+        client, parent_cid="0", name=CLOUD115_DOWNLOADS_ROOT_NAME
+    )
+    # 重新读最新配置合并写回：只补 download_root_cid 一个键，不动 cookies 等其它字段。
+    fresh = MediaLibrary.get_or_none(MediaLibrary.id == library.id)
+    if fresh is not None:
+        next_config = dict(fresh.backend_config or {})
+        if not next_config.get("download_root_cid"):
+            next_config["download_root_cid"] = download_root_cid
+            MediaLibrary.update(backend_config=next_config).where(
+                MediaLibrary.id == library.id
+            ).execute()
+            # 同步内存对象，调用方继续用 library.backend_config 时不落伍。
+            library.backend_config = next_config
+    return download_root_cid
 
 
 async def assert_cid_outside_library_root(

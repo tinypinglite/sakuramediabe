@@ -7,8 +7,9 @@ from loguru import logger
 
 from src.config.config import settings
 from src.common.movie_numbers import normalize_movie_number
-from src.model import DownloadClient, Indexer
+from src.model import DownloadClient, Indexer, IndexerDownloadClient
 from src.schema.transfers.downloads import DownloadCandidateResource
+from src.service.transfers.common import resolve_preferred_client
 from src.service.transfers.tag_rules import detect_candidate_tags
 
 
@@ -32,12 +33,15 @@ class JackettClient:
         candidates: List[DownloadCandidateResource] = []
         normalized_kind = (indexer_kind or "").strip().lower() or None
         search_query = self._build_search_query(movie_number)
-        for indexer in (
-            Indexer.select(Indexer, DownloadClient)
-            .join(DownloadClient)
-            .order_by(Indexer.id.asc())
-        ):
+        # 一趟 JOIN 取全部索引器绑定关系，候选卡片的 resolved_client 按全局 kind 偏好预解析。
+        clients_by_indexer = self._load_clients_by_indexer()
+        for indexer in Indexer.select().order_by(Indexer.id.asc()):
             if normalized_kind and indexer.kind != normalized_kind:
+                continue
+            resolved_client = self._resolve_indexer_client(indexer, clients_by_indexer)
+            if resolved_client is None:
+                # 无绑定下载器的索引器仍参与搜索没有意义：候选无法提交，直接跳过。
+                logger.warning("Skip indexer without bound download clients name={}", indexer.name)
                 continue
             try:
                 response = self.client.get(
@@ -64,11 +68,38 @@ class JackettClient:
             channel_title = self._coerce_text(channel.get("title"))
             for item in self._coerce_items(channel.get("item")):
                 candidates.append(
-                    self._build_candidate(movie_number, indexer, item, channel_title=channel_title)
+                    self._build_candidate(
+                        movie_number,
+                        indexer,
+                        item,
+                        channel_title=channel_title,
+                        resolved_client=resolved_client,
+                    )
                 )
 
         candidates.sort(key=lambda item: (item.seeders, item.size_bytes), reverse=True)
         return candidates
+
+    @staticmethod
+    def _load_clients_by_indexer() -> dict[int, list[DownloadClient]]:
+        clients_by_indexer: dict[int, list[DownloadClient]] = {}
+        for link in (
+            IndexerDownloadClient.select(IndexerDownloadClient, DownloadClient)
+            .join(DownloadClient)
+            .order_by(IndexerDownloadClient.id.asc())
+        ):
+            clients_by_indexer.setdefault(link.indexer_id, []).append(link.download_client)
+        return clients_by_indexer
+
+    @staticmethod
+    def _resolve_indexer_client(
+        indexer: Indexer,
+        clients_by_indexer: dict[int, list[DownloadClient]],
+    ) -> Optional[DownloadClient]:
+        clients = clients_by_indexer.get(indexer.id, [])
+        if not clients:
+            return None
+        return resolve_preferred_client(clients)
 
     @classmethod
     def _build_search_query(cls, movie_number: str) -> str:
@@ -87,6 +118,7 @@ class JackettClient:
         item: dict,
         *,
         channel_title: str = "",
+        resolved_client: DownloadClient,
     ) -> DownloadCandidateResource:
         attr_map = self._coerce_attr_map(item.get("torznab:attr"))
         remote_indexer = self._extract_indexer_metadata(item, channel_title)
@@ -107,8 +139,9 @@ class JackettClient:
             source="jackett",
             indexer_name=indexer.name or remote_indexer["id"] or remote_indexer["name"],
             indexer_kind=indexer.kind,
-            resolved_client_id=indexer.download_client_id,
-            resolved_client_name=indexer.download_client.name,
+            resolved_client_id=resolved_client.id,
+            resolved_client_name=resolved_client.name,
+            resolved_client_kind=resolved_client.kind,
             movie_number=movie_number.upper(),
             title=full_title or title,
             size_bytes=size_bytes,

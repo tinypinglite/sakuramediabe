@@ -8,6 +8,7 @@ from peewee import JOIN
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.model import BackgroundTaskRun, DownloadTask, Image, ImportJob, Movie
+from src.model.enums import DownloadClientKind
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
     DownloadTaskActionResponse,
@@ -147,6 +148,9 @@ class DownloadTaskService:
                 {"task_id": task.id},
             )
 
+        if task.client.kind == DownloadClientKind.CLOUD115.value:
+            return cls._delete_cloud115_task(task, delete_files=delete_files)
+
         qb_client = qbittorrent_client_cls.from_download_client(task.client)
         try:
             # 远端任务已被人工清理时，本地镜像仍可安全删除；若远端存在则客户端层会再次验标签。
@@ -181,7 +185,64 @@ class DownloadTaskService:
         return removed
 
     @classmethod
+    def _delete_cloud115_task(cls, task: DownloadTask, *, delete_files: bool) -> dict:
+        """删除 cloud115 离线任务：先删 115 侧任务（delete_files 时连已下载文件一起删），再删本地镜像。
+
+        abandoned 任务的语义是"115 侧保留、本地停止关注"，删除它时只清本地记录，不动远端。
+        """
+        import asyncio
+
+        from src.lib.cloud115 import Cloud115Error
+        from src.service.playback.cloud115_backend_service import (
+            cloud115_client_for,
+            map_cloud115_error,
+        )
+        from src.service.transfers.cloud115_offline_service import canonicalize_btih
+
+        try:
+            canonical_hash = canonicalize_btih(task.info_hash)
+        except ValueError as exc:
+            raise ApiError(
+                422,
+                "invalid_cloud115_download_task_hash",
+                "cloud115 下载任务缺少有效的 canonical hash",
+                {"task_id": task.id},
+            ) from exc
+
+        if task.download_state != "abandoned":
+            async def _delete_remote() -> None:
+                async with cloud115_client_for(task.client.media_library) as sdk_client:
+                    await sdk_client.delete_offline_tasks(
+                        [canonical_hash], delete_source_files=delete_files
+                    )
+
+            try:
+                asyncio.run(_delete_remote())
+            except Cloud115Error as exc:
+                logger.warning(
+                    "Delete cloud115 offline task failed task_id={} detail={}", task.id, exc
+                )
+                raise map_cloud115_error(exc) from exc
+
+        removed = {
+            "task_id": task.id,
+            "client_id": task.client_id,
+            "movie_number": task.movie,
+            "info_hash": canonical_hash,
+        }
+        task.delete_instance()
+        return removed
+
+    @classmethod
     def _operate_remote_task(cls, task: DownloadTask, *, action: str, qbittorrent_client_cls) -> None:
+        # 115 离线是服务端下载，没有暂停/恢复原语；对 cloud115 任务明确拒绝而不是静默无效。
+        if task.client.kind == DownloadClientKind.CLOUD115.value:
+            raise ApiError(
+                422,
+                "download_task_action_unsupported",
+                f"cloud115 离线任务不支持 {action}",
+                {"task_id": task.id, "action": action},
+            )
         qb_client = qbittorrent_client_cls.from_download_client(task.client)
         try:
             if action == "pause":
@@ -235,6 +296,20 @@ class DownloadTaskService:
                 "download_task_import_conflict",
                 "Download task import is already running or completed",
                 {"task_id": task_id, "import_status": task.import_status},
+            )
+
+        if task.client.kind == DownloadClientKind.CLOUD115.value:
+            # cloud115 任务的导入是云端 copy（cleanup-source），走 cloud115 导入作业链路。
+            from src.service.transfers.cloud115_offline_sync_service import (
+                Cloud115OfflineSyncService,
+            )
+
+            response = Cloud115OfflineSyncService.trigger_task_import(task)
+            return DownloadTaskImportResponse(
+                task_id=task.id,
+                import_job_id=response.import_job_id,
+                task_run_id=response.task_run_id,
+                status=response.status,
             )
 
         source_path = cls._resolve_import_source_path(task.save_path)

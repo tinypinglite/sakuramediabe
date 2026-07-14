@@ -2,24 +2,33 @@ from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.model import DownloadTask
+from src.model.enums import DownloadClientKind
 from src.schema.transfers.downloads import (
     DownloadRequestCreateRequest,
     DownloadRequestCreateResponse,
     DownloadTaskResource,
 )
+from src.service.transfers.cloud115_offline_service import Cloud115OfflineDownloadService
 from src.service.transfers.common import (
     build_movie_save_path,
+    list_indexer_clients,
     map_remote_path,
     require_client,
     require_indexer,
+    resolve_preferred_client,
     validate_non_empty,
 )
 from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
 
 
 class DownloadRequestService:
-    def __init__(self, qbittorrent_client_cls=QBittorrentClient):
+    def __init__(
+        self,
+        qbittorrent_client_cls=QBittorrentClient,
+        cloud115_offline_service: Cloud115OfflineDownloadService | None = None,
+    ):
         self.qbittorrent_client_cls = qbittorrent_client_cls
+        self.cloud115_offline_service = cloud115_offline_service or Cloud115OfflineDownloadService()
 
     def create_request(self, payload: DownloadRequestCreateRequest) -> DownloadRequestCreateResponse:
         client = self._resolve_client(payload)
@@ -35,6 +44,27 @@ class DownloadRequestService:
                 "candidate must provide magnet_url or torrent_url",
             )
 
+        # 按下载入口种类分派；选中即执行到底，执行失败直接报错、不自动换下载器。
+        if client.kind == DownloadClientKind.CLOUD115.value:
+            return self._create_cloud115_request(client, movie_number, payload)
+        return self._create_qbittorrent_request(client, movie_number, payload)
+
+    def _create_cloud115_request(
+        self, client, movie_number: str, payload: DownloadRequestCreateRequest
+    ) -> DownloadRequestCreateResponse:
+        task, created = self.cloud115_offline_service.submit_candidate(
+            client,
+            movie_number=movie_number,
+            candidate=payload.candidate,
+        )
+        return DownloadRequestCreateResponse(
+            task=DownloadTaskResource.from_model(task),
+            created=created,
+        )
+
+    def _create_qbittorrent_request(
+        self, client, movie_number: str, payload: DownloadRequestCreateRequest
+    ) -> DownloadRequestCreateResponse:
         qb_client = self.qbittorrent_client_cls.from_download_client(client)
         # 按番号给每个种子指定独立子目录落盘，避免内容平铺到下载根目录、导致自动导入误扫整根。
         movie_save_path = build_movie_save_path(client.client_save_path, movie_number)
@@ -92,16 +122,17 @@ class DownloadRequestService:
         )
 
     def _resolve_client(self, payload: DownloadRequestCreateRequest):
+        # 显式 client_id 是用户覆盖，最高优先；否则从索引器绑定集合按全局 kind 偏好挑选。
         if payload.client_id is not None:
             return require_client(payload.client_id)
 
         indexer = require_indexer(payload.candidate.indexer_name)
-        client = indexer.download_client
-        if client is None:
+        clients = list_indexer_clients(indexer)
+        if not clients:
             raise ApiError(
                 422,
                 "download_request_client_resolution_failed",
-                "Indexer download client resolution failed",
+                "Indexer has no bound download clients",
                 {"indexer_name": indexer.name},
             )
-        return client
+        return resolve_preferred_client(clients)

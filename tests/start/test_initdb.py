@@ -5,10 +5,13 @@ from peewee import IntegrityError, ProgrammingError
 
 from src.model import (
     Actor,
+    IndexerDownloadClient,
     BackgroundTaskRun,
     DailyRecommendationItem,
+    DownloadClient,
     Image,
     Media,
+    MediaLibrary,
     MediaThumbnail,
     MomentRecommendation,
     HotReviewItem,
@@ -369,3 +372,41 @@ def test_initdb_does_not_run_pending_migrations(monkeypatch):
     initdb()
 
     assert events == ["create_tables", "init_user", "init_system_playlists"]
+
+
+def test_create_tables_creates_download_domain_multi_bind_schema(clean_db, monkeypatch):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+
+    database = create_tables()
+    if database.is_closed():
+        database.connect()
+
+    # 中间表建出且 download_client 带 kind、download_task 带 target_ref。
+    assert IndexerDownloadClient.table_exists()
+    client_columns = {column.name for column in database.get_columns("download_client")}
+    assert "kind" in client_columns
+    task_columns = {column.name for column in database.get_columns("download_task")}
+    assert "target_ref" in task_columns
+    cloud115_indexes = {
+        index.name: index
+        for index in database.get_indexes("download_client")
+        if index.unique
+    }
+    assert "download_client_cloud115_library_unique" in cloud115_indexes
+
+
+def test_create_tables_cloud115_client_index_is_partial(clean_db, monkeypatch):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    create_tables()
+    local_library = MediaLibrary.create(
+        name="local-downloads", backend="local", backend_config={"root_path": "/library"}
+    )
+    cloud_library = MediaLibrary.create(
+        name="cloud-downloads", backend="cloud115", backend_config={"cookies": "x"}
+    )
+
+    DownloadClient.create(name="qb-a", kind="qbittorrent", media_library=local_library)
+    DownloadClient.create(name="qb-b", kind="qbittorrent", media_library=local_library)
+    DownloadClient.create(name="cloud-a", kind="cloud115", media_library=cloud_library)
+    with pytest.raises(IntegrityError):
+        DownloadClient.create(name="cloud-b", kind="cloud115", media_library=cloud_library)

@@ -8,6 +8,7 @@ from src.model import (
     Image,
     ImportJob,
     Indexer,
+    IndexerDownloadClient,
     Media,
     MediaLibrary,
     Movie,
@@ -15,6 +16,13 @@ from src.model import (
     VideoItem,
 )
 
+
+
+def _create_indexer(*, download_client, **fields):
+    """建索引器并写多对多绑定，替代旧的单 FK 直连写法。"""
+    indexer = Indexer.create(**fields)
+    IndexerDownloadClient.create(indexer=indexer, download_client=download_client)
+    return indexer
 
 @pytest.fixture()
 def media_transfer_tables(test_db):
@@ -26,6 +34,7 @@ def media_transfer_tables(test_db):
         MediaLibrary,
         DownloadClient,
         Indexer,
+        IndexerDownloadClient,
         DownloadTask,
         BackgroundTaskRun,
         ImportJob,
@@ -136,7 +145,7 @@ def test_indexer_name_must_be_unique_and_belongs_to_download_client(media_transf
         media_library=library,
     )
 
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
         kind="pt",
@@ -144,7 +153,7 @@ def test_indexer_name_must_be_unique_and_belongs_to_download_client(media_transf
     )
 
     with pytest.raises(IntegrityError):
-        Indexer.create(
+        _create_indexer(
             name="mteam",
             url="https://example.com/api/v2.0/indexers/other/results/torznab/",
             kind="bt",

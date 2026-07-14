@@ -6,7 +6,7 @@ import toml
 import src.config.config as config_module
 from src.api.exception.errors import ApiError
 from src.config.config import IndexerSettings, IndexerType
-from src.model import DownloadClient, Indexer, MediaLibrary
+from src.model import DownloadClient, Indexer, IndexerDownloadClient, MediaLibrary
 from src.schema.system.indexer_settings import (
     IndexerItemUpdatePayload,
     IndexerSettingsUpdateRequest,
@@ -14,6 +14,13 @@ from src.schema.system.indexer_settings import (
 from src.service.system.indexer_settings_service import IndexerSettingsService
 from src.service.transfers.jackett_client import JackettClientError
 
+
+
+def _create_indexer(*, download_client, **fields):
+    """建索引器并写多对多绑定，替代旧的单 FK 直连写法。"""
+    indexer = Indexer.create(**fields)
+    IndexerDownloadClient.create(indexer=indexer, download_client=download_client)
+    return indexer
 
 @pytest.fixture()
 def isolated_indexer_settings(tmp_path, monkeypatch):
@@ -39,7 +46,7 @@ def isolated_indexer_settings(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def indexer_tables(test_db):
-    models = [MediaLibrary, DownloadClient, Indexer]
+    models = [MediaLibrary, DownloadClient, Indexer, IndexerDownloadClient]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
@@ -60,7 +67,7 @@ def _create_client(name: str = "client-a") -> DownloadClient:
 
 def test_get_settings_returns_current_indexer_configuration(isolated_indexer_settings, indexer_tables):
     client = _create_client()
-    Indexer.create(
+    _create_indexer(
         name="initial",
         url="http://127.0.0.1:9117/api/v2.0/indexers/initial/results/torznab/",
         kind="bt",
@@ -77,8 +84,9 @@ def test_get_settings_returns_current_indexer_configuration(isolated_indexer_set
                 "name": "initial",
                 "url": "http://127.0.0.1:9117/api/v2.0/indexers/initial/results/torznab/",
                 "kind": "bt",
-                "download_client_id": client.id,
-                "download_client_name": client.name,
+                "download_clients": [
+                    {"id": client.id, "name": client.name, "kind": "qbittorrent"}
+                ],
             }
         ],
     }
@@ -86,7 +94,7 @@ def test_get_settings_returns_current_indexer_configuration(isolated_indexer_set
 
 def test_update_settings_merges_type_and_api_key(isolated_indexer_settings, indexer_tables):
     client = _create_client()
-    Indexer.create(
+    _create_indexer(
         name="initial",
         url="http://127.0.0.1:9117/api/v2.0/indexers/initial/results/torznab/",
         kind="bt",
@@ -111,13 +119,13 @@ def test_update_settings_replaces_indexers_list(isolated_indexer_settings, index
                     name="mteam",
                     url="http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
                     kind="pt",
-                    download_client_id=client_a.id,
+                    download_client_ids=[client_a.id],
                 ),
                 IndexerItemUpdatePayload(
                     name="dmhy",
                     url="https://example.com/api/v2.0/indexers/dmhy/results/torznab/",
                     kind="bt",
-                    download_client_id=client_b.id,
+                    download_client_ids=[client_b.id],
                 ),
             ]
         )
@@ -129,16 +137,18 @@ def test_update_settings_replaces_indexers_list(isolated_indexer_settings, index
             "name": "mteam",
             "url": "http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
             "kind": "pt",
-            "download_client_id": client_a.id,
-            "download_client_name": client_a.name,
+            "download_clients": [
+                {"id": client_a.id, "name": client_a.name, "kind": "qbittorrent"}
+            ],
         },
         {
             "id": 2,
             "name": "dmhy",
             "url": "https://example.com/api/v2.0/indexers/dmhy/results/torznab/",
             "kind": "bt",
-            "download_client_id": client_b.id,
-            "download_client_name": client_b.name,
+            "download_clients": [
+                {"id": client_b.id, "name": client_b.name, "kind": "qbittorrent"}
+            ],
         },
     ]
 
@@ -170,7 +180,7 @@ def test_update_settings_rejects_invalid_url(isolated_indexer_settings, indexer_
                         name="mteam",
                         url="localhost:9117",
                         kind="pt",
-                        download_client_id=client.id,
+                        download_client_ids=[client.id],
                     )
                 ]
             )
@@ -198,13 +208,13 @@ def test_update_settings_rejects_duplicate_names(isolated_indexer_settings, inde
                         name="mteam",
                         url="http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
                         kind="pt",
-                        download_client_id=client.id,
+                        download_client_ids=[client.id],
                     ),
                     IndexerItemUpdatePayload(
                         name="mteam",
                         url="https://example.com/api/v2.0/indexers/dmhy/results/torznab/",
                         kind="bt",
-                        download_client_id=client.id,
+                        download_client_ids=[client.id],
                     ),
                 ]
             )
@@ -223,7 +233,7 @@ def test_update_settings_rejects_invalid_kind(isolated_indexer_settings, indexer
                         name="mteam",
                         url="http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
                         kind="rss",
-                        download_client_id=client.id,
+                        download_client_ids=[client.id],
                     )
                 ]
             )
@@ -250,7 +260,7 @@ def test_update_settings_rejects_unknown_download_client(isolated_indexer_settin
                         name="mteam",
                         url="http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
                         kind="pt",
-                        download_client_id=999,
+                        download_client_ids=[999],
                     )
                 ]
             )
@@ -261,7 +271,7 @@ def test_update_settings_rejects_unknown_download_client(isolated_indexer_settin
 
 def test_test_connection_reports_healthy_with_result_count(isolated_indexer_settings, indexer_tables):
     client = _create_client()
-    Indexer.create(
+    _create_indexer(
         name="initial",
         url="http://127.0.0.1:9117/api/v2.0/indexers/initial/results/torznab/",
         kind="bt",
@@ -284,7 +294,7 @@ def test_test_connection_reports_healthy_with_result_count(isolated_indexer_sett
 
 def test_test_connection_returns_unhealthy_on_jackett_error(isolated_indexer_settings, indexer_tables):
     client = _create_client()
-    Indexer.create(
+    _create_indexer(
         name="initial",
         url="http://127.0.0.1:9117/api/v2.0/indexers/initial/results/torznab/",
         kind="bt",

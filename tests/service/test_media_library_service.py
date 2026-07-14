@@ -342,8 +342,9 @@ async def test_create_cloud115_library_uses_existing_library_root(
                 [
                     _dir_entry("111", "other"),
                     _dir_entry("222", "sakuramedia"),
+                    _dir_entry("333", "sakuramedia_downloads"),
                 ],
-                2,
+                3,
             )
         },
     )
@@ -356,6 +357,7 @@ async def test_create_cloud115_library_uses_existing_library_root(
     assert resource.backend is MediaLibraryBackend.CLOUD115
     assert "cookies" not in resource.backend_config
     assert resource.backend_config["root_cid"] == "222"
+    assert resource.backend_config["download_root_cid"] == "333"
     assert resource.backend_config["app"] == "alipaymini"
     assert client.mkdir_calls == []  # 没触发 mkdir
     stored = MediaLibrary.get_by_id(resource.id)
@@ -383,7 +385,8 @@ async def test_create_cloud115_library_creates_root_when_missing(
     )
 
     assert resource.backend_config["root_cid"] == "cid-new"
-    assert client.mkdir_calls == [("0", "sakuramedia")]
+    assert resource.backend_config["download_root_cid"] == "cid-new"
+    assert client.mkdir_calls == [("0", "sakuramedia"), ("0", "sakuramedia_downloads")]
 
 
 async def test_create_cloud115_library_rejects_dead_cookies(

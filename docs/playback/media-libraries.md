@@ -5,7 +5,7 @@
 媒体库 = **一个存储后端 + 它的连接配置**（`backend` + `backend_config`）：
 
 - `local`：本地目录库，`backend_config = {"root_path": "<绝对路径>"}`
-- `cloud115`：115 网盘库，内部 `backend_config = {"cookies": "...", "root_cid": "...", "app": "..."}`；API 响应只公开 `root_cid/app`，不会返回 cookies；
+- `cloud115`：115 网盘库，内部 `backend_config = {"cookies": "...", "root_cid": "...", "download_root_cid": "...", "app": "..."}`；API 响应只公开 `root_cid/download_root_cid/app`，不会返回 cookies。`root_cid` 是库管理目录 `sakuramedia/`，`download_root_cid` 是与之平级的离线下载缓冲目录 `sakuramedia_downloads/`（建库时自动 find-or-create；升级前的存量库在首次提交离线下载时自动补建回写）；
   `root_cid` 是 115 根目录下系统管理的 `sakuramedia/` 目录（创建库时 find-or-create），
   其下 `jav/` 子树由导入管线维护。
 

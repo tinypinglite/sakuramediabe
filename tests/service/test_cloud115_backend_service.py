@@ -263,3 +263,79 @@ def test_assert_cid_passes_for_sibling_directory():
     asyncio.run(
         assert_cid_outside_library_root(client, source_cid="S", root_cid="R")
     )
+
+
+class _FakeDownloadRootClient:
+    """ensure_download_root_cid 用的假 client：可配置 list_dir 结果与 mkdir 返回值。"""
+
+    def __init__(self, *, entries=(), total=0, mkdir_return="dl-cid-new"):
+        self._entries = list(entries)
+        self._total = total
+        self._mkdir_return = mkdir_return
+        self.mkdir_calls: list[tuple[str, str]] = []
+
+    async def list_dir(self, cid: str, *, offset: int = 0, limit: int = 1150):
+        if offset == 0:
+            return self._entries, self._total
+        return [], self._total
+
+    async def mkdir(self, pid: str, name: str) -> str:
+        self.mkdir_calls.append((pid, name))
+        return self._mkdir_return
+
+
+def test_ensure_download_root_cid_returns_existing_config_value(cloud115_tables):
+    from src.service.playback.cloud115_backend_service import ensure_download_root_cid
+
+    library = MediaLibrary.create(
+        name="cloud-with-dl",
+        backend="cloud115",
+        backend_config={"cookies": COOKIE, "root_cid": "1", "download_root_cid": "42"},
+    )
+    client = _FakeDownloadRootClient()
+
+    cid = asyncio.run(ensure_download_root_cid(library, client))
+
+    assert cid == "42"
+    assert client.mkdir_calls == []
+
+
+def test_ensure_download_root_cid_backfills_legacy_library(cloud115_tables):
+    """存量库缺 download_root_cid：find-or-create 后回写 backend_config，且不动其它键。"""
+    from src.lib.cloud115 import DirEntry
+    from src.service.playback.cloud115_backend_service import ensure_download_root_cid
+
+    library = _create_cloud_library(name="legacy")
+    client = _FakeDownloadRootClient(
+        entries=[
+            DirEntry(
+                entry_id="dl-777", parent_id="0", name="sakuramedia_downloads",
+                is_dir=True, size=0, sha1=None, pickcode="", mtime=0, ctime=0,
+                is_video=False,
+            )
+        ],
+        total=1,
+    )
+
+    cid = asyncio.run(ensure_download_root_cid(library, client))
+
+    assert cid == "dl-777"
+    assert client.mkdir_calls == []  # 已存在则复用，不 mkdir
+    stored = MediaLibrary.get_by_id(library.id)
+    assert stored.backend_config["download_root_cid"] == "dl-777"
+    assert stored.backend_config["cookies"] == COOKIE  # 其它键原样保留
+    assert library.backend_config["download_root_cid"] == "dl-777"  # 内存对象同步
+
+
+def test_ensure_download_root_cid_creates_dir_when_missing(cloud115_tables):
+    from src.service.playback.cloud115_backend_service import ensure_download_root_cid
+
+    library = _create_cloud_library(name="legacy-empty")
+    client = _FakeDownloadRootClient(entries=[], total=0, mkdir_return="dl-new")
+
+    cid = asyncio.run(ensure_download_root_cid(library, client))
+
+    assert cid == "dl-new"
+    assert client.mkdir_calls == [("0", "sakuramedia_downloads")]
+    stored = MediaLibrary.get_by_id(library.id)
+    assert stored.backend_config["download_root_cid"] == "dl-new"

@@ -64,7 +64,7 @@ class _FakeClient:
         return self.cookies
 
     async def list_dir(self, cid: str, *, offset: int = 0, limit: int = 1000):
-        # 根下已经有 sakuramedia，走 find 分支
+        # 根下已经有 sakuramedia 与 sakuramedia_downloads，两个 find-or-create 都走 find 分支
         entries = [
             DirEntry(
                 entry_id="cid-root",
@@ -77,9 +77,21 @@ class _FakeClient:
                 mtime=0,
                 ctime=0,
                 is_video=False,
-            )
+            ),
+            DirEntry(
+                entry_id="cid-dl-root",
+                parent_id="0",
+                name="sakuramedia_downloads",
+                is_dir=True,
+                size=0,
+                sha1=None,
+                pickcode="",
+                mtime=0,
+                ctime=0,
+                is_video=False,
+            ),
         ]
-        return entries, 1
+        return entries, 2
 
     async def mkdir(self, pid: str, name: str) -> str:
         raise AssertionError("mkdir should not be called when root exists")

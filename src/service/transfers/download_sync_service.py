@@ -6,6 +6,7 @@ from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.movie_numbers import parse_movie_number_from_text
 from src.model import DownloadClient, DownloadTask, ImportJob
+from src.model.enums import DownloadClientKind
 from src.schema.transfers.downloads import DownloadClientSyncResponse
 from src.service.system import ActivityService
 from src.service.transfers.common import (
@@ -172,7 +173,12 @@ class DownloadSyncService:
         total_removed = 0
         total_clients = 0
         failed_client_ids: list[int] = []
-        for client in DownloadClient.select().order_by(DownloadClient.id.asc()):
+        # 本服务是 qb 专属对账；cloud115 离线任务由 Cloud115OfflineSyncService 独立对账。
+        for client in (
+            DownloadClient.select()
+            .where(DownloadClient.kind == DownloadClientKind.QBITTORRENT.value)
+            .order_by(DownloadClient.id.asc())
+        ):
             total_clients += 1
             try:
                 summary = self.sync_client(client.id)
@@ -203,9 +209,15 @@ class DownloadSyncService:
     def enqueue_auto_imports(self) -> Dict[str, int]:
         recovered_count = self._recover_orphaned_imports()
         queued_count = 0
+        # 只排 qb 任务：cloud115 任务的落地是云端 cid，本地路径导入语义不适用，
+        # 其完成后导入由 Cloud115OfflineSyncService 在对账时直接触发。
+        qb_client_ids = DownloadClient.select(DownloadClient.id).where(
+            DownloadClient.kind == DownloadClientKind.QBITTORRENT.value
+        )
         for task in DownloadTask.select().where(
             DownloadTask.download_state.in_(DOWNLOAD_COMPLETE_STATES)
             & (DownloadTask.import_status == IMPORT_STATUS_PENDING)
+            & DownloadTask.client.in_(qb_client_ids)
         ):
             try:
                 DownloadTaskService.trigger_import(

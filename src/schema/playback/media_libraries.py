@@ -20,7 +20,7 @@ class MediaLibraryResource(SchemaModel):
         if library.backend == MediaLibraryBackend.CLOUD115.value:
             public_config = {
                 key: config[key]
-                for key in ("root_cid", "app")
+                for key in ("root_cid", "download_root_cid", "app")
                 if key in config
             }
         else:

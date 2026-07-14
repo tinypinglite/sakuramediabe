@@ -2,7 +2,12 @@
 
 ## 资源说明
 
-下载域负责对接 Jackett 与 qBittorrent，并管理本地可查询的下载状态。
+下载域负责对接 Jackett、qBittorrent 与 115 离线下载，并管理本地可查询的下载状态。
+
+下载入口按 `DownloadClient.kind` 区分两种：
+
+- `qbittorrent`：独立部署的本地下载器，绑定 local 媒体库
+- `cloud115`：挂在 cloud115 媒体库上的 115 离线下载能力（无独立部署，凭据在媒体库 `backend_config` 中）
 
 所有时间字段都由后端按当前运行环境时区转换后返回，格式为不带时区后缀的本地时间字符串。
 
@@ -78,7 +83,7 @@
 
 ### DownloadClient
 
-`DownloadClient` 表示一个受系统管理的 qBittorrent 客户端配置。
+`DownloadClient` 表示一个受系统管理的下载入口。`kind = qbittorrent` 时为 qBittorrent 客户端配置；`kind = cloud115` 时创建时只使用 `name` 与 `media_library_id`（qb 连接字段为 `null`），创建后只允许改名。每个 cloud115 媒体库最多对应一个 cloud115 下载入口；换账号或换库必须先解绑索引器，再删除并重建入口。qBittorrent 仍允许同一 local 媒体库配置多个客户端。
 
 为适配 Docker 或跨机器部署，下载路径拆为两类：
 
@@ -98,6 +103,7 @@
 {
   "id": 1,
   "name": "client-a",
+  "kind": "qbittorrent",
   "base_url": "http://localhost:8080",
   "username": "alice",
   "client_save_path": "/downloads/a",
@@ -120,6 +126,7 @@
   "indexer_kind": "pt",
   "resolved_client_id": 1,
   "resolved_client_name": "client-a",
+  "resolved_client_kind": "qbittorrent",
   "movie_number": "ABC-001",
   "title": "ABC-001 4K 中文字幕",
   "size_bytes": 12884901888,
@@ -142,6 +149,7 @@
   "name": "ABC-001 4K 中文字幕",
   "info_hash": "95a37f09c6d5aac200752f4c334dc9dff91e8cfc",
   "save_path": "/mnt/qb/downloads/a/ABC-001",
+  "target_ref": null,
   "progress": 0.52,
   "download_state": "downloading",
   "import_status": "pending",
@@ -152,7 +160,8 @@
 
 说明：
 
-- `save_path` 为后端可访问路径，应基于 `local_root_path` 计算
+- qb 任务的 `save_path` 为后端可访问路径，应基于 `local_root_path` 计算；cloud115 任务的 `save_path` 是基于完整 canonical hash 的展示路径（如 `sakuramedia_downloads/95a37f09c6d5aac200752f4c334dc9dff91e8cfc`），结构化定位在 `target_ref`
+- `target_ref` 是后端结构化落地定位符：qb 为 `null`，cloud115 为 `{"cid": "<hash 独立目录 cid>"}`
 - `(client_id, info_hash)` 是任务幂等键
 - `movie_number` 可以为空；同步阶段允许先按 `name` 解析，后续再补齐
 - `import_status` 只反映本地导入流程，不直接映射 qBittorrent 状态
@@ -163,11 +172,13 @@
 
 - `downloading`
 - `completed`
+- `seeding`
 - `paused`
 - `failed`
 - `stalled`
 - `checking`
 - `queued`
+- `abandoned`（cloud115 专用：离线任务超时后的本地放弃态，不再对账、不再推进度；115 侧任务保留）
 
 ### `import_status` 枚举
 
@@ -196,7 +207,44 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 
 `delete_files` 默认为 `false`。要连同 qB 下载文件删除，必须同时传 `delete_files=true` 和 `confirm_delete_files=true`；处于本地导入中的任务不能删除，避免与导入线程争用文件。删除成功后本地 `DownloadTask` 会被移除，已完成的媒体导入记录保持不变。
 
-进度轮询周期由 `[downloads].progress_stream_poll_interval_seconds` 配置，默认 `1.0` 秒，允许范围为 `0.2` 至 `10` 秒。
+进度轮询周期：qBittorrent 由 `[downloads].progress_stream_poll_interval_seconds` 配置，默认 `1.0` 秒（允许 `0.2` 至 `10` 秒，修改后需重启 API）；cloud115 由 `[downloads].cloud115_progress_poll_interval_seconds` 配置，默认 `8.0` 秒（允许 `2` 至 `60` 秒，每轮现读、热生效）。Cloud115 SSE 始终从数据库构造完整快照，仅在存在 `queued/downloading` 任务时拉 115 离线列表补进度；没有活跃任务时零 115 请求。`abandoned` 任务仍保留在快照中，状态变化广播一次后不再请求远端进度。
+
+## cloud115 离线下载
+
+选中 cloud115 kind 的下载入口提交下载时，走 115 离线下载而非 qBittorrent，整体链路：
+
+```
+提交（统一磁力）→ 115 服务端离线下载到缓冲目录 → 周期对账 → 完成后 cleanup-source 导入进库
+```
+
+### 提交行为
+
+- 所有 115 下载统一走磁力：候选只有 `torrent_url` 时后端先拉取 .torrent 字节、解析 `info_hash`、拼标准磁力再提交；不使用 BT 选文件流程
+- BTIH 严格规范化为 40 位小写 hex：40 位 hex 直接转小写，32 位 Base32 解码为 20 bytes 后转 hex，其它格式返回 `422`
+- 落地目录为 `sakuramedia_downloads/<完整40位canonical_hash>/`（与库管理目录 `sakuramedia/` 平级的缓冲区），同番号不同资源完全隔离
+- 任务幂等键仍为 `(client_id, canonical_hash)`；115 单项提交必须返回唯一、非空且一致的 hash，否则返回 `cloud115_offline_submit_invalid_response` 或 `cloud115_offline_submit_hash_mismatch`
+- 115 侧已存在同 hash 任务时，以远端真实 `save_dir_id` 为准，并通过目录面包屑确认它属于当前媒体库的受管下载根；位于用户目录或无法可靠定位时返回 `409 cloud115_offline_task_exists_unmanaged`，不会接管或清理
+- 离线月配额耗尽返回 `409 cloud115_offline_quota_exceeded`，不自动降级到其它下载器
+- 广告/垃圾小文件不做下载前过滤：导入管线按扩展名白名单分拣，`cleanup-source` 会在导入完成后清掉缓冲目录内的一切残留
+
+### 周期对账（`cloud115_offline_sync`）
+
+内部调度任务，默认每分钟执行一次（`[scheduler].cloud115_offline_sync_cron`），对每个 cloud115 下载入口：
+
+- 先用本地状态推进 completed 任务的导入与 ImportJob 终态；只有存在 `queued/downloading` 任务时才拉 115 离线列表
+- 任务完成（status=2）且待导入 → 自动触发 cloud115 导入（`cleanup-source`：云端复制进库后清缓冲目录），并把 `ImportJob` 关联回下载任务；同库已有导入在跑时留待下一轮
+- 提交超过 `[downloads].cloud115_offline_abandon_hours`（默认 `24`，最小 `1`）仍处于 queued/downloading → 本地标记 `abandoned` 并发系统通知；**不删除 115 侧任务**，后续不再请求其远端进度。远端 failed 任务保持 failed，不再因超时改为 abandoned
+- 没有活跃任务时整轮零请求，不打扰 115
+- 容器重启时，关联 Activity 会保留 failed 审计记录；半截 Cloud115 ImportJob 被删除，下载任务回到 `import_status=pending`。启动阶段不访问 115，下一轮周期对账再触发导入；已复制文件与 Media 由现有 SHA/Media 幂等对账收敛
+- 可手动单次执行：`uv run python -m src.start.commands aps sync-cloud115-offline-tasks`
+
+### 任务控制差异（相对 qb）
+
+- 暂停/恢复不支持（115 离线无此原语），返回 `422 download_task_action_unsupported`
+- 删除任务：非 `abandoned` 任务会先删 115 侧离线任务（`delete_files=true` 时连已下载文件一起删）再删本地镜像；`abandoned` 任务只删本地记录、不动远端（与放弃语义一致）
+- 手动触发导入（复用下载任务导入接口）走 cloud115 导入作业链路，不走本地路径导入
+
+配置生效级别：Cloud115 SSE 间隔为热生效；qB SSE 间隔需重启 API；abandon 时长、小文件阈值与 `preferred_client_kinds` 由 APS 消费，修改后需重启 scheduler。
 
 ## 端点总览
 
@@ -206,8 +254,8 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 | `POST` | `/download-clients` | 创建下载客户端配置 |
 | `PATCH` | `/download-clients/{client_id}` | 更新下载客户端配置 |
 | `DELETE` | `/download-clients/{client_id}` | 删除下载客户端配置 |
-| `GET` | `/download-clients/{client_id}/test` | 测试 qBittorrent Web API 可用性 |
-| `POST` | `/download-clients/{client_id}/storage-test` | 测试下载目录映射与硬链接能力 |
+| `GET` | `/download-clients/{client_id}/test` | 测试下载入口可用性（qb 测 Web API；cloud115 测媒体库 cookies 存活） |
+| `POST` | `/download-clients/{client_id}/storage-test` | 测试下载目录映射与硬链接能力（仅 qbittorrent kind） |
 | `POST` | `/download-clients/probe/test` | 落库前预检 qBittorrent Web API 可用性 |
 | `POST` | `/download-clients/probe/storage-test` | 落库前预检下载目录映射与硬链接能力 |
 | `GET` | `/download-candidates` | 搜索番号的候选资源 |

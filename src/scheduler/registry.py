@@ -30,6 +30,7 @@ from src.service.playback import (
 from src.service.system import ActivityCleanupService
 
 from src.service.transfers import (
+    Cloud115OfflineSyncService,
     DownloadSmallFileCleanupService,
     DownloadSyncService,
     SubscribedMovieAutoDownloadService,
@@ -229,6 +230,22 @@ JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次已完成下载自动导入",
         cron_setting="download_task_auto_import_cron",
         service_factory=lambda _reporter: DownloadSyncService().enqueue_auto_imports(),
+    ),
+    JobDefinition(
+        task_key="cloud115_offline_sync",
+        log_name="cloud115-offline-sync",
+        cli_name="sync-cloud115-offline-tasks",
+        cli_help="执行一次 cloud115 离线任务对账（进度回写 / 完成导入 / 超时放弃）",
+        cron_setting="cloud115_offline_sync_cron",
+        service_factory=lambda _reporter: Cloud115OfflineSyncService().run(),
+        format_stats=_build_stats_formatter(
+            "cloud115 offline sync finished:",
+            ("total_clients", "total_clients", 0),
+            ("updated_count", "updated_count", 0),
+            ("import_triggered_count", "import_triggered_count", 0),
+            ("abandoned_count", "abandoned_count", 0),
+            ("failed_count", "failed_count", 0),
+        ),
     ),
     JobDefinition(
         task_key="download_small_file_cleanup",

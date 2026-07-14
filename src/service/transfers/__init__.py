@@ -1,5 +1,7 @@
 from .cloud115_import_job_service import Cloud115ImportJobService
 from .cloud115_import_service import Cloud115ImportService
+from .cloud115_offline_service import Cloud115OfflineDownloadService
+from .cloud115_offline_sync_service import Cloud115OfflineSyncService
 from .download_client_service import DownloadClientService
 from .download_request_service import DownloadRequestService
 from .download_search_service import DownloadSearchService
@@ -15,6 +17,8 @@ from .subscribed_movie_auto_download_service import SubscribedMovieAutoDownloadS
 __all__ = [
     "Cloud115ImportJobService",
     "Cloud115ImportService",
+    "Cloud115OfflineDownloadService",
+    "Cloud115OfflineSyncService",
     "DownloadClientService",
     "DownloadRequestService",
     "DownloadSearchService",

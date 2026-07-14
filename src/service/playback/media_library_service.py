@@ -26,15 +26,14 @@ from src.schema.playback.media_libraries import (
     MediaLibraryUpdateRequest,
 )
 from src.service.playback.cloud115_backend_service import (
+    CLOUD115_DOWNLOADS_ROOT_NAME,
+    CLOUD115_LIBRARY_ROOT_NAME,
     cloud115_client_for,
     find_or_create_subdir,
     map_cloud115_error,
     require_cloud115_library,
 )
 from src.service.playback.cloud115_qrlogin_service import Cloud115QrLoginService
-
-# 库根目录名（cloud115 库根 = 115 根下叫这个名字的目录；由系统 find-or-create）。
-CLOUD115_LIBRARY_ROOT_NAME = "sakuramedia"
 
 
 class MediaLibraryService:
@@ -217,9 +216,12 @@ class MediaLibraryService:
                 account_key = await cls._validate_cloud115_login_result(client, result)
                 cls._ensure_cloud_account_available(account_key)
 
-                # 3) find-or-create 库根 sakuramedia/
+                # 3) find-or-create 库根 sakuramedia/ 与平级的离线下载缓冲目录
                 root_cid = await cls._find_or_create_library_root(
                     client, CLOUD115_LIBRARY_ROOT_NAME
+                )
+                download_root_cid = await cls._find_or_create_library_root(
+                    client, CLOUD115_DOWNLOADS_ROOT_NAME
                 )
                 # 探活和建目录响应都可能刷新 Set-Cookie；必须持久化 SDK 的最终快照。
                 cookies_snapshot = client.snapshot_cookies()
@@ -235,6 +237,7 @@ class MediaLibraryService:
                 backend_config={
                     "cookies": cookies_snapshot,
                     "root_cid": root_cid,
+                    "download_root_cid": download_root_cid,
                     "app": app,
                 },
             )

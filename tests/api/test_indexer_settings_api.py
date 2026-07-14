@@ -5,12 +5,19 @@ import toml
 
 import src.config.config as config_module
 from src.config.config import IndexerSettings, IndexerType
-from src.model import DownloadClient, Indexer, MediaLibrary
+from src.model import DownloadClient, Indexer, IndexerDownloadClient, MediaLibrary
 from src.schema.system.indexer_settings import (
     IndexerConnectionTestError,
     IndexerConnectionTestResponse,
 )
 
+
+
+def _create_indexer(*, download_client, **fields):
+    """建索引器并写多对多绑定，替代旧的单 FK 直连写法。"""
+    indexer = Indexer.create(**fields)
+    IndexerDownloadClient.create(indexer=indexer, download_client=download_client)
+    return indexer
 
 def _login(client, username="account", password="password123"):
     response = client.post(
@@ -71,7 +78,7 @@ def test_get_indexer_settings_returns_current_configuration(
     isolated_indexer_settings,
 ):
     download_client = _create_client()
-    Indexer.create(
+    _create_indexer(
         name="initial",
         url="http://127.0.0.1:9117/api/v2.0/indexers/initial/results/torznab/",
         kind="bt",
@@ -94,8 +101,9 @@ def test_get_indexer_settings_returns_current_configuration(
                 "name": "initial",
                 "url": "http://127.0.0.1:9117/api/v2.0/indexers/initial/results/torznab/",
                 "kind": "bt",
-                "download_client_id": download_client.id,
-                "download_client_name": download_client.name,
+                "download_clients": [
+                    {"id": download_client.id, "name": download_client.name, "kind": "qbittorrent"}
+                ],
             }
         ],
     }
@@ -120,7 +128,7 @@ def test_patch_indexer_settings_updates_and_subsequent_get_reads_new_values(
                     "name": "mteam",
                     "url": "http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
                     "kind": "pt",
-                    "download_client_id": download_client.id,
+                    "download_client_ids": [download_client.id],
                 }
             ],
         },
@@ -137,8 +145,9 @@ def test_patch_indexer_settings_updates_and_subsequent_get_reads_new_values(
                 "name": "mteam",
                 "url": "http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
                 "kind": "pt",
-                "download_client_id": download_client.id,
-                "download_client_name": download_client.name,
+                "download_clients": [
+                    {"id": download_client.id, "name": download_client.name, "kind": "qbittorrent"}
+                ],
             }
         ],
     }
@@ -163,7 +172,7 @@ def test_patch_indexer_settings_returns_domain_error_payload(
                     "name": "mteam",
                     "url": "localhost:9117",
                     "kind": "pt",
-                    "download_client_id": download_client.id,
+                    "download_client_ids": [download_client.id],
                 }
             ]
         },
@@ -189,7 +198,7 @@ def test_patch_indexer_settings_rejects_unknown_download_client(
                     "name": "mteam",
                     "url": "http://127.0.0.1:9117/api/v2.0/indexers/mteam/results/torznab/",
                     "kind": "pt",
-                    "download_client_id": 999,
+                    "download_client_ids": [999],
                 }
             ]
         },

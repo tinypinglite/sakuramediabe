@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from peewee import IntegrityError
 
 from src.model import BackgroundTaskRun, Image, MediaLibrary, SchemaMigration, VideoImportJob
 from src.start.commands import main
@@ -795,3 +796,164 @@ def test_run_pending_migrations_decouples_media_movie_and_adds_video_item(clean_
     ).fetchall()
     assert rows == [("ABP-001", "/lib/abp-001.mp4", None)]
     assert "20260613_01_add_videos_and_decouple_media" in _schema_migration_names(clean_db)
+
+
+def _create_legacy_download_tables(clean_db):
+    """kind / target_ref / 中间表出现之前的下载域 schema：qb 字段全 NOT NULL，indexer 单 FK。"""
+    clean_db.execute_sql(
+        """
+        CREATE TABLE download_client (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
+            name VARCHAR(255) NOT NULL UNIQUE,
+            base_url VARCHAR(255) NOT NULL,
+            username VARCHAR(255) NOT NULL,
+            password VARCHAR(255) NOT NULL,
+            client_save_path VARCHAR(1024) NOT NULL,
+            local_root_path VARCHAR(1024) NOT NULL,
+            media_library_id INTEGER NOT NULL
+        )
+        """
+    )
+    clean_db.execute_sql(
+        """
+        CREATE TABLE download_task (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
+            client_id INTEGER NOT NULL,
+            movie_number VARCHAR(255),
+            name VARCHAR(255) NOT NULL,
+            info_hash VARCHAR(128) NOT NULL,
+            save_path VARCHAR(1024) NOT NULL,
+            progress DOUBLE PRECISION NOT NULL DEFAULT 0,
+            download_state VARCHAR(32) NOT NULL,
+            import_status VARCHAR(32) NOT NULL
+        )
+        """
+    )
+    clean_db.execute_sql(
+        """
+        CREATE TABLE indexer (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
+            name VARCHAR(255) NOT NULL UNIQUE,
+            url VARCHAR(1024) NOT NULL,
+            kind VARCHAR(32) NOT NULL,
+            download_client_id INTEGER NOT NULL
+        )
+        """
+    )
+
+
+def test_run_pending_migrations_adds_download_client_kind_and_task_target_ref(clean_db):
+    """20260714_06：download_client 补 kind 并回填 qbittorrent，qb 字段放开可空；download_task 补 target_ref。"""
+    _create_legacy_download_tables(clean_db)
+    clean_db.execute_sql(
+        """
+        INSERT INTO download_client (
+            created_at, updated_at, name, base_url, username, password,
+            client_save_path, local_root_path, media_library_id
+        ) VALUES (
+            '2026-07-14', '2026-07-14', 'qb-main', 'http://qb:8080', 'admin', 'secret',
+            '/downloads', '/mnt/downloads', 1
+        )
+        """
+    )
+    clean_db.execute_sql(
+        """
+        INSERT INTO download_task (
+            created_at, updated_at, client_id, name, info_hash, save_path,
+            download_state, import_status
+        ) VALUES ('2026-07-14', '2026-07-14', 1, 'ABP-001', 'hash-1', '/mnt/downloads/ABP-001',
+            'completed', 'pending')
+        """
+    )
+
+    run_pending_migrations(clean_db)
+
+    client_columns = {column.name for column in clean_db.get_columns("download_client")}
+    assert "kind" in client_columns
+    # 存量行 kind 回填为 qbittorrent。
+    rows = clean_db.execute_sql("SELECT name, kind FROM download_client ORDER BY id").fetchall()
+    assert rows == [("qb-main", "qbittorrent")]
+    # qb 专属字段全部放开为可空。
+    for column_name in ("base_url", "username", "password", "client_save_path", "local_root_path"):
+        assert _column_is_nullable(clean_db, "download_client", column_name) is True
+    # download_task.target_ref 已补出，存量行保持 NULL。
+    task_columns = {column.name for column in clean_db.get_columns("download_task")}
+    assert "target_ref" in task_columns
+    task_rows = clean_db.execute_sql("SELECT name, target_ref FROM download_task ORDER BY id").fetchall()
+    assert task_rows == [("ABP-001", None)]
+
+
+def test_run_pending_migrations_adds_partial_unique_cloud115_client_index(clean_db):
+    _create_legacy_download_tables(clean_db)
+    run_pending_migrations(clean_db)
+
+    clean_db.execute_sql(
+        """
+        INSERT INTO download_client
+            (created_at, updated_at, name, kind, media_library_id)
+        VALUES
+            (NOW(), NOW(), 'qb-a', 'qbittorrent', 1),
+            (NOW(), NOW(), 'qb-b', 'qbittorrent', 1),
+            (NOW(), NOW(), 'cloud-a', 'cloud115', 2)
+        """
+    )
+    with pytest.raises(IntegrityError):
+        clean_db.execute_sql(
+            """
+            INSERT INTO download_client
+                (created_at, updated_at, name, kind, media_library_id)
+            VALUES (NOW(), NOW(), 'cloud-b', 'cloud115', 2)
+            """
+        )
+
+    index_names = {index.name for index in clean_db.get_indexes("download_client")}
+    assert "download_client_cloud115_library_unique" in index_names
+    assert "20260715_01_unique_cloud115_download_client_library" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_moves_indexer_binding_to_junction_table(clean_db):
+    """20260714_07：indexer 单 FK 迁到 indexer_download_client 中间表并删旧列。"""
+    _create_legacy_download_tables(clean_db)
+    clean_db.execute_sql(
+        """
+        INSERT INTO download_client (
+            created_at, updated_at, name, base_url, username, password,
+            client_save_path, local_root_path, media_library_id
+        ) VALUES (
+            '2026-07-14', '2026-07-14', 'qb-main', 'http://qb:8080', 'admin', 'secret',
+            '/downloads', '/mnt/downloads', 1
+        )
+        """
+    )
+    clean_db.execute_sql(
+        """
+        INSERT INTO indexer (created_at, updated_at, name, url, kind, download_client_id)
+        VALUES ('2026-07-14', '2026-07-14', 'mteam', 'http://jackett/api', 'pt', 1)
+        """
+    )
+
+    run_pending_migrations(clean_db)
+
+    # 旧 FK 绑定被搬进中间表。
+    assert clean_db.table_exists("indexer_download_client")
+    link_rows = clean_db.execute_sql(
+        "SELECT indexer_id, download_client_id FROM indexer_download_client ORDER BY id"
+    ).fetchall()
+    assert link_rows == [(1, 1)]
+    # (indexer, download_client) 复合唯一索引已建出。
+    unique_index_columns = [
+        tuple(index.columns)
+        for index in clean_db.get_indexes("indexer_download_client")
+        if index.unique
+    ]
+    assert ("indexer_id", "download_client_id") in unique_index_columns
+    # indexer 表的旧 FK 列已删除。
+    indexer_columns = {column.name for column in clean_db.get_columns("indexer")}
+    assert "download_client_id" not in indexer_columns
+    assert "20260714_07_indexer_multi_client_binding" in _schema_migration_names(clean_db)

@@ -5,13 +5,20 @@ from src.config.config import IndexerKind, IndexerType
 from src.schema.common.base import SchemaModel
 
 
+class IndexerBoundClientResource(SchemaModel):
+    # 索引器绑定的单个下载器概要：kind 供前端展示入口种类（qbittorrent / cloud115）。
+    id: int
+    name: str
+    kind: str
+
+
 class IndexerItemResource(SchemaModel):
     id: int
     name: str
     url: str
     kind: IndexerKind
-    download_client_id: int
-    download_client_name: str
+    # 多对多绑定：按绑定顺序列出；提交下载时按全局 kind 偏好从中挑选。
+    download_clients: List[IndexerBoundClientResource]
 
 
 class IndexerSettingsResource(SchemaModel):
@@ -24,7 +31,8 @@ class IndexerItemUpdatePayload(SchemaModel):
     name: str
     url: str
     kind: str
-    download_client_id: int
+    # 至少绑定一个下载器；重复 id 会被拒绝。
+    download_client_ids: List[int]
 
 
 class IndexerSettingsUpdateRequest(SchemaModel):

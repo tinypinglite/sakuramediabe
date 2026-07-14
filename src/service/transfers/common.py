@@ -7,8 +7,9 @@ from peewee import fn
 
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import require_record, resolve_sort, validate_page as _validate_page
-from src.model import DownloadClient, DownloadTask, Indexer, MediaLibrary
-from src.model.enums import MediaLibraryBackend
+from src.config.config import settings
+from src.model import DownloadClient, DownloadTask, Indexer, IndexerDownloadClient, MediaLibrary
+from src.model.enums import DownloadClientKind, MediaLibraryBackend
 # 导入状态取值统一收口到 media_import_status 模块；此处再导出，兼容历史引用路径。
 from src.common.media_import_status import ALLOWED_IMPORT_STATUSES
 
@@ -21,6 +22,8 @@ ALLOWED_DOWNLOAD_STATES = {
     "stalled",
     "checking",
     "queued",
+    # cloud115 离线任务超时后的本地放弃态：不再对账、不再推进度；115 侧任务保留。
+    "abandoned",
 }
 # 下载已完成的状态集合：completed（下完但不做种）与 seeding（做种中）在业务上都算文件已写定，
 # 可触发自动导入 / 允许手动导入。所有需要判"任务是否已完成下载"的地方走 is_download_complete。
@@ -131,6 +134,43 @@ def require_local_media_library(library_id: int) -> MediaLibrary:
     return library
 
 
+def require_cloud115_media_library(library_id: int) -> MediaLibrary:
+    library = require_media_library(library_id)
+    if library.backend != MediaLibraryBackend.CLOUD115.value:
+        raise ApiError(
+            422,
+            "media_library_backend_mismatch",
+            "该操作要求 cloud115 媒体库",
+            {
+                "library_id": library_id,
+                "expected_backend": MediaLibraryBackend.CLOUD115.value,
+                "actual_backend": library.backend,
+            },
+        )
+    config = library.backend_config or {}
+    if not config.get("cookies") or not config.get("root_cid"):
+        raise ApiError(
+            422,
+            "invalid_media_library_backend_config",
+            "cloud115 媒体库缺少 cookies/root_cid",
+            {"library_id": library_id},
+        )
+    return library
+
+
+def validate_download_client_kind(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    try:
+        return DownloadClientKind(normalized).value
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "invalid_download_client_kind",
+            "Unsupported download client kind",
+            {"kind": value},
+        ) from exc
+
+
 def require_indexer(indexer_name: str) -> Indexer:
     normalized = indexer_name.strip()
     if not normalized:
@@ -149,6 +189,39 @@ def require_indexer(indexer_name: str) -> Indexer:
             {"indexer_name": normalized},
         )
     return indexer
+
+
+def list_indexer_clients(indexer: Indexer) -> list[DownloadClient]:
+    """按绑定顺序（中间表 id 升序）取出索引器绑定的全部下载器。"""
+    return [
+        link.download_client
+        for link in (
+            IndexerDownloadClient.select(IndexerDownloadClient, DownloadClient)
+            .join(DownloadClient)
+            .where(IndexerDownloadClient.indexer == indexer.id)
+            .order_by(IndexerDownloadClient.id.asc())
+        )
+    ]
+
+
+def resolve_preferred_client(clients: Sequence[DownloadClient]) -> DownloadClient:
+    """按全局 kind 偏好从候选下载器中挑一个。
+
+    偏好列表只决定挑选顺序，不做白名单：列表外的 kind 排最后，同 kind 内保持绑定顺序。
+    选中的下载器后续执行失败时由调用方直接报错，不自动换下一个（用户已明确不降级）。
+    """
+    if not clients:
+        raise ApiError(
+            422,
+            "download_request_client_resolution_failed",
+            "Indexer has no bound download clients",
+        )
+    preferred_kinds = settings.downloads.preferred_client_kinds
+    for kind in preferred_kinds:
+        for client in clients:
+            if client.kind == kind:
+                return client
+    return clients[0]
 
 
 def require_task(task_id: int) -> DownloadTask:
@@ -293,9 +366,11 @@ def build_task_movie_filter(movie_number: str):
 _UNSAFE_SUBDIR_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def build_movie_save_path(client_save_path: str, movie_number: str) -> str:
-    """按番号生成 qB 端的种子保存子目录，使每个种子独立落盘，避免内容平铺到下载根目录。"""
-    # 先净化番号：替换非法字符，再去掉首尾的点/下划线/连字符，防止形成隐藏目录或空段。
+def safe_movie_subdir_name(movie_number: str) -> str:
+    """净化番号为安全目录名：替换非法字符，再去掉首尾的点/下划线/连字符，防止隐藏目录或空段。
+
+    qb 的本地保存子目录与 cloud115 的下载缓冲子目录共用同一套净化规则。
+    """
     safe_number = _UNSAFE_SUBDIR_CHARS.sub("_", movie_number.strip()).strip("._-")
     if not safe_number:
         raise ApiError(
@@ -304,7 +379,12 @@ def build_movie_save_path(client_save_path: str, movie_number: str) -> str:
             "movie_number 无法生成有效的保存目录",
             {"movie_number": movie_number},
         )
-    return f"{client_save_path.rstrip('/')}/{safe_number}"
+    return safe_number
+
+
+def build_movie_save_path(client_save_path: str, movie_number: str) -> str:
+    """按番号生成 qB 端的种子保存子目录，使每个种子独立落盘，避免内容平铺到下载根目录。"""
+    return f"{client_save_path.rstrip('/')}/{safe_movie_subdir_name(movie_number)}"
 
 
 def map_remote_path(client: DownloadClient, remote_path: str) -> str:

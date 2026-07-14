@@ -1,20 +1,28 @@
-"""qBittorrent 下载进度 SSE 的进程内轮询与订阅管理。"""
+"""下载进度 SSE 的进程内轮询与订阅管理（qBittorrent Sync delta + cloud115 离线列表轮询）。"""
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from queue import Empty, Queue
 from threading import Event, RLock, Thread
-from typing import Optional
+from typing import Dict, Optional
 
 from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common.database import ensure_database_ready
+from src.config.config import settings
+from src.lib.cloud115 import Cloud115Error, OfflineTask
 from src.model import DownloadClient, DownloadTask
+from src.model.enums import DownloadClientKind
 from src.schema.transfers.downloads import (
     DownloadClientTransferResource,
     DownloadTaskProgressResource,
+)
+from src.service.transfers.cloud115_offline_sync_service import (
+    CLOUD115_OFFLINE_STATE_MAP,
+    Cloud115OfflineSyncService,
 )
 from src.service.transfers.common import (
     QB_ETA_INFINITY,
@@ -192,20 +200,12 @@ class DownloadProgressHub:
             self._task_index.setdefault(client_id, {}).update(index_snapshot)
 
     def _poll_client(self, poller: _ClientPoller, client: DownloadClient) -> None:
-        qb_client = self.qbittorrent_client_cls.from_download_client(client)
+        # 按下载入口种类分派轮询实现；两条路径共享订阅管理与退出重启逻辑。
         try:
-            while not poller.stop_event.is_set() and self._has_subscribers(poller.client_id):
-                try:
-                    ensure_database_ready()
-                    delta = qb_client.get_torrent_progress_delta()
-                    self._mark_client_available(poller.client_id)
-                    self._consume_delta(poller.client_id, delta)
-                except QBittorrentClientError as exc:
-                    self._mark_client_unavailable(poller.client_id, str(exc))
-                except Exception as exc:
-                    logger.exception("Download progress poll failed client_id={}", poller.client_id)
-                    self._mark_client_unavailable(poller.client_id, str(exc))
-                poller.stop_event.wait(self.poll_interval_seconds)
+            if client.kind == DownloadClientKind.CLOUD115.value:
+                self._poll_cloud115_loop(poller, client)
+            else:
+                self._poll_qbittorrent_loop(poller, client)
         finally:
             with self._lock:
                 current = self._pollers.get(poller.client_id)
@@ -214,6 +214,48 @@ class DownloadProgressHub:
                 restart = not self._closed and self._has_subscribers(poller.client_id)
             if restart:
                 self._ensure_poller(poller.client_id)
+
+    def _poll_qbittorrent_loop(self, poller: _ClientPoller, client: DownloadClient) -> None:
+        qb_client = self.qbittorrent_client_cls.from_download_client(client)
+        while not poller.stop_event.is_set() and self._has_subscribers(poller.client_id):
+            try:
+                ensure_database_ready()
+                delta = qb_client.get_torrent_progress_delta()
+                self._mark_client_available(poller.client_id)
+                self._consume_delta(poller.client_id, delta)
+            except QBittorrentClientError as exc:
+                self._mark_client_unavailable(poller.client_id, str(exc))
+            except Exception as exc:
+                logger.exception("Download progress poll failed client_id={}", poller.client_id)
+                self._mark_client_unavailable(poller.client_id, str(exc))
+            poller.stop_event.wait(self.poll_interval_seconds)
+
+    def _poll_cloud115_loop(self, poller: _ClientPoller, client: DownloadClient) -> None:
+        # 115 是公网 API 且有风控，轮询间隔独立配置（默认 8s），远低于 qb 的 1s。
+        while not poller.stop_event.is_set() and self._has_subscribers(poller.client_id):
+            try:
+                ensure_database_ready()
+                remote_by_hash: Dict[str, OfflineTask] = {}
+                if self._has_active_cloud115_tasks(poller.client_id):
+                    remote_by_hash = asyncio.run(
+                        Cloud115OfflineSyncService()._fetch_remote_tasks(client)
+                    )
+                    self._mark_client_available(poller.client_id)
+                self._consume_cloud115_tasks(poller.client_id, remote_by_hash)
+            except Cloud115Error as exc:
+                self._mark_client_unavailable(poller.client_id, str(exc))
+            except Exception as exc:
+                logger.exception("Download progress poll failed client_id={}", poller.client_id)
+                self._mark_client_unavailable(poller.client_id, str(exc))
+            # hot 配置：每轮等待前现读，配置刷新后无需重启 API。
+            poller.stop_event.wait(settings.downloads.cloud115_progress_poll_interval_seconds)
+
+    @staticmethod
+    def _has_active_cloud115_tasks(client_id: int) -> bool:
+        return DownloadTask.select().where(
+            (DownloadTask.client == client_id)
+            & (DownloadTask.download_state.in_(("queued", "downloading")))
+        ).exists()
 
     def _has_subscribers(self, client_id: int) -> bool:
         with self._lock:
@@ -353,6 +395,88 @@ class DownloadProgressHub:
                 connection_status=self._as_optional_str(server_state_snapshot.get("connection_status")),
             ).model_dump(mode="json")
             self._dispatch(broadcast_subscriptions, "download_client_status", transfer_payload)
+
+    def _consume_cloud115_tasks(
+        self, client_id: int, remote_by_hash: Dict[str, OfflineTask]
+    ) -> None:
+        """把 115 离线任务全量快照 diff 后扇出给订阅者。
+
+        与 qb 的 delta 流不同：cloud115 每轮直接查 DB 拿本地任务清单（8s 间隔下代价可忽略，
+        且天然吸收新提交/已删除的任务），远端数据只用于补活跃任务进度；终态完全使用数据库快照。
+        """
+        rows = list(DownloadTask.select().where(DownloadTask.client == client_id))
+        items: list[dict] = []
+        for row in rows:
+            remote = remote_by_hash.get(row.info_hash)
+            items.append(self._build_cloud115_resource(client_id, row, remote).model_dump(mode="json"))
+
+        with self._lock:
+            cache = self._torrent_cache.setdefault(client_id, {})
+            pending_snapshot_subscriptions = [
+                subscription
+                for subscription in self._subscriptions.values()
+                if client_id in subscription.client_ids
+                and client_id not in subscription.snapshotted_client_ids
+            ]
+            for subscription in pending_snapshot_subscriptions:
+                subscription.snapshotted_client_ids.add(client_id)
+            broadcast_subscriptions = list(self._subscriptions.values())
+            # 与上一轮 payload 逐条比对，只广播有变化的条目。
+            updated_items = [
+                item for item in items if cache.get(item["info_hash"]) != item
+            ]
+            cache.clear()
+            cache.update({item["info_hash"]: item for item in items})
+
+        for subscription in pending_snapshot_subscriptions:
+            filtered_items = [
+                item for item in items if self._matches_subscription(subscription, item)
+            ]
+            subscription.queue.put(("snapshot", {"client_id": client_id, "items": filtered_items}))
+
+        pending_snapshot_ids = {sub.subscription_id for sub in pending_snapshot_subscriptions}
+        update_subscriptions = [
+            sub for sub in broadcast_subscriptions if sub.subscription_id not in pending_snapshot_ids
+        ]
+        for item in updated_items:
+            self._dispatch(update_subscriptions, "download_task_updated", item)
+
+    @staticmethod
+    def _build_cloud115_resource(
+        client_id: int, task: DownloadTask, remote: OfflineTask | None
+    ) -> DownloadTaskProgressResource:
+        # 远端没拉到该任务时退回本地库内状态（分页上限内可能没拉全，不清零进度）。
+        if remote is None:
+            return DownloadTaskProgressResource(
+                task_id=task.id,
+                client_id=client_id,
+                movie_number=task.movie,
+                name=task.name,
+                info_hash=task.info_hash,
+                progress=task.progress,
+                raw_state=task.download_state,
+                download_state=task.download_state,
+                download_speed_bytes=0,
+                uploaded_speed_bytes=0,
+                downloaded_bytes=0,
+                total_size_bytes=0,
+                eta_seconds=None,
+            )
+        return DownloadTaskProgressResource(
+            task_id=task.id,
+            client_id=client_id,
+            movie_number=task.movie,
+            name=remote.name or task.name,
+            info_hash=task.info_hash,
+            progress=round(remote.percent_done / 100.0, 4),
+            raw_state=str(remote.status),
+            download_state=CLOUD115_OFFLINE_STATE_MAP.get(remote.status) or task.download_state,
+            download_speed_bytes=remote.rate_download,
+            uploaded_speed_bytes=0,
+            downloaded_bytes=int(remote.size * remote.percent_done / 100.0),
+            total_size_bytes=remote.size,
+            eta_seconds=remote.left_time_seconds or None,
+        )
 
     def _dispatch(self, subscriptions: list[DownloadProgressSubscription], event: str, payload: dict) -> None:
         for subscription in subscriptions:
