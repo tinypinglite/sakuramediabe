@@ -40,27 +40,6 @@ class Cloud115MembershipRequiredError(Cloud115Error):
     """
 
 
-class Cloud115VideoNotReadyError(Cloud115Error):
-    """视频未就绪：转码未完成或已失败（响应 file_status != 1）。
-
-    与 NotFoundError 严格区分：文件真实存在、cookies 也有效，只是 115 服务端
-    还没把它转成可播放的 HLS 流（新上传的视频通常要几分钟到几十分钟）。上层可以
-    提示"稍后再试"并把任务排到重试队列，而不是像 NotFound 那样把资源标 invalid。
-
-    附字段 file_status：0=转码中/未完成，其他非 1 值为失败或未知。
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        file_status: int | None = None,
-        endpoint: str | None = None,
-    ):
-        self.file_status = file_status
-        super().__init__(message, endpoint=endpoint)
-
-
 class Cloud115RequestError(Cloud115Error):
     """HTTP 层错误、超时、5xx 重试耗尽后的最终失败。
 
@@ -114,7 +93,7 @@ class Cloud115OfflineTaskExistsError(Cloud115Error):
     与 Cloud115OfflineQuotaExceededError 严格区分——两者数字都可能是 10008，但字段不同：
       - 配额用尽：落在 **errno**（10004 / 10008），是硬失败。
       - 任务已存在：落在 **errcode**（10008，errtype="war"，error_msg="任务已存在"），是良性告警，
-        不扣配额、旧任务仍在。add_task_bt 真机实测确认。
+        不扣配额、旧任务仍在。
     上层通常可当幂等成功处理（复用旧任务 info_hash），或提示"该种子已在下载列表"；
     若要改文件选择，必须先 delete_offline_tasks 删旧任务再重加。附 info_hash 便于定位旧任务。
     """

@@ -21,8 +21,6 @@
     pickcode-info            取单文件元信息（by pickcode，业务侧持久化的稳定 ID）
     dir-info                 取目录元信息 + 面包屑
     downurl                  拿 302 直链
-    video-info               拿视频信息 + 清晰度列表（VIP 专属）
-    video-segments           拿视频 HLS ts 分段列表（VIP 专属）
     snapshot-cookies         打印当前最新 cookies 字符串（含服务端 Set-Cookie 更新）
     offline-list             列离线下载任务（分页）
     offline-quota            查本月离线下载次数配额
@@ -289,50 +287,6 @@ async def _cmd_downurl(client: Cloud115Client, args: argparse.Namespace) -> int:
     return 0
 
 
-async def _cmd_video_info(client: Cloud115Client, args: argparse.Namespace) -> int:
-    info = await client.get_video_info(args.pickcode)
-    _print_kv([
-        ("pickcode", info.pickcode),
-        ("width", info.width),
-        ("height", info.height),
-        ("thumb_url", info.thumb_url),
-        ("master_m3u8_url", info.master_m3u8_url),
-    ])
-    print()
-    print(f"  definitions ({len(info.definitions)}):")
-    if not info.definitions:
-        print("    (none)")
-        return 0
-    print(f"    {'bandwidth':>10}  {'resolution':<12}  {'label':<8}  m3u8_url")
-    print(f"    {'-'*10}  {'-'*12}  {'-'*8}  {'-'*30}")
-    for d in info.definitions:
-        url_short = d.m3u8_url if len(d.m3u8_url) < 60 else d.m3u8_url[:57] + "..."
-        print(f"    {d.bandwidth:>10}  {d.resolution:<12}  {d.label:<8}  {url_short}")
-    return 0
-
-
-async def _cmd_video_segments(client: Cloud115Client, args: argparse.Namespace) -> int:
-    segments = await client.get_video_segments(
-        args.pickcode,
-        prefer_bandwidth=args.prefer_bandwidth,
-    )
-    total_duration = sum(s.duration_seconds for s in segments)
-    print(f"segments: {len(segments)}  total_duration: {total_duration:.1f}s ({total_duration/60:.1f}min)")
-    if not segments:
-        return 0
-    print()
-    # 默认只打印前 10 段（避免 191 段刷屏），--all 展开全部
-    show = segments if args.all else segments[:10]
-    print(f"  {'idx':>4}  {'dur(s)':>7}  url")
-    print(f"  {'-'*4}  {'-'*7}  {'-'*40}")
-    for s in show:
-        url_short = s.url if len(s.url) < 100 else s.url[:97] + "..."
-        print(f"  {s.index:>4}  {s.duration_seconds:>7.2f}  {url_short}")
-    if not args.all and len(segments) > 10:
-        print(f"  ... {len(segments) - 10} more (pass --all to show)")
-    return 0
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m src.lib.cloud115",
@@ -409,20 +363,6 @@ def _build_parser() -> argparse.ArgumentParser:
              "后续 Range GET 必须复用同一 UA",
     )
 
-    p_vi = sub.add_parser("video-info", help="拿视频信息 + 清晰度列表（VIP 专属）")
-    p_vi.add_argument("--pickcode", required=True, help="视频文件 pickcode")
-
-    p_vs = sub.add_parser("video-segments", help="拿视频 HLS ts 分段列表（VIP 专属）")
-    p_vs.add_argument("--pickcode", required=True, help="视频文件 pickcode")
-    p_vs.add_argument(
-        "--prefer-bandwidth",
-        dest="prefer_bandwidth",
-        type=int,
-        default=None,
-        help="想要的清晰度码率（bit/s）；缺省时挑最高码率",
-    )
-    p_vs.add_argument("--all", action="store_true", help="打印全部分段（默认只列前 10 段）")
-
     p_lr = sub.add_parser("list-recursive", help="递归枚举目录树全部文件（导入管线用）")
     p_lr.add_argument("--cid", default="0", help="起始目录 cid（默认 0 根目录）")
     p_lr.add_argument("--page-size", dest="page_size", type=int, default=1000,
@@ -467,8 +407,6 @@ async def _run(args: argparse.Namespace) -> int:
         "pickcode-info": _cmd_pickcode_info,
         "dir-info": _cmd_dir_info,
         "downurl": _cmd_downurl,
-        "video-info": _cmd_video_info,
-        "video-segments": _cmd_video_segments,
         "snapshot-cookies": _cmd_snapshot_cookies,
         "offline-list": _cmd_offline_list,
         "offline-quota": _cmd_offline_quota,

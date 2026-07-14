@@ -1,6 +1,6 @@
 """115 SDK 对外数据类型。
 
-全部为 frozen dataclass：DirEntry / FileMeta / DirMeta / DirectUrl / VideoInfo 等。
+全部为 frozen dataclass：DirEntry / FileMeta / DirMeta / DirectUrl 等。
 故意与 Pydantic schema 解耦：这是底层 SDK 层，返回原始结构，业务侧再映射自己的 Pydantic 模型。
 """
 
@@ -125,47 +125,6 @@ class DirectUrl:
     expires_at: int
 
 
-@dataclass(frozen=True, slots=True)
-class VideoDefinition:
-    """master m3u8 里的一个清晰度分支（HLS BANDWIDTH variant）。
-
-    115 视频经服务端转码后按不同码率产出多个 variant m3u8；ts 分段在 variant 层。
-    """
-
-    bandwidth: int             # BANDWIDTH 属性，bit/s
-    resolution: str            # RESOLUTION 属性，如 "1280x720"；未声明时为空串
-    label: str                 # NAME 属性，如 "HD"；未声明时为空串
-    m3u8_url: str              # variant m3u8 的绝对 URL
-
-
-@dataclass(frozen=True, slots=True)
-class VideoInfo:
-    """webapi.115.com/files/video 返回的视频综合信息 + master m3u8 清晰度列表。
-
-    仅对 VIP 会员可用；非会员账号 errno=406 → Cloud115MembershipRequiredError。
-    """
-
-    pickcode: str
-    width: int                 # 原始视频宽（像素）；不确定时 0
-    height: int                # 原始视频高（像素）；不确定时 0
-    thumb_url: str             # 封面缩略图 URL；缺省时空串
-    master_m3u8_url: str       # HLS master playlist 绝对 URL
-    definitions: list["VideoDefinition"]   # 所有可用清晰度
-
-
-@dataclass(frozen=True, slots=True)
-class VideoSegment:
-    """variant m3u8 里的一个 HLS ts 分段。
-
-    每段是一小段独立可解码的视频，天然对应"每 duration_seconds 抽一帧"的场景 ——
-    上层 ffmpeg 对 url 直接 `-ss 0 -vframes 1` 就能拿到本段起始帧。
-    """
-
-    index: int                 # 0-based 序号
-    url: str                   # 绝对 URL（相对路径已用 variant m3u8URL 拼过）
-    duration_seconds: float    # EXTINF 声明的时长，秒
-
-
 # ============================================================
 # 离线下载相关数据类型
 # ============================================================
@@ -231,36 +190,6 @@ class OfflineTaskAddResult:
 
     info_hash: str                     # 服务端分配的任务 ID；提交失败时为空串
     url: str                           # 原提交 URL（回传，便于上层 map URL -> info_hash）
-
-
-@dataclass(frozen=True, slots=True)
-class TorrentFileEntry:
-    """种子内的单个文件条目（来自 ac=torrent 响应的 torrent_filelist_web[i]）。
-
-    index 就是数组下标（0-based）——add_task_bt 的 wanted 参数用的正是这个下标。
-    wanted 是 115 给的**默认勾选态**：True=默认下载，False=115 已自动反选
-    （常见于广告/引流类垃圾文件，真机实测 `manko.fun.url` 42B 会被默认反选）。
-    上层把这个默认态展示给用户勾选，最终选中的 index 列表回传 add_task_bt。
-    """
-
-    index: int
-    path: str                          # 种子内相对路径（可能带子目录）
-    size: int                          # 字节
-    wanted: bool                       # 115 默认是否勾选下载
-
-
-@dataclass(frozen=True, slots=True)
-class TorrentInfo:
-    """ac=torrent 解析一个已上传种子后的结果。
-
-    info_hash 是后续 add_task_bt 的唯一入参之一（40 字符 hex，与本地对种子 info 段
-    算 sha1 一致，真机已核对）。name 是种子顶层目录名，建任务时常直接用作 savepath。
-    """
-
-    info_hash: str
-    name: str
-    file_count: int
-    files: list["TorrentFileEntry"]
 
 
 # ============================================================

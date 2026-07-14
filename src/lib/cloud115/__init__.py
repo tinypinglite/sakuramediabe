@@ -1,8 +1,8 @@
 """115 网盘极简异步客户端。
 
-覆盖播放/查找/缩略图/离线下载（含 BT 选文件）4 类上层需求需要的 HTTP 接口 + cookies 认证；
+覆盖播放/查找/缩略图/离线下载 4 类上层需求需要的 HTTP 接口 + cookies 认证；
 另含扫码登录（Cloud115QrLogin，独立于 cookies，用于首次获取 cookies）。
-不含通用文件上传（仅 .torrent 的 sample 上传）、分享、事件订阅等。
+不含通用文件上传、分享、事件订阅等。
 
 上层使用方式：
     from src.lib.cloud115 import Cloud115Client, DirectUrl
@@ -29,7 +29,6 @@ from src.lib.cloud115.exceptions import (
     Cloud115OfflineTaskExistsError,
     Cloud115RateLimitedError,
     Cloud115RequestError,
-    Cloud115VideoNotReadyError,
 )
 from src.lib.cloud115.types import (
     Cloud115CookieStatus,
@@ -45,11 +44,6 @@ from src.lib.cloud115.types import (
     QrCodeToken,
     QrLoginResult,
     QrStatus,
-    TorrentFileEntry,
-    TorrentInfo,
-    VideoDefinition,
-    VideoInfo,
-    VideoSegment,
 )
 
 __all__ = [
@@ -66,15 +60,10 @@ __all__ = [
     "DirBreadcrumb",
     "FileMeta",
     "DirectUrl",
-    "VideoInfo",
-    "VideoDefinition",
-    "VideoSegment",
     "OfflineTask",
     "OfflineTaskPage",
     "OfflineQuota",
     "OfflineTaskAddResult",
-    "TorrentFileEntry",
-    "TorrentInfo",
     "Cloud115Error",
     "Cloud115AuthError",
     "Cloud115NotFoundError",
@@ -82,7 +71,6 @@ __all__ = [
     "Cloud115CipherError",
     "Cloud115RateLimitedError",
     "Cloud115MembershipRequiredError",
-    "Cloud115VideoNotReadyError",
     "Cloud115OfflineQuotaExceededError",
     "Cloud115OfflineTaskExistsError",
 ]

@@ -6,7 +6,7 @@ SakuraMediaBE 内部维护的 115 网盘极简异步客户端。**仅支持 cook
 - 入口：`Cloud115Client`
 - 运行时依赖：`httpx`、`loguru`（都已在 `pyproject.toml`）；**未引入 `cryptography` / `pycryptodome`**，RSA/KDF 全用 Python 内置 `pow()` 手撸
 
-> **重要**：直链下载(`get_download_url`)对非会员账号可用但被官方限速 100KB/s + CDN 多请求拉黑，实测**做不了视频缩略图**。视频类操作(播放、抽帧)必须走 VIP 专属的 `get_video_info` + `get_video_segments`（HLS 分段方案，实测 191 段抽帧顺序跑 6 分钟）。详见 [VIP 视频接口](#vip-视频接口)。
+> **重要**：直链由调用时的 User-Agent 绑定，后续播放和受控 Range 读取必须使用同一 UA；缩略图链路通过受控顺序读取避免触发 CDN 并发限制。
 
 ## 目录
 
@@ -14,7 +14,6 @@ SakuraMediaBE 内部维护的 115 网盘极简异步客户端。**仅支持 cook
 - [认证与 cookies](#认证与-cookies)
 - [Cookies 保活](#cookies-保活)
 - [接口清单](#接口清单)
-- [VIP 视频接口](#vip-视频接口)
 - [数据类型](#数据类型)
 - [异常层次](#异常层次)
 - [关键机制](#关键机制)
@@ -323,74 +322,6 @@ print(du.user_agent)   # 回传给你，用于后续 Range GET
 
 ---
 
-## VIP 视频接口
-
-**仅 VIP 会员账号可用**。非会员调用会抛 `Cloud115MembershipRequiredError`（errno=406 "需要VIP会员"），可在 UI 上引导升级。
-
-这两个接口用来做视频缩略图/播放，绕开了直链方案的所有问题（限速、CDN 拉黑、UA 绑定、mp4 结构不利 seek）。核心思路：走 **115 服务端已经转码好的 HLS m3u8/ts 分段**，每段是独立可解码的短视频，天然对应"每 N 秒抽一张"。
-
-### `get_video_info(pickcode) -> VideoInfo`
-
-拿视频综合信息 + master m3u8 里的清晰度列表。内部发两次 HTTP：
-1. `GET https://webapi.115.com/files/video?pickcode=...` → 视频元数据 + master m3u8 URL
-2. `GET <master m3u8 URL>` → 解析出所有 variant 清晰度
-
-```python
-info = await client.get_video_info("bijccwbcsacpi842c")
-print(info.width, info.height, info.thumb_url)   # 1280 720 https://static.115.com/video/HASH.jpg
-for d in info.definitions:
-    print(d.bandwidth, d.resolution, d.label, d.m3u8_url)
-    # 1800000 1280x720 HD https://cpats01.115.com/.../HASH_1280.m3u8?...
-```
-
-**异常**：
-- `errno=406` → `Cloud115MembershipRequiredError`
-- **`file_status != 1`（转码中或失败）→ `Cloud115VideoNotReadyError`**（附 `file_status` 字段）—— 新上传视频通常要几分钟到几十分钟才转好；上层应把任务丢回重试队列，别标 invalid
-- `video_url` 字段为空且 `file_status` 缺失 → `Cloud115NotFoundError`（非视频文件）
-- 5xx / 网络错 → 内部重试 2 次后 `Cloud115RequestError`
-
-### `get_video_segments(pickcode, *, prefer_bandwidth=None) -> list[VideoSegment]`
-
-拿指定/最高清晰度的 HLS ts 分段列表。
-
-```python
-# 默认最高码率
-segments = await client.get_video_segments("bijccwbcsacpi842c")
-# 或选特定码率
-segments = await client.get_video_segments(pickcode, prefer_bandwidth=1800000)
-
-for s in segments:
-    print(s.index, f"{s.duration_seconds:.2f}s", s.url)
-```
-
-**参数**：
-- `prefer_bandwidth`：想要的码率（bit/s）。找不到匹配码率时**回退到最高**（不抛异常，因为清晰度是"偏好"）
-
-**每段的用法**：
-```python
-# 每段直接抽第一帧，不需要 seek
-subprocess.run([
-    "ffmpeg", "-y",
-    "-user_agent", "Mozilla/5.0 ...",
-    "-i", segment.url,
-    "-ss", "0", "-vframes", "1",
-    "-q:v", "3",
-    f"frame_{segment.index:03d}.webp",
-])
-```
-
-**性能实测**（1.06 GB / 31.6 分钟视频，VIP 账号）：
-- 单段下载 ~200-700 KB，抽帧 1-2 秒/段
-- 191 段串行抽帧总耗时 **约 6 分钟**
-- CDN 参数 `s=4194304` = 4 MB/s（比非会员直链 100 KB/s 快 40 倍）
-
-**注意**：
-- 每段的实际时长以 `duration_seconds` 为准 —— 大多数段是 10 秒但边界段会略偏（编码器 GOP 决定）。**上层若要严格"每 10 秒一张"，按 duration 累加找目标段**；若接受"一段一张"的自然精度，直接遍历
-- 分段 URL 是 115 转码 CDN 域（`cpats01.115.com`），**不需要额外 UA 绑定**（不是 `f=1` 直链）
-- 分段 URL 的过期时间在 URL 里没有 `t=` 参数，但根据实测约 15+ 分钟稳定可用
-
----
-
 ## 数据类型
 
 在 [`types.py`](../types.py) 定义：
@@ -442,40 +373,6 @@ subprocess.run([
 | `file_id` | `str` | 该级 file_id/cid；根目录是 `"0"` |
 | `name` | `str` | 该级名字，如 `"根目录"` |
 
-### `VideoInfo`
-
-`get_video_info` 返回的视频综合信息。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `pickcode` | `str` | 输入回传 |
-| `width` | `int` | 原始视频宽（像素） |
-| `height` | `int` | 原始视频高（像素） |
-| `thumb_url` | `str` | 封面缩略图 URL |
-| `master_m3u8_url` | `str` | HLS master playlist 绝对 URL |
-| `definitions` | `list[VideoDefinition]` | 所有可用清晰度 |
-
-### `VideoDefinition`
-
-master m3u8 里的一个清晰度分支。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `bandwidth` | `int` | 码率 bit/s（`BANDWIDTH` 属性） |
-| `resolution` | `str` | 如 `"1280x720"`；未声明时空串 |
-| `label` | `str` | 如 `"HD"`；未声明时空串 |
-| `m3u8_url` | `str` | 该清晰度的 variant m3u8 绝对 URL |
-
-### `VideoSegment`
-
-variant m3u8 里的一个 HLS ts 分段。
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `index` | `int` | 0-based 序号 |
-| `url` | `str` | 绝对 URL（相对路径已用 variant m3u8 URL 拼过） |
-| `duration_seconds` | `float` | EXTINF 声明的时长，秒 |
-
 ### `DirectUrl`
 
 `get_download_url` 返回的直链信息。
@@ -501,7 +398,6 @@ variant m3u8 里的一个 HLS ts 分段。
 Cloud115Error                          # 基类
 ├── Cloud115AuthError                  # cookies 失效 / UID 缺失 / 账号冻结（errno=99/990009/990017/20130827/...）
 ├── Cloud115MembershipRequiredError    # 接口需要 VIP 会员（errno=406 "需要VIP会员"）
-├── Cloud115VideoNotReadyError         # 视频转码未完成或失败（file_status != 1）；附 file_status
 ├── Cloud115NotFoundError              # 文件不存在 / pickcode 无效 / 被封禁
 ├── Cloud115RequestError               # HTTP 层错、5xx 重试耗尽、非 JSON 响应
 ├── Cloud115CipherError                # RSA 解密失败（响应结构异常）
@@ -516,18 +412,10 @@ from src.lib.cloud115 import (
     Cloud115AuthError,
     Cloud115NotFoundError,
     Cloud115RateLimitedError,
-    Cloud115VideoNotReadyError,
 )
 
 try:
-    segments = await client.get_video_segments(pickcode)
-except Cloud115MembershipRequiredError:
-    # 引导用户升级 VIP；cookies 是好的，重新登录没用
-    ...
-except Cloud115VideoNotReadyError as e:
-    # 转码未完成：把任务丢回 APS 重试队列（新上传视频通常几分钟内转好）
-    # e.file_status: 0=转码中，其他=失败/未知
-    ...
+    direct = await client.get_download_url(pickcode, user_agent="Mozilla/5.0 ...")
 except Cloud115AuthError:
     # 通知用户 cookies 过期，触发重新填 cookies 流程
     ...
@@ -606,11 +494,6 @@ uv run python -m src.lib.cloud115 dir-info --cid 3428707991046116541  # 子目�
 uv run python -m src.lib.cloud115 downurl --pickcode bijccwbcsacpi842c
 uv run python -m src.lib.cloud115 downurl --pickcode xxx --user-agent "Mozilla/5.0 CustomPlayer/1.0"
 uv run python -m src.lib.cloud115 snapshot-cookies   # 打印 Set-Cookie merge 后的完整 cookies
-
-# VIP 专属：视频信息 + HLS 分段列表
-uv run python -m src.lib.cloud115 video-info --pickcode bijccwbcsacpi842c
-uv run python -m src.lib.cloud115 video-segments --pickcode bijccwbcsacpi842c
-uv run python -m src.lib.cloud115 video-segments --pickcode xxx --prefer-bandwidth 1800000 --all
 
 # 文件管理（导入管线用）
 uv run python -m src.lib.cloud115 list-recursive --cid 3428707991046116541 --max-files 50
@@ -696,7 +579,7 @@ uv run pytest tests/lib/cloud115/ --run-cloud115-integration -n0 -v
 
 以下能力**明确不实现**，如需要请另起模块：
 
-- 通用文件上传 `upload_*`（**仅保留 .torrent 的 sample 上传**，用于离线 BT 选文件）
+- 通用文件上传 `upload_*`
 - 分享 `share_*`
 - 增量事件订阅（`life_list`）
 - pickcode ↔ file_id 数学转换（若需要，从 `list_dir` 返回的 `DirEntry` 里直接读）
