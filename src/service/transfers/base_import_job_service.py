@@ -36,6 +36,7 @@ from src.common.media_import_status import (
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import MediaLibrary
+from src.model.enums import MediaLibraryBackend
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.media_import import FailedFileResource
 from src.service.system import ActivityService
@@ -66,6 +67,7 @@ class BaseImportJobService:
     INTERRUPTED_RECOVER_MESSAGE: str = ""
     LOG_LABEL: str = ""  # "Media import" / "Video import"
     RECOVER_LOG_LABEL: str = ""
+    REQUIRED_LIBRARY_BACKEND: MediaLibraryBackend | None = None
 
     # ---- 公开查询 ----
 
@@ -409,11 +411,23 @@ class BaseImportJobService:
 
     # ---- 下沉的通用校验与失败文件解析 ----
 
-    @staticmethod
-    def _require_library(library_id: int) -> MediaLibrary:
+    @classmethod
+    def _require_library(cls, library_id: int) -> MediaLibrary:
         library = MediaLibrary.get_or_none(MediaLibrary.id == library_id)
         if library is None:
             raise ApiError(404, "media_library_not_found", "媒体库不存在", {"library_id": library_id})
+        expected = cls.REQUIRED_LIBRARY_BACKEND
+        if expected is not None and library.backend != expected.value:
+            raise ApiError(
+                422,
+                "media_library_backend_mismatch",
+                f"该操作要求 {expected.value} 媒体库",
+                {
+                    "library_id": library_id,
+                    "expected_backend": expected.value,
+                    "actual_backend": library.backend,
+                },
+            )
         return library
 
     @classmethod

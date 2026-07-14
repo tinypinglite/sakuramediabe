@@ -8,6 +8,7 @@ from peewee import fn
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import require_record, resolve_sort, validate_page as _validate_page
 from src.model import DownloadClient, DownloadTask, Indexer, MediaLibrary
+from src.model.enums import MediaLibraryBackend
 # 导入状态取值统一收口到 media_import_status 模块；此处再导出，兼容历史引用路径。
 from src.common.media_import_status import ALLOWED_IMPORT_STATUSES
 
@@ -104,6 +105,30 @@ def require_media_library(library_id: int) -> MediaLibrary:
         error_message="Media library not found",
         error_details={"library_id": library_id},
     )
+
+
+def require_local_media_library(library_id: int) -> MediaLibrary:
+    library = require_media_library(library_id)
+    if library.backend != MediaLibraryBackend.LOCAL.value:
+        raise ApiError(
+            422,
+            "media_library_backend_mismatch",
+            "该操作要求 local 媒体库",
+            {
+                "library_id": library_id,
+                "expected_backend": MediaLibraryBackend.LOCAL.value,
+                "actual_backend": library.backend,
+            },
+        )
+    root_path = (library.backend_config or {}).get("root_path")
+    if not isinstance(root_path, str) or not root_path:
+        raise ApiError(
+            422,
+            "invalid_media_library_backend_config",
+            "local 媒体库缺少 root_path",
+            {"library_id": library_id},
+        )
+    return library
 
 
 def require_indexer(indexer_name: str) -> Indexer:

@@ -86,6 +86,34 @@ def test_download_client_crud_api(client, account_user):
     assert DownloadClient.get_or_none(DownloadClient.id == created["id"]) is None
 
 
+def test_download_client_rejects_cloud115_library(client, account_user):
+    token = _login(client, username=account_user.username)
+    library = MediaLibrary.create(
+        name="Cloud",
+        backend="cloud115",
+        backend_account_key="cloud115:download-client-mismatch",
+        backend_config={"cookies": "UID=x_A1_y", "root_cid": "root", "app": "web"},
+    )
+
+    response = client.post(
+        "/download-clients",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "client-cloud",
+            "base_url": "http://localhost:8080",
+            "username": "alice",
+            "password": "secret",
+            "client_save_path": "/downloads/a",
+            "local_root_path": "/mnt/downloads/a",
+            "media_library_id": library.id,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "media_library_backend_mismatch"
+    assert DownloadClient.select().count() == 0
+
+
 def test_download_client_api_reports_expected_errors(client, account_user):
     token = _login(client, username=account_user.username)
     library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": "/library/main"})

@@ -48,7 +48,12 @@ def iter_movie_sidecar_roots(movie) -> list[Path]:
 
     sidecar_roots: list[Path] = []
     seen_paths: set[str] = set()
-    media_items = Media.select(Media.path).where(Media.movie == movie).order_by(Media.id.asc())
+    # cloud115 等云盘 Media 的 path 为 NULL（字幕全在 subtitle_root），只遍历有本地路径的行。
+    media_items = (
+        Media.select(Media.path)
+        .where(Media.movie == movie, Media.path.is_null(False))
+        .order_by(Media.id.asc())
+    )
     for media in media_items:
         media_root = Path(media.path).expanduser().resolve().parent
         key = str(media_root)

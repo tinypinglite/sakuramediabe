@@ -25,6 +25,7 @@ from src.lib.cloud115.exceptions import (
     Cloud115RequestError,
     Cloud115VideoNotReadyError,
 )
+from src.lib.cloud115.types import Cloud115CookieStatus
 
 
 COOKIE = "UID=12345678_A1_1700000000; CID=abc; SEID=xyz; KID=kkk"
@@ -113,6 +114,31 @@ async def test_check_cookies_alive_returns_false_on_network_error() -> None:
     # 契约：check_cookies_alive 永不抛，网络错也返 False
     assert await client.check_cookies_alive() is False
     await client.close()
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 502])
+async def test_probe_cookies_status_classifies_upstream_failures_as_unavailable(
+    status_code: int,
+) -> None:
+    client = _make_client(lambda r: httpx.Response(status_code, content=b"temporary"))
+    assert (
+        await client.probe_cookies_status()
+        is Cloud115CookieStatus.UNAVAILABLE
+    )
+    await client.close()
+
+
+async def test_probe_cookies_status_distinguishes_expired_and_invalid_payload() -> None:
+    expired = _make_client(
+        lambda r: httpx.Response(200, json={"state": False})
+    )
+    invalid = _make_client(
+        lambda r: httpx.Response(200, json={"unexpected": True})
+    )
+    assert await expired.probe_cookies_status() is Cloud115CookieStatus.EXPIRED
+    assert await invalid.probe_cookies_status() is Cloud115CookieStatus.UNAVAILABLE
+    await expired.close()
+    await invalid.close()
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +274,7 @@ async def test_mkdir_success_without_cid_raises_request_error() -> None:
 
 
 async def test_errno_99_maps_to_auth_error() -> None:
-    """errno=99 "请重新登录"：短时高频调用 downurl 触发的账号级冷却。"""
+    """errno=99 的稳定可见语义是“请重新登录”，按认证失效处理。"""
     client = _make_client(lambda r: httpx.Response(200, json={
         "state": False, "errno": 99, "error": "请重新登录"
     }))
@@ -529,6 +555,24 @@ async def test_5xx_exhausts_retries_raises_request_error() -> None:
             await client.list_dir("0")
     finally:
         asyncio.sleep = original_sleep  # type: ignore
+        await client.close()
+
+
+async def test_non_idempotent_post_does_not_retry_after_5xx() -> None:
+    """mkdir 可能已在服务端成功，响应 5xx 时不得自动重放并制造同名目录。"""
+    call_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        return httpx.Response(500, content=b"unknown outcome")
+
+    client = _make_client(handler)
+    try:
+        with pytest.raises(Cloud115RequestError, match="after 1 attempts"):
+            await client.mkdir("0", "sakuramedia")
+        assert call_count == 1
+    finally:
         await client.close()
 
 
@@ -1467,4 +1511,309 @@ async def test_restart_offline_task_rejects_empty_hash() -> None:
     client = _make_client(lambda r: httpx.Response(500))
     with pytest.raises(ValueError, match="info_hash"):
         await client.restart_offline_task("")
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# iter_files_recursive
+# ---------------------------------------------------------------------------
+
+
+async def test_iter_files_recursive_paginates_with_stable_sort() -> None:
+    """递归模式参数：show_dir=0 & cur=0 触发全树枚举，o=file_name & asc=1 固定排序。"""
+    from urllib.parse import parse_qs
+
+    pages = [
+        {
+            "state": True,
+            "count": 3,
+            "data": [
+                {"fid": "1", "cid": "100", "n": "a.mp4", "s": "10", "sha": "AAA",
+                 "pc": "pc-a", "te": 1, "tp": 1, "iv": 1, "play_long": 1893, "ic": 0},
+                {"fid": "2", "cid": "100", "n": "b.mp4", "s": "20", "sha": "BBB",
+                 "pc": "pc-b", "te": 2, "tp": 2, "iv": 1},
+            ],
+        },
+        {
+            "state": True,
+            "count": 3,
+            "data": [
+                {"fid": "3", "cid": "200", "n": "c.srt", "s": "5", "sha": "CCC",
+                 "pc": "pc-c", "te": 3, "tp": 3, "iv": 0, "ic": 1},
+            ],
+        },
+    ]
+    seen_offsets: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "webapi.115.com"
+        assert request.url.path == "/files"
+        assert request.url.params["show_dir"] == "0"
+        assert request.url.params["cur"] == "0"
+        assert request.url.params["o"] == "file_name"
+        assert request.url.params["asc"] == "1"
+        assert request.url.params["cid"] == "9000"
+        offset = request.url.params["offset"]
+        seen_offsets.append(offset)
+        return httpx.Response(200, json=pages[0] if offset == "0" else pages[1])
+
+    client = _make_client(handler)
+    entries = [e async for e in client.iter_files_recursive("9000", page_size=2)]
+    assert seen_offsets == ["0", "2"]
+    assert [e.entry_id for e in entries] == ["1", "2", "3"]
+    # play_long / ic 可选字段解析：带值取 int，缺省 None
+    assert entries[0].play_long == 1893
+    assert entries[0].ic == 0
+    assert entries[1].play_long is None
+    assert entries[1].ic is None
+    assert entries[2].ic == 1
+    await client.close()
+
+
+async def test_iter_files_recursive_rejects_empty_cid_and_oversize_page() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={"state": True, "count": 0, "data": []}))
+    with pytest.raises(ValueError, match="cid"):
+        async for _ in client.iter_files_recursive(""):
+            pass
+    with pytest.raises(ValueError, match="exceeds server max"):
+        async for _ in client.iter_files_recursive("0", page_size=2000):
+            pass
+    await client.close()
+
+
+async def test_iter_files_recursive_state_false_maps_errno() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={
+        "state": False, "errno": 990002, "error": "not exist"
+    }))
+    with pytest.raises(Cloud115NotFoundError):
+        async for _ in client.iter_files_recursive("404"):
+            pass
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# copy_files / move_files
+# ---------------------------------------------------------------------------
+
+
+async def test_copy_files_posts_pid_and_indexed_fids() -> None:
+    from urllib.parse import parse_qs
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.host == "webapi.115.com"
+        assert request.url.path == "/files/copy"
+        body = parse_qs(request.content.decode("utf-8"))
+        assert body["pid"] == ["7777"]
+        assert body["fid[0]"] == ["1"]
+        assert body["fid[1]"] == ["2"]
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    await client.copy_files(["1", "2"], pid="7777")
+    await client.close()
+
+
+async def test_copy_files_rejects_empty_args() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="fids"):
+        await client.copy_files([], pid="7777")
+    with pytest.raises(ValueError, match="pid"):
+        await client.copy_files(["1"], pid="")
+    await client.close()
+
+
+async def test_copy_files_state_false_maps_errno() -> None:
+    client = _make_client(lambda r: httpx.Response(200, json={
+        "state": False, "errno": 990009, "error": "expired"
+    }))
+    with pytest.raises(Cloud115AuthError):
+        await client.copy_files(["1"], pid="7777")
+    await client.close()
+
+
+async def test_move_files_posts_pid_and_indexed_fids() -> None:
+    from urllib.parse import parse_qs
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/files/move"
+        body = parse_qs(request.content.decode("utf-8"))
+        assert body["pid"] == ["8888"]
+        assert body["fid[0]"] == ["9"]
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    await client.move_files(["9"], pid="8888")
+    await client.close()
+
+
+async def test_move_files_rejects_empty_args() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="fids"):
+        await client.move_files([], pid="8888")
+    with pytest.raises(ValueError, match="pid"):
+        await client.move_files(["1"], pid="")
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# batch_rename
+# ---------------------------------------------------------------------------
+
+
+async def test_batch_rename_posts_files_new_name_map() -> None:
+    from urllib.parse import parse_qs
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/files/batch_rename"
+        body = parse_qs(request.content.decode("utf-8"))
+        assert body["files_new_name[11]"] == ["ABP-123＿CD1＿movie.mp4"]
+        assert body["files_new_name[22]"] == ["ABP-123＿CD2＿movie.mp4"]
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    await client.batch_rename({
+        "11": "ABP-123＿CD1＿movie.mp4",
+        "22": "ABP-123＿CD2＿movie.mp4",
+    })
+    await client.close()
+
+
+async def test_batch_rename_rejects_empty_map_and_blank_entries() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="renames"):
+        await client.batch_rename({})
+    with pytest.raises(ValueError, match="invalid rename entry"):
+        await client.batch_rename({"11": ""})
+    with pytest.raises(ValueError, match="invalid rename entry"):
+        await client.batch_rename({"": "x.mp4"})
+    await client.close()
+
+
+async def test_rename_file_sends_exactly_one_mapping() -> None:
+    from urllib.parse import parse_qs
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = parse_qs(request.content.decode("utf-8"))
+        assert body == {"files_new_name[11]": ["ABP-123＿movie.mp4"]}
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    await client.rename_file("11", "ABP-123＿movie.mp4")
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# delete_files
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_files_posts_indexed_fids_with_optional_pid() -> None:
+    from urllib.parse import parse_qs
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.host == "webapi.115.com"
+        assert request.url.path == "/rb/delete"
+        body = parse_qs(request.content.decode("utf-8"))
+        assert body["fid[0]"] == ["31"]
+        assert body["fid[1]"] == ["32"]
+        assert body["pid"] == ["600"]
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    await client.delete_files(["31", "32"], pid="600")
+    await client.close()
+
+
+async def test_delete_files_omits_pid_when_not_given() -> None:
+    from urllib.parse import parse_qs
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = parse_qs(request.content.decode("utf-8"))
+        assert "pid" not in body
+        assert body["fid[0]"] == ["31"]
+        return httpx.Response(200, json={"state": True})
+
+    client = _make_client(handler)
+    await client.delete_files(["31"])
+    await client.close()
+
+
+async def test_delete_files_rejects_empty_fids() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="fids"):
+        await client.delete_files([])
+    await client.close()
+
+
+# ---------------------------------------------------------------------------
+# download_bytes
+# ---------------------------------------------------------------------------
+
+
+def _direct_url_stub(url: str, user_agent: str):
+    from src.lib.cloud115.types import DirectUrl
+
+    return DirectUrl(
+        file_id="1", file_name="sub.srt", file_size=10, sha1="S", pickcode="pc-s",
+        url=url, user_agent=user_agent, expires_at=-1,
+    )
+
+
+async def test_download_bytes_reuses_bound_user_agent() -> None:
+    """拿直链与 GET 直链必须同 UA —— download_bytes 内部封装这一约束。"""
+    ua = "SakuraMedia-Subtitle/1.0"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "cdn.example.com"
+        assert request.headers["User-Agent"] == ua
+        return httpx.Response(200, content=b"1\n00:00:01,000 --> 00:00:02,000\nhello\n")
+
+    client = _make_client(handler)
+
+    async def fake_downurl(pickcode: str, user_agent: str):
+        assert pickcode == "pc-s"
+        assert user_agent == ua
+        return _direct_url_stub("https://cdn.example.com/sub.srt?t=1", user_agent)
+
+    client.get_download_url = fake_downurl  # type: ignore[method-assign]
+    content = await client.download_bytes("pc-s", user_agent=ua)
+    assert content.startswith(b"1\n")
+    await client.close()
+
+
+async def test_download_bytes_raises_when_exceeds_max_bytes() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"x" * 100)
+
+    client = _make_client(handler)
+
+    async def fake_downurl(pickcode: str, user_agent: str):
+        return _direct_url_stub("https://cdn.example.com/big.bin", user_agent)
+
+    client.get_download_url = fake_downurl  # type: ignore[method-assign]
+    with pytest.raises(Cloud115RequestError, match="max_bytes"):
+        await client.download_bytes("pc-big", user_agent="ua", max_bytes=10)
+    await client.close()
+
+
+async def test_download_bytes_raises_on_non_2xx_cdn_response() -> None:
+    client = _make_client(lambda r: httpx.Response(403, content=b"forbidden"))
+
+    async def fake_downurl(pickcode: str, user_agent: str):
+        return _direct_url_stub("https://cdn.example.com/gone.srt", user_agent)
+
+    client.get_download_url = fake_downurl  # type: ignore[method-assign]
+    with pytest.raises(Cloud115RequestError, match="403"):
+        await client.download_bytes("pc-x", user_agent="ua")
+    await client.close()
+
+
+async def test_download_bytes_rejects_non_positive_max_bytes() -> None:
+    client = _make_client(lambda r: httpx.Response(500))
+    with pytest.raises(ValueError, match="max_bytes"):
+        await client.download_bytes("pc", user_agent="ua", max_bytes=0)
     await client.close()

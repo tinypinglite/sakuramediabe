@@ -57,6 +57,8 @@ markers = [
 ]
 
 [tool.uv]
+# libtorrent 2.0.12+ 不再发 macOS 13 Intel 轮子，钉在 2.0.11（与 main 锁一致）保证开发机可装。
+constraint-dependencies = ["libtorrent<2.0.12"]
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
     "sys_platform == 'linux' and platform_machine == 'aarch64'",

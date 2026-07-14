@@ -1,7 +1,7 @@
 import base64
 
 from src.api.exception.errors import ApiError
-from src.lib.cloud115 import Cloud115QrLogin, QrStatus
+from src.lib.cloud115 import Cloud115Error, Cloud115QrLogin, QrStatus
 from src.lib.cloud115.qrlogin import APPS
 from src.schema.playback.cloud115_libraries import (
     Cloud115QrStatusRequest,
@@ -30,9 +30,14 @@ class Cloud115QrLoginService:
     @classmethod
     async def get_token(cls) -> Cloud115QrTokenResource:
         """拿扫码 uid/time/sign + 二维码 PNG（base64 塞进 JSON body）。"""
-        async with Cloud115QrLogin() as qr:
-            token = await qr.get_token()
-            image = await qr.get_qrcode_image(token.uid)
+        try:
+            async with Cloud115QrLogin() as qr:
+                token = await qr.get_token()
+                image = await qr.get_qrcode_image(token.uid)
+        except Cloud115Error as exc:
+            from src.service.playback.cloud115_backend_service import map_cloud115_error
+
+            raise map_cloud115_error(exc) from exc
         return Cloud115QrTokenResource(
             uid=token.uid,
             time=token.time,
@@ -53,8 +58,13 @@ class Cloud115QrLoginService:
             sign=payload.sign,
             qrcode="",  # get_qrcode_status 不用这字段
         )
-        async with Cloud115QrLogin() as qr:
-            status = await qr.get_qrcode_status(token)
+        try:
+            async with Cloud115QrLogin() as qr:
+                status = await qr.get_qrcode_status(token)
+        except Cloud115Error as exc:
+            from src.service.playback.cloud115_backend_service import map_cloud115_error
+
+            raise map_cloud115_error(exc) from exc
         return Cloud115QrStatusResource(status=_STATUS_TO_STRING[status])
 
     @staticmethod

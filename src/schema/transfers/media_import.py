@@ -6,7 +6,7 @@
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import computed_field
+from pydantic import computed_field, model_validator
 
 from src.schema.common.base import SchemaModel
 # media_import_status 是零依赖的取值/中文说明集中模块，这里仅用于把原始状态码转换成展示文案。
@@ -52,9 +52,22 @@ class FailedFileResource(SchemaModel):
 
 
 class ImportJobCreateRequest(SchemaModel):
+    """导入作业创建请求：本地库传 source_path，cloud115 库传 source_cid，恰好其一。
+
+    transfer_mode 取值按库类型分别校验：本地 auto/cleanup-source；cloud115
+    copy/cleanup-source（后者默认）；旧 move 仅作为兼容输入。
+    """
+
     library_id: int
-    source_path: str
-    transfer_mode: Literal["auto", "cleanup-source"] = "auto"
+    source_path: Optional[str] = None
+    source_cid: Optional[str] = None
+    transfer_mode: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> "ImportJobCreateRequest":
+        if (self.source_path is None) == (self.source_cid is None):
+            raise ValueError("exactly one of source_path / source_cid is required")
+        return self
 
 
 class RetryFailedFilesRequest(SchemaModel):
@@ -80,6 +93,8 @@ class ImportJobTriggerResponse(SchemaModel):
 class ImportJobListItemResource(SchemaModel):
     id: int
     source_path: str
+    # cloud115 作业的源目录 cid；本地作业为 None，前端据此区分作业类型。
+    source_cid: Optional[str] = None
     library_id: int
     download_task_id: Optional[int] = None
     task_run_id: Optional[int] = None

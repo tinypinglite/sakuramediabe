@@ -1,12 +1,14 @@
 import mimetypes
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
-from src.common import resolve_media_file_path, verify_media_signature
+from src.common import verify_media_signature
 from src.common.range_streaming import range_requests_response
+from src.model import Media
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
     InvalidMediaResource,
@@ -76,7 +78,7 @@ def delete_media_point(
 
 
 @router.get("/{media_id}/stream")
-def stream_media_file(
+async def stream_media_file(
     request: Request,
     media_id: int,
     expires: int | None = None,
@@ -86,7 +88,19 @@ def stream_media_file(
         raise ApiError(403, "file_signature_invalid", "文件签名无效")
 
     verify_media_signature(media_id, expires, signature)
-    absolute_path = resolve_media_file_path(media_id)
+    media = Media.get_or_none(Media.id == media_id)
+    if media is None:
+        raise ApiError(404, "media_not_found", "媒体不存在")
+
+    # cloud115 库：现拿绑定请求方 UA 的直链后 302（签名 URL 保护 /stream，302 之后是 115 CDN）。
+    if MediaService.is_cloud115_media(media):
+        user_agent = request.headers.get("user-agent") or "SakuraMedia-Player/1.0"
+        direct_url = await MediaService.resolve_cloud115_stream_url(media, user_agent)
+        return RedirectResponse(direct_url, status_code=status.HTTP_302_FOUND)
+
+    if not media.path:
+        raise ApiError(404, "file_not_found", "文件不存在")
+    absolute_path = Path(media.path).expanduser().resolve()
     if not absolute_path.exists() or not absolute_path.is_file():
         raise ApiError(404, "file_not_found", "文件不存在")
 

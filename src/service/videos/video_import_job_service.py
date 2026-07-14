@@ -17,6 +17,7 @@ from src.common.media_import_status import (
     IMPORT_JOB_STATE_RUNNING,
 )
 from src.model import VideoCollection, VideoImportJob
+from src.model.enums import MediaLibraryBackend
 from src.schema.videos.imports import (
     VideoImportJobListItemResource,
     VideoImportJobResource,
@@ -29,6 +30,7 @@ from src.service.videos.video_import_service import VideoImportService
 
 
 class VideoImportJobService(BaseImportJobService):
+    REQUIRED_LIBRARY_BACKEND = MediaLibraryBackend.LOCAL
     JOB_MODEL = VideoImportJob
     TASK_KEY = "video_directory_import"
     MUTEX_PREFIX = "video_import"

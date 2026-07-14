@@ -45,7 +45,69 @@ class MediaFileScanService:
             return
         progress_callback(payload)
 
+    @staticmethod
+    def _is_cloud115_media(media: Media) -> bool:
+        from src.model.enums import MediaLibraryBackend
+
+        library = media.library
+        return library is not None and library.backend == MediaLibraryBackend.CLOUD115.value
+
+    def _scan_cloud115_media(self, media: Media) -> dict[str, bool | datetime]:
+        """cloud115 媒体对账：pickcode_info 探活判存在性。
+
+        - NotFound → 远端已删/封禁 → 标 invalid；重新出现 → 复活。
+        - AuthError / 限流 / 网络错 → **跳过本条不动 valid**：cookies 失效不代表文件没了，
+          误标 invalid 会让整库在凭据过期期间集体失效。
+        """
+        import asyncio
+
+        from src.lib.cloud115 import Cloud115Error, Cloud115NotFoundError
+        from src.service.playback.cloud115_backend_service import cloud115_client_for
+
+        checked_at = utc_now_for_db()
+        result = {
+            "updated": False,
+            "invalidated": False,
+            "revived": False,
+            "file_exists": bool(media.valid),
+            "checked_at": checked_at,
+        }
+        pickcode = (media.backend_locator or {}).get("pickcode")
+        if not pickcode:
+            logger.warning("Cloud115 media missing pickcode media_id={}", media.id)
+            return result
+
+        async def _probe() -> bool:
+            async with cloud115_client_for(media.library) as client:
+                await client.pickcode_info(pickcode)
+                return True
+
+        try:
+            file_exists = asyncio.run(_probe())
+        except Cloud115NotFoundError:
+            file_exists = False
+        except Cloud115Error as exc:
+            # 上游不可用：本轮跳过，保持现状（不误标 invalid）。
+            logger.warning(
+                "Cloud115 media probe skipped media_id={} detail={}", media.id, exc
+            )
+            return result
+
+        result["file_exists"] = file_exists
+        if media.valid != file_exists:
+            media.valid = file_exists
+            media.updated_at = checked_at
+            media.save(only=[Media.valid, Media.updated_at])
+            result["updated"] = True
+            result["invalidated"] = not file_exists
+            result["revived"] = file_exists
+        if media.movie_number:
+            MovieSubtitleService.sync_movie_subtitles(media.movie)
+        return result
+
     def _scan_single_media(self, media: Media) -> dict[str, bool | datetime]:
+        if self._is_cloud115_media(media):
+            return self._scan_cloud115_media(media)
         file_path = Path(media.path).expanduser().resolve()
         file_exists = file_path.exists() and file_path.is_file()
         checked_at = utc_now_for_db()
@@ -118,7 +180,7 @@ class MediaFileScanService:
         # 单条复查直接返回状态变化，前端无需再推断 valid 是否被本次修正。
         return MediaFileCheckResult(
             id=media.id,
-            path=media.path,
+            path=media.display_path,
             file_exists=bool(result["file_exists"]),
             valid_before=valid_before,
             valid_after=bool(media.valid),

@@ -1017,6 +1017,35 @@ class ActivityService:
         return cls._notification_resource(notification)
 
     @classmethod
+    def create_cloud115_cookies_expired_notification(
+        cls,
+        *,
+        library_name: str,
+        library_id: int,
+    ) -> NotificationResource | None:
+        # cloud115 cookies 长效凭据失效：需要用户重新扫码绑定。保活任务周期触发，
+        # 同一库存在未读同题通知时不重复发，避免每个周期刷一条。
+        title = f"115 网盘登录已失效（{library_name}）"
+        already_pending = (
+            SystemNotification.select()
+            .where(
+                SystemNotification.title == title,
+                SystemNotification.is_read == False,  # noqa: E712
+            )
+            .exists()
+        )
+        if already_pending:
+            return None
+        notification = cls._create_notification(
+            category="warning",
+            title=title,
+            content="115 网盘 cookies 已失效，该媒体库的播放、缩略图与导入能力已不可用，请在媒体库设置中重新扫码登录。",
+            related_resource_type="media_library",
+            related_resource_id=library_id,
+        )
+        return cls._notification_resource(notification)
+
+    @classmethod
     def create_ranking_account_error_notification(
         cls,
         *,

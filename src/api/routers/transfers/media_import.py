@@ -12,7 +12,12 @@ from src.schema.transfers.media_import import (
     RenameFailedFileRequest,
     RetryFailedFilesRequest,
 )
-from src.service.transfers import FilesystemBrowseService, MediaImportJobService
+from src.service.transfers import (
+    Cloud115ImportJobService,
+    FilesystemBrowseService,
+    MediaImportJobService,
+    import_job_service_for,
+)
 
 router = APIRouter(
     tags=["media-import"],
@@ -31,10 +36,18 @@ def list_filesystem_entries(path: str | None = Query(default=None)):
     status_code=status.HTTP_202_ACCEPTED,
 )
 def create_import_job(payload: ImportJobCreateRequest):
+    # 按请求形状分派：source_cid → cloud115 导入；source_path → 本地目录导入。
+    # schema 已保证两者恰好其一；库 backend 与请求形状不匹配时由对应 service 报 422。
+    if payload.source_cid is not None:
+        return Cloud115ImportJobService.trigger_cloud115_import(
+            payload.library_id,
+            payload.source_cid,
+            transfer_mode=payload.transfer_mode or "cleanup-source",
+        )
     return MediaImportJobService.trigger_directory_import(
         payload.library_id,
         payload.source_path,
-        transfer_mode=payload.transfer_mode,
+        transfer_mode=payload.transfer_mode or "auto",
     )
 
 
@@ -53,12 +66,12 @@ def get_import_job(import_job_id: int):
 
 @router.post("/import-jobs/{import_job_id}/retry", response_model=ImportJobTriggerResponse)
 def retry_import_job_failed_files(import_job_id: int, payload: RetryFailedFilesRequest):
-    return MediaImportJobService.retry_failed_files(import_job_id, payload.files)
+    return import_job_service_for(import_job_id).retry_failed_files(import_job_id, payload.files)
 
 
 @router.delete("/import-jobs/{import_job_id}/failed-files", response_model=ImportJobResource)
 def delete_import_job_failed_file(import_job_id: int, payload: DeleteFailedFileRequest):
-    return MediaImportJobService.delete_failed_file(import_job_id, payload.path)
+    return import_job_service_for(import_job_id).delete_failed_file(import_job_id, payload.path)
 
 
 @router.post(
@@ -66,7 +79,7 @@ def delete_import_job_failed_file(import_job_id: int, payload: DeleteFailedFileR
     response_model=ImportJobResource,
 )
 def rename_import_job_failed_file(import_job_id: int, payload: RenameFailedFileRequest):
-    return MediaImportJobService.rename_failed_file(
+    return import_job_service_for(import_job_id).rename_failed_file(
         import_job_id,
         payload.path,
         payload.new_name,

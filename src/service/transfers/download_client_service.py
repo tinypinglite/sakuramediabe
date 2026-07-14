@@ -26,7 +26,7 @@ from src.schema.transfers.downloads import (
 from src.service.transfers.common import (
     ensure_name_available,
     require_client,
-    require_media_library,
+    require_local_media_library,
     validate_absolute_path,
     validate_base_url,
     validate_media_library_id,
@@ -91,7 +91,7 @@ class DownloadClientService:
             "Download client password cannot be empty",
         )
         media_library_id = validate_media_library_id(payload.media_library_id)
-        require_media_library(media_library_id)
+        require_local_media_library(media_library_id)
         ensure_name_available(name)
 
         client = DownloadClient.create(
@@ -186,6 +186,7 @@ class DownloadClientService:
         probe_id: str | None = None,
     ) -> DownloadClientStorageTestResponse:
         client = require_client(client_id)
+        require_local_media_library(client.media_library_id)
         return cls._run_storage_probe(
             client,
             qbittorrent_client_cls=qbittorrent_client_cls,
@@ -438,7 +439,7 @@ class DownloadClientService:
             field_name="local_root_path",
         )
         media_library_id = validate_media_library_id(payload.media_library_id)
-        library = require_media_library(media_library_id)
+        library = require_local_media_library(media_library_id)
         password, existing = cls._resolve_probe_password(
             password=payload.password,
             client_id=payload.client_id,
@@ -578,7 +579,7 @@ class DownloadClientService:
 
         if "media_library_id" in update_data:
             media_library_id = validate_media_library_id(update_data["media_library_id"])
-            require_media_library(media_library_id)
+            require_local_media_library(media_library_id)
             client.media_library = media_library_id
 
         client.save()

@@ -47,6 +47,28 @@ def test_trigger_video_import_returns_202(client, account_user, tmp_path):
     assert job.state == "pending"
 
 
+def test_trigger_video_import_rejects_cloud115_library(client, account_user, tmp_path):
+    token = _login(client, account_user.username)
+    library = MediaLibrary.create(
+        name="Cloud Videos",
+        backend="cloud115",
+        backend_account_key="cloud115:video-import-mismatch",
+        backend_config={"cookies": "UID=x_A1_y", "root_cid": "root", "app": "web"},
+    )
+    source = tmp_path / "incoming-cloud"
+    source.mkdir()
+
+    response = client.post(
+        "/video-imports",
+        json={"library_id": library.id, "source_path": str(source), "transfer_mode": "auto"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "media_library_backend_mismatch"
+    assert VideoImportJob.select().count() == 0
+
+
 def test_trigger_video_import_missing_library_is_422(client, account_user, tmp_path):
     token = _login(client, account_user.username)
     response = client.post(

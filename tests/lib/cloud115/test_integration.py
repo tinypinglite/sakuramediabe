@@ -242,3 +242,173 @@ async def test_get_download_url_real(client: Cloud115Client) -> None:
     # sha1 / file_name / file_size 应至少非空/非零
     assert du.file_name
     assert du.file_size > 0
+
+
+# ---------------------------------------------------------------------------
+# 文件管理接口（导入管线依赖）：递归枚举 / copy / rename / move / delete 全生命周期
+# ---------------------------------------------------------------------------
+
+
+async def _find_small_file(client: Cloud115Client, max_size: int = 50 * 1024 * 1024) -> DirEntry | None:
+    """优先在前两层找小文件；找不到时递归，避免测试依赖用户目录布局。"""
+    entries, _ = await client.list_dir("0", limit=200)
+    files = [e for e in entries if not e.is_dir and 0 < e.size <= max_size]
+    if files:
+        return min(files, key=lambda e: e.size)
+    for sub in (e for e in entries if e.is_dir):
+        sub_entries, _ = await client.list_dir(sub.entry_id, limit=200)
+        files = [e for e in sub_entries if not e.is_dir and 0 < e.size <= max_size]
+        if files:
+            return min(files, key=lambda e: e.size)
+    count = 0
+    async for entry in client.iter_files_recursive("0", page_size=1000):
+        if 0 < entry.size <= max_size:
+            return entry
+        count += 1
+        if count >= 5000:
+            break
+    return None
+
+
+async def test_iter_files_recursive_real(client: Cloud115Client) -> None:
+    """递归枚举根目录树（前 3 页封顶），验证 §8 清单：分页稳定 + play_long 出现在已转码视频上。"""
+    count = 0
+    seen_video_with_play_long = False
+    async for entry in client.iter_files_recursive("0", page_size=1000):
+        assert not entry.is_dir          # 递归模式只该出文件
+        assert entry.entry_id
+        assert entry.parent_id           # 每条都带 parent cid（拿不到父目录名，靠上层映射）
+        if entry.is_video and entry.play_long:
+            seen_video_with_play_long = True
+        count += 1
+        if count >= 3000:
+            break
+    if count == 0:
+        pytest.skip("account has no files at all")
+    # 只要账号里有已转码视频，play_long 就应该在递归响应里白给
+    if not seen_video_with_play_long:
+        pytest.skip("no transcoded video found to verify play_long presence")
+
+
+async def test_copy_rename_move_delete_lifecycle_real(client: Cloud115Client) -> None:
+    """写操作全生命周期（临时目录内完成，结束清理）：
+
+    mkdir A/B → copy 小文件到 A（新 fid/pickcode、sha1 不变）→ 单文件 rename（fid 不变）
+    → move A→B（fid/pickcode 不变）→ delete 清场。
+    覆盖 §8 清单：copy 同步性（copy 后立即 re-list 能否看到）、单文件改名生效。
+    """
+    source = await _find_small_file(client)
+    if source is None:
+        pytest.skip("no small file (<50MB) found in first two levels for copy test")
+
+    stamp = int(time.time())
+    dir_a = await client.mkdir("0", f"sdk-it-a-{stamp}")
+    dir_b = await client.mkdir("0", f"sdk-it-b-{stamp}")
+    try:
+        # 1) copy：产生新 fid/pickcode，sha1 不变
+        await client.copy_files([source.entry_id], pid=dir_a)
+        copied: DirEntry | None = None
+        for _ in range(10):   # copy 是否同步落地未有官方承诺：轮询最多 ~10s
+            entries, _ = await client.list_dir(dir_a, limit=50)
+            copied = next((e for e in entries if not e.is_dir), None)
+            if copied is not None:
+                break
+            time.sleep(1)
+        assert copied is not None, "copied file did not appear in target dir within 10s"
+        assert copied.sha1 == source.sha1
+        assert copied.entry_id != source.entry_id, "copy must produce a NEW fid"
+        assert copied.pickcode != source.pickcode, "copy must produce a NEW pickcode"
+
+        # 2) 单文件改名：名字变、fid 不变；成功响应后按 fid 查询确认实际名称。
+        suffix = source.name.rsplit(".", 1)[-1] if "." in source.name else ""
+        new_name = f"renamed-{stamp}.{suffix}" if suffix else f"renamed-{stamp}"
+        await client.rename_file(copied.entry_id, new_name)
+        renamed = await client.file_info(copied.entry_id)
+        assert renamed.name == new_name
+        assert renamed.pickcode == copied.pickcode, "rename must keep pickcode"
+
+        # 3) move：fid/pickcode 不变，位置变
+        await client.move_files([copied.entry_id], pid=dir_b)
+        entries_b, _ = await client.list_dir(dir_b, limit=50)
+        moved = next((e for e in entries_b if e.entry_id == copied.entry_id), None)
+        assert moved is not None, "moved file should appear in dir B"
+        assert moved.pickcode == copied.pickcode, "move must keep pickcode"
+        entries_a, _ = await client.list_dir(dir_a, limit=50)
+        assert all(e.entry_id != copied.entry_id for e in entries_a), "file should have left dir A"
+    finally:
+        # 清场：删两个临时目录（rb/delete 对目录同样生效，进回收站）
+        await client.delete_files([dir_a, dir_b])
+    # 删除后 list 应报 NotFound 或列表为空（目录进了回收站）
+    from src.lib.cloud115 import Cloud115NotFoundError
+
+    try:
+        entries, total = await client.list_dir(dir_a, limit=5)
+        assert total == 0 or all(e.entry_id != dir_a for e in entries)
+    except Cloud115NotFoundError:
+        pass
+
+
+async def test_cleanup_source_copy_then_delete_real(client: Cloud115Client) -> None:
+    """只用原文件的临时复制品验证 cleanup-source 顺序，绝不删除用户原始文件。"""
+    original = await _find_small_file(client)
+    if original is None:
+        pytest.skip("no small file (<50MB) found for cleanup-source test")
+
+    stamp = int(time.time())
+    temp_source_cid = await client.mkdir("0", f"sdk-it-cleanup-source-{stamp}")
+    temp_target_cid: str | None = None
+    try:
+        temp_target_cid = await client.mkdir("0", f"sdk-it-cleanup-target-{stamp}")
+        # 先把用户原文件复制为隔离的临时源，后续删除只针对这个副本。
+        await client.copy_files([original.entry_id], pid=temp_source_cid)
+        temp_source: DirEntry | None = None
+        for _ in range(10):
+            entries, _ = await client.list_dir(temp_source_cid, limit=50)
+            temp_source = next((entry for entry in entries if not entry.is_dir), None)
+            if temp_source is not None:
+                break
+            time.sleep(1)
+        assert temp_source is not None
+
+        # cleanup-source：复制到目标、单文件改名并按 fid 验证，最后才删除临时源。
+        await client.copy_files([temp_source.entry_id], pid=temp_target_cid)
+        target: DirEntry | None = None
+        for _ in range(10):
+            entries, _ = await client.list_dir(temp_target_cid, limit=50)
+            target = next((entry for entry in entries if not entry.is_dir), None)
+            if target is not None:
+                break
+            time.sleep(1)
+        assert target is not None
+        assert target.sha1 == temp_source.sha1 == original.sha1
+
+        suffix = target.name.rsplit(".", 1)[-1] if "." in target.name else ""
+        expected_name = f"cleanup-verified-{stamp}.{suffix}" if suffix else f"cleanup-verified-{stamp}"
+        await client.rename_file(target.entry_id, expected_name)
+        verified = await client.file_info(target.entry_id)
+        assert verified.name == expected_name
+
+        await client.delete_files([temp_source.entry_id])
+        source_entries, _ = await client.list_dir(temp_source_cid, limit=50)
+        assert all(entry.entry_id != temp_source.entry_id for entry in source_entries)
+        # 清源完成后目标仍可查询，证明不是先移动或误删目标。
+        surviving_target = await client.file_info(target.entry_id)
+        assert surviving_target.name == expected_name
+    finally:
+        cleanup_cids = [temp_source_cid]
+        if temp_target_cid is not None:
+            cleanup_cids.append(temp_target_cid)
+        await client.delete_files(cleanup_cids)
+
+
+async def test_download_bytes_real(client: Cloud115Client) -> None:
+    """download_bytes：找个 ≤5MB 小文件全量下载，长度与列表 size 一致。"""
+    small = await _find_small_file(client, max_size=5 * 1024 * 1024)
+    if small is None:
+        pytest.skip("no file <=5MB found for download_bytes test")
+    content = await client.download_bytes(
+        small.pickcode,
+        user_agent="SakuraMedia-SDK-IT/1.0",
+        max_bytes=5 * 1024 * 1024,
+    )
+    assert len(content) == small.size

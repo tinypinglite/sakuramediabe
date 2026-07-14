@@ -60,7 +60,10 @@ class DownloadTask(TimestampedMixin, BaseModel):
 
 
 class ImportJob(TimestampedMixin, BaseModel):
+    # 本地导入 = 源目录绝对路径；cloud115 导入 = 源目录面包屑可读路径（仅展示用）。
     source_path = peewee.CharField(max_length=1024)
+    # cloud115 导入的源目录 cid（重导据此重新枚举源）；本地导入为 NULL。
+    source_cid = peewee.CharField(max_length=64, null=True)
     library = peewee.ForeignKeyField(
         MediaLibrary,
         backref="import_jobs",

@@ -21,7 +21,11 @@ from src.service.discovery import (
     MovieRecommendationService,
     RankingSyncService,
 )
-from src.service.playback import MediaFileScanService, MediaThumbnailService
+from src.service.playback import (
+    Cloud115KeepaliveService,
+    MediaFileScanService,
+    MediaThumbnailService,
+)
 from src.service.system import ActivityCleanupService
 
 from src.service.transfers import (
@@ -442,6 +446,21 @@ JOB_REGISTRY: list[JobDefinition] = [
             ("deleted_events", "deleted_events", 0),
             ("deleted_task_runs", "deleted_task_runs", 0),
             ("deleted_notifications", "deleted_notifications", 0),
+        ),
+    ),
+    JobDefinition(
+        task_key="cloud115_cookies_keepalive",
+        log_name="cloud115-cookies-keepalive",
+        cli_name="keepalive-cloud115-cookies",
+        cli_help="执行一次 cloud115 库 cookies 探活与快照回写",
+        cron_setting="cloud115_keepalive_cron",
+        service_factory=lambda _reporter: Cloud115KeepaliveService().run(),
+        format_stats=_build_stats_formatter(
+            "cloud115 keepalive finished:",
+            ("total", "total", 0),
+            ("alive", "alive", 0),
+            ("expired", "expired", 0),
+            ("unavailable", "unavailable", 0),
         ),
     ),
 ]

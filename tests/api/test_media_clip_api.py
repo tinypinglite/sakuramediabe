@@ -1,11 +1,14 @@
 import hashlib
 import hmac
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from src.config.config import settings
-from src.model import Image, Media, MediaClip, MediaThumbnail, Movie
+from src.model import Image, Media, MediaClip, MediaLibrary, MediaThumbnail, Movie
+from src.lib.cloud115.types import DirectUrl
 from src.service.playback.media_clip_service import MediaClipService
 from tests.conftest import TEST_FILE_SIGNATURE_EXPIRES, TEST_FILE_SIGNATURE_SECRET
 
@@ -24,6 +27,33 @@ def _create_media(tmp_path, movie_number="ABC-001") -> Media:
     source = tmp_path / f"{movie_number}.mp4"
     source.write_bytes(b"video-bytes")
     media = Media.create(movie=movie, path=str(source), valid=True)
+    for offset in (0, 10, 20, 30):
+        path = f"movies/{movie_number}/media/fp/thumbnails/{offset}.webp"
+        image = Image.create(origin=path, small=path, medium=path, large=path)
+        MediaThumbnail.create(media=media, image=image, offset=offset)
+    return media
+
+
+def _create_cloud_media(movie_number="ABC-115") -> Media:
+    movie = Movie.create(movie_number=movie_number, javdb_id=f"jav-{movie_number}", title=movie_number)
+    library = MediaLibrary.create(
+        name=f"Cloud-{movie_number}",
+        backend="cloud115",
+        backend_account_key=f"cloud115:{movie_number}",
+        backend_config={"cookies": f"UID={movie_number}_A1_x", "root_cid": "root", "app": "web"},
+    )
+    media = Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={
+            "fid": f"fid-{movie_number}",
+            "pickcode": f"pc-{movie_number}",
+            "name": f"{movie_number}.mp4",
+            "source_path": f"incoming/{movie_number}.mp4",
+        },
+        content_fingerprint=f"sha1:{movie_number}",
+        valid=True,
+    )
     for offset in (0, 10, 20, 30):
         path = f"movies/{movie_number}/media/fp/thumbnails/{offset}.webp"
         image = Image.create(origin=path, small=path, medium=path, large=path)
@@ -79,6 +109,154 @@ def test_create_clip_returns_201_then_200_on_duplicate(client, account_user, tmp
     assert payload["stream_url"].startswith("/media-clips/")
     assert second.status_code == 200
     assert second.json()["clip_id"] == payload["clip_id"]
+
+
+def test_create_cloud115_clip_uses_cloud_source(
+    client, account_user, clip_storage, monkeypatch
+):
+    token = _login(client, username=account_user.username)
+    media = _create_cloud_media()
+    calls = []
+
+    def fake_cut(cls, received_media, target, start, end):
+        calls.append((received_media.id, start, end))
+        target.write_bytes(b"cloud-clip-bytes")
+
+    monkeypatch.setattr(
+        MediaClipService,
+        "_cut_cloud115_clip_file",
+        classmethod(fake_cut),
+    )
+
+    response = client.post(
+        f"/media/{media.id}/clips",
+        json={"start_thumbnail_id": _thumb_id(media, 10), "end_thumbnail_id": _thumb_id(media, 30)},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 201
+    assert calls == [(media.id, 10, 30)]
+    assert response.json()["file_size_bytes"] == len(b"cloud-clip-bytes")
+
+
+def test_cut_cloud115_clip_resolves_direct_url_with_bound_user_agent(
+    monkeypatch, tmp_path
+):
+    import src.lib.cloud115 as cloud115_module
+    from src.service.playback import cloud115_backend_service as backend_module
+
+    calls = []
+    reader_calls = []
+
+    class FakeClient:
+        async def get_download_url(self, pickcode, user_agent):
+            calls.append((pickcode, user_agent))
+            return DirectUrl(
+                file_id="fid",
+                file_name="movie.mp4",
+                # 某些 downurl 响应不带大小；应回退到 Media 已登记的大小。
+                file_size=0,
+                sha1="ABC",
+                pickcode=pickcode,
+                url="https://cdn.example.com/movie.mp4?t=9999999999",
+                user_agent=user_agent,
+                expires_at=9999999999,
+            )
+
+    @asynccontextmanager
+    async def fake_client_for(_library):
+        yield FakeClient()
+
+    class FakeRangeReader:
+        def __init__(self, url, *, user_agent, file_size):
+            reader_calls.append((url, user_agent, file_size))
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    remux_calls = []
+    monkeypatch.setattr(backend_module, "cloud115_client_for", fake_client_for)
+    monkeypatch.setattr(cloud115_module, "Cloud115RangeReader", FakeRangeReader)
+    monkeypatch.setattr(
+        MediaClipService,
+        "_remux_cloud115_clip",
+        staticmethod(lambda reader, target, start, end: remux_calls.append(
+            (reader, target, start, end)
+        )),
+    )
+    media = SimpleNamespace(
+        id=1,
+        library=object(),
+        backend_locator={"pickcode": "pc-clip"},
+        file_size_bytes=2048,
+    )
+    target = tmp_path / "clip.mp4"
+
+    MediaClipService._cut_cloud115_clip_file(media, target, 10, 30)
+
+    assert calls == [("pc-clip", MediaClipService.CLOUD115_CLIP_USER_AGENT)]
+    assert reader_calls == [(
+        "https://cdn.example.com/movie.mp4?t=9999999999",
+        MediaClipService.CLOUD115_CLIP_USER_AGENT,
+        2048,
+    )]
+    assert len(remux_calls) == 1
+    reader, received_target, start, end = remux_calls[0]
+    assert (received_target, start, end) == (target, 10, 30)
+    assert reader.closed is True
+
+
+def test_run_ffmpeg_clip_builds_local_input_command(monkeypatch, tmp_path):
+    commands = []
+    target = tmp_path / "clip.mp4"
+
+    def fake_run(command, **kwargs):
+        commands.append((command, kwargs))
+        target.write_bytes(b"clip")
+
+    monkeypatch.setattr("src.service.playback.media_clip_service.subprocess.run", fake_run)
+
+    MediaClipService._run_ffmpeg_clip(
+        "/library/movie.mp4",
+        target,
+        5,
+        15,
+    )
+
+    command, kwargs = commands[0]
+    assert "-user_agent" not in command
+    assert command[command.index("-i") + 1] == "/library/movie.mp4"
+    assert kwargs["check"] is True
+
+
+def test_remux_cloud115_clip_from_seekable_reader(tmp_path):
+    import av
+
+    source = tmp_path / "source.mp4"
+    target = tmp_path / "target.mp4"
+    with av.open(str(source), mode="w", format="mp4") as container:
+        stream = container.add_stream("mpeg4", rate=10)
+        stream.width = 64
+        stream.height = 48
+        stream.pix_fmt = "yuv420p"
+        for index in range(30):
+            frame = av.VideoFrame(64, 48, "yuv420p")
+            frame.pts = index
+            for plane in frame.planes:
+                plane.update(bytes(plane.buffer_size))
+            for packet in stream.encode(frame):
+                container.mux(packet)
+        for packet in stream.encode(None):
+            container.mux(packet)
+
+    with source.open("rb") as reader:
+        MediaClipService._remux_cloud115_clip(reader, target, 1, 2)
+
+    assert target.stat().st_size > 0
+    with av.open(str(target)) as container:
+        assert container.streams.video
+        assert container.duration is not None and container.duration > 0
 
 
 def test_create_clip_rejects_invalid_range(client, account_user, tmp_path, clip_storage):

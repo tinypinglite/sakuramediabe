@@ -1,6 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from src.model import BackgroundTaskRun, Image, MediaLibrary, SchemaMigration, VideoImportJob
@@ -95,6 +96,42 @@ def _insert_legacy_import_job(test_db, source_path: str, state: str = "failed"):
         VALUES ('2026-05-01 00:00:00', '2026-05-01 00:00:00', %s, 1, %s)
         """,
         (source_path, state),
+    )
+
+
+def _create_media_library_table_without_account_key(test_db):
+    test_db.execute_sql(
+        """
+        CREATE TABLE media_library (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
+            name VARCHAR(255) NOT NULL UNIQUE,
+            backend VARCHAR(32) NOT NULL DEFAULT 'local',
+            backend_config TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _create_import_job_table_with_cloud_columns(test_db):
+    test_db.execute_sql(
+        """
+        CREATE TABLE import_job (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
+            source_path VARCHAR(1024) NOT NULL,
+            source_cid VARCHAR(255) NULL,
+            library_id INTEGER NOT NULL,
+            state VARCHAR(32) NOT NULL DEFAULT 'pending',
+            transfer_mode VARCHAR(32) NOT NULL DEFAULT 'auto',
+            imported_count INTEGER NOT NULL DEFAULT 0,
+            skipped_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            failed_files TEXT NOT NULL DEFAULT '[]'
+        )
+        """
     )
 
 
@@ -579,6 +616,112 @@ def _column_is_nullable(test_db, table_name: str, column_name: str) -> bool:
         if column.name == column_name:
             return column.null
     raise AssertionError(f"column not found: {table_name}.{column_name}")
+
+
+def test_run_pending_migrations_adds_media_backend_locator(test_db):
+    """20260714_01：media 补 backend_locator、path 放松可空、(library_id, backend_locator) 唯一索引。"""
+    _create_legacy_media_table_not_null(test_db)
+    test_db.create_tables([Image, MediaLibrary, BackgroundTaskRun])
+    test_db.execute_sql(
+        """
+        INSERT INTO media (created_at, updated_at, movie_number, path, content_fingerprint)
+        VALUES ('2026-01-01 00:00:00', '2026-01-01 00:00:00', 'ABP-001', '/lib/abp-001.mp4', 'fp-1')
+        """
+    )
+
+    run_pending_migrations(test_db)
+
+    media_columns = {column.name for column in test_db.get_columns("media")}
+    assert "backend_locator" in media_columns
+    assert _column_is_nullable(test_db, "media", "backend_locator") is True
+    assert _column_is_nullable(test_db, "media", "path") is True
+    # 复合唯一索引已建出。
+    unique_index_columns = [
+        tuple(index.columns) for index in test_db.get_indexes("media") if index.unique
+    ]
+    assert ("library_id", "backend_locator") in unique_index_columns
+    # 存量本地行 backend_locator 保持 NULL，数据完好。
+    rows = test_db.execute_sql(
+        "SELECT movie_number, path, backend_locator FROM media ORDER BY id"
+    ).fetchall()
+    assert rows == [("ABP-001", "/lib/abp-001.mp4", None)]
+
+
+def test_run_pending_migrations_adds_import_job_source_cid(test_db):
+    """20260714_02：import_job 补 source_cid 可空列，存量行保持 NULL。"""
+    _create_import_job_table_missing_transfer_mode(test_db)
+    _insert_legacy_import_job(test_db, source_path="/mnt/incoming", state="completed")
+
+    run_pending_migrations(test_db)
+
+    columns = {column.name for column in test_db.get_columns("import_job")}
+    assert "source_cid" in columns
+    rows = test_db.execute_sql(
+        "SELECT source_path, source_cid FROM import_job ORDER BY id"
+    ).fetchall()
+    assert rows == [("/mnt/incoming", None)]
+
+
+def test_run_pending_migrations_backfills_cloud115_account_key(test_db):
+    _create_media_library_table_without_account_key(test_db)
+    test_db.execute_sql(
+        """
+        INSERT INTO media_library (
+            created_at, updated_at, name, backend, backend_config
+        ) VALUES (
+            '2026-07-14 00:00:00', '2026-07-14 00:00:00', 'cloud', 'cloud115',
+            '{"cookies":"UID=12345678_A1_1700000000; CID=abc","root_cid":"1"}'
+        )
+        """
+    )
+
+    run_pending_migrations(test_db)
+
+    row = test_db.execute_sql(
+        "SELECT backend_account_key FROM media_library WHERE name = 'cloud'"
+    ).fetchone()
+    assert row == ("cloud115:12345678",)
+    indexes = [index for index in test_db.get_indexes("media_library") if index.unique]
+    assert any(tuple(index.columns) == ("backend_account_key",) for index in indexes)
+
+
+def test_cloud115_account_key_migration_rejects_existing_duplicates(test_db):
+    _create_media_library_table_without_account_key(test_db)
+    for name in ("cloud-a", "cloud-b"):
+        test_db.execute_sql(
+            """
+            INSERT INTO media_library (
+                created_at, updated_at, name, backend, backend_config
+            ) VALUES (
+                '2026-07-14 00:00:00', '2026-07-14 00:00:00', %s, 'cloud115',
+                '{"cookies":"UID=12345678_A1_1700000000; CID=abc","root_cid":"1"}'
+            )
+            """,
+            (name,),
+        )
+
+    with pytest.raises(ValueError, match="cloud115_media_library_account_duplicate"):
+        run_pending_migrations(test_db)
+
+
+def test_run_pending_migrations_normalizes_legacy_cloud115_move_jobs(test_db):
+    _create_import_job_table_with_cloud_columns(test_db)
+    test_db.execute_sql(
+        """
+        INSERT INTO import_job (
+            created_at, updated_at, source_path, source_cid, library_id, transfer_mode
+        ) VALUES
+            ('2026-07-14', '2026-07-14', 'cloud', 'cid-1', 1, 'move'),
+            ('2026-07-14', '2026-07-14', '/local', NULL, 1, 'move')
+        """
+    )
+
+    run_pending_migrations(test_db)
+
+    rows = test_db.execute_sql(
+        "SELECT source_cid, transfer_mode FROM import_job ORDER BY id"
+    ).fetchall()
+    assert rows == [("cid-1", "cleanup-source"), (None, "move")]
 
 
 def test_run_pending_migrations_decouples_media_movie_and_adds_video_item(test_db, monkeypatch):

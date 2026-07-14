@@ -204,3 +204,99 @@ def test_media_can_store_content_fingerprint(media_transfer_tables):
     )
 
     assert media.content_fingerprint == "fingerprint-1"
+
+
+def test_media_can_store_backend_locator_without_path(media_transfer_tables):
+    """cloud115 / 未来 smb 等云盘 backend 场景：path 留空，用 backend_locator 定位。"""
+    library = MediaLibrary.create(
+        name="cloud",
+        backend="cloud115",
+        backend_config={"cookies": "UID=1_A1_1", "root_cid": "3000000", "app": "alipaymini"},
+    )
+    movie = Movie.create(javdb_id="MovieA1", movie_number="ABC-001", title="ABC-001")
+
+    media = Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={"fid": "1234", "pickcode": "abcdef", "name": "ABC-001.mp4"},
+    )
+
+    assert media.path is None
+    assert media.backend_locator == {
+        "fid": "1234",
+        "pickcode": "abcdef",
+        "name": "ABC-001.mp4",
+    }
+
+
+def test_media_rejects_when_path_and_backend_locator_both_empty(media_transfer_tables):
+    """存储定位不变量：path 和 backend_locator 至少一个非空，都空要抛 ValueError。"""
+    library = MediaLibrary.create(name="A", backend="local", backend_config={"root_path": "/library/a"})
+    movie = Movie.create(javdb_id="MovieA1", movie_number="ABC-001", title="ABC-001")
+
+    with pytest.raises(ValueError, match="path or backend_locator"):
+        Media.create(
+            movie=movie,
+            library=library,
+        )
+
+
+def test_media_rejects_duplicate_backend_locator_in_same_library(media_transfer_tables):
+    """(library, backend_locator) 复合唯一：同库同 locator 重复登记要被 DB 拒绝。"""
+    library = MediaLibrary.create(
+        name="cloud",
+        backend="cloud115",
+        backend_config={"cookies": "UID=1_A1_1", "root_cid": "3000000", "app": "alipaymini"},
+    )
+    movie = Movie.create(javdb_id="MovieA1", movie_number="ABC-001", title="ABC-001")
+    locator = {"fid": "1234", "pickcode": "abcdef", "name": "ABC-001.mp4"}
+
+    Media.create(movie=movie, library=library, backend_locator=locator)
+
+    with pytest.raises(IntegrityError):
+        Media.create(movie=movie, library=library, backend_locator=locator)
+
+
+def test_media_allows_same_backend_locator_across_libraries(media_transfer_tables):
+    """不同库（不同 115 账号）允许出现相同 locator 值，唯一性限定在库内。"""
+    library_a = MediaLibrary.create(
+        name="cloud-a",
+        backend="cloud115",
+        backend_config={"cookies": "UID=1_A1_1", "root_cid": "3000000", "app": "alipaymini"},
+    )
+    library_b = MediaLibrary.create(
+        name="cloud-b",
+        backend="cloud115",
+        backend_config={"cookies": "UID=2_A1_1", "root_cid": "4000000", "app": "alipaymini"},
+    )
+    movie = Movie.create(javdb_id="MovieA1", movie_number="ABC-001", title="ABC-001")
+    locator = {"fid": "1234", "pickcode": "abcdef", "name": "ABC-001.mp4"}
+
+    Media.create(movie=movie, library=library_a, backend_locator=locator)
+    Media.create(movie=movie, library=library_b, backend_locator=locator)
+
+    assert Media.select().count() == 2
+
+
+def test_media_allows_multiple_cloud_rows_without_path(media_transfer_tables):
+    """path 变可空后，多条 cloud115 Media（path 都是 NULL）不会撞 unique 约束
+    （PostgreSQL: NULL != NULL，不参与 unique）。"""
+    library = MediaLibrary.create(
+        name="cloud",
+        backend="cloud115",
+        backend_config={"cookies": "UID=1_A1_1", "root_cid": "3000000", "app": "alipaymini"},
+    )
+    movie = Movie.create(javdb_id="MovieA1", movie_number="ABC-001", title="ABC-001")
+
+    Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={"fid": "1", "pickcode": "pc-1", "name": "a.mp4"},
+    )
+    Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={"fid": "2", "pickcode": "pc-2", "name": "b.mp4"},
+    )
+
+    assert Media.select().where(Media.path.is_null()).count() == 2

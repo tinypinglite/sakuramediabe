@@ -1,6 +1,6 @@
 # Cloud115 SDK
 
-SakuraMediaBE 内部维护的 115 网盘极简异步客户端。**仅支持 cookies 认证**，覆盖播放/查找/缩略图三类上层需求所需的 HTTP 接口，完全不依赖第三方 115 SDK。
+SakuraMediaBE 内部维护的 115 网盘极简异步客户端。**仅支持 cookies 认证**，覆盖播放/查找/缩略图/离线下载/导入搬运五类上层需求所需的 HTTP 接口，完全不依赖第三方 115 SDK。
 
 - 位置：[`src/lib/cloud115/`](../)
 - 入口：`Cloud115Client`
@@ -132,17 +132,18 @@ except Cloud115AuthError:
 
 ## 接口清单
 
-### 1. `check_cookies_alive() -> bool`
+### 1. `probe_cookies_status()` / `check_cookies_alive()`
 
-探测当前 cookies 是否仍在登录态。**永不抛异常**，任何异常场景都返 `False`。
+`probe_cookies_status()` 区分 `alive`、`expired`、`unavailable`；兼容接口 `check_cookies_alive()` 仍返回 bool。
 
 ```python
 alive: bool = await client.check_cookies_alive()
 ```
 
 **契约**：
-- 200 + JSON `state=True` → `True`
-- 302 到登录页 / JSON `state=False` / 非 JSON / 网络错 → `False`
+- 200 + JSON `state=True` → `alive`
+- 302 到登录页、401/403、JSON `state=False` → `expired`
+- 网络错误、429/5xx、非 JSON 或异常响应 → `unavailable`
 
 **副作用安全**：底层用 `https://my.115.com/?ct=guide&ac=status`，不会触发同设备其它 cookies 失效。**不要用**其它文章推荐的 `login_check_sso` 端点 —— 那个 60 秒后会杀掉同设备其它 cookies。
 
@@ -282,6 +283,43 @@ print(du.user_agent)   # 回传给你，用于后续 Range GET
 - `get_download_url(pickcode, user_agent=...)` 的参数：**灌进直链**给下游播放器/抽帧用的 UA
 
 这两个是独立的，不要混淆。
+
+---
+
+## 文件管理接口（导入管线用）
+
+### `iter_files_recursive(cid, *, page_size=1000) -> AsyncIterator[DirEntry]`
+
+递归枚举 cid 目录树下**全部文件**（不含目录条目），逐条 yield。
+
+- 触发条件：`/files` 加 `show_dir=0 & cur=0`（p115client 记载的全树递归模式）
+- 固定 `o=file_name & asc=1` 排序，保证大目录跨页分页一致
+- **每条只带 parent cid，拿不到父目录名** → cid→目录名映射由上层用 `list_dir` 遍历目录结构自行维护（目录数远小于文件数）
+- `DirEntry.play_long`（已转码视频时长秒）与 `DirEntry.ic`（违规封禁标记，1=封禁）在本响应白给；未带时为 `None`
+
+### `copy_files(fids, *, pid) -> None`
+
+批量复制到 pid 目录（云端零流量搬运）。⚠️ 勿并发、单次 ≤5 万（官方文档）→ 上层串行分批。**复制产生新 fid 和新 pickcode**（仅 sha1 相同）→ 登记必须以复制后 re-list 目标目录的新条目为准。同账号复制**占双倍空间**。
+
+### `move_files(fids, *, pid) -> None`
+
+批量移动，与 copy 协议同型。**fid / pickcode 保持不变**。SDK 保留该底层能力，但媒体导入不再使用：`cleanup-source` 会先复制并确认入库，再删除源文件。
+
+### `batch_rename(renames: dict[fid, 新名]) -> None`
+
+批量改名。⚠️ 文件新名**必须带扩展名**（否则 115 按最后一个 `.` 截断），扩展名本身不可改。改名保持 fid/pickcode 不变。单批上限未见官方文档，上层保守按 30–50/批。
+
+### `rename_file(fid, new_name) -> None`
+
+单文件改名，每个请求只提交一个 fid。导入流程使用该接口，并在成功响应后调用 `file_info(fid)` 核对实际名称。
+
+### `delete_files(fids, *, pid=None) -> None`
+
+批量删除，**进 115 回收站**（有误删缓冲）。pid 可选。
+
+### `download_bytes(pickcode, *, user_agent, max_bytes=10MB) -> bytes`
+
+小文件（字幕等）全量下载。内部先 `get_download_url` 再用**同一 UA** GET 直链——封装"拿链接与 GET 必须同 UA"这一易错点。超过 max_bytes 抛 `Cloud115RequestError`，视频请走 302 或受控 Range 读。
 
 ---
 
@@ -574,6 +612,14 @@ uv run python -m src.lib.cloud115 video-info --pickcode bijccwbcsacpi842c
 uv run python -m src.lib.cloud115 video-segments --pickcode bijccwbcsacpi842c
 uv run python -m src.lib.cloud115 video-segments --pickcode xxx --prefer-bandwidth 1800000 --all
 
+# 文件管理（导入管线用）
+uv run python -m src.lib.cloud115 list-recursive --cid 3428707991046116541 --max-files 50
+uv run python -m src.lib.cloud115 copy --fid 111 --fid 222 --pid 3000000
+uv run python -m src.lib.cloud115 move --fid 111 --pid 3000000
+uv run python -m src.lib.cloud115 rename --fid 111 --new-name "ABP-123＿CD1＿movie.mp4"
+uv run python -m src.lib.cloud115 delete --fid 111 --fid 222
+uv run python -m src.lib.cloud115 download-bytes --pickcode xxx --output /tmp/sub.srt
+
 # 命令行参数方式（cookies 会进 shell history，注意场合）
 uv run python -m src.lib.cloud115 --cookies "UID=..." check-alive
 
@@ -650,15 +696,16 @@ uv run pytest tests/lib/cloud115/ --run-cloud115-integration -n0 -v
 
 以下能力**明确不实现**，如需要请另起模块：
 
-- 二维码扫码登录（`qrcodeapi.115.com` 三段状态机）
-- 离线下载 `offline_add / list / delete`
-- 文件上传 `upload_*`
+- 通用文件上传 `upload_*`（**仅保留 .torrent 的 sample 上传**，用于离线 BT 选文件）
 - 分享 `share_*`
 - 增量事件订阅（`life_list`）
 - pickcode ↔ file_id 数学转换（若需要，从 `list_dir` 返回的 `DirEntry` 里直接读）
-- `iter_dir(cid)` 自动翻页（上层写 offset 循环，5 行代码）
-- 图片 CDN、字幕、视频转码历史
+- `iter_dir(cid)` 单层自动翻页（上层写 offset 循环，5 行代码；全树枚举用 `iter_files_recursive`）
+- 图片 CDN、视频转码历史
 - 同步接口（如需在阻塞栈里调，用 `asyncio.run(...)` 包一层）
 - Netscape cookies 文件导入
+
+> 历史注：早期版本"明确不做"清单还包含扫码登录、离线下载、`files/delete`、递归列文件——
+> 均已随业务需要陆续落地（`qrlogin.py` / 离线三组能力 / `delete_files` / `iter_files_recursive`）。
 
 上层业务改造（`MediaLibrary` 加 `source_kind` 字段、`/stream` 端点 302 分派、`MediaThumbnailService` 走远程 URL 抽帧等）不在 SDK 范围，由 [`src/service/`](../../../service/) 各域自行接入。

@@ -1,3 +1,4 @@
+from .cloud115_backend_service import Cloud115KeepaliveService, cloud115_client_for
 from .cloud115_qrlogin_service import Cloud115QrLoginService
 from .media_file_scan_service import MediaFileScanService
 from .media_metadata_probe_service import MediaMetadataProbeService
@@ -7,6 +8,7 @@ from .media_service import MediaService
 from .media_thumbnail_service import MediaThumbnailService
 
 __all__ = [
+    "Cloud115KeepaliveService",
     "Cloud115QrLoginService",
     "MediaClipService",
     "MediaFileScanService",
@@ -14,4 +16,5 @@ __all__ = [
     "MediaMetadataProbeService",
     "MediaService",
     "MediaThumbnailService",
+    "cloud115_client_for",
 ]

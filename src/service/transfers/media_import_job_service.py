@@ -18,6 +18,7 @@ from src.common.media_import_status import (
     IMPORT_JOB_STATE_RUNNING,
 )
 from src.model import ImportJob
+from src.model.enums import MediaLibraryBackend
 from src.schema.transfers.media_import import (
     ImportJobListItemResource,
     ImportJobResource,
@@ -30,6 +31,7 @@ from src.service.transfers.media_import_service import MediaImportService
 
 
 class MediaImportJobService(BaseImportJobService):
+    REQUIRED_LIBRARY_BACKEND = MediaLibraryBackend.LOCAL
     JOB_MODEL = ImportJob
     TASK_KEY = "media_directory_import"
     MUTEX_PREFIX = "media_import"
@@ -135,6 +137,7 @@ class MediaImportJobService(BaseImportJobService):
     @classmethod
     def _orphan_jobs_query(cls):
         # 只回收无关联下载任务的手动导入；下载导入由 DownloadSyncService 单独回收，避免重复处理。
+        # cloud115 导入作业（source_cid 非空）同样是 download_task 为空的 ImportJob，一并覆盖。
         return (
             ImportJob.select()
             .where(
@@ -143,3 +146,16 @@ class MediaImportJobService(BaseImportJobService):
             )
             .order_by(ImportJob.id.asc())
         )
+
+
+def import_job_service_for(job_id: int):
+    """按作业类型分派 service：cloud115 作业（source_cid 非空）走 Cloud115ImportJobService。
+
+    作业不存在时返回本地侧 service，由其统一抛 404，保持错误形状一致。
+    """
+    from src.service.transfers.cloud115_import_job_service import Cloud115ImportJobService
+
+    job = ImportJob.get_or_none(ImportJob.id == job_id)
+    if job is not None and job.source_cid:
+        return Cloud115ImportJobService
+    return MediaImportJobService

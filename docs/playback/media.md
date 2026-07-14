@@ -594,24 +594,31 @@ Authorization: Bearer <token>
 
 ### Success Responses
 
-- `200 OK`: 返回完整视频流
-- `206 Partial Content`: 返回分段视频流
+- `200 OK`: 返回完整视频流（本地媒体）
+- `206 Partial Content`: 返回分段视频流（本地媒体）
+- `302 Found`: 重定向到 115 CDN 直链（cloud115 媒体）
 
 ### Error Responses
 
 - `403 Forbidden`: 缺少签名、签名错误或签名已过期
-- `404 Not Found`: 媒体不存在，或媒体记录存在但文件已缺失
+- `404 Not Found`: 媒体不存在，或媒体记录存在但文件已缺失/被 115 封禁
 - `416 Requested Range Not Satisfiable`: `Range` 请求头非法
+- `422 Unprocessable Entity`: `cloud115_cookies_invalid`（115 cookies 已失效，需重新扫码）
+- `429 Too Many Requests`: 115 限流（cloud115 媒体）
 
 ### Behavior
 
 - 影片详情中的 `media_items[*].play_url` 就是这个接口返回的签名相对地址
 - 前端应使用 `base_url + play_url` 作为播放器地址
-- 服务端支持浏览器常见的 `Range` 分段请求
+- 服务端支持浏览器常见的 `Range` 分段请求（本地媒体）
 - 成功响应会带上：
   - `Accept-Ranges: bytes`
   - `Content-Length`
   - `Content-Encoding: identity`
+- **cloud115 媒体**：每次请求现拿一条 115 直链后 `302`。直链绑定了**本次请求的 User-Agent**
+  （115 CDN 校验后续请求 UA 必须一字不差），播放器跟随 302 时 UA 天然一致；直链带 `t=`
+  过期时间（实测十几小时），播放器 seek 触发重新请求 `/stream` 即重新拿链，无需前端特殊处理。
+  Flutter media_kit 等自定义 http 客户端需保证跟随重定向时不改写 UA。
   - `Content-Range`（仅 `206` 时返回）
 
 ### Example Request

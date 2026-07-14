@@ -20,7 +20,11 @@ from __future__ import annotations
 
 import httpx
 
-from src.lib.cloud115.exceptions import Cloud115AuthError, Cloud115RequestError
+from src.lib.cloud115.exceptions import (
+    Cloud115AuthError,
+    Cloud115RateLimitedError,
+    Cloud115RequestError,
+)
 from src.lib.cloud115.types import QrCodeToken, QrLoginResult, QrStatus
 
 # 可选的登录槽（app）。alipaymini/wechatmini 是支付宝 / 微信小程序端。
@@ -85,9 +89,20 @@ class Cloud115QrLogin:
 
     async def get_token(self) -> QrCodeToken:
         """第 1 步：拿一次扫码会话的 uid/time/sign + 二维码内容。"""
-        r = await self._client.get(self._TOKEN_URL)
+        r = await self._request("GET", self._TOKEN_URL)
         data = self._data(r, self._TOKEN_URL)
-        uid = str(data.get("uid", ""))
+        try:
+            uid = str(data.get("uid", ""))
+            token_time = int(data.get("time") or 0)
+            sign = str(data.get("sign", ""))
+            qrcode = str(data.get("qrcode", ""))
+        except (TypeError, ValueError) as exc:
+            raise Cloud115RequestError(
+                "qrcode token has invalid fields",
+                method="GET",
+                url=self._TOKEN_URL,
+                detail=str(exc),
+            ) from exc
         if not uid:
             raise Cloud115RequestError(
                 "qrcode token missing uid",
@@ -95,20 +110,21 @@ class Cloud115QrLogin:
             )
         return QrCodeToken(
             uid=uid,
-            time=int(data.get("time") or 0),
-            sign=str(data.get("sign", "")),
-            qrcode=str(data.get("qrcode", "")),
+            time=token_time,
+            sign=sign,
+            qrcode=qrcode,
         )
 
     async def get_qrcode_image(self, uid: str) -> bytes:
         """第 2 步：拿 115 现成的二维码 PNG（仅凭 uid，无状态）。也可自行渲染 token.qrcode。"""
         if not uid:
             raise ValueError("uid is required")
-        r = await self._client.get(self._IMAGE_URL.format(uid=uid))
-        if r.status_code != 200 or not r.content:
+        url = self._IMAGE_URL.format(uid=uid)
+        r = await self._request("GET", url)
+        if not r.content:
             raise Cloud115RequestError(
-                f"qrcode image http {r.status_code}",
-                method="GET", url=self._IMAGE_URL.format(uid=uid), detail=r.text[:200],
+                "qrcode image response is empty",
+                method="GET", url=url, detail=r.text[:200],
             )
         return r.content
 
@@ -123,10 +139,26 @@ class Cloud115QrLogin:
                 self._STATUS_URL,
                 params={"uid": token.uid, "time": token.time, "sign": token.sign},
             )
-            data = (r.json() or {}).get("data") or {}
-            raw = data.get("status")
-        except httpx.TimeoutException:
+        except httpx.ReadTimeout:
             return QrStatus.WAITING  # 长轮询超时 = 无变化
+        except httpx.RequestError as exc:
+            raise self._transport_error("GET", self._STATUS_URL, exc) from exc
+        self._raise_for_status(r, "GET", self._STATUS_URL)
+        try:
+            body = r.json() or {}
+            if not isinstance(body, dict):
+                raise TypeError(f"expected object, got {type(body).__name__}")
+            data = body.get("data") or {}
+            if not isinstance(data, dict):
+                raise TypeError(f"expected data object, got {type(data).__name__}")
+            raw = data.get("status")
+        except Exception as exc:
+            raise Cloud115RequestError(
+                "qrcode status returned an invalid JSON body",
+                method="GET",
+                url=self._STATUS_URL,
+                detail=str(exc),
+            ) from exc
         if raw is None:
             return QrStatus.WAITING  # 空 data = 无变化
         try:
@@ -143,18 +175,44 @@ class Cloud115QrLogin:
             raise ValueError("uid is required")
         if app not in APPS:
             raise ValueError(f"unknown app {app!r}; expected one of {APPS}")
-        r = await self._client.post(
-            self._RESULT_URL.format(app=app),
+        url = self._RESULT_URL.format(app=app)
+        r = await self._request(
+            "POST",
+            url,
             data={"app": app, "account": uid},
         )
-        body = r.json() or {}
+        try:
+            body = r.json() or {}
+            if not isinstance(body, dict):
+                raise TypeError(f"expected object, got {type(body).__name__}")
+        except Exception as exc:
+            raise Cloud115RequestError(
+                "qrcode login result returned an invalid JSON body",
+                method="POST",
+                url=url,
+                detail=str(exc),
+            ) from exc
         data = body.get("data") or {}
+        if not isinstance(data, dict):
+            raise Cloud115RequestError(
+                "qrcode login result has invalid data",
+                method="POST",
+                url=url,
+                detail=str(data)[:200],
+            )
         cookie = data.get("cookie") or {}
+        if not isinstance(cookie, dict):
+            raise Cloud115RequestError(
+                "qrcode login result has invalid cookie data",
+                method="POST",
+                url=url,
+                detail=str(cookie)[:200],
+            )
         cookie_str = "; ".join(f"{k}={v}" for k, v in cookie.items())
         if not cookie_str:
             raise Cloud115AuthError(
                 f"qrcode login result has no cookie (app={app}): {str(body)[:200]}",
-                endpoint=self._RESULT_URL.format(app=app),
+                endpoint=url,
             )
         return QrLoginResult(
             cookies=cookie_str,
@@ -163,10 +221,58 @@ class Cloud115QrLogin:
             app=app,
         )
 
+    async def _request(self, method: str, url: str, **kwargs) -> httpx.Response:
+        """统一二维码短请求的 transport/HTTP 异常边界。"""
+        try:
+            response = await self._client.request(method, url, **kwargs)
+        except httpx.RequestError as exc:
+            raise self._transport_error(method, url, exc) from exc
+        self._raise_for_status(response, method, url)
+        return response
+
+    @staticmethod
+    def _transport_error(
+        method: str,
+        url: str,
+        exc: httpx.RequestError,
+    ) -> Cloud115RequestError:
+        return Cloud115RequestError(
+            f"qrcode request failed: {exc}",
+            method=method,
+            url=url,
+            detail=str(exc),
+        )
+
+    @staticmethod
+    def _raise_for_status(response: httpx.Response, method: str, url: str) -> None:
+        if response.status_code == 429:
+            retry_after = response.headers.get("Retry-After")
+            try:
+                retry_after_seconds = int(retry_after) if retry_after else None
+            except ValueError:
+                retry_after_seconds = None
+            raise Cloud115RateLimitedError(
+                "115 qrcode API is rate limiting",
+                retry_after_seconds=retry_after_seconds,
+            )
+        if not 200 <= response.status_code < 300:
+            raise Cloud115RequestError(
+                f"qrcode request http {response.status_code}",
+                method=method,
+                url=url,
+                detail=response.text[:200],
+            )
+
     @staticmethod
     def _data(response: httpx.Response, url: str) -> dict:
         try:
-            return (response.json() or {}).get("data") or {}
+            body = response.json() or {}
+            if not isinstance(body, dict):
+                raise TypeError(f"expected object, got {type(body).__name__}")
+            data = body.get("data") or {}
+            if not isinstance(data, dict):
+                raise TypeError(f"expected data object, got {type(data).__name__}")
+            return data
         except Exception as exc:
             raise Cloud115RequestError(
                 f"non-json body on GET {url}", method="GET", url=url, detail=str(exc),

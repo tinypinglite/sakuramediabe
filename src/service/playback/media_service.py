@@ -4,6 +4,7 @@ from typing import Sequence
 
 import peewee
 from loguru import logger
+from src.api.exception.errors import ApiError
 from src.common.service_helpers import (
     require_record,
     resolve_sort,
@@ -52,6 +53,42 @@ class MediaService:
     @staticmethod
     def _current_time() -> datetime:
         return utc_now_for_db()
+
+    @staticmethod
+    def is_cloud115_media(media: Media) -> bool:
+        # backend 判定的权威来源是所属库（Media 不冗余 backend 字段）。
+        from src.model.enums import MediaLibraryBackend
+
+        library = media.library
+        return library is not None and library.backend == MediaLibraryBackend.CLOUD115.value
+
+    @classmethod
+    async def resolve_cloud115_stream_url(cls, media: Media, user_agent: str) -> str:
+        """现拿一条绑定请求方 UA 的 115 直链（不缓存：直链有 t= 过期，seek 重取即重新请求）。
+
+        UA 绑定链路：播放器请求 /stream 的 UA → 绑进直链 f= 指纹 → 302 后播放器
+        跟随请求 CDN 时 UA 天然一致。
+        """
+        from src.lib.cloud115 import Cloud115Error
+        from src.service.playback.cloud115_backend_service import (
+            cloud115_client_for,
+            map_cloud115_error,
+        )
+
+        locator = media.backend_locator or {}
+        pickcode = locator.get("pickcode")
+        if not pickcode:
+            raise ApiError(
+                404, "media_locator_missing",
+                "媒体缺少 cloud115 定位信息",
+                {"media_id": media.id},
+            )
+        try:
+            async with cloud115_client_for(media.library) as client:
+                direct = await client.get_download_url(pickcode, user_agent)
+        except Cloud115Error as exc:
+            raise map_cloud115_error(exc) from exc
+        return direct.url
 
     @staticmethod
     def _require_media(media_id: int) -> Media:
@@ -120,6 +157,41 @@ class MediaService:
             Path(media.path).unlink()
         except FileNotFoundError:
             return
+
+    @classmethod
+    def _delete_cloud115_media_file(cls, media: Media) -> None:
+        """删 115 云端文件（进回收站，有误删缓冲）；文件已不在时容忍继续删记录。
+
+        cookies 失效 / 限流等上游异常向上抛（映射成 ApiError），不静默吞——
+        否则记录删了云端文件还在，库目录会积累孤儿文件。
+        """
+        from src.lib.cloud115 import Cloud115Error, Cloud115NotFoundError
+        from src.service.playback.cloud115_backend_service import (
+            cloud115_client_for,
+            map_cloud115_error,
+        )
+
+        locator = media.backend_locator or {}
+        fid = locator.get("fid")
+        if not fid:
+            # 没有 fid 无从删起：记录本身仍应可删（对齐本地 FileNotFoundError 容忍语义）
+            logger.warning("Delete cloud115 media without fid media_id={}", media.id)
+            return
+
+        async def _delete() -> None:
+            async with cloud115_client_for(media.library) as client:
+                await client.delete_files([fid])
+
+        import asyncio
+
+        try:
+            asyncio.run(_delete())
+        except Cloud115NotFoundError:
+            logger.info(
+                "Cloud115 file already gone media_id={} fid={}", media.id, fid
+            )
+        except Cloud115Error as exc:
+            raise map_cloud115_error(exc) from exc
 
     @staticmethod
     def _media_point_kind_filter(kind: MediaPointKind):
@@ -276,7 +348,11 @@ class MediaService:
         )
         thumbnail_image_ids = [thumbnail.image_id for thumbnail in thumbnails]
 
-        cls._delete_local_media_file(media)
+        # 删除语义对齐本地：删 Media = 文件也没了。cloud115 走 SDK 删（进回收站），本地 unlink。
+        if cls.is_cloud115_media(media):
+            cls._delete_cloud115_media_file(media)
+        elif media.path:
+            cls._delete_local_media_file(media)
 
         with get_database().atomic():
             # 依赖 DB 外键 CASCADE 自动清 MediaProgress / MediaPoint / MediaThumbnail。
@@ -337,7 +413,7 @@ class MediaService:
                 thin_cover_image=ImageResource.from_attributes_model(movie.thin_cover_image)
                 if movie.thin_cover_image_id is not None
                 else None,
-                path=media.path,
+                path=media.display_path,
                 library_id=media.library_id,
                 library_name=media.library.name if media.library_id is not None else None,
                 file_size_bytes=media.file_size_bytes,
@@ -351,7 +427,7 @@ class MediaService:
             cover_image=ImageResource.from_attributes_model(video_item.cover_image)
             if video_item is not None and video_item.cover_image_id is not None
             else None,
-            path=media.path,
+            path=media.display_path,
             library_id=media.library_id,
             library_name=media.library.name if media.library_id is not None else None,
             file_size_bytes=media.file_size_bytes,

@@ -7,7 +7,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum, IntEnum
+
+
+class Cloud115CookieStatus(str, Enum):
+    """115 登录态探测结果；临时上游故障不能等同于凭据失效。"""
+
+    ALIVE = "alive"
+    EXPIRED = "expired"
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +39,12 @@ class DirEntry:
     mtime: int
     ctime: int
     is_video: bool
+    # play_long：已转码视频的时长秒（/files 列表响应白给，导入落库不用额外请求）；
+    # 未转码新文件 / 非视频 / 目录条目为 None，上层不要把 None 当 0 落库。
+    play_long: int | None = None
+    # ic（is_collect）：115 违规封禁标记。1 = 已封禁（拿不到直链也播不了），
+    # 导入侧应直接标 invalid + 报告；响应未带该字段时为 None。
+    ic: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

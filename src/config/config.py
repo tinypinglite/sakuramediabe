@@ -270,6 +270,9 @@ class Scheduler(BaseModel):
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
     activity_cleanup_cron: str = "30 5 * * *"
+    # cloud115 cookies 保活：acw_tc（阿里云 WAF token）30 分钟过期，每 20 分钟探活一次
+    # 并把 SDK merge 到的最新快照回写库配置；长效凭据失效时发通知引导重新扫码。
+    cloud115_keepalive_cron: str = "*/20 * * * *"
     # 活动中心三张表的保留期：事件流只保留最近 N 天，每个 task_key 只保留最近 N 条运行记录，
     # 已读通知保留最近 N 天。具体语义见 ActivityCleanupService。
     activity_event_retention_days: int = 1

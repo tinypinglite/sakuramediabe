@@ -1294,7 +1294,9 @@ def test_import_media_fetches_metadata_with_thread_pool(import_tables, tmp_path,
         assert set(started_movie_numbers) == {"ABP-123", "ABP-124"}
 
     release.set()
-    worker.join(timeout=3)
+    # 元数据写库还会串行落图片、演员和标签；慢速 CI/PostgreSQL 上 3 秒不足以完成，
+    # 这里只验证两个抓取 worker 确实重叠，不应把后续落库耗时当成并发失败。
+    worker.join(timeout=15)
 
     assert not worker.is_alive()
     assert result["job"].state == "completed"

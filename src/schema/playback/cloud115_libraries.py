@@ -37,3 +37,36 @@ class Cloud115LibraryCreateRequest(SchemaModel):
     name: str
     uid: str
     app: str = "alipaymini"
+
+
+class Cloud115LibraryReauthRequest(SchemaModel):
+    """为已绑定的 cloud115 媒体库换取一组新的 cookies。"""
+
+    uid: str
+    app: str = "alipaymini"
+
+
+class Cloud115DirEntryResource(SchemaModel):
+    """115 目录浏览单条目（前端目录选择器消费的最小字段集）。"""
+
+    entry_id: str
+    name: str
+    is_dir: bool
+    size: int
+    is_video: bool
+    mtime: int
+
+
+class Cloud115BrowseResponse(SchemaModel):
+    """115 目录浏览一页。
+
+    root_cid 是该库的管理目录（sakuramedia/）cid——前端目录选择器据此禁止用户
+    把管理目录（或其子目录）选为导入源；服务端触发导入时还会再校验一次。
+    """
+
+    cid: str
+    total: int
+    offset: int
+    limit: int
+    root_cid: str
+    entries: list[Cloud115DirEntryResource]

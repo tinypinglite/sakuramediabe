@@ -31,6 +31,12 @@
     offline-del              删除离线任务
     offline-clear            按范围清空离线任务
     offline-restart          重试失败任务
+    list-recursive           递归枚举目录树全部文件（导入管线用）
+    copy                     批量复制文件/目录（云端零流量；产生新 fid/pickcode）
+    move                     批量移动文件/目录（fid/pickcode 不变）
+    rename                   单文件改名（文件新名必须带扩展名）
+    delete                   批量删除文件/目录（进回收站）
+    download-bytes           下载小文件到本地（字幕等；拿链接与 GET 自动同 UA）
 """
 
 from __future__ import annotations
@@ -201,6 +207,59 @@ async def _cmd_offline_restart(client: Cloud115Client, args: argparse.Namespace)
     return 0
 
 
+# ---- 文件管理子命令（导入管线用） ----
+
+
+async def _cmd_list_recursive(client: Cloud115Client, args: argparse.Namespace) -> int:
+    count = 0
+    print(f"  {'fid':<20}  {'parent':<20}  {'size':>12}  {'play_long':>9}  {'ic':>2}  name")
+    print(f"  {'-'*20}  {'-'*20}  {'-'*12}  {'-'*9}  {'-'*2}  {'-'*30}")
+    async for e in client.iter_files_recursive(args.cid, page_size=args.page_size):
+        pl = "-" if e.play_long is None else str(e.play_long)
+        ic = "-" if e.ic is None else str(e.ic)
+        print(f"  {e.entry_id:<20}  {e.parent_id:<20}  {e.size:>12,}  {pl:>9}  {ic:>2}  {e.name}")
+        count += 1
+        if args.max_files and count >= args.max_files:
+            print(f"  ... stopped at --max-files={args.max_files}")
+            break
+    print(f"total shown: {count}")
+    return 0
+
+
+async def _cmd_copy(client: Cloud115Client, args: argparse.Namespace) -> int:
+    await client.copy_files(args.fid, pid=args.pid)
+    print(f"copied {len(args.fid)} item(s) -> pid={args.pid}（复制产生新 fid/pickcode，需 re-list 目标目录获取）")
+    return 0
+
+
+async def _cmd_move(client: Cloud115Client, args: argparse.Namespace) -> int:
+    await client.move_files(args.fid, pid=args.pid)
+    print(f"moved {len(args.fid)} item(s) -> pid={args.pid}（fid/pickcode 不变）")
+    return 0
+
+
+async def _cmd_rename(client: Cloud115Client, args: argparse.Namespace) -> int:
+    await client.batch_rename({args.fid: args.new_name})
+    print(f"renamed fid={args.fid} -> {args.new_name!r}")
+    return 0
+
+
+async def _cmd_delete(client: Cloud115Client, args: argparse.Namespace) -> int:
+    await client.delete_files(args.fid, pid=args.pid)
+    print(f"deleted {len(args.fid)} item(s)（进 115 回收站）")
+    return 0
+
+
+async def _cmd_download_bytes(client: Cloud115Client, args: argparse.Namespace) -> int:
+    content = await client.download_bytes(
+        args.pickcode, user_agent=args.user_agent, max_bytes=args.max_bytes
+    )
+    with open(args.output, "wb") as f:
+        f.write(content)
+    print(f"downloaded {len(content):,} bytes -> {args.output}")
+    return 0
+
+
 def _print_file_meta(meta) -> None:
     _print_kv([
         ("file_id", meta.file_id),
@@ -364,6 +423,38 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     p_vs.add_argument("--all", action="store_true", help="打印全部分段（默认只列前 10 段）")
 
+    p_lr = sub.add_parser("list-recursive", help="递归枚举目录树全部文件（导入管线用）")
+    p_lr.add_argument("--cid", default="0", help="起始目录 cid（默认 0 根目录）")
+    p_lr.add_argument("--page-size", dest="page_size", type=int, default=1000,
+                      help="分页大小（默认 1000，服务端最大 1150）")
+    p_lr.add_argument("--max-files", dest="max_files", type=int, default=200,
+                      help="最多打印多少条（默认 200；0 = 不限制）")
+
+    p_cp = sub.add_parser("copy", help="批量复制文件/目录到目标目录（复制产生新 fid/pickcode）")
+    p_cp.add_argument("--fid", action="append", required=True, help="源 fid/cid；可重复传多个")
+    p_cp.add_argument("--pid", required=True, help="目标目录 cid")
+
+    p_mv = sub.add_parser("move", help="批量移动文件/目录到目标目录（fid/pickcode 不变）")
+    p_mv.add_argument("--fid", action="append", required=True, help="源 fid/cid；可重复传多个")
+    p_mv.add_argument("--pid", required=True, help="目标目录 cid")
+
+    p_rn = sub.add_parser("rename", help="单文件改名（文件新名必须带原扩展名）")
+    p_rn.add_argument("--fid", required=True, help="目标 fid")
+    p_rn.add_argument("--new-name", dest="new_name", required=True, help="新名字（文件必须带扩展名）")
+
+    p_rm = sub.add_parser("delete", help="批量删除文件/目录（进 115 回收站）")
+    p_rm.add_argument("--fid", action="append", required=True, help="fid/cid；可重复传多个")
+    p_rm.add_argument("--pid", default=None, help="可选：删除项所在父目录 cid")
+
+    p_db = sub.add_parser("download-bytes", help="下载小文件到本地（字幕等）")
+    p_db.add_argument("--pickcode", required=True, help="文件 pickcode")
+    p_db.add_argument("--output", required=True, help="本地输出路径")
+    p_db.add_argument("--max-bytes", dest="max_bytes", type=int, default=10 * 1024 * 1024,
+                      help="大小上限字节（默认 10MB，超限报错）")
+    p_db.add_argument("--user-agent", dest="user_agent",
+                      default="Mozilla/5.0 SakuraMedia-Cli/1.0",
+                      help="下载 UA（拿链接与 GET 自动同 UA）")
+
     return parser
 
 
@@ -386,6 +477,12 @@ async def _run(args: argparse.Namespace) -> int:
         "offline-del": _cmd_offline_del,
         "offline-clear": _cmd_offline_clear,
         "offline-restart": _cmd_offline_restart,
+        "list-recursive": _cmd_list_recursive,
+        "copy": _cmd_copy,
+        "move": _cmd_move,
+        "rename": _cmd_rename,
+        "delete": _cmd_delete,
+        "download-bytes": _cmd_download_bytes,
     }
     async with Cloud115Client(cookies=cookies, timeout=args.timeout) as client:
         return await handlers[args.command](client, args)

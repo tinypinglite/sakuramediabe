@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 
 from src.api.exception.errors import ApiError
+from src.lib.cloud115 import Cloud115RequestError
 from src.lib.cloud115.types import QrCodeToken, QrStatus
 from src.schema.playback.cloud115_libraries import Cloud115QrStatusRequest
 from src.service.playback import Cloud115QrLoginService
@@ -16,6 +17,7 @@ class _FakeQrLogin:
     image: bytes = b""
     status: QrStatus = QrStatus.WAITING
     status_calls: list[QrCodeToken] | None = None
+    error: Exception | None = None
 
     async def __aenter__(self):
         return self
@@ -24,6 +26,8 @@ class _FakeQrLogin:
         pass
 
     async def get_token(self) -> QrCodeToken:
+        if self.error is not None:
+            raise self.error
         assert self.token is not None
         return self.token
 
@@ -33,6 +37,8 @@ class _FakeQrLogin:
         return self.image
 
     async def get_qrcode_status(self, token: QrCodeToken) -> QrStatus:
+        if self.error is not None:
+            raise self.error
         if self.status_calls is not None:
             self.status_calls.append(token)
         return self.status
@@ -99,3 +105,31 @@ def test_validate_app_rejects_unknown():
         Cloud115QrLoginService.validate_app("mars")
     assert exc_info.value.status_code == 422
     assert exc_info.value.code == "invalid_cloud115_app"
+
+
+async def test_token_maps_sdk_upstream_error_to_502(monkeypatch):
+    qr = _FakeQrLogin(
+        error=Cloud115RequestError("timeout", method="GET", url="https://115.test")
+    )
+    monkeypatch.setattr(qrlogin_module, "Cloud115QrLogin", lambda: qr)
+
+    with pytest.raises(ApiError) as exc_info:
+        await Cloud115QrLoginService.get_token()
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.code == "cloud115_upstream_error"
+
+
+async def test_status_maps_sdk_upstream_error_to_502(monkeypatch):
+    qr = _FakeQrLogin(
+        error=Cloud115RequestError("bad response", method="GET", url="https://115.test")
+    )
+    monkeypatch.setattr(qrlogin_module, "Cloud115QrLogin", lambda: qr)
+
+    with pytest.raises(ApiError) as exc_info:
+        await Cloud115QrLoginService.poll_status(
+            Cloud115QrStatusRequest(uid="u", time=1, sign="s")
+        )
+
+    assert exc_info.value.status_code == 502
+    assert exc_info.value.code == "cloud115_upstream_error"

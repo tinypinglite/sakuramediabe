@@ -13,6 +13,10 @@
     - add_offline_urls / delete_offline_tasks / clear_offline_tasks  （离线下载：写）
     - restart_offline_task                                           （离线下载：失败重试）
     - upload_torrent / torrent_info / add_task_bt                    （离线 BT：传种子/解析文件列表/按选择建任务）
+    - iter_files_recursive       （递归枚举目录树全部文件；play_long/ic 白给）
+    - copy_files / move_files    （云端零流量搬运；copy 产新 fid/pickcode，move 不变）
+    - batch_rename / delete_files（批量改名 / 删除进回收站）
+    - download_bytes             （小文件下载：字幕等；封装同 UA 约束）
     - snapshot_cookies / update_cookies （cookies 保活/热替换，见 _merge_set_cookies）
     - 构造函数（cookies 字符串 -> httpx.AsyncClient）
 
@@ -44,6 +48,7 @@ from src.lib.cloud115.exceptions import (
     Cloud115VideoNotReadyError,
 )
 from src.lib.cloud115.types import (
+    Cloud115CookieStatus,
     DirBreadcrumb,
     DirectUrl,
     DirEntry,
@@ -63,7 +68,8 @@ from src.lib.cloud115.types import (
 
 # 归类到具体异常子类的 errno 集合。全部来自 p115client 观察 + 反向验证。
 # 认证类：session 失效 / 冻结 / 需短信验证。
-# errno=99 "请重新登录"：短时高频 downurl 触发的账号级冷却，实测遇到（2026-07-12）。
+# errno=99 的服务端文案是“请重新登录”，p115client 也映射为登录态失效；保持 AuthError，
+# 不把一次 downurl 高频场景的观察泛化成限流错误（115 未公开该 errno 的稳定限流契约）。
 _AUTH_ERRNOS: frozenset[int] = frozenset({
     50003, 50004, 99, 911, 20130827, 99999, 990009, 990017,
 })
@@ -243,15 +249,8 @@ class Cloud115Client:
 
     # ---- 5 个核心接口 ----
 
-    async def check_cookies_alive(self) -> bool:
-        """探测当前 cookie 是否仍在登录态。
-
-        契约：只返 bool，不抛业务异常。
-        alive: 200 + JSON state=True；
-        dead: 302 到登录页 / JSON state=False / 非 JSON / 任何异常。
-
-        副作用：成功响应会 merge Set-Cookie（若干 acw_tc 刷新经常从这个端点回来）。
-        """
+    async def probe_cookies_status(self) -> Cloud115CookieStatus:
+        """探测登录态，并区分明确失效与临时上游不可用。"""
         url = f"{self._BASE_MY}/"
         params = {"ct": "guide", "ac": "status"}
         try:
@@ -261,20 +260,31 @@ class Cloud115Client:
                 headers=self._base_headers(),
             )
         except Exception as exc:
-            # 网络错、超时、协议错等：探活语义上都算 "不 alive"，不上抛
-            logger.debug("check_cookies_alive request failed: {}", exc)
-            return False
+            logger.debug("probe_cookies_status request failed: {}", exc)
+            return Cloud115CookieStatus.UNAVAILABLE
         # 无论探活成功与否，只要拿到响应就 merge Set-Cookie（服务端可能塞新 acw_tc）
         async with self._cookies_lock:
             self._merge_set_cookies(response)
-        # follow_redirects=False，所以 302 到登录页会体现为 status_code=302
+        # follow_redirects=False；登录态失效通常明确 302 到登录页。
+        if response.status_code in (302, 401, 403):
+            return Cloud115CookieStatus.EXPIRED
         if response.status_code != 200:
-            return False
+            return Cloud115CookieStatus.UNAVAILABLE
         try:
             data = response.json()
         except Exception:
-            return False
-        return bool(data.get("state"))
+            return Cloud115CookieStatus.UNAVAILABLE
+        if not isinstance(data, dict) or "state" not in data:
+            return Cloud115CookieStatus.UNAVAILABLE
+        if data["state"] is True:
+            return Cloud115CookieStatus.ALIVE
+        if data["state"] is False:
+            return Cloud115CookieStatus.EXPIRED
+        return Cloud115CookieStatus.UNAVAILABLE
+
+    async def check_cookies_alive(self) -> bool:
+        """兼容旧调用方的 bool 接口；临时不可用与失效均返回 False。"""
+        return await self.probe_cookies_status() is Cloud115CookieStatus.ALIVE
 
     async def list_dir(
         self,
@@ -404,6 +414,189 @@ class Cloud115Client:
             )
         return cid
 
+    # ---- 文件管理（导入管线用：递归枚举 / 复制 / 移动 / 改名 / 删除 / 小文件下载） ----
+
+    async def iter_files_recursive(
+        self,
+        cid: str,
+        *,
+        page_size: int = 1000,
+    ):
+        """递归枚举 cid 目录树下的**全部文件**（不含目录条目），逐条 yield DirEntry。
+
+        - 触发条件：/files 加 show_dir=0 & cur=0（p115client 记载的全树递归模式）。
+        - 固定 o=file_name & asc=1 排序，保证大目录跨页分页一致（服务端默认排序不稳定）。
+        - 递归模式下每条只带 parent cid（parent_id），**拿不到父目录名** ——
+          cid→目录名映射由上层自己用 list_dir 遍历目录结构维护（目录数远小于文件数）。
+        - play_long / ic 字段在本响应里白给，导入侧直接消费，无需逐文件再查。
+        """
+        if not cid:
+            raise ValueError("cid is required (use '0' for root)")
+        if page_size > self._LIST_DIR_MAX_LIMIT:
+            raise ValueError(
+                f"page_size {page_size} exceeds server max {self._LIST_DIR_MAX_LIMIT}"
+            )
+        url = f"{self._BASE_WEBAPI}/files"
+        offset = 0
+        total = -1
+        while total < 0 or offset < total:
+            params = {
+                "aid": 1,
+                "cid": cid,
+                "offset": offset,
+                "limit": page_size,
+                "show_dir": 0,
+                "cur": 0,
+                "o": "file_name",
+                "asc": 1,
+            }
+            payload = await self._request_json("GET", url, params=params)
+            if not payload.get("state"):
+                raise self._map_errno(payload, endpoint=url)
+            batch = [self._parse_dir_entry(raw) for raw in (payload.get("data") or [])]
+            total = int(payload.get("count", 0))
+            if not batch:
+                break
+            for entry in batch:
+                yield entry
+            offset += len(batch)
+
+    async def copy_files(self, fids: list[str], *, pid: str) -> None:
+        """批量复制文件/目录到 pid 目录（云端零流量搬运）。
+
+        - ⚠️ 115 文档明确：copy 勿并发执行、单次 ≤5 万个 → 上层串行分批调用本方法。
+        - **复制产生新 fid 和新 pickcode**（仅 sha1 相同）→ 登记必须以复制后
+          re-list 目标目录拿到的新条目为准，不能拿源条目的 pickcode 落库。
+        - 同账号内复制占双倍空间。
+        - 端点：POST webapi.115.com/files/copy，body {pid, fid[0..n]}。
+        """
+        if not fids:
+            raise ValueError("fids is required")
+        if not pid:
+            raise ValueError("pid is required (use '0' for root)")
+        url = f"{self._BASE_WEBAPI}/files/copy"
+        data: dict[str, Any] = {"pid": pid}
+        for index, fid in enumerate(fids):
+            data[f"fid[{index}]"] = fid
+        payload = await self._request_json("POST", url, data=data)
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=url)
+
+    async def move_files(self, fids: list[str], *, pid: str) -> None:
+        """批量移动文件/目录到 pid 目录。
+
+        - 与 copy 协议同型；**移动保持 fid / pickcode 不变** → 登记可直接用源条目。
+        - 不占双倍空间；SDK 保留该底层能力，媒体导入的 cleanup-source 不再使用移动。
+        - 端点：POST webapi.115.com/files/move，body {pid, fid[0..n]}。
+        """
+        if not fids:
+            raise ValueError("fids is required")
+        if not pid:
+            raise ValueError("pid is required (use '0' for root)")
+        url = f"{self._BASE_WEBAPI}/files/move"
+        data: dict[str, Any] = {"pid": pid}
+        for index, fid in enumerate(fids):
+            data[f"fid[{index}]"] = fid
+        payload = await self._request_json("POST", url, data=data)
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=url)
+
+    async def batch_rename(self, renames: dict[str, str]) -> None:
+        """批量改名。renames: {fid: 新名}。
+
+        - ⚠️ 文件新名**必须带扩展名**：115 会把最后一个 '.' 之后的部分截断处理，
+          不带扩展名会导致名字被意外截断；且扩展名本身不可改。
+        - 改名保持 fid / pickcode 不变。
+        - 单批条数上限未见官方文档，上层保守按 30–50/批分批。
+        - 端点：POST webapi.115.com/files/batch_rename，body files_new_name[<fid>]=<新名>。
+        """
+        if not renames:
+            raise ValueError("renames is required")
+        for fid, new_name in renames.items():
+            if not fid or not new_name:
+                raise ValueError(f"invalid rename entry: {fid!r} -> {new_name!r}")
+        url = f"{self._BASE_WEBAPI}/files/batch_rename"
+        data = {f"files_new_name[{fid}]": name for fid, name in renames.items()}
+        payload = await self._request_json("POST", url, data=data)
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=url)
+
+    async def rename_file(self, fid: str, new_name: str) -> None:
+        """单文件改名；每次请求只提交一个 fid，供需逐项确认的导入流程使用。"""
+        if not fid or not new_name:
+            raise ValueError(f"invalid rename entry: {fid!r} -> {new_name!r}")
+        url = f"{self._BASE_WEBAPI}/files/batch_rename"
+        payload = await self._request_json(
+            "POST", url, data={f"files_new_name[{fid}]": new_name}
+        )
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=url)
+
+    async def delete_files(self, fids: list[str], *, pid: str | None = None) -> None:
+        """批量删除文件/目录（进 115 回收站，有误删缓冲）。
+
+        - pid 可选：传删除项所在父目录 cid 可少一次服务端定位（不传也能删）。
+        - 端点：POST webapi.115.com/rb/delete，body {fid[0..n], pid?}。
+        """
+        if not fids:
+            raise ValueError("fids is required")
+        url = f"{self._BASE_WEBAPI}/rb/delete"
+        data: dict[str, Any] = {}
+        if pid:
+            data["pid"] = pid
+        for index, fid in enumerate(fids):
+            data[f"fid[{index}]"] = fid
+        payload = await self._request_json("POST", url, data=data)
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=url)
+
+    async def download_bytes(
+        self,
+        pickcode: str,
+        *,
+        user_agent: str,
+        max_bytes: int = 10 * 1024 * 1024,
+    ) -> bytes:
+        """下载小文件完整内容（字幕等）。封装「拿直链与 GET 必须同 UA」这一易错点。
+
+        - 内部先 get_download_url(pickcode, user_agent) 再用**同一 UA** GET 直链。
+        - max_bytes 防御：目标超限直接抛 Cloud115RequestError（本方法只为小文件设计，
+          视频请走 /stream 302 或受控 Range 读）。
+        """
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+        direct = await self.get_download_url(pickcode, user_agent)
+        headers = {"User-Agent": user_agent}
+        chunks: list[bytes] = []
+        received = 0
+        try:
+            async with self._client.stream("GET", direct.url, headers=headers) as response:
+                if response.status_code not in (200, 206):
+                    raise Cloud115RequestError(
+                        f"http {response.status_code} on GET direct url for pickcode {pickcode}",
+                        method="GET",
+                        url=direct.url,
+                        detail=f"pickcode={pickcode}",
+                    )
+                async for chunk in response.aiter_bytes():
+                    received += len(chunk)
+                    if received > max_bytes:
+                        raise Cloud115RequestError(
+                            f"file exceeds max_bytes={max_bytes} for pickcode {pickcode}",
+                            method="GET",
+                            url=direct.url,
+                            detail=f"received>{max_bytes}",
+                        )
+                    chunks.append(chunk)
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+            raise Cloud115RequestError(
+                f"network error downloading pickcode {pickcode}: {exc}",
+                method="GET",
+                url=direct.url,
+                detail=str(exc),
+            ) from exc
+        return b"".join(chunks)
+
     async def get_download_url(self, pickcode: str, user_agent: str) -> DirectUrl:
         """取 302 直链。
 
@@ -431,6 +624,8 @@ class Cloud115Client:
             url,
             data={"data": data_field},
             headers=headers,
+            # HTTP 虽为 POST，但该端点只读取并签发直链，不产生远端文件副作用。
+            retryable=True,
         )
         if not response_json.get("state"):
             raise self._map_errno(response_json, endpoint=url)
@@ -868,6 +1063,8 @@ class Cloud115Client:
             self._LIXIAN_URL,
             params={"ct": "lixian", "ac": "torrent"},
             data={"pickcode": pickcode, "sha1": sha1},
+            # 仅解析已上传种子，不创建离线任务，语义上可安全重试。
+            retryable=True,
         )
         if payload.get("state") is False:
             raise self._map_errno(payload, endpoint=self._LIXIAN_URL)
@@ -963,18 +1160,21 @@ class Cloud115Client:
         params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        retryable: bool | None = None,
     ) -> httpx.Response:
         """带退避重试的 HTTP 请求，返回 2xx httpx.Response。上层再自行 .json() 或 .text。
 
         - 429：直接抛 Cloud115RateLimitedError（不重试，避免账号信号升级）
-        - 5xx / TimeoutException / NetworkError：最多 2 次退避重试
+        - 5xx / TimeoutException / NetworkError：仅幂等请求最多 2 次退避重试
         - 4xx（401/403）：401/403 → Cloud115AuthError；其它 → Cloud115RequestError
 
         每次成功响应到达后会 merge Set-Cookie 到内部 cookies dict（保活 acw_tc 等）。
         401/403 抛异常前也会 merge（可能带着新 acw_tc / logout 信号）。
         """
         last_error: Exception | None = None
-        for attempt in range(self._MAX_RETRIES + 1):
+        should_retry = retryable if retryable is not None else method.upper() in {"GET", "HEAD", "OPTIONS"}
+        max_retries = self._MAX_RETRIES if should_retry else 0
+        for attempt in range(max_retries + 1):
             # 每次重试前重新拼 headers（因为上一次响应可能 merge 了新的 acw_tc）
             request_headers = self._base_headers()
             if headers:
@@ -991,9 +1191,9 @@ class Cloud115Client:
                 last_error = exc
                 logger.warning(
                     "cloud115 request transient error method={} url={} attempt={}/{} detail={}",
-                    method, url, attempt + 1, self._MAX_RETRIES + 1, exc,
+                    method, url, attempt + 1, max_retries + 1, exc,
                 )
-                if attempt >= self._MAX_RETRIES:
+                if attempt >= max_retries:
                     break
                 await asyncio.sleep(self._RETRY_BACKOFF_STEP * (attempt + 1))
                 continue
@@ -1025,9 +1225,9 @@ class Cloud115Client:
                 )
                 logger.warning(
                     "cloud115 5xx method={} url={} status={} attempt={}/{}",
-                    method, url, status, attempt + 1, self._MAX_RETRIES + 1,
+                    method, url, status, attempt + 1, max_retries + 1,
                 )
-                if attempt >= self._MAX_RETRIES:
+                if attempt >= max_retries:
                     break
                 await asyncio.sleep(self._RETRY_BACKOFF_STEP * (attempt + 1))
                 continue
@@ -1043,7 +1243,7 @@ class Cloud115Client:
         # 重试耗尽
         detail = str(last_error) if last_error else "unknown"
         raise Cloud115RequestError(
-            f"request failed after {self._MAX_RETRIES + 1} attempts: {method} {url} ({detail})",
+            f"request failed after {max_retries + 1} attempts: {method} {url} ({detail})",
             method=method,
             url=url,
             detail=detail,
@@ -1057,9 +1257,17 @@ class Cloud115Client:
         params: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
+        retryable: bool | None = None,
     ) -> dict[str, Any]:
         """_request 的 JSON 便捷封装。2xx 但非 JSON 抛 Cloud115RequestError。"""
-        response = await self._request(method, url, params=params, data=data, headers=headers)
+        response = await self._request(
+            method,
+            url,
+            params=params,
+            data=data,
+            headers=headers,
+            retryable=retryable,
+        )
         try:
             return response.json()
         except Exception as exc:
@@ -1132,6 +1340,9 @@ class Cloud115Client:
             # 文件的 file_id 是 fid，parent 是 cid
             entry_id = str(raw.get("fid", ""))
             parent_id = str(raw.get("cid", ""))
+        # play_long / ic 是可选字段：未转码视频、目录、旧响应可能不带，缺省一律 None
+        play_long_raw = raw.get("play_long")
+        ic_raw = raw.get("ic")
         return DirEntry(
             entry_id=entry_id,
             parent_id=parent_id,
@@ -1143,6 +1354,8 @@ class Cloud115Client:
             mtime=int(raw.get("te") or 0),
             ctime=int(raw.get("tp") or 0),
             is_video=bool(raw.get("iv")) if not is_dir else False,
+            play_long=int(float(play_long_raw)) if play_long_raw not in (None, "") else None,
+            ic=int(ic_raw) if ic_raw not in (None, "") else None,
         )
 
     @staticmethod

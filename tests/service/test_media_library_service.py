@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 
 from src.api.exception.errors import ApiError
-from src.lib.cloud115 import Cloud115AuthError, QrLoginResult
+from src.lib.cloud115 import Cloud115AuthError, Cloud115CookieStatus, QrLoginResult
 from src.lib.cloud115.types import DirEntry
 from src.model import BackgroundTaskRun, DownloadClient, DownloadTask, Image, ImportJob, Media, MediaLibrary, Movie, MovieSeries, VideoItem
 from src.model.enums import MediaLibraryBackend
@@ -269,6 +269,7 @@ class _FakeCloud115Client:
         mkdir_return: str = "3000000",
     ):
         self.cookies = cookies
+        self.user_id = "12345678"
         self._alive = alive
         self._entries_by_offset = entries_by_offset or {0: ([], 0)}
         self._mkdir_return = mkdir_return
@@ -280,8 +281,12 @@ class _FakeCloud115Client:
     async def __aexit__(self, *_exc: Any) -> None:
         pass
 
-    async def check_cookies_alive(self) -> bool:
-        return self._alive
+    async def probe_cookies_status(self) -> Cloud115CookieStatus:
+        return (
+            Cloud115CookieStatus.ALIVE
+            if self._alive
+            else Cloud115CookieStatus.EXPIRED
+        )
 
     async def list_dir(self, cid: str, *, offset: int = 0, limit: int = 1000):
         return self._entries_by_offset.get(offset, ([], 0))
@@ -347,10 +352,13 @@ async def test_create_cloud115_library_uses_existing_library_root(
     )
 
     assert resource.backend is MediaLibraryBackend.CLOUD115
-    assert resource.backend_config["cookies"] == COOKIES
+    assert "cookies" not in resource.backend_config
     assert resource.backend_config["root_cid"] == "222"
     assert resource.backend_config["app"] == "alipaymini"
     assert client.mkdir_calls == []  # 没触发 mkdir
+    stored = MediaLibrary.get_by_id(resource.id)
+    assert stored.backend_config["cookies"] == COOKIES
+    assert stored.backend_account_key == "cloud115:12345678"
 
 
 async def test_create_cloud115_library_creates_root_when_missing(
@@ -380,7 +388,9 @@ async def test_create_cloud115_library_rejects_dead_cookies(
     media_library_tables, patched_cloud115
 ):
     qr = _FakeQrLogin(
-        result=QrLoginResult(cookies=COOKIES, cookie_dict={}, user_id="x", app="alipaymini")
+        result=QrLoginResult(
+            cookies=COOKIES, cookie_dict={}, user_id="12345678", app="alipaymini"
+        )
     )
     client = _FakeCloud115Client(cookies=COOKIES, alive=False)
     patched_cloud115(qr, lambda cookies: client)

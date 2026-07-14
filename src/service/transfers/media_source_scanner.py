@@ -25,6 +25,7 @@ from src.common.media_import_status import (
 )
 from src.config.config import settings
 from src.model import Media, MediaLibrary
+from src.model.enums import MediaLibraryBackend
 
 
 ImportTransferMode = Literal["auto", "cleanup-source"]
@@ -108,10 +109,15 @@ def existing_media_file_exists(
     return False
 
 
+def _local_libraries():
+    # 本地路径语义只对 backend=local 成立；cloud115 等云盘库没有 root_path，混进来会 KeyError。
+    return MediaLibrary.select().where(MediaLibrary.backend == MediaLibraryBackend.LOCAL.value)
+
+
 def find_media_library_containing_path(source_entry: Path) -> MediaLibrary | None:
-    """查找 source_entry 是否落在任一已配置媒体库根目录内。"""
+    """查找 source_entry 是否落在任一已配置本地媒体库根目录内。"""
     resolved_source = source_entry.expanduser().resolve()
-    for media_library in MediaLibrary.select():
+    for media_library in _local_libraries():
         library_root = Path(media_library.backend_config["root_path"]).expanduser().resolve()
         # cleanup-source 会删除源视频，禁止对任何媒体库目录或其子路径执行。
         if resolved_source == library_root or resolved_source.is_relative_to(library_root):
@@ -120,9 +126,9 @@ def find_media_library_containing_path(source_entry: Path) -> MediaLibrary | Non
 
 
 def media_library_roots() -> List[Path]:
-    """返回当前已配置媒体库根目录，供 cleanup-source 扫描排除使用。"""
+    """返回当前已配置本地媒体库根目录，供 cleanup-source 扫描排除使用。"""
     roots: List[Path] = []
-    for media_library in MediaLibrary.select():
+    for media_library in _local_libraries():
         roots.append(Path(media_library.backend_config["root_path"]).expanduser().resolve())
     return roots
 

@@ -18,6 +18,7 @@ Cookies 保活：客户端内部维护 cookies dict，每次响应自动 merge �
 
 from src.lib.cloud115.client import Cloud115Client
 from src.lib.cloud115.qrlogin import APPS, Cloud115QrLogin
+from src.lib.cloud115.reader import Cloud115RangeReader
 from src.lib.cloud115.exceptions import (
     Cloud115AuthError,
     Cloud115CipherError,
@@ -31,6 +32,7 @@ from src.lib.cloud115.exceptions import (
     Cloud115VideoNotReadyError,
 )
 from src.lib.cloud115.types import (
+    Cloud115CookieStatus,
     DirBreadcrumb,
     DirectUrl,
     DirEntry,
@@ -53,6 +55,8 @@ from src.lib.cloud115.types import (
 __all__ = [
     "Cloud115Client",
     "Cloud115QrLogin",
+    "Cloud115RangeReader",
+    "Cloud115CookieStatus",
     "APPS",
     "QrCodeToken",
     "QrStatus",

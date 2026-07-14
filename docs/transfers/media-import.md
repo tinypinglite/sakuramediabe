@@ -1,16 +1,16 @@
 # 可视化媒体导入
 
-面向前端的“导入用户已有媒体”能力：浏览后端文件系统、选择导入源目录、提交后台导入任务，并对失败文件做删除/重命名/重导。
+面向前端的“导入用户已有媒体”能力：浏览导入源（本地文件系统 / 115 网盘目录）、提交后台导入任务，并对失败文件做删除/重命名/重导。
 
 所有时间字段都由后端按当前运行环境时区转换后返回，格式为不带时区后缀的本地时间字符串。
 
 ## 资源与边界
 
-- 导入源由用户在后端文件系统中浏览选择，导入目标为已配置的 `MediaLibrary`。
-- 导入业务能力完全复用 `MediaImportService.import_from_source`，与下载任务导入共享同一套扫描、分组、元数据抓取与落库逻辑。
+- 导入源由用户浏览选择：本地库在后端文件系统中选目录；cloud115 库在 115 网盘目录树中选目录（浏览端点见 `docs/playback/media-libraries.md`）。导入目标为已配置的 `MediaLibrary`。
+- 本地导入复用 `MediaImportService.import_from_source`；cloud115 导入走 `Cloud115ImportService`（云端复制，文件不经过本机），两者共享 `ImportJob` 模型、任务中心进度与失败清单结构。
 - 导入在后端**后台线程**（`DownloadImportRunner` 线程池）运行，客户端关闭不影响其运行；重连后通过任务中心查询进度。
-- 失败文件清单复用 `ImportJob.failed_files`，不新增成功文件明细；模型层仅新增 `ImportJob.transfer_mode` 列（迁移 `20260607_01`）。
-- `transfer_mode` 沿用现有 `auto`（默认，硬链接优先）与 `cleanup-source`（复制后删除源文件）两种语义，并持久化到作业以支撑失败重导沿用原模式。
+- 失败文件清单复用 `ImportJob.failed_files`；模型层含 `ImportJob.transfer_mode`（迁移 `20260607_01`）与 `ImportJob.source_cid`（迁移 `20260714_02`，cloud115 作业专用，本地作业为 NULL——前端可据此区分作业类型）。
+- `transfer_mode` 按库类型取值：本地 `auto`（默认，硬链接优先）/ `cleanup-source`（复制后删源）；cloud115 `cleanup-source`（默认，复制并确认入库后删源）/ `copy`（保留源文件）。旧 `move` 仅作为兼容输入，创建作业时统一保存为 `cleanup-source`。
 
 ## 接口
 
@@ -44,15 +44,35 @@
 
 `POST /import-jobs`
 
+按请求形状分派：`source_path` 与 `source_cid` **恰好其一**（同时给或都不给返回 `422`）。
+
+**本地目录导入**：
+
 ```json
 {"library_id": 1, "source_path": "/data/incoming/movies", "transfer_mode": "auto"}
 ```
 
 - 校验媒体库存在；归一化 `source_path` 并校验落在白名单根目录内（不在范围内返回 `403 path_forbidden`）。
-- `transfer_mode` 会持久化到 `ImportJob.transfer_mode`，供失败文件重导时沿用。
+- `transfer_mode` 缺省为 `auto`，会持久化到 `ImportJob.transfer_mode`，供失败文件重导时沿用。
 - **防重**：以 `media_import:{library_id}:{sha1(source_path)}` 作为 `BackgroundTaskRun.mutex_key`，同库同源路径正在导入时返回 `409 media_import_conflict`（响应附阻塞中的 `blocking_task_run_id`）。
 - 接受后返回 `202`，并给出 `import_job_id` / `task_run_id` / `status`。
 - 入队过程中任一步骤失败返回 `502 media_import_failed`，并回收 task_run（释放 mutex_key），不会遗留永久占用的互斥键。
+
+**115 网盘导入**（目标库须为 `backend=cloud115`，否则 `422 media_library_backend_mismatch`）：
+
+```json
+{"library_id": 2, "source_cid": "3428707991046116541", "transfer_mode": "cleanup-source"}
+```
+
+- `transfer_mode` 只接受 `cleanup-source`（默认）/ `copy`；旧 `move` 兼容为 `cleanup-source`，其它值返回 `422 invalid_transfer_mode`。
+- **服务端防御校验**（前端目录选择器已按浏览端点返回的 `root_cid` 禁选，这里兜底）：源目录不能是库管理目录、不能在其内部（`422 cloud115_source_inside_library`）、也不能包含它——含选中网盘根目录的情形（`422 cloud115_source_contains_library`）。
+- **防重按库锁**：mutex 为 `media_import:cloud115:{library_id}`——115 的云端写操作是账号级串行约束，同一 cloud115 库同时只允许一个导入任务（与本地"同库同源"锁粒度不同）。
+- 导入管线：递归枚举源目录 → 按「父目录名/文件名」识别番号 → 按 115 全量 sha1 对账 → 云端复制到 `sakuramedia/jav/` → 逐文件改名并按 fid 查询确认 → 事务登记 Media → 下载并登记字幕 → `cleanup-source` 逐项删除源字幕和源视频。任一改名未生效时整组不入库、不清源；重试按 SHA1 复用已经复制或改名的目标文件。
+- 多分部（VR/FC2）**不做合并**：每个文件一条 Media 挂同一影片（云端无拼接能力）。
+- 配对的 `.srt` 字幕**不复制到 115**：下载到本地 `subtitle_root/{番号}/` 并登记 `Subtitle`；`cleanup-source` 仅在字幕成功后清掉源 srt 和视频，字幕失败时两者均保留。
+- 115 标记违规的文件（`ic=1`）按 `valid=false` 登记并记 `cloud115_file_censored` 告警（拿不到直链也播不了）。
+- **幂等**：中断重跑以「目标目录 sha1 对账」收敛——已搬的跳过搬运、没改名的补改名、没登记的补登记；`copy` 产生新 fid/pickcode，登记一律以复制后 re-list 目标目录的条目为准。
+- cookies 失效返回 `422 cloud115_cookies_invalid`（引导重新扫码）；115 限流返回 `429 cloud115_rate_limited`；其它上游错误 `502 cloud115_upstream_error`。
 
 ### 查询导入作业
 
@@ -87,6 +107,7 @@
 - **安全约束**：每个待重导路径都必须是该作业 `failed_files` 内 `kind=file` 的条目，否则 `403 file_not_in_failed_list`；并再次校验落在白名单根目录内。
 - 以原作业的 `source_path` + `library` + **原 `transfer_mode`** 起一个**新的** `ImportJob` + `task_run`，并通过 `only_files` 把扫描范围限定到选中文件；retry 使用带 `retry` 前缀的独立 mutex_key，与全量导入互不冲突。
 - 若选中文件均已不在源目录，作业判 `failed` 并记 `retry_sources_missing`，不会静默判 `completed`。
+- **cloud115 作业**：`files` 传的是失败清单里的**源内相对路径**（如 `ABP-123/movie.mp4`），重导按原 `source_cid` 重新枚举后按相对路径取子集；语义与本地一致。
 
 ### 删除失败源文件
 
@@ -106,6 +127,8 @@
 - 重命名后把 `failed_files` 中该条记录的 `path` 更新为新路径，保证后续仍可对新名重导且继续满足约束。
 
 > 删除/重命名只改 `failed_files` 列表内容，不改 `imported/skipped/failed_count` 历史统计。
+
+> **cloud115 作业不支持删除/重命名失败源文件**（那是对用户 115 目录的写操作），两端点对 cloud115 作业一律返回 `422 cloud115_failed_file_not_actionable`；请在 115 App 内处理后用重导。
 
 ## 状态枚举与中文说明
 
@@ -153,6 +176,12 @@
 | `import_job_bootstrap_failed` | job | 作业启动失败：导入作业入队/引导阶段失败 |
 | `import_job_interrupted` | job | 导入进程中断：作业未正常结束（孤儿恢复判失败） |
 | `retry_sources_missing` | job | 源文件缺失：待重导的源文件均已不存在 |
+| `already_indexed_path` | skipped | 已在库中：该文件路径已登记，跳过重复导入 |
+| `duplicate_fingerprint` | skipped | 内容重复：库中已存在相同内容的文件，跳过导入 |
+| `cloud115_file_censored` | warning | 115 已封禁：文件被 115 标记违规，已登记为失效（拿不到直链也播不了） |
+| `cloud115_transfer_failed` | file | 115 搬运失败：云端复制或对账阶段异常 |
+| `cloud115_rename_failed` | file | 115 单文件改名未成功或查询到的实际名称不一致 |
+| `cloud115_subtitle_download_failed` | warning | 字幕下载失败：影片已入库，但字幕从 115 下载失败（仅告警） |
 
 对外经 `failed_files[].reason_label` / `failed_files[].kind_label` 暴露中文说明；`kind` 的判定与可操作性见上文[失败条目分类表](#查询导入作业)。
 

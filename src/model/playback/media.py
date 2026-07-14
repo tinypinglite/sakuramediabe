@@ -32,9 +32,17 @@ class Media(TimestampedMixin, BaseModel):
         on_delete="SET NULL",
         column_name="library_id",
     )
-    path = peewee.CharField(max_length=1024, unique=True)
+    # 本地库文件绝对路径（本地专用）；cloud115 等云盘 backend 走 backend_locator。
+    # unique=True 对 NULL 不生效（PostgreSQL NULL != NULL），本地库仍保持路径唯一。
+    path = peewee.CharField(max_length=1024, null=True, unique=True)
+    # backend 相关的定位符（cloud115: {fid, pickcode, name, source_path}；未来 smb 等各自形状）。
+    # locator dict 必须由 service 层统一构造保证键序固定，JsonTextField 序列化才稳定，
+    # (library, backend_locator) 复合唯一索引（见 Meta.indexes）据此防同库重复登记。
+    backend_locator = JsonTextField(null=True, default=None)
     storage_mode = peewee.CharField(max_length=32, null=True)
     resolution = peewee.CharField(max_length=32, null=True)
+    # 本地库为 fingerprint-v1 抽样 sha256 裸 hex；cloud115 库存 "sha1:<hex>" 带前缀形式，
+    # 两者值域天然不相交，判重查询仍须显式限定目标库范围。
     content_fingerprint = peewee.CharField(max_length=255, null=True, index=True)
     file_size_bytes = peewee.BigIntegerField(default=0)
     duration_seconds = peewee.IntegerField(default=0)
@@ -43,15 +51,30 @@ class Media(TimestampedMixin, BaseModel):
     special_tags = peewee.CharField(max_length=255, default="普通")
     valid = peewee.BooleanField(default=True)
 
+    @property
+    def display_path(self) -> str:
+        """返回可用于 API/日志展示的非空存储位置，不把云端 locator 冒充本地路径。"""
+        if self.path:
+            return self.path
+        locator = self.backend_locator or {}
+        backend = self.library.backend if self.library_id is not None else "remote"
+        label = locator.get("name") or locator.get("pickcode") or locator.get("fid") or str(self.id)
+        return f"{backend}:{label}"
+
     def save(self, *args, **kwargs):
         # 恰好其一不变量：一条 Media 必须归属 movie(JAV) 或 video_item(非 JAV) 之一，
         # 不能两者都空或都非空。读外键原始列值判断，不触发关联加载。
         if (self.movie_number is None) == (self.video_item_id is None):
             raise ValueError("Media must belong to exactly one of movie / video_item")
+        # 存储定位不变量：至少一个非空。本地库用 path，cloud115 等云盘 backend 用 backend_locator。
+        if self.path is None and self.backend_locator is None:
+            raise ValueError("Media must have either path or backend_locator")
         return super().save(*args, **kwargs)
 
     class Meta:
         table_name = "media"
+        # 同库同 locator 只允许登记一条；NULL 不参与唯一约束，本地行（locator=NULL）不受影响。
+        indexes = ((("library", "backend_locator"), True),)
 
 
 class MediaThumbnail(TimestampedMixin, BaseModel):
