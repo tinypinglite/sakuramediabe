@@ -166,6 +166,7 @@
 - 下载完成后的异步导入任务
 - 影片简介翻译任务（`movie_desc_translation`）
 - 影片标题翻译任务（`movie_title_translation`）
+- 批量媒体秒传任务（`media_rapid_upload`）：批次内顺序执行，结束后创建一条汇总通知
 
 ## 影片描述回填终态失败
 
@@ -197,3 +198,4 @@
 - `trigger_type = startup` 的任务会在 API 启动时扫描旧的 `pending` / `running` 记录，并统一回收为 `failed`
 - 当回收到 `movie_desc_sync`、`movie_interaction_sync`、`movie_desc_translation`、`movie_title_translation` 或 `media_thumbnail_generation` 时，会联动把对应 `resource_task_state.state = running` 回收为 `failed`
 - 当回收到 `download_task_import` 任务时，会联动执行孤儿导入恢复；基于 `ImportJob` 与运行器活跃状态一起判定，只有确认导入线程已经失活，才会把 `ImportJob`、`DownloadTask.import_status` 与对应 activity 状态统一回收为失败链路
+- 当回收到 `media_rapid_upload` 时，会释放逐媒体活动锁；尚未切换云端定位的条目标记为 `failed`，已经切换云端但未完成本地清理的条目标记为 `cleanup_failed`，供重试接口继续收敛

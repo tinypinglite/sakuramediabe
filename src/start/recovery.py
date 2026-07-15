@@ -16,6 +16,7 @@ from src.service.transfers import (
     Cloud115OfflineSyncService,
     DownloadSyncService,
     MediaImportJobService,
+    MediaRapidUploadService,
 )
 from src.service.videos import VideoImportJobService
 
@@ -49,7 +50,11 @@ BUSINESS_RECOVERY_HANDLERS: dict[str, Callable[[], object]] = {
     "download_task_import": lambda: DownloadSyncService().recover_orphaned_imports_only(),
     "media_directory_import": _recover_media_directory_imports,
     "video_directory_import": lambda: VideoImportJobService.recover_orphaned_jobs(),
+    "media_rapid_upload": lambda: MediaRapidUploadService.recover_interrupted_batches(),
 }
+
+# 秒传批次需要在业务恢复完成、统计已收敛后才能发送一条汇总通知。
+BUSINESS_MANAGED_NOTIFICATION_TASK_KEYS = {"media_rapid_upload"}
 
 
 def recover_interrupted_tasks(
@@ -69,6 +74,7 @@ def recover_interrupted_tasks(
             error_message=error_message,
             allow_null_owner=True,
             force=True,
+            suppress_notification_task_keys=BUSINESS_MANAGED_NOTIFICATION_TASK_KEYS,
         ):
             recovered_task_keys.add(task_run.task_key)
 

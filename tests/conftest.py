@@ -40,6 +40,8 @@ from src.model import (
     MediaLibrary,
     MediaPoint,
     MediaProgress,
+    MediaRapidUploadBatch,
+    MediaRapidUploadItem,
     MediaThumbnail,
     MomentRecommendation,
     Movie,
@@ -112,6 +114,8 @@ TEST_MODELS = [
     DownloadTask,
     ImportJob,
     VideoImportJob,
+    MediaRapidUploadBatch,
+    MediaRapidUploadItem,
 ]
 
 

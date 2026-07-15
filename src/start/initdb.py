@@ -24,6 +24,8 @@ from src.model import (
     MediaLibrary,
     MediaPoint,
     MediaProgress,
+    MediaRapidUploadBatch,
+    MediaRapidUploadItem,
     MediaThumbnail,
     MomentRecommendation,
     Movie,
@@ -106,6 +108,8 @@ def create_tables():
             DownloadTask,
             ImportJob,
             VideoImportJob,
+            MediaRapidUploadBatch,
+            MediaRapidUploadItem,
         ],
         safe=True,
     )

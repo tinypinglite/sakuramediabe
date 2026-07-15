@@ -12,6 +12,8 @@ from src.model import (
     Image,
     Media,
     MediaLibrary,
+    MediaRapidUploadBatch,
+    MediaRapidUploadItem,
     MediaThumbnail,
     MomentRecommendation,
     HotReviewItem,
@@ -104,6 +106,8 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
     assert SystemNotification.table_exists()
     assert SystemEvent.table_exists()
     assert Subtitle.table_exists()
+    assert MediaRapidUploadBatch.table_exists()
+    assert MediaRapidUploadItem.table_exists()
 
 
 def test_create_tables_creates_videos_domain_tables_and_decoupled_media(clean_db, monkeypatch):

@@ -314,5 +314,5 @@ Authorization: Bearer <token>
 - `MediaLibrary` 是受保护的系统配置资源，所有接口都要求 Bearer Token
 - 一个媒体库要么本地、要么网盘，不混合；`backend` 是 Media 后端分派（播放/缩略图/对账/导入）的权威来源
 - 修改接口只允许更新 `name`；backend 连接配置由各自的生命周期机制维护（cloud115 cookies 走保活回写与重新扫码）
-- 删除是否允许取决于该媒体库是否仍被其他业务数据引用（Media / DownloadClient / ImportJob）
+- 删除是否允许取决于该媒体库是否仍被其他业务数据引用（Media / DownloadClient / ImportJob / 批量秒传历史）；秒传批次保留目标库关联以支持审计与失败重试，因此存在历史批次时也会返回 `409 media_library_in_use`
 - cloud115 库的 cookies 与 qb 密码、Jackett key 同规格明文存库（`backend_config`），不引入额外加密框架；媒体库公开资源统一脱敏，任何创建、列表或更新响应均不返回 cookies

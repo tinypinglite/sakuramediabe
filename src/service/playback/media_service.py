@@ -533,6 +533,18 @@ class MediaService:
     @classmethod
     def delete_media(cls, media_id: int) -> None:
         media = cls._require_media(media_id)
+        # 秒传运行期间源文件正在被哈希或清理，禁止并发删除同一媒体。
+        from src.service.transfers.media_rapid_upload_service import (
+            MediaRapidUploadService,
+        )
+
+        if MediaRapidUploadService.has_active_media(media.id):
+            raise ApiError(
+                409,
+                "media_rapid_upload_in_progress",
+                "媒体正在执行秒传，暂不能删除",
+                {"media_id": media.id},
+            )
 
         thumbnails = list(
             MediaThumbnail.select(MediaThumbnail, Image)

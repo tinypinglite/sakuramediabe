@@ -12,6 +12,7 @@ from .download_task_service import DownloadTaskService
 from .filesystem_browse_service import FilesystemBrowseService
 from .media_import_job_service import MediaImportJobService, import_job_service_for
 from .media_import_service import MediaImportService
+from .media_rapid_upload_service import MediaRapidUploadService
 from .subscribed_movie_auto_download_service import SubscribedMovieAutoDownloadService
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "FilesystemBrowseService",
     "MediaImportJobService",
     "MediaImportService",
+    "MediaRapidUploadService",
     "SubscribedMovieAutoDownloadService",
     "import_job_service_for",
 ]

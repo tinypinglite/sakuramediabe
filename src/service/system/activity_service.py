@@ -59,6 +59,7 @@ TASK_NAME_REGISTRY = {
     "image_search_index": "图像搜索索引构建",
     "image_search_optimize": "图像搜索索引优化",
     "download_task_import": "下载任务导入",
+    "media_rapid_upload": "批量媒体秒传",
 }
 
 ALLOWED_TASK_CONFLICT_POLICIES = {"raise", "skip"}
@@ -576,6 +577,7 @@ class ActivityService:
         *,
         result_summary: dict[str, Any] | None = None,
         result_text: str | None = None,
+        notify_result: bool = True,
     ) -> BackgroundTaskRun:
         with get_database().atomic():
             task_run = BackgroundTaskRun.get_by_id(task_run_id)
@@ -592,7 +594,8 @@ class ActivityService:
                 resource_type="task_run",
                 resource_id=task_run.id,
             )
-            cls._notify_task_result(task_run, failed=False)
+            if notify_result:
+                cls._notify_task_result(task_run, failed=False)
             return task_run
 
     @classmethod
@@ -602,6 +605,7 @@ class ActivityService:
         *,
         error_message: str,
         result_summary: dict[str, Any] | None = None,
+        notify_result: bool = True,
     ) -> BackgroundTaskRun:
         with get_database().atomic():
             task_run = BackgroundTaskRun.get_by_id(task_run_id)
@@ -618,7 +622,8 @@ class ActivityService:
                 resource_type="task_run",
                 resource_id=task_run.id,
             )
-            cls._notify_task_result(task_run, failed=True)
+            if notify_result:
+                cls._notify_task_result(task_run, failed=True)
             return task_run
 
     @classmethod
@@ -630,6 +635,7 @@ class ActivityService:
         result_summary: dict[str, Any] | None = None,
         allow_null_owner: bool = False,
         force: bool = False,
+        notify_result: bool = True,
     ) -> BackgroundTaskRun | None:
         task_run = BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == task_run_id)
         if task_run is None:
@@ -645,6 +651,7 @@ class ActivityService:
             task_run_id,
             error_message=error_message,
             result_summary=result_summary,
+            notify_result=notify_result,
         )
 
     @classmethod
@@ -656,6 +663,7 @@ class ActivityService:
         error_message: str,
         allow_null_owner: bool = False,
         force: bool = False,
+        suppress_notification_task_keys: set[str] | None = None,
     ) -> list[BackgroundTaskRun]:
         query = BackgroundTaskRun.select().where(BackgroundTaskRun.state.in_(("pending", "running")))
         if trigger_type is not None:
@@ -663,6 +671,7 @@ class ActivityService:
         if task_key is not None:
             query = query.where(BackgroundTaskRun.task_key == task_key)
 
+        suppressed_task_keys = suppress_notification_task_keys or set()
         recovered_task_runs: list[BackgroundTaskRun] = []
         for task_run in query.order_by(BackgroundTaskRun.id.asc()):
             recovered = cls.recover_task_run(
@@ -670,6 +679,8 @@ class ActivityService:
                 error_message=error_message,
                 allow_null_owner=allow_null_owner,
                 force=force,
+                # 由业务层发送汇总通知的任务，避免与通用任务失败通知重复。
+                notify_result=task_run.task_key not in suppressed_task_keys,
             )
             if recovered is not None:
                 recovered_task_runs.append(recovered)
@@ -713,6 +724,7 @@ class ActivityService:
         extra_callbacks: list[Callable[[dict[str, Any]], None]] | None = None,
         mutex_key: str | None = None,
         conflict_policy: Literal["raise", "skip"] = "raise",
+        notify_result: bool = True,
     ) -> Any:
         normalized_conflict_policy = _normalize_allowed_filter(
             conflict_policy,
@@ -777,6 +789,7 @@ class ActivityService:
                         task_run.id,
                         error_message=str(exc),
                         result_summary=reporter.summary,
+                        notify_result=notify_result,
                     )
                     if task_logger:
                         elapsed_ms = int((time.time() - started_at) * 1000)
@@ -789,6 +802,7 @@ class ActivityService:
                 cls.complete_task_run(
                     task_run.id,
                     result_summary=result_summary,
+                    notify_result=notify_result,
                 )
                 if task_logger:
                     elapsed_ms = int((time.time() - started_at) * 1000)
@@ -1013,6 +1027,40 @@ class ActivityService:
             related_task_run_id=related_task_run_id,
             related_resource_type="movie",
             related_resource_id=related_resource_id if isinstance(related_resource_id, int) else None,
+        )
+        return cls._notification_resource(notification)
+
+    @classmethod
+    def create_media_rapid_upload_notification(
+        cls,
+        *,
+        batch_id: int,
+        task_run_id: int,
+        total_count: int,
+        succeeded_count: int,
+        failed_count: int,
+        cleanup_failed_count: int,
+        batch_failed: bool = False,
+    ) -> NotificationResource:
+        """为一个批量秒传批次发送唯一的终态汇总通知。"""
+        has_failures = failed_count > 0 or cleanup_failed_count > 0
+        if batch_failed:
+            category = "error"
+            title = "批量秒传任务失败"
+        else:
+            category = "warning" if has_failures else "info"
+            title = "批量秒传完成（部分失败）" if has_failures else "批量秒传完成"
+        content = (
+            f"本批次共 {total_count} 个媒体：成功 {succeeded_count} 个，"
+            f"失败 {failed_count} 个，本地文件清理失败 {cleanup_failed_count} 个。"
+        )
+        notification = cls._create_notification(
+            category=category,
+            title=title,
+            content=content,
+            related_task_run_id=task_run_id,
+            related_resource_type="media_rapid_upload_batch",
+            related_resource_id=batch_id,
         )
         return cls._notification_resource(notification)
 

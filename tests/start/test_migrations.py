@@ -606,6 +606,14 @@ def test_run_pending_migrations_supports_empty_database_after_create_tables(clea
     )
     assert moment_execution.applied is True
     assert clean_db.table_exists("moment_recommendation")
+    rapid_upload_execution = next(
+        item
+        for item in summary.executed
+        if item.name == "20260716_01_add_media_rapid_upload_jobs"
+    )
+    assert rapid_upload_execution.applied is True
+    assert clean_db.table_exists("media_rapid_upload_batch")
+    assert clean_db.table_exists("media_rapid_upload_item")
 
 
 def _create_legacy_notification_table_with_archived_index(clean_db):

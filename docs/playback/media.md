@@ -11,6 +11,7 @@
 - 缩略图列表查询
 - 全局媒体书签分页查询
 - 全局媒体分页查询（跨 JAV 与 videos 域，支持归属/库/订阅女优筛选与排序）
+- 批量把本地媒体秒传到 115，并在成功后删除本地文件
 - 媒体删除与有效性管理
 - 失效媒体列表查询
 - 单个媒体文件有效性复查
@@ -128,6 +129,10 @@
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `GET` | `/media` | 分页获取全局媒体列表，跨 JAV 与 videos 域，支持归属/库/订阅女优筛选与排序 |
+| `POST` | `/media/rapid-uploads` | 异步创建一个批量秒传作业 |
+| `GET` | `/media/rapid-uploads` | 分页查询秒传批次 |
+| `GET` | `/media/rapid-uploads/{batch_id}` | 查询批次及逐项结果 |
+| `POST` | `/media/rapid-uploads/{batch_id}/retry` | 只重试批次中的失败项 |
 | `GET` | `/media-points` | 分页获取全局媒体书签列表，按 `kind` 区分 JAV / 非 JAV（默认仅 JAV） |
 | `GET` | `/media/invalid` | 分页获取所有失效媒体列表 |
 | `POST` | `/media/{media_id}/validity-check` | 单次复查媒体文件是否有效，并同步修正 `valid` |
@@ -140,6 +145,61 @@
 | `DELETE` | `/media/{media_id}` | 硬删除媒体并清理关联播放数据 |
 
 ## 详细接口定义
+
+### 批量秒传到 115
+
+`POST /media/rapid-uploads`
+
+请求体：
+
+```json
+{
+  "media_ids": [101, 102, 103],
+  "target_library_id": 8
+}
+```
+
+- `media_ids` 必须是 1 至 200 个不重复的本地媒体 ID；JAV 和 videos 媒体可以混合提交。
+- `target_library_id` 必须指向 `backend=cloud115` 的媒体库。
+- 接口只创建后台作业并立即返回 `202 Accepted`：
+
+```json
+{
+  "rapid_upload_batch_id": 12,
+  "task_run_id": 456,
+  "status": "accepted"
+}
+```
+
+批次内部严格按请求顺序逐个秒传。同一目标 115 库会与现有 115 导入共享库级写锁，避免建目录、改名和删除并发。
+
+单项只有在 115 返回秒传成功、并按 `fid/pickcode/SHA1/size` 回查确认后，才会把原 `Media` 原地切换为 cloud115 定位；随后再次核对本地文件的大小、mtime、device 和 inode，确认仍是同一文件后删除。原地切换会保留该媒体已有的播放进度、缩略图、书签、片段与推荐关系。
+
+逐项终态：
+
+- `succeeded`：云端已登记，本地文件已删除。
+- `failed`：秒传失败；本地 Media 和文件保持不变。
+- `cleanup_failed`：云端已登记，但本地文件未能安全删除；重试时只执行本地清理，不会再次秒传。
+
+前端通过 `GET /system/events/stream` 接收 `task_run_created` / `task_run_updated` 进度事件。批次结束后系统始终创建一条汇总通知：全成功为 `info`，存在任一失败或清理失败为 `warning`。
+
+查询接口：
+
+- `GET /media/rapid-uploads?page=1&page_size=20`
+- `GET /media/rapid-uploads/{batch_id}`
+
+重试接口：
+
+`POST /media/rapid-uploads/{batch_id}/retry`
+
+只把原批次的 `failed` / `cleanup_failed` 项放入新批次；没有可重试项时返回 `422 media_rapid_upload_no_retryable_items`。
+
+常见错误：
+
+- `409 media_rapid_upload_conflict`：目标 115 库已有写入任务。
+- `409 media_rapid_upload_media_conflict`：所选媒体已在其它秒传批次中。
+- `422 media_rapid_upload_source_not_local`：源媒体不是本地媒体。
+- `422 media_rapid_upload_target_not_cloud115`：目标不是 115 媒体库。
 
 ### Endpoint
 

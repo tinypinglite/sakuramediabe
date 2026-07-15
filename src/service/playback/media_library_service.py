@@ -402,10 +402,16 @@ class MediaLibraryService:
     @classmethod
     def delete_library(cls, library_id: int) -> None:
         library = cls._require_library(library_id)
+        from src.service.transfers.media_rapid_upload_service import (
+            MediaRapidUploadService,
+        )
+
         if (
             Media.select().where(Media.library == library.id).exists()
             or DownloadClient.select().where(DownloadClient.media_library == library.id).exists()
             or ImportJob.select().where(ImportJob.library == library.id).exists()
+            or MediaRapidUploadService.has_active_library(library.id)
+            or MediaRapidUploadService.has_library_history(library.id)
         ):
             raise ApiError(
                 409,
