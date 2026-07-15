@@ -14,11 +14,13 @@ def _column_exists(database, *, table_name: str, column_name: str) -> bool:
 
 def migrate(database, migrator) -> None:
     # import_job 表加 source_cid（cloud115 导入的源目录 cid，重导据此重新枚举源）。
-    # 本地导入行保持 NULL；新装用户 initdb 已直接建出新 schema，命中已完成态时 skip。
+    # 本地导入行保持 NULL；新装用户走 initdb 直接建出终态 schema，本迁移在其之后
+    # 二次执行时会看到列已存在——此时正常 return（并写入 SchemaMigration）而不是
+    # 抛 SkipMigration，避免全新环境永远缺少这条审计记录、且每次 migrate 都白跑。
     if not database.table_exists("import_job"):
         raise SkipMigration("import_job table does not exist")
     if _column_exists(database, table_name="import_job", column_name="source_cid"):
-        raise SkipMigration("import_job.source_cid already exists")
+        return
     run_migration(
         migrator.add_column(
             "import_job",

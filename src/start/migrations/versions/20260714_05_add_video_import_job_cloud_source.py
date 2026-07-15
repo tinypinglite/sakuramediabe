@@ -26,6 +26,8 @@ def migrate(database, migrator) -> None:
                     VideoImportJob._meta.fields[column_name],
                 )
             )
+    # 新装用户 initdb 之后二次执行本迁移会发现列已存在——此时正常 return（并写入
+    # SchemaMigration 审计），不抛 SkipMigration；否则全新环境永远不记录本条。
     if not operations:
-        raise SkipMigration("video_import_job cloud source columns already exist")
+        return
     run_migration(*operations)

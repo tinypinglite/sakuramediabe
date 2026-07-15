@@ -399,15 +399,47 @@ class Cloud115VideoImportService:
                     )
                     continue
                 existing = self._find_library_media(library, source.sha1)
-                if source.sha1 in seen_sha1 or existing is not None:
+                # 同批次去重永远跳过（第二个副本没有独立价值）。
+                # 库内已存在时的行为按 transfer_mode 分派：
+                #   - copy 模式：跳过，保留源文件；
+                #   - cleanup-source 模式：不再重登，但**必须**尝试删除 115 源文件——
+                #     否则一次 delete_files 瞬时失败会让源永久滞留 115，用户看不到
+                #     可操作的失败项，违背 cleanup-source"复制后释放 115 配额"的语义。
+                if source.sha1 in seen_sha1:
                     stats["skipped"] += 1
-                    detail = "同批次存在相同内容文件"
-                    if existing is not None:
-                        detail = f"库中已存在相同内容（media_id={existing.id}）"
                     failure_items.append(
                         make_failure_item(
-                            source.rel_path, FAILURE_REASON_DUPLICATE_FINGERPRINT, detail
+                            source.rel_path,
+                            FAILURE_REASON_DUPLICATE_FINGERPRINT,
+                            "同批次存在相同内容文件",
                         )
+                    )
+                    continue
+                if existing is not None and transfer_mode != CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE:
+                    stats["skipped"] += 1
+                    failure_items.append(
+                        make_failure_item(
+                            source.rel_path,
+                            FAILURE_REASON_DUPLICATE_FINGERPRINT,
+                            f"库中已存在相同内容（media_id={existing.id}）",
+                        )
+                    )
+                    continue
+                if existing is not None:
+                    stats["skipped"] += 1
+                    failure_items.append(
+                        make_failure_item(
+                            source.rel_path,
+                            FAILURE_REASON_DUPLICATE_FINGERPRINT,
+                            f"库中已存在相同内容（media_id={existing.id}）",
+                        )
+                    )
+                    seen_sha1.add(source.sha1)
+                    await self._cleanup_source_only(
+                        client,
+                        source=source,
+                        failure_items=failure_items,
+                        stats=stats,
                     )
                     continue
                 seen_sha1.add(source.sha1)
@@ -585,8 +617,41 @@ class Cloud115VideoImportService:
                 await client.delete_files([source.fid])
             except Exception as exc:
                 stats["failed"] += 1
-                failure_items.append(
-                    make_failure_item(
-                        source.rel_path, FAILURE_REASON_SOURCE_DELETE_FAILED, str(exc)
-                    )
+                item = make_failure_item(
+                    source.rel_path, FAILURE_REASON_SOURCE_DELETE_FAILED, str(exc)
                 )
+                # 清源失败必须走可操作路径：与 JAV 管线对齐把 kind 提升为 file，
+                # 让用户能通过失败项重试列表精确地重新触发删除，避免残留 115 侧文件。
+                item["kind"] = "file"
+                failure_items.append(item)
+                logger.warning(
+                    "Cloud115 video source delete failed rel_path={} detail={}",
+                    source.rel_path, exc,
+                )
+
+    async def _cleanup_source_only(
+        self,
+        client: Cloud115Client,
+        *,
+        source: CloudSourceFile,
+        failure_items: List[dict],
+        stats: dict,
+    ) -> None:
+        """cleanup-source 模式下遇到已入库内容时，只删远端源文件、不重登。
+
+        与 _import_file 的清源分支共享失败语义（kind=file 可重试），保证 delete
+        瞬时失败时用户能从失败项列表精确重跑，不至于永久遗留 115 侧文件。
+        """
+        try:
+            await client.delete_files([source.fid])
+        except Exception as exc:
+            stats["failed"] += 1
+            item = make_failure_item(
+                source.rel_path, FAILURE_REASON_SOURCE_DELETE_FAILED, str(exc)
+            )
+            item["kind"] = "file"
+            failure_items.append(item)
+            logger.warning(
+                "Cloud115 video cleanup-only delete failed rel_path={} detail={}",
+                source.rel_path, exc,
+            )

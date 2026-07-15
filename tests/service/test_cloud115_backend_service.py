@@ -141,6 +141,33 @@ def test_keepalive_counts_alive_and_notifies_expired_once(cloud115_tables, monke
     assert SystemNotification.select().count() == 1
 
 
+def test_keepalive_dedup_survives_library_rename(cloud115_tables, monkeypatch):
+    """库改名后再触发保活，未读的旧标题通知仍算命中——去重必须按 library_id 而非拼库名的 title。"""
+    library = _create_cloud_library(name="dead-lib")
+
+    async def fake_check(cls, _library):
+        return Cloud115CookieStatus.EXPIRED
+
+    monkeypatch.setattr(
+        Cloud115KeepaliveService, "_check_library", classmethod(fake_check)
+    )
+
+    Cloud115KeepaliveService.run()
+    assert SystemNotification.select().count() == 1
+    first = SystemNotification.get()
+    assert "dead-lib" in first.title
+
+    # 用户在 cookies 未修复期间给这个库改了名。
+    library.name = "renamed-lib"
+    library.save()
+
+    Cloud115KeepaliveService.run()
+    # 旧通知未读，新一轮同库继续 EXPIRED；标题里的库名变了但去重键（library_id）
+    # 未变，所以不能因为标题不同而再插入一条。
+    assert SystemNotification.select().count() == 1
+    assert SystemNotification.get().id == first.id
+
+
 def test_keepalive_skips_when_no_cloud115_library(cloud115_tables):
     MediaLibrary.create(
         name="local", backend="local", backend_config={"root_path": "/library/a"}

@@ -47,6 +47,10 @@ from src.service.playback.media_metadata_probe_service import MediaMetadataProbe
 
 class MediaClipService:
     CLOUD115_CLIP_USER_AGENT = "Mozilla/5.0 SakuraMedia-Clip/1.0"
+    # 切片 remux 累计字节上限：一次片段截取只需读起止两处附近的少量数据，1GB 足以
+    # 覆盖码率极高的长片段；给上限的目的是兜住 CDN 偶发不遵守 Range 直接吐 200 全量
+    # body 的情况，防止大文件被整体读进内存。
+    CLOUD115_CLIP_FETCH_BUDGET_BYTES = 1024 * 1024 * 1024
     MEDIA_CLIP_SORT_FIELDS = {
         "created_at:desc": [MediaClip.created_at.desc(), MediaClip.id.desc()],
         "created_at:asc": [MediaClip.created_at.asc(), MediaClip.id.asc()],
@@ -218,6 +222,7 @@ class MediaClipService:
             direct.url,
             user_agent=direct.user_agent,
             file_size=file_size,
+            max_fetched_bytes=cls.CLOUD115_CLIP_FETCH_BUDGET_BYTES,
         )
         try:
             cls._remux_cloud115_clip(reader, target_path, start, end)

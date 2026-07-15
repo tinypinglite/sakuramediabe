@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -110,6 +111,21 @@ def _create_media_library_table_without_account_key(clean_db):
             name VARCHAR(255) NOT NULL UNIQUE,
             backend VARCHAR(32) NOT NULL DEFAULT 'local',
             backend_config TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _create_legacy_media_library_table_with_root_path(clean_db):
+    """20260713_01 迁移前的表结构：只有 name + root_path（无 backend/backend_config）。"""
+    clean_db.execute_sql(
+        """
+        CREATE TABLE media_library (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
+            name VARCHAR(255) NOT NULL UNIQUE,
+            root_path VARCHAR(1024) NOT NULL UNIQUE
         )
         """
     )
@@ -288,6 +304,33 @@ def test_run_pending_migrations_skips_when_target_table_is_missing(clean_db):
     )
     assert clip_execution.applied is False
     assert not clean_db.table_exists("media_clip")
+
+
+def test_run_pending_migrations_records_source_cid_migrations_after_fresh_initdb(clean_db):
+    """全新安装：initdb 建出终态 schema 后再跑 migrate，02/05 也应记入 SchemaMigration。
+
+    修复前这两条迁移在"列已存在"分支抛 SkipMigration，全新环境永远缺这两条审计记录；
+    修复后走 return 分支，SchemaMigration 会写入，`applied=True`，重跑走 continue。
+    """
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+
+    summary = run_pending_migrations(clean_db)
+
+    source_cid_execution = next(
+        item for item in summary.executed
+        if item.name == "20260714_02_add_import_job_source_cid"
+    )
+    assert source_cid_execution.applied is True
+    cloud_source_execution = next(
+        item for item in summary.executed
+        if item.name == "20260714_05_add_video_import_job_cloud_source"
+    )
+    assert cloud_source_execution.applied is True
+
+    recorded_names = _schema_migration_names(clean_db)
+    assert "20260714_02_add_import_job_source_cid" in recorded_names
+    assert "20260714_05_add_video_import_job_cloud_source" in recorded_names
 
 
 def test_run_pending_migrations_creates_media_clip_tables_on_empty_database(clean_db):
@@ -653,6 +696,45 @@ def _column_is_nullable(clean_db, table_name: str, column_name: str) -> bool:
     raise AssertionError(f"column not found: {table_name}.{column_name}")
 
 
+def test_run_pending_migrations_migrates_root_path_to_backend_config(clean_db):
+    """20260713_01：旧 media_library.root_path 迁移到 backend + backend_config JSON，且旧列被删除。
+
+    这是本次改动里“爆炸半径”最大的迁移（新增 backend/backend_config 两列 + 回填 + 删列），
+    覆盖存量本地库的完整迁移路径：无 backend 列 → 补列 → JSON 回填 → 删旧列。
+    """
+    _create_legacy_media_library_table_with_root_path(clean_db)
+    clean_db.execute_sql(
+        """
+        INSERT INTO media_library (created_at, updated_at, name, root_path) VALUES
+            ('2026-01-01 00:00:00', '2026-01-01 00:00:00', 'Main', '/media/library/main'),
+            ('2026-01-02 00:00:00', '2026-01-02 00:00:00', 'Archive', '/media/library/archive')
+        """
+    )
+
+    run_pending_migrations(clean_db)
+
+    columns = {column.name for column in clean_db.get_columns("media_library")}
+    assert "backend" in columns
+    assert "backend_config" in columns
+    # 旧 root_path 列已被删除（此后应用代码只能通过 backend_config 读到路径）。
+    assert "root_path" not in columns
+    # backend 列已加 NOT NULL 约束（存量行由方言引擎默认值 'local' 回填）。
+    assert _column_is_nullable(clean_db, "media_library", "backend") is False
+    assert _column_is_nullable(clean_db, "media_library", "backend_config") is False
+
+    rows = clean_db.execute_sql(
+        "SELECT name, backend, backend_config FROM media_library ORDER BY name"
+    ).fetchall()
+
+    def _as_dict(raw):
+        return raw if isinstance(raw, dict) else json.loads(raw)
+
+    assert len(rows) == 2
+    by_name = {row[0]: (row[1], _as_dict(row[2])) for row in rows}
+    assert by_name["Archive"] == ("local", {"root_path": "/media/library/archive"})
+    assert by_name["Main"] == ("local", {"root_path": "/media/library/main"})
+
+
 def test_run_pending_migrations_adds_media_backend_locator(clean_db):
     """20260714_01：media 补 backend_locator、path 放松可空、(library_id, backend_locator) 唯一索引。"""
     _create_legacy_media_table_not_null(clean_db)
@@ -915,6 +997,49 @@ def test_run_pending_migrations_adds_partial_unique_cloud115_client_index(clean_
     index_names = {index.name for index in clean_db.get_indexes("download_client")}
     assert "download_client_cloud115_library_unique" in index_names
     assert "20260715_01_unique_cloud115_download_client_library" in _schema_migration_names(clean_db)
+
+
+def test_cloud115_unique_client_migration_rejects_existing_duplicates(clean_db):
+    """20260715_01：加唯一索引前发现存量脏数据（同一 media_library 已有多条 cloud115），必须报语义化错。
+
+    直接构造已跑完 20260714_06 但未跑 20260715_01 的中间态：手写一张带 kind+media_library_id
+    的 download_client 表，插入两条 cloud115 同库脏数据，然后单独调 15_01.migrate() 应该
+    抛 ValueError 且携带 library_id，而非落到 Postgres 层裸 IntegrityError。
+    """
+    from importlib import import_module
+
+    from playhouse.migrate import PostgresqlMigrator
+
+    unique_migration_module = import_module(
+        "src.start.migrations.versions.20260715_01_unique_cloud115_download_client_library"
+    )
+
+    clean_db.execute_sql(
+        """
+        CREATE TABLE download_client (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
+            name VARCHAR(255) NOT NULL UNIQUE,
+            kind VARCHAR(32) NOT NULL DEFAULT 'qbittorrent',
+            media_library_id INTEGER NULL
+        )
+        """
+    )
+    clean_db.execute_sql(
+        """
+        INSERT INTO download_client (created_at, updated_at, name, kind, media_library_id)
+        VALUES
+            (NOW(), NOW(), 'cloud-a', 'cloud115', 42),
+            (NOW(), NOW(), 'cloud-b', 'cloud115', 42)
+        """
+    )
+
+    migrator = PostgresqlMigrator(clean_db)
+    with pytest.raises(ValueError) as excinfo:
+        unique_migration_module.migrate(clean_db, migrator)
+    assert "cloud115_download_client_library_duplicate" in str(excinfo.value)
+    assert "42" in str(excinfo.value)
 
 
 def test_run_pending_migrations_moves_indexer_binding_to_junction_table(clean_db):

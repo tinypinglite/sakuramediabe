@@ -1025,11 +1025,17 @@ class ActivityService:
     ) -> NotificationResource | None:
         # cloud115 cookies 长效凭据失效：需要用户重新扫码绑定。保活任务周期触发，
         # 同一库存在未读同题通知时不重复发，避免每个周期刷一条。
+        # 去重键用 (related_resource_type, related_resource_id) 而不是拼了库名的
+        # title——库允许被改名，若沿用 title 匹配，"失效期间恰好改名"会导致新一轮
+        # 保活探测再插入一条不同标题的通知，破坏"每库一次未读"的语义。
         title = f"115 网盘登录已失效（{library_name}）"
         already_pending = (
             SystemNotification.select()
             .where(
-                SystemNotification.title == title,
+                SystemNotification.related_resource_type == "media_library",
+                SystemNotification.related_resource_id == library_id,
+                SystemNotification.category == "warning",
+                SystemNotification.title.startswith("115 网盘登录已失效"),
                 SystemNotification.is_read == False,  # noqa: E712
             )
             .exists()

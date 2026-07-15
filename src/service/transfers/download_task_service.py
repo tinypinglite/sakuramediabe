@@ -210,6 +210,8 @@ class DownloadTaskService:
             ) from exc
 
         if task.download_state != "abandoned":
+            from src.lib.cloud115 import Cloud115NotFoundError
+
             async def _delete_remote() -> None:
                 async with cloud115_client_for(task.client.media_library) as sdk_client:
                     await sdk_client.delete_offline_tasks(
@@ -218,6 +220,15 @@ class DownloadTaskService:
 
             try:
                 asyncio.run(_delete_remote())
+            except Cloud115NotFoundError:
+                # 远端明确不存在（用户已在 115 App 手动删过、或上次删除请求远端成功
+                # 但本地事务失败留下的悬空任务）：视为"已经删干净"，继续走本地删除，
+                # 避免本地记录永久卡死无法清理。cookies 失效/限流等其它上游错误仍然
+                # 保留本地记录并向上报错，以便用户重试。
+                logger.info(
+                    "Cloud115 offline task already gone remotely, proceeding with local delete task_id={}",
+                    task.id,
+                )
             except Cloud115Error as exc:
                 logger.warning(
                     "Delete cloud115 offline task failed task_id={} detail={}", task.id, exc

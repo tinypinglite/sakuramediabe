@@ -63,6 +63,8 @@ class _CloudFS:
     copy_calls: list = field(default_factory=list)
     rename_calls: list = field(default_factory=list)
     delete_calls: list = field(default_factory=list)
+    # 注入指定 fid 让 delete_files 抛错，用于验证 cleanup-source 删源失败可重试。
+    delete_fail_fids: set[str] = field(default_factory=set)
     counter: itertools.count = field(default_factory=lambda: itertools.count(100))
 
     def add_dir(self, cid, name, parent):
@@ -148,6 +150,9 @@ class _CloudFS:
 
     async def delete_files(self, fids, *, pid=None):
         self.delete_calls.append(tuple(fids))
+        for fid in fids:
+            if fid in self.delete_fail_fids:
+                raise RuntimeError(f"simulated delete failure fid={fid}")
         for fid in fids:
             self.files.pop(fid, None)
 
@@ -266,14 +271,56 @@ def test_probe_failure_keeps_source_and_does_not_register(cloud_setup):
     assert fs.delete_calls == []
 
 
-def test_duplicate_cleanup_source_is_skipped_without_deleting_source(cloud_setup):
+def test_duplicate_cleanup_source_still_deletes_remote_source(cloud_setup):
+    """已入库内容再次 cleanup-source 导入时，仍要删远端源文件（否则源永久滞留 115）。"""
+    fs, library = cloud_setup
+    fs.add_file(fid="f1", parent="source", name="clip.mp4", sha1="AAA")
+    service = Cloud115VideoImportService(_Probe())
+    # 第一次 copy 模式：入库并保留源文件。
+    service.import_from_cloud115(library.id, source_cid="source")
+    assert "f1" in fs.files
+    # 第二次 cleanup-source：不重登，但必须清源。
+    job = service.import_from_cloud115(
+        library.id, source_cid="source", transfer_mode="cleanup-source"
+    )
+    assert job.state == "completed"
+    assert job.skipped_count == 1
+    assert Media.select().count() == 1  # 未重登
+    assert "f1" not in fs.files
+    assert ("f1",) in fs.delete_calls
+
+
+def test_duplicate_cleanup_source_delete_failure_is_retryable(cloud_setup):
+    """cleanup-source 删源失败 → 失败项 kind=file，允许用户通过失败列表精确重试。"""
     fs, library = cloud_setup
     fs.add_file(fid="f1", parent="source", name="clip.mp4", sha1="AAA")
     service = Cloud115VideoImportService(_Probe())
     service.import_from_cloud115(library.id, source_cid="source")
+
+    fs.delete_fail_fids.add("f1")
     job = service.import_from_cloud115(
         library.id, source_cid="source", transfer_mode="cleanup-source"
     )
+
+    assert job.state == "failed"
+    assert "f1" in fs.files
+    failed = job.failed_files.get("source_delete_failed", [])
+    matching = [item for item in failed if item.get("path") == "clip.mp4"]
+    assert matching, f"expected clip.mp4 in source_delete_failed, got {job.failed_files}"
+    # 关键：kind=file 才会进入可重试白名单，warning 不会。
+    assert matching[0].get("kind") == "file"
+
+
+def test_duplicate_copy_mode_skips_and_keeps_source(cloud_setup):
+    """copy 模式下已存在内容仍然跳过，且不动源文件（保持向后兼容）。"""
+    fs, library = cloud_setup
+    fs.add_file(fid="f1", parent="source", name="clip.mp4", sha1="AAA")
+    service = Cloud115VideoImportService(_Probe())
+    service.import_from_cloud115(library.id, source_cid="source")
+    fs.delete_calls.clear()
+
+    job = service.import_from_cloud115(library.id, source_cid="source")
+
     assert job.state == "completed"
     assert job.skipped_count == 1
     assert "f1" in fs.files

@@ -1038,3 +1038,59 @@ def test_backfill_cloud115_resolution_reads_real_webp(thumbnail_tables, tmp_path
     MediaThumbnailService._backfill_cloud115_resolution(media, [webp_path])
 
     assert Media.get_by_id(media.id).resolution == "1280x720"
+
+
+def test_open_cloud115_reader_binds_fetch_budget(monkeypatch: pytest.MonkeyPatch):
+    """_open_cloud115_reader 必须给 RangeReader 传抓取预算，防止 CDN 不遵守 Range 时读整个大文件到内存。"""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import src.lib.cloud115 as cloud115_module
+    from src.service.playback import cloud115_backend_service as backend_module
+    from src.service.playback.media_thumbnail_service import MediaThumbnailService
+
+    reader_calls = []
+
+    class _FakeClient:
+        async def get_download_url(self, pickcode, user_agent):
+            return SimpleNamespace(
+                url="https://cdn.example.com/movie.mp4?t=9999999999",
+                user_agent=user_agent,
+                file_size=1024 * 1024,
+                expires_at=9999999999,
+            )
+
+    @asynccontextmanager
+    async def _fake_client_for(_library):
+        yield _FakeClient()
+
+    class _FakeRangeReader:
+        def __init__(self, url, *, user_agent, file_size, max_fetched_bytes=None):
+            reader_calls.append(
+                {
+                    "url": url,
+                    "user_agent": user_agent,
+                    "file_size": file_size,
+                    "max_fetched_bytes": max_fetched_bytes,
+                }
+            )
+
+    monkeypatch.setattr(backend_module, "cloud115_client_for", _fake_client_for)
+    monkeypatch.setattr(cloud115_module, "Cloud115RangeReader", _FakeRangeReader)
+
+    media = SimpleNamespace(
+        id=42,
+        library=object(),
+        backend_locator={"pickcode": "pc-thumb"},
+    )
+    reader, label = MediaThumbnailService._open_cloud115_reader(media)
+
+    assert label == "cloud115:pc-thumb"
+    assert reader_calls == [
+        {
+            "url": "https://cdn.example.com/movie.mp4?t=9999999999",
+            "user_agent": MediaThumbnailService.CLOUD115_THUMBNAIL_UA,
+            "file_size": 1024 * 1024,
+            "max_fetched_bytes": MediaThumbnailService.CLOUD115_THUMBNAIL_FETCH_BUDGET_BYTES,
+        }
+    ]

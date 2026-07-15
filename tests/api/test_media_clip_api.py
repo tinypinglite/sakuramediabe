@@ -168,8 +168,10 @@ def test_cut_cloud115_clip_resolves_direct_url_with_bound_user_agent(
         yield FakeClient()
 
     class FakeRangeReader:
-        def __init__(self, url, *, user_agent, file_size):
-            reader_calls.append((url, user_agent, file_size))
+        def __init__(self, url, *, user_agent, file_size, max_fetched_bytes=None):
+            # 记录 max_fetched_bytes 以断言切片路径始终传了抓取预算，防止 CDN
+            # 不遵守 Range 时把整个大文件读进内存。
+            reader_calls.append((url, user_agent, file_size, max_fetched_bytes))
             self.closed = False
 
         def close(self):
@@ -200,6 +202,7 @@ def test_cut_cloud115_clip_resolves_direct_url_with_bound_user_agent(
         "https://cdn.example.com/movie.mp4?t=9999999999",
         MediaClipService.CLOUD115_CLIP_USER_AGENT,
         2048,
+        MediaClipService.CLOUD115_CLIP_FETCH_BUDGET_BYTES,
     )]
     assert len(remux_calls) == 1
     reader, received_target, start, end = remux_calls[0]

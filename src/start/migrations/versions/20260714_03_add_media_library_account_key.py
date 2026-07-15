@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import json
-import re
 
 import peewee
 from playhouse.migrate import migrate as run_migration
 
+from src.lib.cloud115 import Cloud115AuthError
+from src.lib.cloud115.client import Cloud115Client
 from src.start.migrations import SkipMigration
 
 name = "20260714_03_add_media_library_account_key"
-
-_UID_PATTERN = re.compile(r"(?:^|;\s*)UID=(\d+)_")
 
 
 def _column_exists(database, *, table_name: str, column_name: str) -> bool:
@@ -19,6 +18,13 @@ def _column_exists(database, *, table_name: str, column_name: str) -> bool:
 
 def _index_exists(database, *, table_name: str, columns: tuple[str, ...]) -> bool:
     return any(tuple(index.columns) == columns for index in database.get_indexes(table_name))
+
+
+def _extract_user_id(cookies: str) -> str:
+    """复用 SDK 权威 cookie 解析，避免迁移里自造正则与运行时解析漂移。"""
+    return Cloud115Client._parse_user_id_from_dict(
+        Cloud115Client._parse_cookies(cookies)
+    )
 
 
 def migrate(database, migrator) -> None:
@@ -45,12 +51,13 @@ def migrate(database, migrator) -> None:
     for library_id, raw_config in rows:
         config = raw_config if isinstance(raw_config, dict) else json.loads(raw_config or "{}")
         cookies = str(config.get("cookies") or "")
-        match = _UID_PATTERN.search(cookies)
-        if match is None:
+        try:
+            user_id = _extract_user_id(cookies)
+        except Cloud115AuthError as exc:
             raise ValueError(
                 f"cloud115_media_library_uid_missing: library_id={library_id}"
-            )
-        account_key = f"cloud115:{match.group(1)}"
+            ) from exc
+        account_key = f"cloud115:{user_id}"
         previous_id = account_keys.get(account_key)
         if previous_id is not None:
             raise ValueError(

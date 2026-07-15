@@ -3391,3 +3391,106 @@ def test_cloud115_sse_interval_is_read_each_poll_round(download_tables, monkeypa
 
     assert waits == [8.0, 12.0]
     assert consumed == [(client.id, {}), (client.id, {})]
+
+
+# -----------------------------------------------------------------------------
+# _delete_cloud115_task 覆盖：先删远端、再删本地，且远端不存在时视为成功。
+# -----------------------------------------------------------------------------
+
+
+def _install_cloud115_delete_fake(monkeypatch, *, calls, raise_exc=None):
+    """给 download_task_service._delete_cloud115_task 装一个可控的 SDK 假客户端。"""
+    from contextlib import asynccontextmanager
+
+    from src.service.transfers import download_task_service as dts_module
+
+    class _FakeSdkClient:
+        async def delete_offline_tasks(self, info_hashes, *, delete_source_files):
+            calls.append((tuple(info_hashes), delete_source_files))
+            if raise_exc is not None:
+                raise raise_exc
+
+    @asynccontextmanager
+    async def _fake_client_for(_library):
+        yield _FakeSdkClient()
+
+    # cloud115_client_for/map_cloud115_error 都是在 _delete_cloud115_task 内延迟 import 的，
+    # 需要 patch backend service 模块本身，而不是 download_task_service 里的引用。
+    monkeypatch.setattr(
+        "src.service.playback.cloud115_backend_service.cloud115_client_for",
+        _fake_client_for,
+    )
+
+
+def _build_cloud115_task_for_delete(*, download_state="downloading") -> DownloadTask:
+    library = _create_cloud115_library(name=f"cloud-{download_state}")
+    client = DownloadClient.create(
+        name=f"cloud115-entry-{download_state}", kind="cloud115", media_library=library
+    )
+    return DownloadTask.create(
+        client=client,
+        movie="ABP-777",
+        name="ABP-777",
+        info_hash="a" * 40,
+        save_path="sakuramedia_downloads/abp-777",
+        target_ref={"cid": "cid-abp-777"},
+        download_state=download_state,
+        import_status="pending",
+    )
+
+
+def test_delete_cloud115_task_removes_local_when_remote_already_gone(
+    download_tables, monkeypatch
+):
+    """115 侧任务已被用户手动清理时，本地仍要能删除，不能永久卡死。"""
+    from src.lib.cloud115 import Cloud115NotFoundError
+
+    task = _build_cloud115_task_for_delete()
+    calls: list[tuple] = []
+    _install_cloud115_delete_fake(
+        monkeypatch,
+        calls=calls,
+        raise_exc=Cloud115NotFoundError("task not found remotely"),
+    )
+
+    removed = DownloadTaskService.delete_task(task.id, delete_files=False)
+
+    assert removed["task_id"] == task.id
+    assert DownloadTask.get_or_none(DownloadTask.id == task.id) is None
+    # 仍然真实调用了远端一次，才知道它不存在（不是短路跳过）。
+    assert len(calls) == 1
+
+
+def test_delete_cloud115_task_keeps_local_on_other_upstream_errors(
+    download_tables, monkeypatch
+):
+    """cookies 失效等非 NotFound 的上游错误：本地记录保留、让用户重试。"""
+    from src.lib.cloud115 import Cloud115AuthError
+
+    task = _build_cloud115_task_for_delete()
+    _install_cloud115_delete_fake(
+        monkeypatch,
+        calls=[],
+        raise_exc=Cloud115AuthError("cookies expired"),
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        DownloadTaskService.delete_task(task.id, delete_files=False)
+
+    # map_cloud115_error 会把 AuthError 映射为 422 cloud115_cookies_invalid。
+    assert exc_info.value.status_code == 422
+    assert DownloadTask.get_or_none(DownloadTask.id == task.id) is not None
+
+
+def test_delete_cloud115_task_abandoned_skips_remote_call(download_tables, monkeypatch):
+    """abandoned 语义：本地放弃、远端保留，删除时不动 115。"""
+    task = _build_cloud115_task_for_delete(download_state="abandoned")
+    calls: list[tuple] = []
+    _install_cloud115_delete_fake(monkeypatch, calls=calls)
+
+    removed = DownloadTaskService.delete_task(task.id, delete_files=False)
+
+    assert removed["task_id"] == task.id
+    assert DownloadTask.get_or_none(DownloadTask.id == task.id) is None
+    # abandoned 走本地-only 路径，从头到尾不调远端。
+    assert calls == []

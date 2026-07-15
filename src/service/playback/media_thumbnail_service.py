@@ -53,6 +53,10 @@ class MediaThumbnailService:
         Cloud115RateLimitedError,
         Cloud115RequestError,
     )
+    # 抽帧全过程受控 Range 累计字节上限：单张缩略图仅需读若干个 GOP 关键帧片段，
+    # 单个视频抽 6-10 张封面通常远小于这个数量级；给到 512MB 是为了兜住 CDN 偶发
+    # 不遵守 Range 直接吐 200 全量 body 的情况——即使碰到，也不会把整部影片读进内存。
+    CLOUD115_THUMBNAIL_FETCH_BUDGET_BYTES = 512 * 1024 * 1024
 
     @staticmethod
     def _ensure_worker_database_ready() -> None:
@@ -94,6 +98,7 @@ class MediaThumbnailService:
             direct.url,
             user_agent=cls.CLOUD115_THUMBNAIL_UA,
             file_size=direct.file_size,
+            max_fetched_bytes=cls.CLOUD115_THUMBNAIL_FETCH_BUDGET_BYTES,
         )
         return reader, f"cloud115:{pickcode}"
 
