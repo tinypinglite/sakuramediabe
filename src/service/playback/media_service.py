@@ -21,6 +21,7 @@ from src.model import (
     MediaProgress,
     MediaThumbnail,
     Movie,
+    MovieActor,
     ResourceTaskState,
     VideoItem,
 )
@@ -29,6 +30,7 @@ from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
     InvalidMediaResource,
+    MediaListItemResource,
     MediaValidityCheckResponse,
     MediaPointCreateRequest,
     MediaPointKind,
@@ -50,6 +52,13 @@ class MediaService:
         "created_at:desc": [MediaPoint.created_at.desc(), MediaPoint.id.desc()],
         "created_at:asc": [MediaPoint.created_at.asc(), MediaPoint.id.asc()],
     }
+
+    MEDIA_LIST_SORT_FIELD_MAP = {
+        "file_size_bytes": Media.file_size_bytes,
+        "heat": Movie.heat,
+    }
+    # 非 JAV 视频没有关联 Movie，heat 恒为空，需要排在末尾（不受排序方向影响）。
+    MEDIA_LIST_NULLABLE_SORT_FIELDS = {"heat"}
 
     @staticmethod
     def _current_time() -> datetime:
@@ -233,6 +242,158 @@ class MediaService:
         if kind == MediaPointKind.VIDEO:
             return Media.video_item.is_null(False)
         return None
+
+    @classmethod
+    def _build_media_list_sort(cls, sort: str | None) -> Sequence:
+        """解析 ``field:direction`` 排序表达式，默认按入库时间倒序。"""
+        if sort is None or not sort.strip():
+            return [Media.created_at.desc(), Media.id.desc()]
+
+        normalized = sort.strip().lower()
+        try:
+            field_name, direction = normalized.split(":", 1)
+        except ValueError:
+            raise ApiError(
+                422,
+                "invalid_media_filter",
+                "Invalid sort expression",
+                {"sort": sort},
+            )
+
+        if field_name not in cls.MEDIA_LIST_SORT_FIELD_MAP or direction not in ("asc", "desc"):
+            raise ApiError(
+                422,
+                "invalid_media_filter",
+                "Invalid sort expression",
+                {"sort": sort},
+            )
+
+        sort_field = cls.MEDIA_LIST_SORT_FIELD_MAP[field_name]
+        ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
+        tie_breaker = Media.id.asc() if direction == "asc" else Media.id.desc()
+        if field_name in cls.MEDIA_LIST_NULLABLE_SORT_FIELDS:
+            # 允许空值的字段统一放到后面，避免不同数据库里空值排序行为不一致。
+            return [sort_field.is_null(), ordered_field, tie_breaker]
+        return [ordered_field, tie_breaker]
+
+    @staticmethod
+    def _to_media_list_item_resource(media: Media) -> MediaListItemResource:
+        # 按归属拆分：JAV 媒体展示番号、影片封面与热度，非 JAV 媒体回退到 VideoItem 标题。
+        if media.movie_number:
+            movie = media.movie
+            return MediaListItemResource(
+                id=media.id,
+                kind="jav",
+                movie_number=movie.movie_number,
+                title=movie.title,
+                cover_image=ImageResource.from_attributes_model(movie.cover_image)
+                if movie.cover_image_id is not None
+                else None,
+                thin_cover_image=ImageResource.from_attributes_model(movie.thin_cover_image)
+                if movie.thin_cover_image_id is not None
+                else None,
+                library_id=media.library_id,
+                library_name=media.library.name if media.library_id is not None else None,
+                path=media.display_path,
+                file_size_bytes=media.file_size_bytes,
+                duration_seconds=media.duration_seconds,
+                resolution=media.resolution,
+                special_tags=media.special_tags,
+                valid=media.valid,
+                heat=movie.heat,
+                created_at=media.created_at,
+                updated_at=media.updated_at,
+            )
+        video_item = media.video_item if media.video_item_id else None
+        return MediaListItemResource(
+            id=media.id,
+            kind="video",
+            video_item_id=media.video_item_id,
+            title=video_item.title if video_item is not None else None,
+            cover_image=ImageResource.from_attributes_model(video_item.cover_image)
+            if video_item is not None and video_item.cover_image_id is not None
+            else None,
+            library_id=media.library_id,
+            library_name=media.library.name if media.library_id is not None else None,
+            path=media.display_path,
+            file_size_bytes=media.file_size_bytes,
+            duration_seconds=media.duration_seconds,
+            resolution=media.resolution,
+            special_tags=media.special_tags,
+            valid=media.valid,
+            heat=None,
+            created_at=media.created_at,
+            updated_at=media.updated_at,
+        )
+
+    @classmethod
+    def list_media(
+        cls,
+        *,
+        kind: MediaPointKind = MediaPointKind.ALL,
+        library_id: int | None = None,
+        actor_ids: list[int] | None = None,
+        sort: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> PageResponse[MediaListItemResource]:
+        """跨 JAV 与 videos 域分页列出全部媒体，支持归属/库/订阅女优筛选与排序。"""
+        validate_page(page, page_size, error_code="invalid_media_filter")
+
+        # 非 JAV 媒体没有 movie，Movie 改为 LEFT OUTER，并补 VideoItem 兜底标题/封面。
+        base_query = Media.select(Media, Movie, VideoItem).join(
+            Movie,
+            peewee.JOIN.LEFT_OUTER,
+            on=(Media.movie == Movie.movie_number),
+        )
+        base_query, _thin_cover_alias = with_movie_card_relations(base_query)
+        video_cover_alias = Image.alias()
+        base_query = (
+            base_query.select_extend(MediaLibrary, video_cover_alias)
+            .switch(Media)
+            .join(VideoItem, peewee.JOIN.LEFT_OUTER)
+            .join(
+                video_cover_alias,
+                peewee.JOIN.LEFT_OUTER,
+                on=(VideoItem.cover_image == video_cover_alias.id),
+                attr="cover_image",
+            )
+            .switch(Media)
+            .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
+        )
+
+        kind_filter = cls._media_point_kind_filter(kind)
+        if kind_filter is not None:
+            base_query = base_query.where(kind_filter)
+        if library_id is not None:
+            base_query = base_query.where(Media.library == library_id)
+        if actor_ids is not None:
+            # MovieActor.movie 指向 Movie.id，而 Media.movie 指向 Movie.movie_number，
+            # 两者不是同一标识符空间，须先转换成 movie_number 再筛 Media；
+            # 用 IN 子查询而非 JOIN，避免多女优命中同一影片时主查询出现重复行，
+            # 非 JAV 视频因 Media.movie 恒为 NULL 天然被排除，无需额外联动 kind。
+            actor_movie_ids = MovieActor.select(MovieActor.movie).where(
+                MovieActor.actor.in_(actor_ids)
+            )
+            movie_numbers = Movie.select(Movie.movie_number).where(
+                Movie.id.in_(actor_movie_ids)
+            )
+            base_query = base_query.where(Media.movie.in_(movie_numbers))
+
+        total = base_query.count()
+        order_by = cls._build_media_list_sort(sort)
+        rows = list(
+            base_query.order_by(*order_by)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = [cls._to_media_list_item_resource(media) for media in rows]
+        return PageResponse[MediaListItemResource](
+            items=items,
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
 
     @classmethod
     def list_media_points(

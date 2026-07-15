@@ -10,13 +10,47 @@
 - 媒体书签添加与删除
 - 缩略图列表查询
 - 全局媒体书签分页查询
+- 全局媒体分页查询（跨 JAV 与 videos 域，支持归属/库/订阅女优筛选与排序）
 - 媒体删除与有效性管理
 - 失效媒体列表查询
 - 单个媒体文件有效性复查
 
-当前项目里，媒体详情不会单独通过 `/media/{media_id}` 返回，而是包含在影片详情的 `media_items` 中，详见 [../catalog/movies.md](../catalog/movies.md)。
+当前项目里，媒体详情不会单独通过 `/media/{media_id}` 返回，而是包含在影片详情的 `media_items` 中，详见 [../catalog/movies.md](../catalog/movies.md)。`GET /media` 提供的是跨归属的列表视图，同样不含单条详情接口。
 
 ## 资源模型
+
+媒体列表项资源（`GET /media`，跨 JAV 与 videos 域）：
+
+```json
+{
+  "id": 100,
+  "kind": "jav",
+  "movie_number": "ABC-001",
+  "video_item_id": null,
+  "title": "Movie 1",
+  "cover_image": {
+    "id": 88,
+    "origin": "/files/images/movies/ABC-001/cover.webp?expires=1700000900&signature=<signature>",
+    "small": "/files/images/movies/ABC-001/cover.webp?expires=1700000900&signature=<signature>",
+    "medium": "/files/images/movies/ABC-001/cover.webp?expires=1700000900&signature=<signature>",
+    "large": "/files/images/movies/ABC-001/cover.webp?expires=1700000900&signature=<signature>"
+  },
+  "thin_cover_image": null,
+  "library_id": 1,
+  "library_name": "Main",
+  "path": "/library/main/abc-001.mp4",
+  "file_size_bytes": 2147483648,
+  "duration_seconds": 5400,
+  "resolution": "1920x1080",
+  "special_tags": "普通",
+  "valid": true,
+  "heat": 320,
+  "created_at": "2026-03-12T10:20:00",
+  "updated_at": "2026-03-12T10:20:00"
+}
+```
+
+非 JAV（videos 域）媒体：`kind` 为 `video`，`movie_number` 为 `null`，`video_item_id` 非空，`heat`、`thin_cover_image` 恒为 `null`。
 
 播放进度资源：
 
@@ -93,6 +127,7 @@
 
 | Method | Endpoint | Purpose |
 |---|---|---|
+| `GET` | `/media` | 分页获取全局媒体列表，跨 JAV 与 videos 域，支持归属/库/订阅女优筛选与排序 |
 | `GET` | `/media-points` | 分页获取全局媒体书签列表，按 `kind` 区分 JAV / 非 JAV（默认仅 JAV） |
 | `GET` | `/media/invalid` | 分页获取所有失效媒体列表 |
 | `POST` | `/media/{media_id}/validity-check` | 单次复查媒体文件是否有效，并同步修正 `valid` |
@@ -105,6 +140,95 @@
 | `DELETE` | `/media/{media_id}` | 硬删除媒体并清理关联播放数据 |
 
 ## 详细接口定义
+
+### Endpoint
+
+`GET /media`
+
+### Purpose
+
+分页获取全局 `Media`，跨 JAV（`movie_number` 非空）与 videos 域（`video_item_id` 非空）统一返回，可按归属、所属媒体库、订阅女优筛选，并支持按文件大小或影片热度排序。
+
+### Auth
+
+需要 Bearer Token。
+
+### Path Params
+
+无。
+
+### Query Params
+
+- `page`: 页码，默认 `1`，必须大于 `0`
+- `page_size`: 每页数量，默认 `20`，取值范围 `1-100`
+- `kind`: 归属过滤，默认 `all`
+- `library_id`: 按所属媒体库过滤，可选
+- `actor_ids`: 按订阅女优筛选，逗号分隔的正整数演员 ID 列表，可选；命中任意一位即可（OR 逻辑）。非 JAV 视频没有演员关联，传入该参数后天然被排除，即便 `kind=all`
+- `sort`: 排序规则，默认 `created_at:desc`
+
+支持的 `kind`：
+
+- `jav`：仅 JAV 影片媒体
+- `video`：仅非 JAV 视频（videos 域）媒体
+- `all`（默认）：不限归属，两类混合返回
+
+支持的 `sort`：
+
+- `file_size_bytes:asc` / `file_size_bytes:desc`
+- `heat:asc` / `heat:desc`：按所属影片热度排序，仅 JAV 媒体有 `heat`；非 JAV 视频的 `heat` 恒为空，统一排在结果末尾，不受排序方向影响
+- 不传时默认按 `created_at:desc`（+ `id` 同方向兜底排序保证稳定）
+
+### Request Body
+
+无。
+
+### Success Responses
+
+- `200 OK`: 返回分页结果，每项为 [`MediaListItemResource`](#资源模型)
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `422 Unprocessable Entity`: `page`、`page_size`、`actor_ids` 或 `sort` 非法（错误码 `invalid_media_filter`）
+
+### Example Request
+
+```http
+GET /media?kind=jav&library_id=1&actor_ids=12,34&sort=heat:desc&page=1&page_size=20
+Authorization: Bearer <token>
+```
+
+### Example Response
+
+```json
+{
+  "items": [
+    {
+      "id": 100,
+      "kind": "jav",
+      "movie_number": "ABC-001",
+      "video_item_id": null,
+      "title": "Movie 1",
+      "cover_image": null,
+      "thin_cover_image": null,
+      "library_id": 1,
+      "library_name": "Main",
+      "path": "/library/main/abc-001.mp4",
+      "file_size_bytes": 2147483648,
+      "duration_seconds": 5400,
+      "resolution": "1920x1080",
+      "special_tags": "普通",
+      "valid": true,
+      "heat": 320,
+      "created_at": "2026-03-12T10:20:00",
+      "updated_at": "2026-03-12T10:20:00"
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 1
+}
+```
 
 ### Endpoint
 

@@ -1,7 +1,7 @@
 import mimetypes
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from src.api.exception.errors import ApiError
@@ -12,7 +12,9 @@ from src.model import Media
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
     InvalidMediaResource,
+    MediaListItemResource,
     MediaPointCreateRequest,
+    MediaPointKind,
     MediaPointResource,
     MediaProgressResource,
     MediaProgressUpdateRequest,
@@ -26,6 +28,60 @@ router = APIRouter(
     tags=["media"],
     dependencies=[Depends(db_deps)],
 )
+
+
+def _parse_csv_positive_ints(raw: str | None, field_name: str) -> list[int] | None:
+    if raw is None:
+        return None
+
+    # 数组筛选参数必须显式传入正整数，避免把空串或脏值静默吞掉。
+    parts = [part.strip() for part in raw.split(",")]
+    if not parts or any(not part for part in parts):
+        raise ApiError(
+            422,
+            "invalid_media_filter",
+            "Invalid filter value",
+            {field_name: raw},
+        )
+
+    try:
+        values = [int(part) for part in parts]
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "invalid_media_filter",
+            "Invalid filter value",
+            {field_name: raw},
+        ) from exc
+
+    if any(value <= 0 for value in values):
+        raise ApiError(
+            422,
+            "invalid_media_filter",
+            "Invalid filter value",
+            {field_name: raw},
+        )
+    return values
+
+
+@router.get("", response_model=PageResponse[MediaListItemResource])
+def list_media(
+    kind: MediaPointKind = Query(default=MediaPointKind.ALL),
+    library_id: int | None = Query(default=None),
+    actor_ids: str | None = Query(default=None),
+    sort: str | None = Query(default=None),
+    page: int = 1,
+    page_size: int = 20,
+    current_user=Depends(get_current_user),
+):
+    return MediaService.list_media(
+        kind=kind,
+        library_id=library_id,
+        actor_ids=_parse_csv_positive_ints(actor_ids, "actor_ids"),
+        sort=sort,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/invalid", response_model=PageResponse[InvalidMediaResource])
