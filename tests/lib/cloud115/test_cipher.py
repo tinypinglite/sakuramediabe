@@ -26,6 +26,12 @@ from src.lib.cloud115.cipher import (
     _RSA_BLOCK_SIZE,
     _RSA_MSG_SIZE,
     _xor_cycle,
+    _upload_aes_cbc_decrypt,
+    _upload_aes_cbc_encrypt,
+    _upload_decrypt_block,
+    _upload_encrypt_block,
+    _upload_lz4_decompress,
+    _upload_round_keys,
     rsa_decode,
     rsa_encode,
 )
@@ -206,3 +212,24 @@ def test_g_key_l_length() -> None:
 
 def test_rsa_key_length() -> None:
     assert len(RSA_KEY) == 4
+
+
+def test_upload_aes_block_matches_fips_vector() -> None:
+    keys = _upload_round_keys(bytes.fromhex("000102030405060708090a0b0c0d0e0f"))
+    plaintext = bytes.fromhex("00112233445566778899aabbccddeeff")
+    ciphertext = bytes.fromhex("69c4e0d86a7b0430d8cdb78070b4c55a")
+    assert _upload_encrypt_block(plaintext, keys) == ciphertext
+    assert _upload_decrypt_block(ciphertext, keys) == plaintext
+
+
+def test_upload_aes_cbc_round_trip() -> None:
+    plaintext = b"cookie upload init payload"
+    encrypted = _upload_aes_cbc_encrypt(plaintext)
+    assert len(encrypted) % 16 == 0
+    assert _upload_aes_cbc_decrypt(encrypted) == plaintext
+
+
+def test_upload_lz4_decompresses_literal_frame() -> None:
+    compressed_block = bytes([0x50]) + b"hello"
+    framed = len(compressed_block).to_bytes(2, "little") + compressed_block
+    assert _upload_lz4_decompress(framed) == b"hello"

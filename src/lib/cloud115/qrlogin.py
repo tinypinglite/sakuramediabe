@@ -179,7 +179,7 @@ class Cloud115QrLogin:
         r = await self._request(
             "POST",
             url,
-            data={"app": app, "account": uid},
+            data={"account": uid},
         )
         try:
             body = r.json() or {}

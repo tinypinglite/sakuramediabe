@@ -15,24 +15,32 @@
     - batch_rename / delete_files（批量改名 / 删除进回收站）
     - download_bytes             （小文件下载：字幕等；封装同 UA 约束）
     - snapshot_cookies / update_cookies （cookies 保活/热替换，见 _merge_set_cookies）
+    - rapid_upload                （本地文件仅尝试秒传，不回退普通上传）
     - 构造函数（cookies 字符串 -> httpx.AsyncClient）
 
 不含：二维码登录（在独立的 qrlogin.Cloud115QrLogin，登录发生在拿到 cookies 之前）、
-通用文件上传、分享、事件订阅、图片 CDN 等。
+普通文件上传、分享、事件订阅、图片 CDN 等。
 不依赖任何业务 model / service / schema，纯 HTTP + RSA 层。
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 from loguru import logger
 
-from src.lib.cloud115.cipher import decrypt_response, encrypt_payload
+from src.lib.cloud115.cipher import (
+    decrypt_response,
+    decrypt_upload_response,
+    encrypt_payload,
+    make_upload_payload,
+)
 from src.lib.cloud115.exceptions import (
     Cloud115AuthError,
     Cloud115Error,
@@ -54,6 +62,8 @@ from src.lib.cloud115.types import (
     OfflineTask,
     OfflineTaskAddResult,
     OfflineTaskPage,
+    RapidUploadResult,
+    RapidUploadStatus,
 )
 
 
@@ -107,6 +117,8 @@ class Cloud115Client:
     _BASE_MY = "https://my.115.com"
     _BASE_WEBAPI = "https://webapi.115.com"
     _BASE_PROAPI = "https://proapi.115.com"
+    _BASE_UPLOAD = "https://uplb.115.com"
+    _UPLOAD_APP_VERSION_URL = "https://appversion.115.com/1.0/web/1.0/api/getMultiVer"
 
     # 默认 UA：稳定的 Chrome UA，用于客户端 -> 115 的所有请求（downurl 拿链接的场景由调用方传 UA）。
     _DEFAULT_UA = (
@@ -120,6 +132,11 @@ class Cloud115Client:
 
     # UID cookie 前段就是 user_id。格式：UID=<int>_A1_<unix_ts>
     _UID_PATTERN = re.compile(r"UID=(\d+)_")
+    _UID_SSOENT_PATTERN = re.compile(r"^\d+_([A-Z]\d)_")
+    _RAPID_UPLOAD_PROTOCOL_BY_SSOENT = {
+        "F1": "android",
+        "R2": "web",
+    }
 
     # 退避重试：最多 2 次重试（首次立即，第 2 次 sleep 0.5s，第 3 次 sleep 1.0s）
     _MAX_RETRIES = 2
@@ -140,6 +157,10 @@ class Cloud115Client:
         self._cookies_dict: dict[str, str] = self._parse_cookies(cookies)
         self._user_id = self._parse_user_id_from_dict(self._cookies_dict)
         self._cookies_lock = asyncio.Lock()
+        self._upload_userkeys: dict[str, str] = {}
+        self._upload_userkey_lock = asyncio.Lock()
+        self._upload_app_version: str | None = None
+        self._upload_app_version_lock = asyncio.Lock()
         self._user_agent = user_agent or self._DEFAULT_UA
         # 外部注入的 client 由调用方负责关闭（不做 owned/borrowed 引用计数简化状态）
         self._owns_client = http_client is None
@@ -198,6 +219,8 @@ class Cloud115Client:
         new_user_id = self._parse_user_id_from_dict(new_dict)   # 校验 UID 合法性
         self._cookies_dict = new_dict
         self._user_id = new_user_id
+        # Cookie 槽位或账号可能已切换，旧 userkey 不能继续复用。
+        self._upload_userkeys.clear()
 
     def _merge_set_cookies(self, response: httpx.Response) -> None:
         """把响应的 Set-Cookie 头 merge 进 self._cookies_dict。
@@ -657,6 +680,315 @@ class Cloud115Client:
             expires_at=self._parse_expires_at(direct_url),
         )
 
+    async def rapid_upload(
+        self,
+        path: str | Path,
+        *,
+        pid: str = "0",
+    ) -> RapidUploadResult:
+        """只尝试秒传一个本地文件，不会回退到普通上传。
+
+        大文件首次初始化可能返回 status=7，要求读取服务端指定范围并再次提交范围哈希；
+        最终 status=2 才表示文件已落到目标目录。SDK 根据 UID Cookie 自动识别 Android
+        F1 或支付宝小程序 R2 槽，并选择对应的 userkey 接口；其他槽位不支持秒传。
+        """
+        file_path = Path(path)
+        if not file_path.is_file():
+            raise ValueError(f"file path is not a regular file: {file_path}")
+        if not pid:
+            raise ValueError("pid is required")
+        upload_protocol = self._rapid_upload_protocol()
+
+        before = self._file_snapshot(file_path)
+        size = before[0]
+        file_sha1 = (await asyncio.to_thread(self._hash_file, file_path)).upper()
+        if self._file_snapshot(file_path) != before:
+            return RapidUploadResult(
+                status=RapidUploadStatus.FILE_CHANGED,
+                path=str(file_path),
+                filename=file_path.name,
+                size=size,
+                sha1=file_sha1,
+            )
+
+        response = await self._upload_init(
+            filename=file_path.name,
+            filesize=size,
+            filesha1=file_sha1,
+            pid=pid,
+            upload_protocol=upload_protocol,
+        )
+        data = self._upload_data(response)
+        status = int(data.get("status") or 0)
+        if status == 7:
+            sign_key = str(data.get("sign_key") or "")
+            sign_check = str(data.get("sign_check") or "")
+            if not sign_key or not sign_check:
+                raise Cloud115RequestError(
+                    "upload init status=7 missing sign_key/sign_check",
+                    method="POST",
+                    url=f"{self._BASE_UPLOAD}/4.0/initupload.php",
+                )
+            if self._file_snapshot(file_path) != before:
+                return RapidUploadResult(
+                    status=RapidUploadStatus.FILE_CHANGED,
+                    path=str(file_path),
+                    filename=file_path.name,
+                    size=size,
+                    sha1=file_sha1,
+                    raw_response=response,
+                )
+            range_sha1 = await asyncio.to_thread(
+                self._hash_file_range,
+                file_path,
+                sign_check,
+            )
+            if self._file_snapshot(file_path) != before:
+                return RapidUploadResult(
+                    status=RapidUploadStatus.FILE_CHANGED,
+                    path=str(file_path),
+                    filename=file_path.name,
+                    size=size,
+                    sha1=file_sha1,
+                    raw_response=response,
+                )
+            response = await self._upload_init(
+                filename=file_path.name,
+                filesize=size,
+                filesha1=file_sha1,
+                pid=pid,
+                sign_key=sign_key,
+                sign_val=range_sha1,
+                upload_protocol=upload_protocol,
+            )
+            data = self._upload_data(response)
+            status = int(data.get("status") or 0)
+
+        if status != 2:
+            return RapidUploadResult(
+                status=RapidUploadStatus.NOT_HIT,
+                path=str(file_path),
+                filename=file_path.name,
+                size=size,
+                sha1=file_sha1,
+                raw_response=response,
+            )
+        return RapidUploadResult(
+            status=RapidUploadStatus.SUCCESS,
+            path=str(file_path),
+            filename=file_path.name,
+            size=size,
+            sha1=file_sha1,
+            file_id=self._first_text(data, "file_id", "fileid", "fid"),
+            pickcode=self._first_text(data, "pick_code", "pickcode"),
+            raw_response=response,
+        )
+
+    def _rapid_upload_protocol(self) -> Literal["web", "android"]:
+        """从 UID Cookie 的登录槽自动选择秒传所需的 userkey 接口。"""
+        uid = self._cookies_dict.get("UID", "")
+        match = self._UID_SSOENT_PATTERN.match(uid)
+        ssoent = match.group(1) if match else ""
+        protocol = self._RAPID_UPLOAD_PROTOCOL_BY_SSOENT.get(ssoent)
+        if protocol == "android":
+            return "android"
+        if protocol == "web":
+            return "web"
+        raise Cloud115AuthError(
+            "rapid upload only supports Android (F1) and Alipay Mini Program (R2) cookies"
+        )
+
+    async def _get_upload_userkey(
+        self,
+        upload_protocol: Literal["web", "android"] = "web",
+    ) -> str:
+        """懒加载 cookie 上传协议需要的 userkey，只保存在当前客户端实例。"""
+        if upload_protocol not in {"web", "android"}:
+            raise ValueError("upload_protocol must be 'web' or 'android'")
+        if userkey := self._upload_userkeys.get(upload_protocol):
+            return userkey
+        async with self._upload_userkey_lock:
+            if userkey := self._upload_userkeys.get(upload_protocol):
+                return userkey
+            if upload_protocol == "android":
+                url = f"{self._BASE_PROAPI}/android/2.0/user/upload_key"
+            else:
+                # 网页 Cookie 对 app upload_key 接口会返回 errno=99；网页上传
+                # 初始化实际使用的 userkey 由 uploadinfo 接口提供。
+                url = f"{self._BASE_PROAPI}/app/uploadinfo"
+            payload = await self._request_json("GET", url, retryable=True)
+            if not payload.get("state"):
+                raise self._map_errno(payload, endpoint=url)
+            data = payload.get("data") or {}
+            userkey = str(
+                payload.get("userkey")
+                or payload.get("user_key")
+                or (data.get("userkey") if isinstance(data, dict) else "")
+                or (data.get("user_key") if isinstance(data, dict) else "")
+                or ""
+            )
+            if not userkey:
+                raise Cloud115RequestError(
+                    "upload userkey missing from response",
+                    method="GET",
+                    url=url,
+                    detail=str(payload)[:200],
+                )
+            self._upload_userkeys[upload_protocol] = userkey
+            return userkey
+
+    async def _get_upload_app_version(self) -> str:
+        """读取官方 Android 当前版本，避免伪造 99.99.99.99 被 WAF 拦截。"""
+        if self._upload_app_version:
+            return self._upload_app_version
+        async with self._upload_app_version_lock:
+            if self._upload_app_version:
+                return self._upload_app_version
+            payload = await self._request_json(
+                "GET",
+                self._UPLOAD_APP_VERSION_URL,
+                # 版本接口是公开接口，不向该域名透传账号 Cookie。
+                headers={"Cookie": ""},
+                retryable=True,
+            )
+            data = payload.get("data") or {}
+            android = data.get("Android") if isinstance(data, dict) else None
+            version = str(android.get("version_code") or "") if isinstance(android, dict) else ""
+            if not version:
+                raise Cloud115RequestError(
+                    "Android upload app version missing from response",
+                    method="GET",
+                    url=self._UPLOAD_APP_VERSION_URL,
+                    detail=str(payload)[:200],
+                )
+            self._upload_app_version = version
+            return version
+
+    async def _upload_init(
+        self,
+        *,
+        filename: str,
+        filesize: int,
+        filesha1: str,
+        pid: str,
+        sign_key: str = "",
+        sign_val: str = "",
+        upload_protocol: Literal["web", "android"] = "web",
+    ) -> dict[str, Any]:
+        """调用 uplb 初始化接口；这里只提交秒传元数据，不上传文件内容。"""
+        url = f"{self._BASE_UPLOAD}/4.0/initupload.php"
+        userkey, app_version = await asyncio.gather(
+            self._get_upload_userkey(upload_protocol),
+            self._get_upload_app_version(),
+        )
+        payload = {
+            "appid": 0,
+            "appversion": app_version,
+            "fileid": filesha1.upper(),
+            "filename": filename,
+            "filesize": filesize,
+            "target": f"U_1_{pid}",
+            "sign_key": sign_key,
+            "sign_val": sign_val,
+            "topupload": "true",
+            "userid": self._user_id,
+            "userkey": userkey,
+        }
+        params, body = make_upload_payload(payload)
+        response = await self._request(
+            "POST",
+            url,
+            params=params,
+            data=body,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://115.com",
+                "Referer": "https://115.com/",
+                "User-Agent": (
+                    f"Mozilla/5.0 115disk/{app_version} "
+                    f"115Browser/{app_version} 115wangpan_android/{app_version}"
+                ),
+            },
+            retryable=False,
+        )
+        try:
+            result = decrypt_upload_response(response.content)
+        except Exception as exc:
+            raise Cloud115RequestError(
+                "invalid encrypted upload init response",
+                method="POST",
+                url=url,
+                detail=str(exc),
+            ) from exc
+        if not isinstance(result, dict):
+            raise Cloud115RequestError(
+                "upload init response is not an object",
+                method="POST",
+                url=url,
+            )
+        if result.get("state") is False:
+            raise self._map_errno(result, endpoint=url)
+        return result
+
+    @staticmethod
+    def _upload_data(response: dict[str, Any]) -> dict[str, Any]:
+        if response.get("state") is False:
+            raise Cloud115Error("upload initialization rejected")
+        data = response.get("data")
+        if not isinstance(data, dict):
+            # 旧版 uplb 会直接返回 {status, statuscode, statusmsg}，没有
+            # state/data 包装；保留该响应，让上层按 NOT_HIT 处理而不是误判协议崩溃。
+            if "status" in response:
+                return response
+            raise Cloud115RequestError("upload init response missing data")
+        return data
+
+    @staticmethod
+    def _first_text(data: dict[str, Any], *keys: str) -> str | None:
+        for key in keys:
+            value = data.get(key)
+            if value not in (None, ""):
+                return str(value)
+        return None
+
+    @staticmethod
+    def _file_snapshot(path: Path) -> tuple[int, int, int]:
+        stat = path.stat()
+        return stat.st_size, stat.st_mtime_ns, getattr(stat, "st_ino", 0)
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        digest = hashlib.sha1()
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _hash_file_range(path: Path, sign_check: str) -> str:
+        try:
+            start_text, end_text = sign_check.split("-", 1)
+            start, end = int(start_text), int(end_text)
+        except ValueError as exc:
+            raise Cloud115RequestError(
+                f"invalid upload sign_check: {sign_check!r}"
+            ) from exc
+        if start < 0 or end < start:
+            raise Cloud115RequestError(f"invalid upload byte range: {sign_check!r}")
+        digest = hashlib.sha1()
+        remaining = end - start + 1
+        with path.open("rb") as file:
+            file.seek(start)
+            while remaining:
+                chunk = file.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    raise Cloud115RequestError(
+                        f"upload byte range exceeds local file: {sign_check!r}"
+                    )
+                digest.update(chunk)
+                remaining -= len(chunk)
+        return digest.hexdigest().upper()
+
     # ---- 离线下载 ----
     #
     # 端点选型：全部走 https://115.com/web/lixian/?ct=lixian&ac=<action> 明文端点。
@@ -882,7 +1214,7 @@ class Cloud115Client:
         url: str,
         *,
         params: dict[str, Any] | None = None,
-        data: dict[str, Any] | None = None,
+        data: dict[str, Any] | bytes | None = None,
         headers: dict[str, str] | None = None,
         retryable: bool | None = None,
     ) -> httpx.Response:
@@ -904,13 +1236,15 @@ class Cloud115Client:
             if headers:
                 request_headers.update(headers)
             try:
-                response = await self._client.request(
-                    method,
-                    url,
-                    params=params,
-                    data=data,
-                    headers=request_headers,
-                )
+                request_kwargs: dict[str, Any] = {
+                    "params": params,
+                    "headers": request_headers,
+                }
+                if isinstance(data, bytes):
+                    request_kwargs["content"] = data
+                else:
+                    request_kwargs["data"] = data
+                response = await self._client.request(method, url, **request_kwargs)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
                 logger.warning(

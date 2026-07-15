@@ -1,8 +1,8 @@
 """115 网盘极简异步客户端。
 
-覆盖播放/查找/缩略图/离线下载 4 类上层需求需要的 HTTP 接口 + cookies 认证；
+覆盖播放/查找/缩略图/离线下载及本地文件秒传 5 类上层需求需要的 HTTP 接口 + cookies 认证；
 另含扫码登录（Cloud115QrLogin，独立于 cookies，用于首次获取 cookies）。
-不含通用文件上传、分享、事件订阅等。
+不含普通文件上传、分享、事件订阅等；`rapid_upload` 仅执行秒传初始化，不会回退上传。
 
 上层使用方式：
     from src.lib.cloud115 import Cloud115Client, DirectUrl
@@ -41,6 +41,8 @@ from src.lib.cloud115.types import (
     OfflineTask,
     OfflineTaskAddResult,
     OfflineTaskPage,
+    RapidUploadResult,
+    RapidUploadStatus,
     QrCodeToken,
     QrLoginResult,
     QrStatus,
@@ -64,6 +66,8 @@ __all__ = [
     "OfflineTaskPage",
     "OfflineQuota",
     "OfflineTaskAddResult",
+    "RapidUploadResult",
+    "RapidUploadStatus",
     "Cloud115Error",
     "Cloud115AuthError",
     "Cloud115NotFoundError",

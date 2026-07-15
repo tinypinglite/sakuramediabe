@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, IntEnum
+from typing import Any
 
 
 class Cloud115CookieStatus(str, Enum):
@@ -16,6 +17,28 @@ class Cloud115CookieStatus(str, Enum):
     ALIVE = "alive"
     EXPIRED = "expired"
     UNAVAILABLE = "unavailable"
+
+
+class RapidUploadStatus(str, Enum):
+    """本地文件执行 115 秒传初始化后的业务结果。"""
+
+    SUCCESS = "success"
+    NOT_HIT = "not_hit"
+    FILE_CHANGED = "file_changed"
+
+
+@dataclass(frozen=True, slots=True)
+class RapidUploadResult:
+    """秒传结果；未命中时不会触发普通上传。"""
+
+    status: RapidUploadStatus
+    path: str
+    filename: str
+    size: int
+    sha1: str
+    file_id: str | None = None
+    pickcode: str | None = None
+    raw_response: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

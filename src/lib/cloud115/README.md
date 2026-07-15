@@ -13,6 +13,7 @@ SakuraMediaBE 内部维护的 115 网盘极简异步客户端。**仅支持 cook
 - [快速开始](#快速开始)
 - [认证与 cookies](#认证与-cookies)
 - [Cookies 保活](#cookies-保活)
+- [仅秒传](#仅秒传)
 - [接口清单](#接口清单)
 - [数据类型](#数据类型)
 - [异常层次](#异常层次)
@@ -53,6 +54,36 @@ asyncio.run(main())
 - 客户端必须用 `async with` 或显式 `await client.close()` 释放 httpx 连接池
 - `get_download_url` 的 `user_agent` 参数必填 —— 见[UA 绑定机制](#ua-绑定机制)
 - 所有方法都是 `async def`；FastAPI handler 直接 `await`，APScheduler 线程池里包 `asyncio.run(...)` 也可
+
+## 仅秒传
+
+`rapid_upload(path, pid="0")` 只尝试本地文件秒传，不会回退到普通上传。SDK 会从
+`UID` Cookie 自动识别 Android（F1）或支付宝小程序（R2）槽，并选择正确的 `userkey` 接口：
+
+```python
+result = await client.rapid_upload(
+    "/media/movie.mkv",
+    pid="0",
+)
+if result.status.value == "success":
+    print(result.file_id, result.pickcode)
+elif result.status.value == "not_hit":
+    print("115 未命中秒传；SDK 没有上传文件")
+```
+
+秒传当前只支持由 `fetch_result(..., app="android")` 或
+`fetch_result(..., app="alipaymini")` 取得的 Cookie；其他登录槽调用时会抛出认证异常。
+扫码完成后可直接把登录结果交给客户端，业务侧不需要知道底层上传协议：
+
+```python
+login = await qr.fetch_result(token.uid, app="alipaymini")
+async with Cloud115Client(cookies=login.cookies) as client:
+    result = await client.rapid_upload("/media/movie.mkv")
+```
+
+SDK 会先计算完整 SHA-1；大文件收到 `status=7` 时，再按服务端返回的 `sign_check` 范围计算一次 SHA-1。最终 `status=2` 才表示已完成秒传。`SUCCESS`、`NOT_HIT` 和 `FILE_CHANGED` 由 `RapidUploadResult` 返回；认证、限流、网络和协议错误继续抛出既有异常。
+
+cookie 上传初始化需要额外获取 `userkey`，该值只缓存在当前客户端实例，不会写入 cookies 或数据库。该功能不会调用 OSS token、分块上传或普通上传接口。
 
 ---
 
@@ -579,7 +610,7 @@ uv run pytest tests/lib/cloud115/ --run-cloud115-integration -n0 -v
 
 以下能力**明确不实现**，如需要请另起模块：
 
-- 通用文件上传 `upload_*`
+- 普通文件上传 `upload_*`（当前仅提供 `rapid_upload` 秒传初始化）
 - 分享 `share_*`
 - 增量事件订阅（`life_list`）
 - pickcode ↔ file_id 数学转换（若需要，从 `list_dir` 返回的 `DirEntry` 里直接读）

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 from typing import Callable
 
 import httpx
@@ -24,7 +25,7 @@ from src.lib.cloud115.exceptions import (
     Cloud115RateLimitedError,
     Cloud115RequestError,
 )
-from src.lib.cloud115.types import Cloud115CookieStatus
+from src.lib.cloud115.types import Cloud115CookieStatus, RapidUploadStatus
 
 
 COOKIE = "UID=12345678_A1_1700000000; CID=abc; SEID=xyz; KID=kkk"
@@ -418,6 +419,122 @@ async def test_get_download_url_requires_pickcode() -> None:
     client = _make_client(lambda r: httpx.Response(500))
     with pytest.raises(ValueError, match="pickcode"):
         await client.get_download_url("", user_agent="ua")
+
+
+# ---------------------------------------------------------------------------
+# rapid_upload（只初始化秒传，不回退普通上传）
+# ---------------------------------------------------------------------------
+
+
+async def test_rapid_upload_status_two_returns_success_without_upload_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_path = tmp_path / "movie.mkv"
+    file_path.write_bytes(b"movie-content")
+    calls: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, str(request.url)))
+        if request.url.host == "proapi.115.com":
+            assert request.url.path == "/app/uploadinfo"
+            return httpx.Response(200, json={"state": True, "data": {"userkey": "uk"}})
+        if request.url.host == "appversion.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"Android": {"version_code": "37.2.5"}}})
+        assert request.url.host == "uplb.115.com"
+        assert request.url.path == "/4.0/initupload.php"
+        assert request.method == "POST"
+        assert request.url.params.get("k_ec")
+        assert request.headers["origin"] == "https://115.com"
+        assert "115wangpan_android" in request.headers["user-agent"]
+        assert request.content
+        return httpx.Response(200, content=b"encrypted")
+
+    monkeypatch.setattr(
+        client_module,
+        "decrypt_upload_response",
+        lambda _content: {"state": True, "data": {"status": 2, "file_id": "fid", "pick_code": "pc"}},
+    )
+    client = _make_client(handler, cookies="UID=12345678_R2_1700000000; CID=abc; SEID=xyz")
+    result = await client.rapid_upload(file_path)
+    assert result.status is RapidUploadStatus.SUCCESS
+    assert result.file_id == "fid"
+    assert result.pickcode == "pc"
+    assert sum("uplb.115.com" in url for _, url in calls) == 1
+    await client.close()
+
+
+async def test_rapid_upload_rejects_unsupported_cookie_slot(tmp_path: Path) -> None:
+    file_path = tmp_path / "unsupported.bin"
+    file_path.write_bytes(b"content")
+    client = _make_client(lambda _request: httpx.Response(500))
+
+    with pytest.raises(Cloud115AuthError, match="Android.*Alipay"):
+        await client.rapid_upload(file_path)
+
+    await client.close()
+
+
+async def test_rapid_upload_android_cookie_uses_android_userkey_endpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_path = tmp_path / "android-demo.exe"
+    file_path.write_bytes(b"android-upload")
+    endpoints: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        endpoints.append(request.url.path)
+        if request.url.path == "/android/2.0/user/upload_key":
+            return httpx.Response(200, json={"state": True, "data": {"userkey": "android-uk"}})
+        if request.url.host == "appversion.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"Android": {"version_code": "37.2.5"}}})
+        assert request.url.path == "/4.0/initupload.php"
+        return httpx.Response(200, content=b"encrypted")
+
+    monkeypatch.setattr(
+        client_module,
+        "decrypt_upload_response",
+        lambda _content: {"state": True, "data": {"status": 2}},
+    )
+    client = _make_client(handler, cookies="UID=12345678_F1_1700000000; CID=abc; SEID=xyz")
+    result = await client.rapid_upload(file_path)
+    assert result.status is RapidUploadStatus.SUCCESS
+    assert set(endpoints[:2]) == {
+        "/android/2.0/user/upload_key",
+        "/1.0/web/1.0/api/getMultiVer",
+    }
+    assert endpoints[2] == "/4.0/initupload.php"
+    await client.close()
+
+
+async def test_rapid_upload_status_seven_performs_range_check_then_returns_not_hit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_path = tmp_path / "movie.mkv"
+    file_path.write_bytes(b"0123456789")
+    init_responses = iter([
+        {"state": True, "data": {"status": 7, "sign_key": "key", "sign_check": "2-5"}},
+        {"state": True, "data": {"status": 1}},
+    ])
+    init_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal init_count
+        if request.url.host == "proapi.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"userkey": "uk"}})
+        if request.url.host == "appversion.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"Android": {"version_code": "37.2.5"}}})
+        init_count += 1
+        assert request.url.host == "uplb.115.com"
+        return httpx.Response(200, content=b"encrypted")
+
+    monkeypatch.setattr(client_module, "decrypt_upload_response", lambda _content: next(init_responses))
+    client = _make_client(handler, cookies="UID=12345678_R2_1700000000; CID=abc; SEID=xyz")
+    result = await client.rapid_upload(file_path, pid="42")
+    assert result.status is RapidUploadStatus.NOT_HIT
+    assert init_count == 2
     await client.close()
 
 
