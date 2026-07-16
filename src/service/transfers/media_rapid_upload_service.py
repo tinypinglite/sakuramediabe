@@ -70,8 +70,6 @@ class _ItemSpec:
     source_path: str
     source_size_bytes: int
     source_mtime_ns: int
-    source_device: int
-    source_inode: int
     source_sha1: str | None = None
     target_cid: str | None = None
     target_fid: str | None = None
@@ -308,8 +306,6 @@ class MediaRapidUploadService:
                         source_path=spec.source_path,
                         source_size_bytes=spec.source_size_bytes,
                         source_mtime_ns=spec.source_mtime_ns,
-                        source_device=spec.source_device,
-                        source_inode=spec.source_inode,
                         source_sha1=spec.source_sha1,
                         target_cid=spec.target_cid,
                         target_fid=spec.target_fid,
@@ -655,8 +651,6 @@ class MediaRapidUploadService:
         return (
             stat.st_size == item.source_size_bytes
             and stat.st_mtime_ns == item.source_mtime_ns
-            and stat.st_dev == item.source_device
-            and stat.st_ino == item.source_inode
         )
 
     @classmethod
@@ -709,8 +703,6 @@ class MediaRapidUploadService:
             source_path=str(source),
             source_size_bytes=stat.st_size,
             source_mtime_ns=stat.st_mtime_ns,
-            source_device=stat.st_dev,
-            source_inode=stat.st_ino,
             retry_source_item_id=retry_source_item_id,
         )
 
@@ -731,8 +723,6 @@ class MediaRapidUploadService:
             source_path=item.source_path,
             source_size_bytes=item.source_size_bytes,
             source_mtime_ns=item.source_mtime_ns,
-            source_device=item.source_device,
-            source_inode=item.source_inode,
             source_sha1=item.source_sha1,
             target_cid=item.target_cid,
             target_fid=item.target_fid,
@@ -750,8 +740,6 @@ class MediaRapidUploadService:
             source_path=item.source_path,
             source_size_bytes=item.source_size_bytes,
             source_mtime_ns=item.source_mtime_ns,
-            source_device=item.source_device,
-            source_inode=item.source_inode,
             source_sha1=item.source_sha1,
             target_cid=item.target_cid,
             target_fid=item.target_fid,
