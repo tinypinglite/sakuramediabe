@@ -73,8 +73,6 @@ class MediaRapidUploadItem(TimestampedMixin, BaseModel):
     source_path = peewee.CharField(max_length=1024)
     source_size_bytes = peewee.BigIntegerField(default=0)
     source_mtime_ns = peewee.BigIntegerField(default=0)
-    source_device = peewee.BigIntegerField(default=0)
-    source_inode = peewee.BigIntegerField(default=0)
     source_sha1 = peewee.CharField(max_length=40, null=True)
     target_cid = peewee.CharField(max_length=64, null=True)
     target_fid = peewee.CharField(max_length=64, null=True)
