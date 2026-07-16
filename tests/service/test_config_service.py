@@ -2,6 +2,7 @@ import json
 
 import pytest
 import toml
+from pydantic import ValidationError
 
 import src.config.config as config_module
 from src.api.exception.errors import ApiError
@@ -151,3 +152,25 @@ def test_resolve_effect_falls_back_to_section_default():
     assert resolve_effect("metadata.proxy") == ConfigEffectLevel.HOT
     # 未登记的顶层名保守回落到 restart_api，避免"改了以为生效"的假象。
     assert resolve_effect("unknown_section.foo") == ConfigEffectLevel.RESTART_API
+
+
+def test_download_config_effect_levels_match_runtime_consumers():
+    assert (
+        resolve_effect("downloads.cloud115_progress_poll_interval_seconds")
+        == ConfigEffectLevel.HOT
+    )
+    assert (
+        resolve_effect("downloads.progress_stream_poll_interval_seconds")
+        == ConfigEffectLevel.RESTART_API
+    )
+    for field in (
+        "cloud115_offline_abandon_hours",
+        "small_file_cleanup_threshold_mb",
+        "preferred_client_kinds",
+    ):
+        assert resolve_effect(f"downloads.{field}") == ConfigEffectLevel.RESTART_SCHEDULER
+
+
+def test_cloud115_offline_abandon_hours_minimum_is_one():
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"downloads": {"cloud115_offline_abandon_hours": 0}})

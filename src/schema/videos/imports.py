@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import List, Literal, Optional
 
-from pydantic import Field, computed_field, field_validator
+from pydantic import computed_field, field_validator, model_validator
 
 # 失败条目结构与中文状态说明复用 transfers 域既有定义，避免平行再造 DTO。
 from src.common.media_import_status import describe_import_job_state
@@ -10,19 +10,29 @@ from src.schema.transfers.media_import import FailedFileResource
 
 
 class VideoImportRequest(SchemaModel):
-    # 指定一个目录或单个视频文件导入；library 必填，可选地一并关联合集。
-    source_path: str = Field(min_length=1)
+    # 本地路径、115 目录 CID、115 文件 FID 恰好提供一个；library 必填，可选地一并关联合集。
+    source_path: str | None = None
+    source_cid: str | None = None
+    source_fid: str | None = None
     library_id: int
-    transfer_mode: Literal["auto", "cleanup-source"] = "auto"
+    transfer_mode: Literal["auto", "copy", "cleanup-source"] | None = None
     collection_id: int | None = None
 
-    @field_validator("source_path")
+    @field_validator("source_path", "source_cid", "source_fid")
     @classmethod
-    def validate_source_path(cls, value: str) -> str:
+    def validate_source(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized:
-            raise ValueError("source_path cannot be blank")
+            raise ValueError("import source cannot be blank")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_exactly_one_source(self) -> "VideoImportRequest":
+        if sum(value is not None for value in (self.source_path, self.source_cid, self.source_fid)) != 1:
+            raise ValueError("exactly one of source_path / source_cid / source_fid is required")
+        return self
 
 
 class VideoImportTriggerResponse(SchemaModel):
@@ -34,6 +44,8 @@ class VideoImportTriggerResponse(SchemaModel):
 class VideoImportJobListItemResource(SchemaModel):
     id: int
     source_path: str
+    source_cid: Optional[str] = None
+    source_fid: Optional[str] = None
     library_id: int
     task_run_id: Optional[int] = None
     collection_id: Optional[int] = None

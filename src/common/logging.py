@@ -72,4 +72,6 @@ def configure_logging() -> None:
         except ValueError:
             pass
 
-    _LOGURU_STDERR_SINK_ID = logger.add(sys.stderr, level=level_name)
+    # diagnose=False：关闭 loguru 的“诊断模式”回溯，避免异常回溯里把途经栈帧的
+    # 局部变量（如 cloud115 cookies、qBittorrent 密码等）明文打进日志。
+    _LOGURU_STDERR_SINK_ID = logger.add(sys.stderr, level=level_name, diagnose=False)

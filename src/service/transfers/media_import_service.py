@@ -5,11 +5,12 @@
 """
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 import json
 import time
 from pathlib import Path
 from threading import RLock, local
-from typing import Any, Callable, Dict, List, Literal
+from typing import Any, Callable, Dict, Iterator, List, Literal, Sequence
 
 from loguru import logger
 from pydantic import BaseModel
@@ -17,6 +18,7 @@ from pydantic import BaseModel
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import DownloadTask, ImportJob, MediaLibrary, Movie, get_database
+from src.model.enums import MediaLibraryBackend
 from src.service.catalog import CatalogImportService, ImageDownloadError
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
 from src.service.transfers.media_import_writer import import_single_scanned_file, import_vr_media_group
@@ -178,6 +180,26 @@ class MediaImportService:
             movie_id=movie.id,
         )
 
+    @contextmanager
+    def metadata_import_batch(
+        self,
+        movie_numbers: Sequence[str],
+        *,
+        thread_name_prefix: str = "import-metadata",
+    ) -> Iterator[Dict[str, Future[MetadataImportResult]]]:
+        """统一管理元数据并发池，供本地与云端导入复用，调用方按原顺序消费 Future。"""
+        if not movie_numbers:
+            yield {}
+            return
+        with ThreadPoolExecutor(
+            max_workers=self._metadata_max_workers(len(movie_numbers)),
+            thread_name_prefix=thread_name_prefix,
+        ) as executor:
+            yield {
+                movie_number: executor.submit(self._import_movie_metadata, movie_number)
+                for movie_number in movie_numbers
+            }
+
     def import_from_source(
         self,
         source_path: str,
@@ -211,6 +233,13 @@ class MediaImportService:
         if library is None:
             logger.warning("Import rejected because media library not found library_id={}", library_id)
             raise ValueError("media_library_not_found")
+        if library.backend != MediaLibraryBackend.LOCAL.value:
+            logger.warning(
+                "Import rejected because media library backend is not local library_id={} backend={}",
+                library_id,
+                library.backend,
+            )
+            raise ValueError("media_library_backend_mismatch")
 
         if transfer_mode == "cleanup-source":
             matched_library = find_media_library_containing_path(source_entry)
@@ -219,7 +248,7 @@ class MediaImportService:
                     "Import rejected cleanup-source inside media library source_path={} matched_library_id={} matched_library_root={}",
                     str(source_entry),
                     matched_library.id,
-                    matched_library.root_path,
+                    matched_library.backend_config.get("root_path"),
                 )
                 raise ValueError("cleanup_source_inside_media_library")
 
@@ -237,7 +266,7 @@ class MediaImportService:
             "Import start source_path={} library_id={} library_root={} download_task_id={}",
             str(source_entry),
             library_id,
-            library.root_path,
+            library.backend_config.get("root_path"),
             download_task_id,
         )
         # 支持创建新任务，也支持复用已有 ImportJob 做重试，后者需要把统计字段全部重置。
@@ -328,13 +357,11 @@ class MediaImportService:
                 },
             )
 
-            metadata_futures: Dict[str, Future[MetadataImportResult]] = {}
             if grouped_files:
-                max_workers = self._metadata_max_workers(total_movie_numbers)
-                with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="import-metadata") as executor:
-                    for movie_number in grouped_files:
-                        metadata_futures[movie_number] = executor.submit(self._import_movie_metadata, movie_number)
-
+                with self.metadata_import_batch(
+                    list(grouped_files),
+                    thread_name_prefix="import-metadata",
+                ) as metadata_futures:
                     for movie_number, group in grouped_files.items():
                         logger.info(
                             "Import processing movie_number={} files={} job_id={}",

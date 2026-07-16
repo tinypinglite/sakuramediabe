@@ -18,6 +18,7 @@ from src.config.config import settings
 from src.metadata.factory import build_dmm_provider, build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import BackgroundTaskRun, ResourceTaskState, init_database
+from src.model.enums import MediaLibraryBackend
 from src.scheduler.progress import TqdmProgressAdapter
 from src.scheduler.registry import JOB_REGISTRY
 from src.schema.playback.media_libraries import MediaLibraryCreateRequest
@@ -529,7 +530,11 @@ def add_media_library(name: str, root_path: str):
     _ensure_database_ready()
     try:
         library = MediaLibraryService.create_library(
-            MediaLibraryCreateRequest(name=name, root_path=root_path)
+            MediaLibraryCreateRequest(
+                name=name,
+                backend=MediaLibraryBackend.LOCAL,
+                backend_config={"root_path": root_path},
+            )
         )
     except ApiError as exc:
         logger.warning(
@@ -542,17 +547,18 @@ def add_media_library(name: str, root_path: str):
         logger.exception("CLI add-media-library crashed name={} root_path={}", name, root_path)
         raise
 
+    library_root_path = library.backend_config.get("root_path", "")
     logger.info(
         "CLI add-media-library finished library_id={} name={} root_path={}",
         library.id,
         library.name,
-        library.root_path,
+        library_root_path,
     )
     click.echo(
         "media library created: "
         f"library_id={library.id} "
         f"name={library.name} "
-        f"root_path={library.root_path}"
+        f"root_path={library_root_path}"
     )
 
 
@@ -629,11 +635,11 @@ def scan_media_files():
 
 @main.command(name="migrate-jav-layout")
 @click.option("--library-id", type=int, default=None,
-              help="只迁移指定 library；缺省时处理全部媒体库。")
+              help="只迁移指定本地 library；缺省时处理全部本地媒体库。")
 @click.option("--dry-run", is_flag=True, default=False,
               help="只统计不改任何东西，用于升级前预览规模。")
 def migrate_jav_layout(library_id: int | None, dry_run: bool):
-    """把 JAV 从 <root>/番号/ 迁到 <root>/jav/番号/。
+    """把本地媒体库的 JAV 从 <root>/番号/ 迁到 <root>/jav/番号/。
 
     单文件 4 步流程 + DB update 原子提交点，Ctrl+C / crash 后重跑可自动收敛：
     已达 F 的走 fast-path skip，中间态的会被恢复。

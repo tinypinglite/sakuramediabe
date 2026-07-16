@@ -40,7 +40,7 @@ def test_download_endpoints_require_authentication(client):
 
 def test_download_client_crud_api(client, account_user):
     token = _login(client, username=account_user.username)
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": "/library/main"})
 
     create_response = client.post(
         "/download-clients",
@@ -86,9 +86,87 @@ def test_download_client_crud_api(client, account_user):
     assert DownloadClient.get_or_none(DownloadClient.id == created["id"]) is None
 
 
+def test_download_client_rejects_cloud115_library(client, account_user):
+    token = _login(client, username=account_user.username)
+    library = MediaLibrary.create(
+        name="Cloud",
+        backend="cloud115",
+        backend_account_key="cloud115:download-client-mismatch",
+        backend_config={"cookies": "UID=x_A1_y", "root_cid": "root", "app": "web"},
+    )
+
+    response = client.post(
+        "/download-clients",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "name": "client-cloud",
+            "base_url": "http://localhost:8080",
+            "username": "alice",
+            "password": "secret",
+            "client_save_path": "/downloads/a",
+            "local_root_path": "/mnt/downloads/a",
+            "media_library_id": library.id,
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "media_library_backend_mismatch"
+    assert DownloadClient.select().count() == 0
+
+
+def test_cloud115_download_client_api_enforces_one_per_library_and_immutable_binding(
+    client, account_user
+):
+    token = _login(client, username=account_user.username)
+    first_library = MediaLibrary.create(
+        name="Cloud A",
+        backend="cloud115",
+        backend_account_key="cloud115:client-a",
+        backend_config={"cookies": "UID=a_A1_1", "root_cid": "root-a"},
+    )
+    second_library = MediaLibrary.create(
+        name="Cloud B",
+        backend="cloud115",
+        backend_account_key="cloud115:client-b",
+        backend_config={"cookies": "UID=b_A1_1", "root_cid": "root-b"},
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = client.post(
+        "/download-clients",
+        headers=headers,
+        json={
+            "name": "cloud115-a",
+            "kind": "cloud115",
+            "media_library_id": first_library.id,
+        },
+    )
+    assert created.status_code == 201
+
+    duplicate = client.post(
+        "/download-clients",
+        headers=headers,
+        json={
+            "name": "cloud115-b",
+            "kind": "cloud115",
+            "media_library_id": first_library.id,
+        },
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "cloud115_download_client_already_exists"
+
+    rebound = client.patch(
+        f"/download-clients/{created.json()['id']}",
+        headers=headers,
+        json={"media_library_id": second_library.id},
+    )
+    assert rebound.status_code == 409
+    assert rebound.json()["error"]["code"] == "cloud115_download_client_library_immutable"
+
+
 def test_download_client_api_reports_expected_errors(client, account_user):
     token = _login(client, username=account_user.username)
-    library = MediaLibrary.create(name="Main", root_path="/library/main")
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": "/library/main"})
     DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -404,6 +482,10 @@ def test_download_candidates_api_uses_search_service(client, account_user, monke
                 "indexer_kind": "pt",
                 "resolved_client_id": 1,
                 "resolved_client_name": "client-a",
+                "resolved_client_kind": "qbittorrent",
+                "download_clients": [
+                    {"id": 1, "name": "client-a", "kind": "qbittorrent"}
+                ],
                 "movie_number": movie_number,
                 "title": "ABC-001 4K",
                 "size_bytes": 123,
@@ -423,6 +505,9 @@ def test_download_candidates_api_uses_search_service(client, account_user, monke
 
     assert response.status_code == 200
     assert response.json()[0]["movie_number"] == "ABC-001"
+    assert response.json()[0]["download_clients"] == [
+        {"id": 1, "name": "client-a", "kind": "qbittorrent"}
+    ]
 
 
 def test_download_request_api_returns_201_or_200(client, account_user, monkeypatch):

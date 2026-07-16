@@ -10,6 +10,7 @@ from src.model import (
     Image,
     ImportJob,
     Indexer,
+    IndexerDownloadClient,
     Media,
     MediaLibrary,
     Movie,
@@ -19,6 +20,8 @@ from src.model import (
     VideoItem,
 )
 from src.schema.transfers.downloads import (
+    DownloadCandidateCreatePayload,
+    DownloadCandidateClientResource,
     DownloadCandidateResource,
     DownloadClientCreateRequest,
     DownloadClientProbeStorageTestRequest,
@@ -36,7 +39,13 @@ from src.service.transfers.subscribed_movie_auto_download_service import (
 )
 from src.service.transfers.download_sync_service import DownloadSyncService
 from src.service.transfers.download_task_service import DownloadTaskService
-from src.service.transfers.common import build_movie_save_path, map_download_state, map_remote_path
+from src.service.transfers.common import (
+    build_movie_save_path,
+    list_indexer_clients,
+    map_download_state,
+    map_remote_path,
+    resolve_preferred_client,
+)
 from src.service.transfers.jackett_client import JackettClient
 from src.service.transfers.qbittorrent_client import (
     QBittorrentClient,
@@ -48,6 +57,13 @@ from src.service.transfers.download_progress_service import (
     DownloadProgressSubscription,
 )
 
+
+
+def _create_indexer(*, download_client, **fields):
+    """建索引器并写多对多绑定，替代旧的单 FK 直连写法。"""
+    indexer = Indexer.create(**fields)
+    IndexerDownloadClient.create(indexer=indexer, download_client=download_client)
+    return indexer
 
 def test_ensure_add_success_accepts_legacy_ok_text():
     # qBittorrent 4.x 返回文本 "Ok." 仍应通过
@@ -249,17 +265,17 @@ def download_tables(test_db):
         SystemEvent,
         DownloadClient,
         Indexer,
+        IndexerDownloadClient,
         DownloadTask,
         ImportJob,
     ]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
-    test_db.drop_tables(list(reversed(models)))
 
 
 def _create_library(name: str = "Main", root_path: str = "/library/main") -> MediaLibrary:
-    return MediaLibrary.create(name=name, root_path=root_path)
+    return MediaLibrary.create(name=name, backend="local", backend_config={"root_path": root_path})
 
 
 def _create_client(
@@ -311,6 +327,10 @@ def _candidate(
         indexer_kind=indexer_kind,
         resolved_client_id=1,
         resolved_client_name="client-a",
+        resolved_client_kind="qbittorrent",
+        download_clients=[
+            DownloadCandidateClientResource(id=1, name="client-a", kind="qbittorrent")
+        ],
         movie_number=movie_number,
         title=title,
         size_bytes=size_bytes,
@@ -883,12 +903,14 @@ def test_jackett_client_parses_and_sorts_candidates(download_tables):
 
     library = _create_library()
     download_client = _create_client(library)
-    Indexer.create(
+    indexer = _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
         download_client=download_client,
     )
+    other_client = _create_client(library, name="client-b")
+    IndexerDownloadClient.create(indexer=indexer, download_client=other_client)
     client = JackettClient(api_key="secret", client=FakeHttpClient())
     results = client.search("ABC-001")
 
@@ -897,6 +919,10 @@ def test_jackett_client_parses_and_sorts_candidates(download_tables):
     assert results[0].tags == ["中字", "4K"]
     assert results[0].resolved_client_id == download_client.id
     assert results[0].resolved_client_name == download_client.name
+    assert [item.id for item in results[0].download_clients] == [
+        download_client.id,
+        other_client.id,
+    ]
     assert results[0].indexer_name == "mteam"
 
 
@@ -917,7 +943,7 @@ def test_jackett_client_search_uses_numeric_query_for_fc2_number(download_tables
 
     library = _create_library()
     download_client = _create_client(library)
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
@@ -946,7 +972,7 @@ def test_jackett_client_search_uses_numeric_query_for_fc2_ppv_number(download_ta
 
     library = _create_library()
     download_client = _create_client(library)
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
@@ -975,7 +1001,7 @@ def test_jackett_client_search_keeps_non_fc2_query(download_tables):
 
     library = _create_library()
     download_client = _create_client(library)
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
@@ -1015,7 +1041,7 @@ def test_jackett_client_keeps_local_indexer_name_when_jackettindexer_is_dict(dow
 
     library = _create_library()
     download_client = _create_client(library)
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
@@ -1056,7 +1082,7 @@ def test_jackett_client_keeps_local_indexer_name_when_indexer_is_dict(download_t
 
     library = _create_library()
     download_client = _create_client(library)
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
@@ -1096,7 +1122,7 @@ def test_jackett_client_handles_missing_item_indexer_fields_with_channel_title_f
 
     library = _create_library()
     download_client = _create_client(library)
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
@@ -1137,7 +1163,7 @@ def test_jackett_client_routes_magnet_in_link_to_magnet_url(download_tables):
 
     library = _create_library()
     download_client = _create_client(library)
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
@@ -1178,7 +1204,7 @@ def test_jackett_client_prefers_magneturl_attr_and_keeps_torrent_file_link(downl
 
     library = _create_library()
     download_client = _create_client(library)
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
@@ -1201,6 +1227,12 @@ def test_download_search_service_rejects_invalid_indexer_kind(download_tables):
 def test_download_request_service_adds_task_and_passes_movie_subdir(download_tables):
     library = _create_library()
     client = _create_client(library)
+    _create_indexer(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=client,
+    )
     called = {}
 
     class FakeQBittorrentClient:
@@ -1253,7 +1285,7 @@ def test_download_request_service_adds_task_and_passes_movie_subdir(download_tab
 def test_download_request_service_resolves_client_from_indexer_when_client_id_missing(download_tables):
     library = _create_library()
     client = _create_client(library)
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
@@ -1301,6 +1333,46 @@ def test_download_request_service_resolves_client_from_indexer_when_client_id_mi
     assert called["client_id"] == client.id
 
 
+def test_download_request_service_rejects_client_not_bound_to_indexer(download_tables):
+    library = _create_library()
+    bound_client = _create_client(library, name="client-bound")
+    other_client = _create_client(library, name="client-other")
+    _create_indexer(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=bound_client,
+    )
+
+    service = DownloadRequestService(qbittorrent_client_cls=object)
+    with pytest.raises(ApiError) as exc_info:
+        service.create_request(
+            DownloadRequestCreateRequest.model_validate(
+                {
+                    "client_id": other_client.id,
+                    "movie_number": "ABC-001",
+                    "candidate": {
+                        "source": "jackett",
+                        "indexer_name": "mteam",
+                        "indexer_kind": "pt",
+                        "title": "ABC-001",
+                        "size_bytes": 123,
+                        "seeders": 5,
+                        "magnet_url": "magnet:?xt=urn:btih:ABCDEF123456",
+                        "torrent_url": "",
+                        "tags": [],
+                    },
+                }
+            )
+        )
+
+    assert exc_info.value.code == "download_request_client_not_bound_to_indexer"
+    assert exc_info.value.details == {
+        "client_id": other_client.id,
+        "indexer_name": "mteam",
+    }
+
+
 def test_download_request_service_rejects_unknown_indexer_when_client_id_missing(download_tables):
     library = _create_library()
     _create_client(library)
@@ -1333,6 +1405,12 @@ def test_download_request_service_rejects_unknown_indexer_when_client_id_missing
 def test_download_request_service_is_idempotent_per_client(download_tables):
     library = _create_library()
     client = _create_client(library)
+    _create_indexer(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=client,
+    )
 
     class FakeQBittorrentClient:
         @classmethod
@@ -1630,7 +1708,7 @@ def test_download_sync_service_sync_all_clients_continues_when_one_client_fails(
 def test_download_client_delete_rejects_when_indexer_exists(download_tables):
     library = _create_library()
     client = _create_client(library)
-    Indexer.create(
+    _create_indexer(
         name="mteam",
         url="http://jackett/api",
         kind="pt",
@@ -1644,7 +1722,7 @@ def test_download_client_delete_rejects_when_indexer_exists(download_tables):
 
 
 def test_download_sync_service_enqueues_auto_imports(download_tables, monkeypatch, tmp_path):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1699,7 +1777,7 @@ def test_download_sync_service_enqueues_seeding_tasks_alongside_completed(
 ):
     # 做种态在业务上等价于"下载完成，正在做种"，同样应被 auto_import 拾起，避免用户开启做种后
     # 任务卡在 seeding 状态里永远进不去导入流程。
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1749,7 +1827,7 @@ def test_download_sync_service_enqueues_seeding_tasks_alongside_completed(
 def test_download_sync_service_recovers_orphaned_running_import_before_requeue(
     download_tables, monkeypatch, tmp_path
 ):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1817,7 +1895,7 @@ def test_download_sync_service_recovers_orphaned_running_import_before_requeue(
 def test_download_sync_service_recover_orphaned_imports_only_does_not_enqueue_new_imports(
     download_tables, monkeypatch, tmp_path
 ):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1880,10 +1958,58 @@ def test_download_sync_service_recover_orphaned_imports_only_does_not_enqueue_ne
     assert task_run.error_message == "下载导入线程已中断，任务已失败"
 
 
+def test_download_sync_service_does_not_recover_cloud115_running_import(
+    download_tables, monkeypatch
+):
+    library = MediaLibrary.create(
+        name="Cloud115",
+        backend="cloud115",
+        backend_config={"cookies": "UID=1_A1_1; CID=x; SEID=y", "root_cid": "100"},
+    )
+    client = DownloadClient.create(
+        name="cloud115-recovery-boundary",
+        kind="cloud115",
+        media_library=library,
+    )
+    task = DownloadTask.create(
+        client=client,
+        movie="ABC-115",
+        name="ABC-115",
+        info_hash="hash-cloud115-recovery",
+        save_path="/Cloud115/ABC-115",
+        target_ref={"cid": "cid-115"},
+        progress=1.0,
+        download_state="completed",
+        import_status="running",
+    )
+    completed_job = ImportJob.create(
+        source_path="/Cloud115/ABC-115",
+        source_cid="cid-115",
+        library=library,
+        download_task=task,
+        state="completed",
+    )
+    monkeypatch.setattr(
+        DownloadTaskService,
+        "trigger_import",
+        classmethod(
+            lambda cls, task_id, allowed_statuses=None, trigger_type="manual": (_ for _ in ()).throw(
+                AssertionError("cloud115 task should not enter qB auto import queue")
+            )
+        ),
+    )
+
+    summary = DownloadSyncService().enqueue_auto_imports()
+
+    assert summary == {"queued_count": 0, "recovered_count": 0}
+    assert DownloadTask.get_by_id(task.id).import_status == "running"
+    assert ImportJob.get_by_id(completed_job.id).state == "completed"
+
+
 def test_download_sync_service_does_not_backfill_missing_task_run_id_for_legacy_jobs(
     download_tables, monkeypatch, tmp_path
 ):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1934,7 +2060,7 @@ def test_download_sync_service_does_not_backfill_missing_task_run_id_for_legacy_
 
 
 def test_download_sync_service_keeps_activity_running_when_owner_process_is_still_alive(download_tables, monkeypatch, tmp_path):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -1985,7 +2111,7 @@ def test_download_sync_service_keeps_activity_running_when_owner_process_is_stil
 
 
 def test_download_task_service_trigger_import_marks_running_and_creates_job(download_tables, monkeypatch, tmp_path):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -2033,7 +2159,7 @@ def test_download_task_service_trigger_import_marks_running_and_creates_job(down
 def test_download_task_service_trigger_import_preserves_single_file_source_path(
     download_tables, monkeypatch, tmp_path
 ):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -2068,7 +2194,7 @@ def test_download_task_service_trigger_import_preserves_single_file_source_path(
 
 
 def test_download_task_service_trigger_import_rejects_non_completed_or_duplicate(download_tables, tmp_path):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -2489,7 +2615,7 @@ def test_subscribed_movie_auto_download_treats_non_created_request_as_skipped(do
 
 
 def test_download_task_service_run_import_job_marks_failure_when_bootstrap_fails(download_tables, tmp_path):
-    library = MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    library = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
     client = DownloadClient.create(
         name="client-a",
         base_url="http://localhost:8080",
@@ -2834,3 +2960,537 @@ def test_download_progress_hub_merges_partial_delta_without_exposing_manual_torr
     assert payload["progress"] == 0.5
     assert payload["download_speed_bytes"] == 30
     assert payload["name"] == "ABC-001"
+
+
+def _create_cloud115_client(name: str = "cloud115-main") -> DownloadClient:
+    # cloud115 kind 的下载入口:qb 专属连接字段全空,凭据在 media_library.backend_config。
+    library = MediaLibrary.create(
+        name=f"library-{name}",
+        backend="cloud115",
+        backend_config={"cookies": "UID=1_A1_1; CID=x; SEID=y", "root_cid": "100"},
+    )
+    return DownloadClient.create(name=name, kind="cloud115", media_library=library)
+
+
+def test_resolve_preferred_client_orders_by_global_kind_preference(download_tables, monkeypatch):
+    from src.config.config import settings as runtime_settings
+
+    qb_client = _create_client(_create_library())
+    cloud_client = _create_cloud115_client()
+
+    monkeypatch.setattr(
+        runtime_settings.downloads, "preferred_client_kinds", ["cloud115", "qbittorrent"]
+    )
+    assert resolve_preferred_client([qb_client, cloud_client]).id == cloud_client.id
+
+    monkeypatch.setattr(
+        runtime_settings.downloads, "preferred_client_kinds", ["qbittorrent", "cloud115"]
+    )
+    assert resolve_preferred_client([qb_client, cloud_client]).id == qb_client.id
+
+
+def test_resolve_preferred_client_falls_back_to_first_when_kind_not_listed(download_tables, monkeypatch):
+    from src.config.config import settings as runtime_settings
+
+    qb_client = _create_client(_create_library())
+    # 偏好列表全部不匹配时按绑定顺序取第一个,不因偏好拒下。
+    monkeypatch.setattr(runtime_settings.downloads, "preferred_client_kinds", ["aria2"])
+    assert resolve_preferred_client([qb_client]).id == qb_client.id
+
+
+def test_resolve_preferred_client_rejects_empty_candidates(download_tables):
+    with pytest.raises(ApiError) as exc_info:
+        resolve_preferred_client([])
+    assert exc_info.value.code == "download_request_client_resolution_failed"
+
+
+def test_list_indexer_clients_returns_bound_clients_in_binding_order(download_tables):
+    qb_client = _create_client(_create_library())
+    cloud_client = _create_cloud115_client()
+    indexer = _create_indexer(
+        name="mteam",
+        url="http://jackett/api",
+        kind="pt",
+        download_client=qb_client,
+    )
+    IndexerDownloadClient.create(indexer=indexer, download_client=cloud_client)
+
+    clients = list_indexer_clients(indexer)
+    assert [item.id for item in clients] == [qb_client.id, cloud_client.id]
+
+
+# ---------------------------------------------------------------------------
+# cloud115 kind 的下载客户端管理
+# ---------------------------------------------------------------------------
+
+
+def _create_cloud115_library(name: str = "cloud") -> MediaLibrary:
+    return MediaLibrary.create(
+        name=name,
+        backend="cloud115",
+        backend_config={"cookies": "UID=1_A1_1; CID=x; SEID=y", "root_cid": "100"},
+    )
+
+
+def test_create_cloud115_download_client_requires_cloud115_library(download_tables):
+    local_library = _create_library()
+    with pytest.raises(ApiError) as exc_info:
+        DownloadClientService.create_client(
+            DownloadClientCreateRequest(
+                name="cloud115-entry", kind="cloud115", media_library_id=local_library.id
+            )
+        )
+    assert exc_info.value.code == "media_library_backend_mismatch"
+
+
+def test_create_cloud115_download_client_without_qb_fields(download_tables):
+    library = _create_cloud115_library()
+    resource = DownloadClientService.create_client(
+        DownloadClientCreateRequest(
+            name="cloud115-entry", kind="cloud115", media_library_id=library.id
+        )
+    )
+    assert resource.kind == "cloud115"
+    assert resource.base_url is None
+    assert resource.has_password is False
+    stored = DownloadClient.get_by_id(resource.id)
+    assert stored.kind == "cloud115"
+    assert stored.base_url is None
+
+
+def test_create_cloud115_download_client_rejects_duplicate_library(download_tables):
+    library = _create_cloud115_library()
+    DownloadClientService.create_client(
+        DownloadClientCreateRequest(
+            name="cloud115-entry-a", kind="cloud115", media_library_id=library.id
+        )
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        DownloadClientService.create_client(
+            DownloadClientCreateRequest(
+                name="cloud115-entry-b", kind="cloud115", media_library_id=library.id
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "cloud115_download_client_already_exists"
+
+
+def test_qbittorrent_allows_multiple_clients_for_same_library(download_tables):
+    library = _create_library()
+    first = _create_client(library, name="qb-a")
+    second = _create_client(library, name="qb-b")
+
+    assert first.media_library_id == second.media_library_id == library.id
+
+
+def test_create_download_client_rejects_unknown_kind(download_tables):
+    library = _create_library()
+    with pytest.raises(ApiError) as exc_info:
+        DownloadClientService.create_client(
+            DownloadClientCreateRequest(
+                name="entry", kind="aria2", media_library_id=library.id
+            )
+        )
+    assert exc_info.value.code == "invalid_download_client_kind"
+
+
+def test_update_cloud115_download_client_rejects_qb_fields(download_tables):
+    library = _create_cloud115_library()
+    resource = DownloadClientService.create_client(
+        DownloadClientCreateRequest(
+            name="cloud115-entry", kind="cloud115", media_library_id=library.id
+        )
+    )
+    with pytest.raises(ApiError) as exc_info:
+        DownloadClientService.update_client(
+            resource.id,
+            DownloadClientUpdateRequest(base_url="http://qb:8080"),
+        )
+    assert exc_info.value.code == "invalid_download_client_update_fields"
+
+    updated = DownloadClientService.update_client(
+        resource.id, DownloadClientUpdateRequest(name="renamed")
+    )
+    assert updated.name == "renamed"
+
+
+def test_update_cloud115_download_client_rejects_library_rebind(download_tables):
+    library = _create_cloud115_library("cloud-a")
+    other_library = _create_cloud115_library("cloud-b")
+    resource = DownloadClientService.create_client(
+        DownloadClientCreateRequest(
+            name="cloud115-entry", kind="cloud115", media_library_id=library.id
+        )
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        DownloadClientService.update_client(
+            resource.id,
+            DownloadClientUpdateRequest(media_library_id=other_library.id),
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.code == "cloud115_download_client_library_immutable"
+    assert DownloadClient.get_by_id(resource.id).media_library_id == library.id
+
+
+def test_storage_test_rejects_cloud115_kind(download_tables):
+    library = _create_cloud115_library()
+    resource = DownloadClientService.create_client(
+        DownloadClientCreateRequest(
+            name="cloud115-entry", kind="cloud115", media_library_id=library.id
+        )
+    )
+    with pytest.raises(ApiError) as exc_info:
+        DownloadClientService.test_storage(resource.id)
+    assert exc_info.value.code == "download_client_kind_mismatch"
+
+
+def test_test_client_probes_cloud115_cookies(download_tables, monkeypatch):
+    from src.lib.cloud115 import Cloud115CookieStatus
+    from src.service.transfers import download_client_service as client_service_module
+
+    library = _create_cloud115_library()
+    resource = DownloadClientService.create_client(
+        DownloadClientCreateRequest(
+            name="cloud115-entry", kind="cloud115", media_library_id=library.id
+        )
+    )
+
+    async def _probe_alive(_library):
+        return Cloud115CookieStatus.ALIVE
+
+    monkeypatch.setattr(
+        client_service_module.Cloud115KeepaliveService,
+        "probe_library_cookies_status",
+        staticmethod(_probe_alive),
+    )
+    response = DownloadClientService.test_client(resource.id)
+    assert response.healthy is True
+    assert response.base_url is None
+
+    async def _probe_expired(_library):
+        return Cloud115CookieStatus.EXPIRED
+
+    monkeypatch.setattr(
+        client_service_module.Cloud115KeepaliveService,
+        "probe_library_cookies_status",
+        staticmethod(_probe_expired),
+    )
+    response = DownloadClientService.test_client(resource.id)
+    assert response.healthy is False
+    assert response.error.type == "cloud115_cookies_invalid"
+
+
+def test_create_request_dispatches_to_cloud115_offline_service(download_tables, monkeypatch):
+    library = _create_cloud115_library()
+    cloud_client = DownloadClient.create(
+        name="cloud115-entry", kind="cloud115", media_library=library
+    )
+    _create_indexer(
+        name="mteam",
+        url="http://jackett/api",
+        kind="bt",
+        download_client=cloud_client,
+    )
+    task = DownloadTask.create(
+        client=cloud_client,
+        movie="ABP-123",
+        name="ABP-123 4K",
+        info_hash="a" * 40,
+        save_path="sakuramedia_downloads/ABP-123",
+        target_ref={"cid": "cid-ABP-123"},
+        download_state="queued",
+        import_status="pending",
+    )
+
+    class _FakeOfflineService:
+        def __init__(self):
+            self.calls = []
+
+        def submit_candidate(self, client, *, movie_number, candidate):
+            self.calls.append((client.id, movie_number))
+            return task, True
+
+    fake_offline = _FakeOfflineService()
+    service = DownloadRequestService(cloud115_offline_service=fake_offline)
+    response = service.create_request(
+        DownloadRequestCreateRequest(
+            client_id=cloud_client.id,
+            movie_number="abp-123",
+            candidate=DownloadCandidateCreatePayload(
+                source="jackett",
+                indexer_name="mteam",
+                indexer_kind="bt",
+                title="ABP-123 4K",
+                size_bytes=1,
+                seeders=1,
+                magnet_url="magnet:?xt=urn:btih:" + "a" * 40,
+            ),
+        )
+    )
+
+    # 番号大写归一后透传；目录隔离由提交服务按 canonical hash 完成。
+    assert fake_offline.calls == [(cloud_client.id, "ABP-123")]
+    assert response.created is True
+    assert response.task.id == task.id
+
+
+def test_download_progress_hub_consumes_cloud115_tasks_snapshot_and_updates(download_tables):
+    from src.lib.cloud115 import OfflineTask
+
+    def _offline(info_hash, *, status, percent, rate=0, size=1000):
+        return OfflineTask(
+            info_hash=info_hash, name="ABP-123", size=size, status=status,
+            status_text="", percent_done=percent, rate_download=rate, peers=0,
+            left_time_seconds=60, add_time=0, last_update=0, file_id="",
+            pickcode="", save_dir_id="cid-1", source_url="", retry_count=0,
+            retry_limit=0,
+        )
+
+    library = _create_cloud115_library()
+    client = DownloadClient.create(name="cloud115-main", kind="cloud115", media_library=library)
+    task = DownloadTask.create(
+        client=client, movie="ABP-123", name="ABP-123", info_hash="a" * 40,
+        save_path="sakuramedia_downloads/ABP-123", target_ref={"cid": "cid-1"},
+        download_state="downloading", import_status="pending",
+    )
+    # abandoned 任务不推进度。
+    DownloadTask.create(
+        client=client, movie="OLD-1", name="OLD-1", info_hash="b" * 40,
+        save_path="sakuramedia_downloads/OLD-1", target_ref={"cid": "cid-2"},
+        download_state="abandoned", import_status="pending",
+    )
+
+    hub = DownloadProgressHub()
+    subscription = DownloadProgressSubscription(subscription_id=1, client_ids={client.id})
+    hub._subscriptions[subscription.subscription_id] = subscription
+
+    hub._consume_cloud115_tasks(client.id, {"a" * 40: _offline("a" * 40, status=1, percent=42.5, rate=1024)})
+
+    event, payload = subscription.queue.get_nowait()
+    assert event == "snapshot"
+    assert len(payload["items"]) == 2  # abandoned 保留在完整数据库快照里
+    item = next(item for item in payload["items"] if item["task_id"] == task.id)
+    assert item["task_id"] == task.id
+    assert item["progress"] == pytest.approx(0.425)
+    assert item["download_state"] == "downloading"
+    assert item["download_speed_bytes"] == 1024
+    assert item["total_size_bytes"] == 1000
+
+    # 第二轮：远端进度推进 → 只广播变化条目为 update。
+    hub._consume_cloud115_tasks(client.id, {"a" * 40: _offline("a" * 40, status=2, percent=100.0)})
+    event, payload = subscription.queue.get_nowait()
+    assert event == "download_task_updated"
+    assert payload["download_state"] == "completed"
+    assert payload["progress"] == pytest.approx(1.0)
+
+    # 第三轮：无变化 → 不再广播。
+    hub._consume_cloud115_tasks(client.id, {"a" * 40: _offline("a" * 40, status=2, percent=100.0)})
+    with pytest.raises(Empty):
+        subscription.queue.get_nowait()
+
+
+def test_cloud115_sse_broadcasts_abandoned_once_then_stops_updating(download_tables):
+    from src.lib.cloud115 import OfflineTask
+
+    library = _create_cloud115_library()
+    client = DownloadClient.create(
+        name="cloud115-main", kind="cloud115", media_library=library
+    )
+    task = DownloadTask.create(
+        client=client,
+        movie="ABP-123",
+        name="ABP-123",
+        info_hash="a" * 40,
+        save_path="sakuramedia_downloads/" + "a" * 40,
+        target_ref={"cid": "cid-1"},
+        progress=0.4,
+        download_state="downloading",
+        import_status="pending",
+    )
+    remote = OfflineTask(
+        info_hash=task.info_hash,
+        name=task.name,
+        size=1000,
+        status=1,
+        status_text="",
+        percent_done=40,
+        rate_download=0,
+        peers=0,
+        left_time_seconds=0,
+        add_time=0,
+        last_update=0,
+        file_id="",
+        pickcode="",
+        save_dir_id="cid-1",
+        source_url="",
+        retry_count=0,
+        retry_limit=0,
+    )
+    hub = DownloadProgressHub()
+    subscription = DownloadProgressSubscription(subscription_id=1, client_ids={client.id})
+    hub._subscriptions[subscription.subscription_id] = subscription
+    hub._consume_cloud115_tasks(client.id, {task.info_hash: remote})
+    assert subscription.queue.get_nowait()[0] == "snapshot"
+
+    task.download_state = "abandoned"
+    task.save()
+    hub._consume_cloud115_tasks(client.id, {})
+    event, payload = subscription.queue.get_nowait()
+    assert event == "download_task_updated"
+    assert payload["download_state"] == "abandoned"
+
+    hub._consume_cloud115_tasks(client.id, {})
+    with pytest.raises(Empty):
+        subscription.queue.get_nowait()
+
+
+def test_cloud115_sse_interval_is_read_each_poll_round(download_tables, monkeypatch):
+    from types import SimpleNamespace
+
+    from src.config.config import settings as runtime_settings
+    from src.service.transfers import download_progress_service as progress_module
+
+    library = _create_cloud115_library()
+    client = DownloadClient.create(
+        name="cloud115-main", kind="cloud115", media_library=library
+    )
+    waits = []
+
+    class _StopAfterTwoRounds:
+        rounds = 0
+
+        def is_set(self):
+            return self.rounds >= 2
+
+        def wait(self, interval):
+            waits.append(interval)
+            self.rounds += 1
+            runtime_settings.downloads.cloud115_progress_poll_interval_seconds = 12.0
+
+    hub = DownloadProgressHub()
+    monkeypatch.setattr(progress_module, "ensure_database_ready", lambda: None)
+    monkeypatch.setattr(hub, "_has_subscribers", lambda _client_id: True)
+    monkeypatch.setattr(hub, "_has_active_cloud115_tasks", lambda _client_id: False)
+    consumed = []
+    monkeypatch.setattr(
+        hub,
+        "_consume_cloud115_tasks",
+        lambda client_id, remote: consumed.append((client_id, remote)),
+    )
+    monkeypatch.setattr(
+        runtime_settings.downloads, "cloud115_progress_poll_interval_seconds", 8.0
+    )
+
+    hub._poll_cloud115_loop(
+        SimpleNamespace(client_id=client.id, stop_event=_StopAfterTwoRounds()), client
+    )
+
+    assert waits == [8.0, 12.0]
+    assert consumed == [(client.id, {}), (client.id, {})]
+
+
+# -----------------------------------------------------------------------------
+# _delete_cloud115_task 覆盖：先删远端、再删本地，且远端不存在时视为成功。
+# -----------------------------------------------------------------------------
+
+
+def _install_cloud115_delete_fake(monkeypatch, *, calls, raise_exc=None):
+    """给 download_task_service._delete_cloud115_task 装一个可控的 SDK 假客户端。"""
+    from contextlib import asynccontextmanager
+
+    from src.service.transfers import download_task_service as dts_module
+
+    class _FakeSdkClient:
+        async def delete_offline_tasks(self, info_hashes, *, delete_source_files):
+            calls.append((tuple(info_hashes), delete_source_files))
+            if raise_exc is not None:
+                raise raise_exc
+
+    @asynccontextmanager
+    async def _fake_client_for(_library):
+        yield _FakeSdkClient()
+
+    # cloud115_client_for/map_cloud115_error 都是在 _delete_cloud115_task 内延迟 import 的，
+    # 需要 patch backend service 模块本身，而不是 download_task_service 里的引用。
+    monkeypatch.setattr(
+        "src.service.playback.cloud115_backend_service.cloud115_client_for",
+        _fake_client_for,
+    )
+
+
+def _build_cloud115_task_for_delete(*, download_state="downloading") -> DownloadTask:
+    library = _create_cloud115_library(name=f"cloud-{download_state}")
+    client = DownloadClient.create(
+        name=f"cloud115-entry-{download_state}", kind="cloud115", media_library=library
+    )
+    return DownloadTask.create(
+        client=client,
+        movie="ABP-777",
+        name="ABP-777",
+        info_hash="a" * 40,
+        save_path="sakuramedia_downloads/abp-777",
+        target_ref={"cid": "cid-abp-777"},
+        download_state=download_state,
+        import_status="pending",
+    )
+
+
+def test_delete_cloud115_task_removes_local_when_remote_already_gone(
+    download_tables, monkeypatch
+):
+    """115 侧任务已被用户手动清理时，本地仍要能删除，不能永久卡死。"""
+    from src.lib.cloud115 import Cloud115NotFoundError
+
+    task = _build_cloud115_task_for_delete()
+    calls: list[tuple] = []
+    _install_cloud115_delete_fake(
+        monkeypatch,
+        calls=calls,
+        raise_exc=Cloud115NotFoundError("task not found remotely"),
+    )
+
+    removed = DownloadTaskService.delete_task(task.id, delete_files=False)
+
+    assert removed["task_id"] == task.id
+    assert DownloadTask.get_or_none(DownloadTask.id == task.id) is None
+    # 仍然真实调用了远端一次，才知道它不存在（不是短路跳过）。
+    assert len(calls) == 1
+
+
+def test_delete_cloud115_task_keeps_local_on_other_upstream_errors(
+    download_tables, monkeypatch
+):
+    """cookies 失效等非 NotFound 的上游错误：本地记录保留、让用户重试。"""
+    from src.lib.cloud115 import Cloud115AuthError
+
+    task = _build_cloud115_task_for_delete()
+    _install_cloud115_delete_fake(
+        monkeypatch,
+        calls=[],
+        raise_exc=Cloud115AuthError("cookies expired"),
+    )
+
+    with pytest.raises(ApiError) as exc_info:
+        DownloadTaskService.delete_task(task.id, delete_files=False)
+
+    # map_cloud115_error 会把 AuthError 映射为 422 cloud115_cookies_invalid。
+    assert exc_info.value.status_code == 422
+    assert DownloadTask.get_or_none(DownloadTask.id == task.id) is not None
+
+
+def test_delete_cloud115_task_abandoned_skips_remote_call(download_tables, monkeypatch):
+    """abandoned 语义：本地放弃、远端保留，删除时不动 115。"""
+    task = _build_cloud115_task_for_delete(download_state="abandoned")
+    calls: list[tuple] = []
+    _install_cloud115_delete_fake(monkeypatch, calls=calls)
+
+    removed = DownloadTaskService.delete_task(task.id, delete_files=False)
+
+    assert removed["task_id"] == task.id
+    assert DownloadTask.get_or_none(DownloadTask.id == task.id) is None
+    # abandoned 走本地-only 路径，从头到尾不调远端。
+    assert calls == []

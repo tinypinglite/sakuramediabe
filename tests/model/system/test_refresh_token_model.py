@@ -10,7 +10,6 @@ def refresh_token_tables(test_db):
     test_db.bind([User, UserRefreshToken], bind_refs=False, bind_backrefs=False)
     test_db.create_tables([User, UserRefreshToken])
     yield test_db
-    test_db.drop_tables([UserRefreshToken, User])
 
 
 def test_refresh_token_belongs_to_user(refresh_token_tables):

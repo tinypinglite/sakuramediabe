@@ -33,12 +33,15 @@ from src.model import (
     ImageSearchSession,
     RankingItem,
     Indexer,
+    IndexerDownloadClient,
     ImportJob,
     Media,
     MediaClip,
     MediaLibrary,
     MediaPoint,
     MediaProgress,
+    MediaRapidUploadBatch,
+    MediaRapidUploadItem,
     MediaThumbnail,
     MomentRecommendation,
     Movie,
@@ -107,9 +110,12 @@ TEST_MODELS = [
     SystemEvent,
     DownloadClient,
     Indexer,
+    IndexerDownloadClient,
     DownloadTask,
     ImportJob,
     VideoImportJob,
+    MediaRapidUploadBatch,
+    MediaRapidUploadItem,
 ]
 
 
@@ -229,32 +235,83 @@ def _worker_test_database_url():
         )
 
 
-@pytest.fixture()
-def test_db(_worker_test_database_url):
+@pytest.fixture(scope="session")
+def _prepared_test_database(_worker_test_database_url):
+    # session 只做一次：初始化 worker 库、绑定所有测试模型、建全套表。
+    # 每个用例只清空数据（TRUNCATE），避免反复执行 DROP SCHEMA + CREATE TABLE 40+ 张的巨额 DDL 开销。
     worker_url = _worker_test_database_url
-    # 每个用例重置 worker 库的 public schema，得到干净空库。
-    _run_maintenance_statements(
-        worker_url,
-        ["DROP SCHEMA IF EXISTS public CASCADE", "CREATE SCHEMA public"],
-    )
-
     original_database_settings = settings.database
     settings.database = Database(url=worker_url)
     database = init_database(settings.database)
     database.connect()
     for model in TEST_MODELS:
         model.bind(database_proxy, bind_refs=False, bind_backrefs=False)
+    database.create_tables(TEST_MODELS)
     try:
         yield database
     finally:
         if not database.is_closed():
             database.close()
-        database_proxy.initialize(database)
-        # 还原所有测试模型到全局 proxy：用例里 test_db.bind(...) 会把模型绑死到本用例的库，
-        # 若不复位，同一进程后续用例（尤其是 pytest-xdist 并行打乱执行顺序时）会命中已关闭的旧库而失败。
+        settings.database = original_database_settings
+
+
+def _public_schema_table_names(database) -> list[str]:
+    cursor = database.execute_sql(
+        "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+    )
+    return [row[0] for row in cursor.fetchall()]
+
+
+def _truncate_all_public_tables(database) -> None:
+    tables = _public_schema_table_names(database)
+    if not tables:
+        return
+    quoted = ", ".join(_quote_identifier(name) for name in tables)
+    # RESTART IDENTITY：与旧的 drop+create schema 语义等价——每个用例从 id=1 开始。
+    # CASCADE：一并处理外键关系，一次搞定所有表，比逐表 DELETE 快得多。
+    database.execute_sql(f"TRUNCATE TABLE {quoted} RESTART IDENTITY CASCADE")
+
+
+@pytest.fixture()
+def test_db(_prepared_test_database):
+    database = _prepared_test_database
+    _truncate_all_public_tables(database)
+    # 部分用例会调用 test_db.create_tables([...])：peewee 默认 safe=True (CREATE TABLE IF NOT EXISTS)，
+    # 在完整 schema 上重复调用是无害的 no-op；TRUNCATE 已保证数据洁净。
+    yield database
+
+
+@pytest.fixture()
+def clean_db(_worker_test_database_url, _prepared_test_database):
+    # 给 test_migrations.py / test_initdb.py 这类主动测 schema 演化的用例：需要真正的空 schema。
+    # 保留旧的 drop+create schema 语义；用例结束后恢复完整 schema，让后续 test_db 用例继续复用 session 库。
+    worker_url = _worker_test_database_url
+    session_database = _prepared_test_database
+    # session_database 上可能有连接持有 public schema，DROP SCHEMA 会被阻塞。先断开。
+    if not session_database.is_closed():
+        session_database.close()
+    _run_maintenance_statements(
+        worker_url,
+        ["DROP SCHEMA IF EXISTS public CASCADE", "CREATE SCHEMA public"],
+    )
+    session_database.connect()
+    for model in TEST_MODELS:
+        model.bind(database_proxy, bind_refs=False, bind_backrefs=False)
+    database_proxy.initialize(session_database)
+    try:
+        yield session_database
+    finally:
+        if not session_database.is_closed():
+            session_database.close()
+        _run_maintenance_statements(
+            worker_url,
+            ["DROP SCHEMA IF EXISTS public CASCADE", "CREATE SCHEMA public"],
+        )
+        session_database.connect()
         for model in TEST_MODELS:
             model.bind(database_proxy, bind_refs=False, bind_backrefs=False)
-        settings.database = original_database_settings
+        database_proxy.initialize(session_database)
+        session_database.create_tables(TEST_MODELS)
 
 
 @pytest.fixture(autouse=True)
@@ -276,8 +333,8 @@ def fake_default_dmm_provider(monkeypatch):
 def app(test_db, monkeypatch):
     from src.api.app import create_app
 
-    test_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
-    test_db.create_tables(TEST_MODELS)
+    # schema 由 _prepared_test_database 一次性建好；test_db 已经 TRUNCATE 清数据。
+    # 这里不再 create_tables / drop_tables，去掉每用例 40+ 表的 DDL 大头。
     monkeypatch.setattr(settings.auth, "secret_key", "test-secret-key")
     monkeypatch.setattr(settings.auth, "access_token_expire_minutes", 60)
     monkeypatch.setattr(settings.auth, "refresh_token_expire_minutes", 60 * 24 * 7, raising=False)
@@ -285,7 +342,6 @@ def app(test_db, monkeypatch):
 
     application = create_app()
     yield application
-    test_db.drop_tables(list(reversed(TEST_MODELS)))
 
 
 @pytest.fixture(autouse=True)

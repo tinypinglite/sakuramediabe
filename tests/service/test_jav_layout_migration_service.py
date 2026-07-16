@@ -25,7 +25,6 @@ def jav_layout_tables(test_db):
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
-    test_db.drop_tables(list(reversed(models)))
 
 
 def _make_movie(movie_number: str) -> Movie:
@@ -34,7 +33,11 @@ def _make_movie(movie_number: str) -> Movie:
 
 def _make_library(root: Path, name: str = "Main") -> MediaLibrary:
     root.mkdir(parents=True, exist_ok=True)
-    return MediaLibrary.create(name=name, root_path=str(root))
+    return MediaLibrary.create(
+        name=name,
+        backend="local",
+        backend_config={"root_path": str(root)},
+    )
 
 
 def _write_video_file(path: Path, content: bytes = b"video-bytes") -> None:
@@ -55,7 +58,7 @@ def _place_media(
 
     返回 (media, old_path, new_path)。style ∈ {"old", "new"}，指 Media.path 存的前缀风格。
     """
-    root = Path(library.root_path)
+    root = Path(library.backend_config["root_path"])
     old_path = root / movie.movie_number / str(version_ms) / f"{movie.movie_number}.mp4"
     new_path = root / "jav" / movie.movie_number / str(version_ms) / f"{movie.movie_number}.mp4"
     db_path = old_path if style == "old" else new_path
@@ -220,6 +223,21 @@ def test_skip_unknown_layout(jav_layout_tables, tmp_path):
     assert weird_path.exists()
 
 
+def test_cloud115_library_is_not_scanned(jav_layout_tables):
+    """JAV 本地布局迁移不读取或改动 cloud115 媒体库。"""
+    cloud_library = MediaLibrary.create(
+        name="Cloud115",
+        backend="cloud115",
+        backend_config={"root_cid": "cid-library"},
+    )
+
+    stats = JavLayoutMigrationService.run(library_id=cloud_library.id)
+
+    assert stats.libraries_scanned == 0
+    assert stats.media_migrated == 0
+    assert stats.media_failed == 0
+
+
 # ---------------------------------------------------------------------------
 # 端到端幂等 + sidecar + inode + 降级 + STEP3 失败
 # ---------------------------------------------------------------------------
@@ -293,7 +311,7 @@ def test_prunes_empty_old_dirs(jav_layout_tables, tmp_path):
     assert not old_path.parent.exists()
     assert not old_path.parent.parent.exists()
     # 但 <root>/jav/ 还在
-    assert (Path(lib.root_path) / "jav").exists()
+    assert (Path(lib.backend_config["root_path"]) / "jav").exists()
 
 
 def test_hardlink_semantics_preserve_inode(jav_layout_tables, tmp_path):

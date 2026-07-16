@@ -40,6 +40,7 @@ from typing import Callable
 from loguru import logger
 
 from src.model import Media, MediaLibrary
+from src.model.enums import MediaLibraryBackend
 from src.service.transfers.file_transfer import JAV_LIBRARY_SUBDIR
 
 
@@ -94,12 +95,14 @@ class JavLayoutMigrationService:
         dry_run: bool = False,
         progress_callback: ProgressCallback | None = None,
     ) -> MigrationStats:
-        """迁移入口。``library_id`` 为 None 时处理全部库；``dry_run`` 只统计不动。
+        """迁移入口。``library_id`` 为 None 时处理全部本地库；``dry_run`` 只统计不动。
 
         重跑幂等：所有已达 F 的 media 走 fast-path skip；处于中间态的会被恢复。
         """
         stats = MigrationStats()
-        query = MediaLibrary.select()
+        query = MediaLibrary.select().where(
+            MediaLibrary.backend == MediaLibraryBackend.LOCAL.value
+        )
         if library_id is not None:
             query = query.where(MediaLibrary.id == library_id)
         for library in query:
@@ -116,7 +119,7 @@ class JavLayoutMigrationService:
         dry_run: bool,
         progress: ProgressCallback | None,
     ) -> None:
-        root = Path(library.root_path).expanduser()
+        root = Path(library.backend_config["root_path"]).expanduser()
         if not dry_run:
             # 顶层 jav 目录预先建好；已存在幂等
             (root / JAV_LIBRARY_SUBDIR).mkdir(exist_ok=True)

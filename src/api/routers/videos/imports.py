@@ -13,7 +13,11 @@ from src.schema.videos.imports import (
     VideoImportRequest,
     VideoImportTriggerResponse,
 )
-from src.service.videos import VideoImportJobService
+from src.service.videos import (
+    Cloud115VideoImportJobService,
+    VideoImportJobService,
+    video_import_job_service_for,
+)
 
 router = APIRouter(
     prefix="/video-imports",
@@ -25,10 +29,18 @@ router = APIRouter(
 @router.post("", response_model=VideoImportTriggerResponse, status_code=status.HTTP_202_ACCEPTED)
 def trigger_video_import(payload: VideoImportRequest):
     # 异步触发：把视频目录/单文件搬入媒体库并登记，进度经 /system/events/stream 或本作业详情查询。
+    if payload.source_path is None:
+        return Cloud115VideoImportJobService.trigger_cloud115_import(
+            payload.library_id,
+            source_cid=payload.source_cid,
+            source_fid=payload.source_fid,
+            transfer_mode=payload.transfer_mode or "copy",
+            collection_id=payload.collection_id,
+        )
     return VideoImportJobService.trigger_directory_import(
         payload.library_id,
         payload.source_path,
-        transfer_mode=payload.transfer_mode,
+        transfer_mode=payload.transfer_mode or "auto",
         collection_id=payload.collection_id,
     )
 
@@ -48,12 +60,16 @@ def get_video_import_job(video_import_job_id: int):
 
 @router.post("/{video_import_job_id}/retry", response_model=VideoImportTriggerResponse)
 def retry_video_import_failed_files(video_import_job_id: int, payload: RetryFailedFilesRequest):
-    return VideoImportJobService.retry_failed_files(video_import_job_id, payload.files)
+    return video_import_job_service_for(video_import_job_id).retry_failed_files(
+        video_import_job_id, payload.files
+    )
 
 
 @router.delete("/{video_import_job_id}/failed-files", response_model=VideoImportJobResource)
 def delete_video_import_failed_file(video_import_job_id: int, payload: DeleteFailedFileRequest):
-    return VideoImportJobService.delete_failed_file(video_import_job_id, payload.path)
+    return video_import_job_service_for(video_import_job_id).delete_failed_file(
+        video_import_job_id, payload.path
+    )
 
 
 @router.post(
@@ -61,7 +77,7 @@ def delete_video_import_failed_file(video_import_job_id: int, payload: DeleteFai
     response_model=VideoImportJobResource,
 )
 def rename_video_import_failed_file(video_import_job_id: int, payload: RenameFailedFileRequest):
-    return VideoImportJobService.rename_failed_file(
+    return video_import_job_service_for(video_import_job_id).rename_failed_file(
         video_import_job_id,
         payload.path,
         payload.new_name,

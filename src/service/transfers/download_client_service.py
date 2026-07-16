@@ -1,3 +1,4 @@
+import asyncio
 import errno
 import os
 import shutil
@@ -7,9 +8,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+from peewee import IntegrityError
+
 from src.api.exception.errors import ApiError
+from src.lib.cloud115 import Cloud115CookieStatus
+from src.service.playback.cloud115_backend_service import Cloud115KeepaliveService
 from src.common.runtime_time import utc_now_for_db
-from src.model import DownloadClient, DownloadTask, Indexer
+from src.model import DownloadClient, DownloadTask, IndexerDownloadClient
 from src.schema.transfers.downloads import (
     DownloadClientCreateRequest,
     DownloadClientProbeStorageTestRequest,
@@ -23,12 +28,15 @@ from src.schema.transfers.downloads import (
     DownloadClientTestResponse,
     DownloadClientUpdateRequest,
 )
+from src.model.enums import DownloadClientKind
 from src.service.transfers.common import (
     ensure_name_available,
     require_client,
-    require_media_library,
+    require_cloud115_media_library,
+    require_local_media_library,
     validate_absolute_path,
     validate_base_url,
+    validate_download_client_kind,
     validate_media_library_id,
     validate_non_empty,
 )
@@ -37,7 +45,7 @@ from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorr
 
 @dataclass
 class _MediaLibraryView:
-    root_path: str
+    backend_config: dict
 
 
 @dataclass
@@ -75,36 +83,55 @@ class DownloadClientService:
 
     @classmethod
     def create_client(cls, payload: DownloadClientCreateRequest) -> DownloadClientResource:
+        kind = validate_download_client_kind(payload.kind)
         name = validate_non_empty(
             payload.name,
             "invalid_download_client_name",
             "Download client name cannot be empty",
         )
+        media_library_id = validate_media_library_id(payload.media_library_id)
+        ensure_name_available(name)
+
+        if kind == DownloadClientKind.CLOUD115.value:
+            # cloud115 入口不带连接字段：凭据与落地目录都挂在 cloud115 媒体库配置上。
+            require_cloud115_media_library(media_library_id)
+            cls._ensure_cloud115_library_available(media_library_id)
+            try:
+                client = DownloadClient.create(
+                    name=name,
+                    kind=kind,
+                    media_library=media_library_id,
+                )
+            except IntegrityError:
+                # 并发创建由数据库部分唯一索引兜底，并映射为稳定的领域错误。
+                cls._ensure_cloud115_library_available(media_library_id)
+                raise
+            return DownloadClientResource.from_model(client)
+
         username = validate_non_empty(
-            payload.username,
+            payload.username or "",
             "invalid_download_client_username",
             "Download client username cannot be empty",
         )
         password = validate_non_empty(
-            payload.password,
+            payload.password or "",
             "invalid_download_client_password",
             "Download client password cannot be empty",
         )
-        media_library_id = validate_media_library_id(payload.media_library_id)
-        require_media_library(media_library_id)
-        ensure_name_available(name)
+        require_local_media_library(media_library_id)
 
         client = DownloadClient.create(
             name=name,
-            base_url=validate_base_url(payload.base_url),
+            kind=kind,
+            base_url=validate_base_url(payload.base_url or ""),
             username=username,
             password=password,
             client_save_path=validate_absolute_path(
-                payload.client_save_path,
+                payload.client_save_path or "",
                 field_name="client_save_path",
             ),
             local_root_path=validate_absolute_path(
-                payload.local_root_path,
+                payload.local_root_path or "",
                 field_name="local_root_path",
             ),
             media_library=media_library_id,
@@ -119,9 +146,37 @@ class DownloadClientService:
         qbittorrent_client_cls=QBittorrentClient,
     ) -> DownloadClientTestResponse:
         client = require_client(client_id)
+        if client.kind == DownloadClientKind.CLOUD115.value:
+            return cls._run_cloud115_probe(client)
         return cls._run_connectivity_probe(
             client,
             qbittorrent_client_cls=qbittorrent_client_cls,
+        )
+
+    @classmethod
+    def _run_cloud115_probe(cls, client) -> DownloadClientTestResponse:
+        """cloud115 入口的连通性 = 所挂媒体库 cookies 是否存活（探活会顺带回写快照）。"""
+        start_at = time.time()
+        cookie_status = asyncio.run(
+            Cloud115KeepaliveService.probe_library_cookies_status(client.media_library)
+        )
+        if cookie_status is Cloud115CookieStatus.ALIVE:
+            return cls._build_test_response(client, start_at=start_at, healthy=True)
+        error_type = (
+            "cloud115_cookies_invalid"
+            if cookie_status is Cloud115CookieStatus.EXPIRED
+            else "cloud115_upstream_error"
+        )
+        error_message = (
+            "115 cookies 已失效，请重新扫码登录"
+            if cookie_status is Cloud115CookieStatus.EXPIRED
+            else "115 上游暂时不可用，请稍后再试"
+        )
+        return cls._build_test_response(
+            client,
+            start_at=start_at,
+            healthy=False,
+            error=DownloadClientTestError(type=error_type, message=error_message),
         )
 
     @classmethod
@@ -186,6 +241,15 @@ class DownloadClientService:
         probe_id: str | None = None,
     ) -> DownloadClientStorageTestResponse:
         client = require_client(client_id)
+        if client.kind != DownloadClientKind.QBITTORRENT.value:
+            # 存储探测（目录映射 + 硬链接）是 qb 专属概念；cloud115 无本地磁盘语义。
+            raise ApiError(
+                422,
+                "download_client_kind_mismatch",
+                "Storage test is only supported for qbittorrent clients",
+                {"client_id": client.id, "kind": client.kind},
+            )
+        require_local_media_library(client.media_library_id)
         return cls._run_storage_probe(
             client,
             qbittorrent_client_cls=qbittorrent_client_cls,
@@ -204,7 +268,7 @@ class DownloadClientService:
         start_at = time.time()
         probe_id = probe_id or uuid.uuid4().hex
         local_root = Path(client.local_root_path).expanduser()
-        library_root = Path(client.media_library.root_path).expanduser()
+        library_root = Path(client.media_library.backend_config["root_path"]).expanduser()
         local_probe_dir = local_root / cls.DIAGNOSTIC_DIR_NAME / probe_id
         library_probe_dir = library_root / cls.DIAGNOSTIC_DIR_NAME / probe_id
         local_diagnostic_dir = local_probe_dir.parent
@@ -410,8 +474,10 @@ class DownloadClientService:
             client_save_path=existing.client_save_path if existing is not None else "",
             local_root_path=existing.local_root_path if existing is not None else "",
             media_library=_MediaLibraryView(
-                root_path=(
-                    existing.media_library.root_path if existing is not None else ""
+                backend_config=(
+                    dict(existing.media_library.backend_config)
+                    if existing is not None
+                    else {"root_path": ""}
                 ),
             ),
         )
@@ -436,7 +502,7 @@ class DownloadClientService:
             field_name="local_root_path",
         )
         media_library_id = validate_media_library_id(payload.media_library_id)
-        library = require_media_library(media_library_id)
+        library = require_local_media_library(media_library_id)
         password, existing = cls._resolve_probe_password(
             password=payload.password,
             client_id=payload.client_id,
@@ -449,7 +515,7 @@ class DownloadClientService:
             password=password,
             client_save_path=client_save_path,
             local_root_path=local_root_path,
-            media_library=_MediaLibraryView(root_path=library.root_path),
+            media_library=_MediaLibraryView(backend_config=dict(library.backend_config)),
         )
 
     @staticmethod
@@ -518,6 +584,23 @@ class DownloadClientService:
                 warnings.append(f"诊断临时目录清理失败: {directory} ({exc})")
         return warnings
 
+    # cloud115 入口只允许改名；换账号或换库必须解绑后删除重建。
+    CLOUD115_UPDATABLE_FIELDS = {"name"}
+
+    @staticmethod
+    def _ensure_cloud115_library_available(media_library_id: int) -> None:
+        existing = DownloadClient.get_or_none(
+            (DownloadClient.kind == DownloadClientKind.CLOUD115.value)
+            & (DownloadClient.media_library == media_library_id)
+        )
+        if existing is not None:
+            raise ApiError(
+                409,
+                "cloud115_download_client_already_exists",
+                "同一 115 媒体库只能创建一个离线下载入口",
+                {"media_library_id": media_library_id, "client_id": existing.id},
+            )
+
     @classmethod
     def update_client(
         cls,
@@ -527,13 +610,28 @@ class DownloadClientService:
         client = require_client(client_id)
         update_data = payload.model_dump(exclude_unset=True, by_alias=False)
         if not update_data:
-            from src.api.exception.errors import ApiError
-
             raise ApiError(
                 422,
                 "empty_download_client_update",
                 "At least one field must be provided",
             )
+
+        if client.kind == DownloadClientKind.CLOUD115.value:
+            if "media_library_id" in update_data:
+                raise ApiError(
+                    409,
+                    "cloud115_download_client_library_immutable",
+                    "115 离线下载入口不允许换绑媒体库，请解绑后删除重建",
+                    {"client_id": client.id},
+                )
+            invalid_fields = sorted(set(update_data) - cls.CLOUD115_UPDATABLE_FIELDS)
+            if invalid_fields:
+                raise ApiError(
+                    422,
+                    "invalid_download_client_update_fields",
+                    "cloud115 download client only supports updating name",
+                    {"fields": invalid_fields},
+                )
 
         if "name" in update_data:
             name = validate_non_empty(
@@ -576,7 +674,10 @@ class DownloadClientService:
 
         if "media_library_id" in update_data:
             media_library_id = validate_media_library_id(update_data["media_library_id"])
-            require_media_library(media_library_id)
+            if client.kind == DownloadClientKind.CLOUD115.value:
+                require_cloud115_media_library(media_library_id)
+            else:
+                require_local_media_library(media_library_id)
             client.media_library = media_library_id
 
         client.save()
@@ -584,8 +685,6 @@ class DownloadClientService:
 
     @classmethod
     def delete_client(cls, client_id: int) -> None:
-        from src.api.exception.errors import ApiError
-
         client = require_client(client_id)
         if DownloadTask.select().where(DownloadTask.client == client.id).exists():
             raise ApiError(
@@ -594,7 +693,7 @@ class DownloadClientService:
                 "Download client is still referenced by download tasks",
                 {"client_id": client.id},
             )
-        if Indexer.select().where(Indexer.download_client == client.id).exists():
+        if IndexerDownloadClient.select().where(IndexerDownloadClient.download_client == client.id).exists():
             raise ApiError(
                 409,
                 "download_client_in_use_by_indexers",

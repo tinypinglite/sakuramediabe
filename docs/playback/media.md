@@ -10,13 +10,48 @@
 - 媒体书签添加与删除
 - 缩略图列表查询
 - 全局媒体书签分页查询
+- 全局媒体分页查询（跨 JAV 与 videos 域，支持归属/库/订阅女优筛选与排序）
+- 批量把本地媒体秒传到 115，并在成功后删除本地文件
 - 媒体删除与有效性管理
 - 失效媒体列表查询
 - 单个媒体文件有效性复查
 
-当前项目里，媒体详情不会单独通过 `/media/{media_id}` 返回，而是包含在影片详情的 `media_items` 中，详见 [../catalog/movies.md](../catalog/movies.md)。
+当前项目里，媒体详情不会单独通过 `/media/{media_id}` 返回，而是包含在影片详情的 `media_items` 中，详见 [../catalog/movies.md](../catalog/movies.md)。`GET /media` 提供的是跨归属的列表视图，同样不含单条详情接口。
 
 ## 资源模型
+
+媒体列表项资源（`GET /media`，跨 JAV 与 videos 域）：
+
+```json
+{
+  "id": 100,
+  "kind": "jav",
+  "movie_number": "ABC-001",
+  "video_item_id": null,
+  "title": "Movie 1",
+  "cover_image": {
+    "id": 88,
+    "origin": "/files/images/movies/ABC-001/cover.webp?expires=1700000900&signature=<signature>",
+    "small": "/files/images/movies/ABC-001/cover.webp?expires=1700000900&signature=<signature>",
+    "medium": "/files/images/movies/ABC-001/cover.webp?expires=1700000900&signature=<signature>",
+    "large": "/files/images/movies/ABC-001/cover.webp?expires=1700000900&signature=<signature>"
+  },
+  "thin_cover_image": null,
+  "library_id": 1,
+  "library_name": "Main",
+  "path": "/library/main/abc-001.mp4",
+  "file_size_bytes": 2147483648,
+  "duration_seconds": 5400,
+  "resolution": "1920x1080",
+  "special_tags": "普通",
+  "valid": true,
+  "heat": 320,
+  "created_at": "2026-03-12T10:20:00",
+  "updated_at": "2026-03-12T10:20:00"
+}
+```
+
+非 JAV（videos 域）媒体：`kind` 为 `video`，`movie_number` 为 `null`，`video_item_id` 非空，`heat`、`thin_cover_image` 恒为 `null`。
 
 播放进度资源：
 
@@ -93,6 +128,11 @@
 
 | Method | Endpoint | Purpose |
 |---|---|---|
+| `GET` | `/media` | 分页获取全局媒体列表，跨 JAV 与 videos 域，支持归属/库/订阅女优筛选与排序 |
+| `POST` | `/media/rapid-uploads` | 异步创建一个批量秒传作业 |
+| `GET` | `/media/rapid-uploads` | 分页查询秒传批次 |
+| `GET` | `/media/rapid-uploads/{batch_id}` | 查询批次及逐项结果 |
+| `POST` | `/media/rapid-uploads/{batch_id}/retry` | 只重试批次中的失败项 |
 | `GET` | `/media-points` | 分页获取全局媒体书签列表，按 `kind` 区分 JAV / 非 JAV（默认仅 JAV） |
 | `GET` | `/media/invalid` | 分页获取所有失效媒体列表 |
 | `POST` | `/media/{media_id}/validity-check` | 单次复查媒体文件是否有效，并同步修正 `valid` |
@@ -105,6 +145,150 @@
 | `DELETE` | `/media/{media_id}` | 硬删除媒体并清理关联播放数据 |
 
 ## 详细接口定义
+
+### 批量秒传到 115
+
+`POST /media/rapid-uploads`
+
+请求体：
+
+```json
+{
+  "media_ids": [101, 102, 103],
+  "target_library_id": 8
+}
+```
+
+- `media_ids` 必须是 1 至 200 个不重复的本地媒体 ID；JAV 和 videos 媒体可以混合提交。
+- `target_library_id` 必须指向 `backend=cloud115` 的媒体库。
+- 接口只创建后台作业并立即返回 `202 Accepted`：
+
+```json
+{
+  "rapid_upload_batch_id": 12,
+  "task_run_id": 456,
+  "status": "accepted"
+}
+```
+
+批次内部严格按请求顺序逐个秒传。同一目标 115 库会与现有 115 导入共享库级写锁，避免建目录、改名和删除并发。
+
+单项只有在 115 返回秒传成功、并按 `fid/pickcode/SHA1/size` 回查确认后，才会把原 `Media` 原地切换为 cloud115 定位；随后再次核对本地文件的大小、mtime、device 和 inode，确认仍是同一文件后删除。原地切换会保留该媒体已有的播放进度、缩略图、书签、片段与推荐关系。
+
+逐项终态：
+
+- `succeeded`：云端已登记，本地文件已删除。
+- `failed`：秒传失败；本地 Media 和文件保持不变。
+- `cleanup_failed`：云端已登记，但本地文件未能安全删除；重试时只执行本地清理，不会再次秒传。
+
+前端通过 `GET /system/events/stream` 接收 `task_run_created` / `task_run_updated` 进度事件。批次结束后系统始终创建一条汇总通知：全成功为 `info`，存在任一失败或清理失败为 `warning`。
+
+查询接口：
+
+- `GET /media/rapid-uploads?page=1&page_size=20`
+- `GET /media/rapid-uploads/{batch_id}`
+
+重试接口：
+
+`POST /media/rapid-uploads/{batch_id}/retry`
+
+只把原批次的 `failed` / `cleanup_failed` 项放入新批次；没有可重试项时返回 `422 media_rapid_upload_no_retryable_items`。
+
+常见错误：
+
+- `409 media_rapid_upload_conflict`：目标 115 库已有写入任务。
+- `409 media_rapid_upload_media_conflict`：所选媒体已在其它秒传批次中。
+- `422 media_rapid_upload_source_not_local`：源媒体不是本地媒体。
+- `422 media_rapid_upload_target_not_cloud115`：目标不是 115 媒体库。
+
+### Endpoint
+
+`GET /media`
+
+### Purpose
+
+分页获取全局 `Media`，跨 JAV（`movie_number` 非空）与 videos 域（`video_item_id` 非空）统一返回，可按归属、所属媒体库、订阅女优筛选，并支持按文件大小或影片热度排序。
+
+### Auth
+
+需要 Bearer Token。
+
+### Path Params
+
+无。
+
+### Query Params
+
+- `page`: 页码，默认 `1`，必须大于 `0`
+- `page_size`: 每页数量，默认 `20`，取值范围 `1-100`
+- `kind`: 归属过滤，默认 `all`
+- `library_id`: 按所属媒体库过滤，可选
+- `actor_ids`: 按订阅女优筛选，逗号分隔的正整数演员 ID 列表，可选；命中任意一位即可（OR 逻辑）。非 JAV 视频没有演员关联，传入该参数后天然被排除，即便 `kind=all`
+- `sort`: 排序规则，默认 `created_at:desc`
+
+支持的 `kind`：
+
+- `jav`：仅 JAV 影片媒体
+- `video`：仅非 JAV 视频（videos 域）媒体
+- `all`（默认）：不限归属，两类混合返回
+
+支持的 `sort`：
+
+- `file_size_bytes:asc` / `file_size_bytes:desc`
+- `heat:asc` / `heat:desc`：按所属影片热度排序，仅 JAV 媒体有 `heat`；非 JAV 视频的 `heat` 恒为空，统一排在结果末尾，不受排序方向影响
+- 不传时默认按 `created_at:desc`（+ `id` 同方向兜底排序保证稳定）
+
+### Request Body
+
+无。
+
+### Success Responses
+
+- `200 OK`: 返回分页结果，每项为 [`MediaListItemResource`](#资源模型)
+
+### Error Responses
+
+- `401 Unauthorized`: 未认证
+- `422 Unprocessable Entity`: `page`、`page_size`、`actor_ids` 或 `sort` 非法（错误码 `invalid_media_filter`）
+
+### Example Request
+
+```http
+GET /media?kind=jav&library_id=1&actor_ids=12,34&sort=heat:desc&page=1&page_size=20
+Authorization: Bearer <token>
+```
+
+### Example Response
+
+```json
+{
+  "items": [
+    {
+      "id": 100,
+      "kind": "jav",
+      "movie_number": "ABC-001",
+      "video_item_id": null,
+      "title": "Movie 1",
+      "cover_image": null,
+      "thin_cover_image": null,
+      "library_id": 1,
+      "library_name": "Main",
+      "path": "/library/main/abc-001.mp4",
+      "file_size_bytes": 2147483648,
+      "duration_seconds": 5400,
+      "resolution": "1920x1080",
+      "special_tags": "普通",
+      "valid": true,
+      "heat": 320,
+      "created_at": "2026-03-12T10:20:00",
+      "updated_at": "2026-03-12T10:20:00"
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 1
+}
+```
 
 ### Endpoint
 
@@ -331,7 +515,7 @@ Authorization: Bearer <token>
 - 有效性定义与全量 `scan-media-files` 巡检一致：`Media.path` 指向的路径存在且是普通文件
 - 该接口不是只读检查；会根据当前文件状态同步修正 `Media.valid`
 - 原本 `valid=false` 的媒体如果文件已恢复，会被改回 `valid=true`，随后会从 `GET /media/invalid` 结果中消失
-- 文件恢复且 `video_info` 为空时，会沿用全量巡检逻辑补充文件大小、分辨率、时长、视频信息、特殊标签，并同步字幕
+- 巡检只修正 `Media.valid` 并同步影片字幕关系，不探测或补写文件大小、分辨率、时长、`video_info`、特殊标签
 - 接口同步执行，不创建后台任务、不写任务中心记录
 
 ### Example Request
@@ -594,24 +778,31 @@ Authorization: Bearer <token>
 
 ### Success Responses
 
-- `200 OK`: 返回完整视频流
-- `206 Partial Content`: 返回分段视频流
+- `200 OK`: 返回完整视频流（本地媒体）
+- `206 Partial Content`: 返回分段视频流（本地媒体）
+- `302 Found`: 重定向到 115 CDN 直链（cloud115 媒体）
 
 ### Error Responses
 
 - `403 Forbidden`: 缺少签名、签名错误或签名已过期
-- `404 Not Found`: 媒体不存在，或媒体记录存在但文件已缺失
+- `404 Not Found`: 媒体不存在，或媒体记录存在但文件已缺失/被 115 封禁
 - `416 Requested Range Not Satisfiable`: `Range` 请求头非法
+- `422 Unprocessable Entity`: `cloud115_cookies_invalid`（115 cookies 已失效，需重新扫码）
+- `429 Too Many Requests`: 115 限流（cloud115 媒体）
 
 ### Behavior
 
 - 影片详情中的 `media_items[*].play_url` 就是这个接口返回的签名相对地址
 - 前端应使用 `base_url + play_url` 作为播放器地址
-- 服务端支持浏览器常见的 `Range` 分段请求
+- 服务端支持浏览器常见的 `Range` 分段请求（本地媒体）
 - 成功响应会带上：
   - `Accept-Ranges: bytes`
   - `Content-Length`
   - `Content-Encoding: identity`
+- **cloud115 媒体**：每次请求现拿一条 115 直链后 `302`。直链绑定了**本次请求的 User-Agent**
+  （115 CDN 校验后续请求 UA 必须一字不差），播放器跟随 302 时 UA 天然一致；直链带 `t=`
+  过期时间（实测十几小时），播放器 seek 触发重新请求 `/stream` 即重新拿链，无需前端特殊处理。
+  Flutter media_kit 等自定义 http 客户端需保证跟随重定向时不改写 UA。
   - `Content-Range`（仅 `206` 时返回）
 
 ### Example Request

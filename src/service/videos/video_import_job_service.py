@@ -17,6 +17,7 @@ from src.common.media_import_status import (
     IMPORT_JOB_STATE_RUNNING,
 )
 from src.model import VideoCollection, VideoImportJob
+from src.model.enums import MediaLibraryBackend
 from src.schema.videos.imports import (
     VideoImportJobListItemResource,
     VideoImportJobResource,
@@ -29,6 +30,7 @@ from src.service.videos.video_import_service import VideoImportService
 
 
 class VideoImportJobService(BaseImportJobService):
+    REQUIRED_LIBRARY_BACKEND = MediaLibraryBackend.LOCAL
     JOB_MODEL = VideoImportJob
     TASK_KEY = "video_directory_import"
     MUTEX_PREFIX = "video_import"
@@ -188,3 +190,21 @@ class VideoImportJobService(BaseImportJobService):
             .where(VideoImportJob.state.in_((IMPORT_JOB_STATE_PENDING, IMPORT_JOB_STATE_RUNNING)))
             .order_by(VideoImportJob.id.asc())
         )
+
+
+def video_import_job_service_for(job_id: int):
+    job = VideoImportJob.get_or_none(VideoImportJob.id == job_id)
+    if job is None:
+        raise ApiError(
+            404,
+            VideoImportJobService.JOB_NOT_FOUND_CODE,
+            VideoImportJobService.JOB_NOT_FOUND_MESSAGE,
+            {VideoImportJobService.JOB_ID_FIELD: job_id},
+        )
+    if job.source_cid or job.source_fid:
+        from src.service.videos.cloud115_video_import_job_service import (
+            Cloud115VideoImportJobService,
+        )
+
+        return Cloud115VideoImportJobService
+    return VideoImportJobService

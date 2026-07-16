@@ -6,6 +6,7 @@ from loguru import logger
 
 from src.config.config import settings
 from src.model import DownloadClient
+from src.model.enums import DownloadClientKind
 from src.service.transfers.qbittorrent_client import QBittorrentClient
 
 # 打到待删除小文件上的标记前缀；物理删除阶段按文件名是否含该前缀来识别。
@@ -33,7 +34,11 @@ class DownloadSmallFileCleanupService:
         deleted_files = 0
         failed_count = 0
 
-        for client in DownloadClient.select().order_by(DownloadClient.id.asc()):
+        for client in (
+            DownloadClient.select()
+            .where(DownloadClient.kind == DownloadClientKind.QBITTORRENT.value)
+            .order_by(DownloadClient.id.asc())
+        ):
             total_clients += 1
             try:
                 qb_client = self.qbittorrent_client_cls.from_download_client(client)

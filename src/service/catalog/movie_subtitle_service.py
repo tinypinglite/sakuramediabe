@@ -94,7 +94,13 @@ class MovieSubtitleService:
     def _discover_sidecar_subtitle_paths(cls, movie: Movie) -> list[Path]:
         discovered_paths: list[Path] = []
         seen_paths: set[str] = set()
-        media_items = Media.select(Media).where(Media.movie == movie).order_by(Media.id.asc())
+        # cloud115 等云盘 Media 的 path 为 NULL（其字幕直接落 subtitle_root 并由导入侧登记），
+        # sidecar 扫描只对有本地路径的行有意义。
+        media_items = (
+            Media.select(Media)
+            .where(Media.movie == movie, Media.path.is_null(False))
+            .order_by(Media.id.asc())
+        )
         for media in media_items:
             media_path = Path(media.path).expanduser().resolve()
             if not media_path.exists() or not media_path.is_file():

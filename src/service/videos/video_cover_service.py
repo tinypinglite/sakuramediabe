@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -34,21 +35,27 @@ class VideoCoverService:
         )
 
     @classmethod
-    def generate_cover(cls, video: VideoItem, video_path: Path) -> Image | None:
-        """读取视频第 0 帧存为 webp，建 Image 行并回写到 video.cover_image；失败返回 None。"""
+    def generate_cover(cls, video: VideoItem, video_source: Any) -> Image | None:
+        """从本地路径或 seekable file-like 读取第 0 帧；失败返回 None。"""
         if av is None:
             logger.warning("Video cover skipped because pyav is unavailable video_id={}", video.id)
             return None
 
-        resolved_path = Path(video_path).expanduser().resolve()
-        if not resolved_path.exists() or not resolved_path.is_file():
-            logger.warning("Video cover skipped because file missing video_id={} path={}", video.id, str(resolved_path))
-            return None
+        if isinstance(video_source, (str, Path)):
+            resolved_path = Path(video_source).expanduser().resolve()
+            if not resolved_path.exists() or not resolved_path.is_file():
+                logger.warning("Video cover skipped because file missing video_id={} path={}", video.id, str(resolved_path))
+                return None
+            av_source: Any = str(resolved_path)
+            source_label = str(resolved_path)
+        else:
+            av_source = video_source
+            source_label = getattr(video_source, "name", None) or type(video_source).__name__
 
         cover_path = cls._cover_path(video.id)
         container = None
         try:
-            container = av.open(str(resolved_path))
+            container = av.open(av_source)
             if not container.streams.video:
                 logger.warning("Video cover skipped because no video stream video_id={}", video.id)
                 return None
@@ -58,7 +65,7 @@ class VideoCoverService:
             cover_path.parent.mkdir(parents=True, exist_ok=True)
             frame.to_image().save(cover_path, format="WEBP", quality=80)
         except Exception as exc:
-            logger.warning("Video cover generation failed video_id={} path={} detail={}", video.id, str(resolved_path), exc)
+            logger.warning("Video cover generation failed video_id={} source={} detail={}", video.id, source_label, exc)
             return None
         finally:
             if container is not None:
@@ -85,7 +92,7 @@ class VideoCoverService:
             logger.warning(
                 "Video cover persist failed video_id={} path={} detail={}",
                 video.id,
-                str(resolved_path),
+                source_label,
                 exc,
             )
             return None

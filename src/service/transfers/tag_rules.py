@@ -7,7 +7,6 @@ BLURAY_TAG = "4K"
 UNCENSORED_TAG = "无码"
 VR_TAG = "VR"
 NORMAL_TAG = "普通"
-ORDERED_SPECIAL_TAGS = [SUBTITLE_TAG, BLURAY_TAG, UNCENSORED_TAG, VR_TAG]
 
 
 def detect_special_tags(
@@ -73,31 +72,6 @@ def build_media_special_tags(
     if not tags:
         return NORMAL_TAG
     return " ".join(tags)
-
-
-def build_scanned_media_special_tags(
-    existing_special_tags: str | None,
-    *,
-    video_info: dict[str, Any] | None,
-    has_subtitle: bool = False,
-) -> str:
-    existing_tags = set(parse_special_tags_text(existing_special_tags))
-    existing_tags.discard(BLURAY_TAG)
-    if has_subtitle:
-        existing_tags.add(SUBTITLE_TAG)
-    if _is_media_4k(video_info):
-        existing_tags.add(BLURAY_TAG)
-    ordered_tags = [tag for tag in ORDERED_SPECIAL_TAGS if tag in existing_tags]
-    if not ordered_tags:
-        return NORMAL_TAG
-    return " ".join(ordered_tags)
-
-
-def parse_special_tags_text(value: str | None) -> List[str]:
-    if value is None:
-        return []
-    parts = [part.strip() for part in value.split() if part.strip()]
-    return [tag for tag in ORDERED_SPECIAL_TAGS if tag in parts]
 
 
 def detect_candidate_tags(title: str, movie_number: str, size_bytes: int) -> List[str]:

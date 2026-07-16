@@ -23,7 +23,6 @@ def thumbnail_tables(test_db):
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
-    test_db.drop_tables(list(reversed(models)))
 
 
 def _create_media(
@@ -42,9 +41,7 @@ def _create_media(
         title="Movie 1",
         duration_minutes=duration_minutes,
     )
-    library = MediaLibrary.create(
-        name=f"Main-{movie_number}",
-        root_path=str(tmp_path / f"library-{movie_number}"),
+    library = MediaLibrary.create(name=f"Main-{movie_number}", backend="local", backend_config={"root_path": str(tmp_path / f"library-{movie_number}")},
     )
     video_path = tmp_path / f"{movie_number}.mp4"
     video_path.write_bytes(b"video")
@@ -652,6 +649,7 @@ def test_generate_pending_thumbnails_logs_flow_for_success_and_terminal_failure(
         "pending_media": 2,
         "successful_media": 1,
         "generated_thumbnails": 1,
+        "deferred_media": 0,
         "retryable_failed_media": 0,
         "terminal_failed_media": 1,
     }
@@ -676,7 +674,7 @@ def test_generate_pending_thumbnails_logs_flow_for_success_and_terminal_failure(
     )
     assert any(
         level == "info"
-        and "Finished media thumbnail generation pending_media=2 successful_media=1 generated_thumbnails=1 retryable_failed_media=0 terminal_failed_media=1"
+        and "Finished media thumbnail generation pending_media=2 successful_media=1 generated_thumbnails=1 deferred_media=0 retryable_failed_media=0 terminal_failed_media=1"
         in message
         for level, message in events
     )
@@ -890,3 +888,209 @@ def test_generate_pending_thumbnails_supports_non_jav_media_and_marks_skipped(
         t.joytag_index_status == MediaThumbnail.JOYTAG_INDEX_STATUS_SKIPPED
         for t in thumbnails
     )
+
+
+def _create_cloud115_media(*, movie_number="ABC-115", fingerprint="sha1:AAA") -> Media:
+    movie = Movie.create(
+        javdb_id=f"javdb-{movie_number}",
+        movie_number=movie_number,
+        title="Cloud Movie",
+    )
+    library = MediaLibrary.create(
+        name=f"cloud-{movie_number}",
+        backend="cloud115",
+        backend_config={
+            "cookies": "UID=12345678_A1_1700000000; CID=abc",
+            "root_cid": "lib-root",
+            "app": "alipaymini",
+        },
+    )
+    return Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={"fid": "f-1", "pickcode": "pc-115", "name": f"{movie_number}.mp4"},
+        content_fingerprint=fingerprint,
+        duration_seconds=30,
+        valid=True,
+    )
+
+
+def test_generate_pending_thumbnails_cloud115_uses_range_reader(
+    thumbnail_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """cloud115 媒体：走直链 reader 抽帧，成功后回填 resolution 并关闭 reader。"""
+    from src.service.playback.media_thumbnail_service import MediaThumbnailService
+
+    media = _create_cloud115_media()
+    image_root = tmp_path / "images"
+    events = {}
+
+    class _FakeReader:
+        closed = False
+
+        def close(self):
+            events["reader_closed"] = True
+
+    def fake_open_reader(m):
+        assert m.id == media.id
+        events["reader_opened"] = True
+        return _FakeReader(), "cloud115:pc-115"
+
+    def fake_generate(video_source, webp_dir, *, interval_seconds=10, source_label=None):
+        # cloud115 分支必须把 reader（而不是本地路径）交给 PyAV
+        assert isinstance(video_source, _FakeReader)
+        assert source_label == "cloud115:pc-115"
+        _write_webp_batch(webp_dir, [0, 10, 20])
+        return None
+
+    monkeypatch.setattr(
+        MediaThumbnailService, "_open_cloud115_reader", staticmethod(fake_open_reader)
+    )
+    monkeypatch.setattr(
+        MediaThumbnailService, "_generate_webp_with_pyav", staticmethod(fake_generate)
+    )
+    monkeypatch.setattr(
+        "src.service.playback.media_thumbnail_service.settings.media.import_image_root_path",
+        str(image_root),
+    )
+    monkeypatch.setattr(
+        "src.service.playback.media_thumbnail_service.settings.media.max_thumbnail_process_count",
+        1,
+    )
+
+    stats = MediaThumbnailService.generate_pending_thumbnails()
+
+    assert stats["successful_media"] == 1
+    assert stats["generated_thumbnails"] == 3
+    assert events == {"reader_opened": True, "reader_closed": True}
+    task_state = _get_task_state(media.id)
+    assert task_state.state == "succeeded"
+    # 分辨率由抽帧产物（全分辨率帧）回填；_write_webp_batch 产出的假 webp 无法解析尺寸，
+    # 回填容错跳过后 resolution 保持为空——只断言不崩溃。
+    fresh = Media.get_by_id(media.id)
+    assert fresh.resolution is None
+
+
+def test_generate_pending_thumbnails_cloud115_direct_url_failure_marks_retryable(
+    thumbnail_tables, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    from src.service.playback.media_thumbnail_service import MediaThumbnailService
+
+    media = _create_cloud115_media(movie_number="ABC-116", fingerprint="sha1:BBB")
+
+    def fake_open_reader(_media):
+        raise RuntimeError("boom: rate limited")
+
+    monkeypatch.setattr(
+        MediaThumbnailService, "_open_cloud115_reader", staticmethod(fake_open_reader)
+    )
+    monkeypatch.setattr(
+        "src.service.playback.media_thumbnail_service.settings.media.max_thumbnail_process_count",
+        1,
+    )
+
+    stats = MediaThumbnailService.generate_pending_thumbnails()
+
+    assert stats["retryable_failed_media"] == 1
+    task_state = _get_task_state(media.id)
+    assert task_state.state == "failed"
+    assert "cloud115_direct_url_failed" in task_state.last_error
+
+
+def test_generate_pending_thumbnails_cloud115_system_failure_does_not_consume_retry(
+    thumbnail_tables, monkeypatch: pytest.MonkeyPatch
+):
+    from src.lib.cloud115 import Cloud115RateLimitedError
+    from src.service.playback.media_thumbnail_service import MediaThumbnailService
+
+    media = _create_cloud115_media(movie_number="ABC-118", fingerprint="sha1:DDD")
+
+    def fake_open_reader(_media):
+        raise Cloud115RateLimitedError("115 rate limited", retry_after_seconds=60)
+
+    monkeypatch.setattr(
+        MediaThumbnailService, "_open_cloud115_reader", staticmethod(fake_open_reader)
+    )
+    monkeypatch.setattr(
+        "src.service.playback.media_thumbnail_service.settings.media.max_thumbnail_process_count",
+        1,
+    )
+
+    stats = MediaThumbnailService.generate_pending_thumbnails()
+
+    assert stats["deferred_media"] == 1
+    assert stats["retryable_failed_media"] == 0
+    assert stats["terminal_failed_media"] == 0
+    # 系统性异常发生在任务开始前，不创建状态记录，也不增加媒体重试次数。
+    assert _get_task_state(media.id) is None
+
+
+def test_backfill_cloud115_resolution_reads_real_webp(thumbnail_tables, tmp_path):
+    """真 webp 场景：回填 resolution = 首帧尺寸。"""
+    from PIL import Image as PILImage
+
+    from src.service.playback.media_thumbnail_service import MediaThumbnailService
+
+    media = _create_cloud115_media(movie_number="ABC-117", fingerprint="sha1:CCC")
+    webp_path = tmp_path / "0.webp"
+    PILImage.new("RGB", (1280, 720)).save(webp_path, format="WEBP")
+
+    MediaThumbnailService._backfill_cloud115_resolution(media, [webp_path])
+
+    assert Media.get_by_id(media.id).resolution == "1280x720"
+
+
+def test_open_cloud115_reader_binds_fetch_budget(monkeypatch: pytest.MonkeyPatch):
+    """_open_cloud115_reader 必须给 RangeReader 传抓取预算，防止 CDN 不遵守 Range 时读整个大文件到内存。"""
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import src.lib.cloud115 as cloud115_module
+    from src.service.playback import cloud115_backend_service as backend_module
+    from src.service.playback.media_thumbnail_service import MediaThumbnailService
+
+    reader_calls = []
+
+    class _FakeClient:
+        async def get_download_url(self, pickcode, user_agent):
+            return SimpleNamespace(
+                url="https://cdn.example.com/movie.mp4?t=9999999999",
+                user_agent=user_agent,
+                file_size=1024 * 1024,
+                expires_at=9999999999,
+            )
+
+    @asynccontextmanager
+    async def _fake_client_for(_library):
+        yield _FakeClient()
+
+    class _FakeRangeReader:
+        def __init__(self, url, *, user_agent, file_size, max_fetched_bytes=None):
+            reader_calls.append(
+                {
+                    "url": url,
+                    "user_agent": user_agent,
+                    "file_size": file_size,
+                    "max_fetched_bytes": max_fetched_bytes,
+                }
+            )
+
+    monkeypatch.setattr(backend_module, "cloud115_client_for", _fake_client_for)
+    monkeypatch.setattr(cloud115_module, "Cloud115RangeReader", _FakeRangeReader)
+
+    media = SimpleNamespace(
+        id=42,
+        library=object(),
+        backend_locator={"pickcode": "pc-thumb"},
+    )
+    reader, label = MediaThumbnailService._open_cloud115_reader(media)
+
+    assert label == "cloud115:pc-thumb"
+    assert reader_calls == [
+        {
+            "url": "https://cdn.example.com/movie.mp4?t=9999999999",
+            "user_agent": MediaThumbnailService.CLOUD115_THUMBNAIL_UA,
+            "file_size": 1024 * 1024,
+            "max_fetched_bytes": MediaThumbnailService.CLOUD115_THUMBNAIL_FETCH_BUDGET_BYTES,
+        }
+    ]

@@ -11,8 +11,10 @@ from src.config.config import (
     settings,
     update_settings as persist_settings,
 )
-from src.model import DownloadClient, Indexer
+from src.model import DownloadClient, Indexer, IndexerDownloadClient
+from src.model.enums import DownloadClientKind
 from src.schema.system.indexer_settings import (
+    IndexerBoundClientResource,
     IndexerConnectionTestError,
     IndexerConnectionTestResponse,
     IndexerItemUpdatePayload,
@@ -28,6 +30,20 @@ class IndexerSettingsService:
 
     @staticmethod
     def get_settings() -> IndexerSettingsResource:
+        # 一趟 JOIN 取全部绑定关系，再按 indexer 分组，避免逐 indexer 查询。
+        links_by_indexer: dict[int, list[IndexerBoundClientResource]] = {}
+        for link in (
+            IndexerDownloadClient.select(IndexerDownloadClient, DownloadClient)
+            .join(DownloadClient)
+            .order_by(IndexerDownloadClient.id.asc())
+        ):
+            links_by_indexer.setdefault(link.indexer_id, []).append(
+                IndexerBoundClientResource(
+                    id=link.download_client.id,
+                    name=link.download_client.name,
+                    kind=link.download_client.kind,
+                )
+            )
         return IndexerSettingsResource(
             type=settings.indexer_settings.type,
             api_key=settings.indexer_settings.api_key,
@@ -37,14 +53,9 @@ class IndexerSettingsService:
                     name=indexer.name,
                     url=indexer.url,
                     kind=IndexerKind(indexer.kind),
-                    download_client_id=indexer.download_client_id,
-                    download_client_name=indexer.download_client.name,
+                    download_clients=links_by_indexer.get(indexer.id, []),
                 )
-                for indexer in (
-                    Indexer.select(Indexer, DownloadClient)
-                    .join(DownloadClient)
-                    .order_by(Indexer.id.asc())
-                )
+                for indexer in Indexer.select().order_by(Indexer.id.asc())
             ],
         )
 
@@ -260,40 +271,89 @@ class IndexerSettingsService:
                     {"name": name},
                 )
             normalized_names.add(normalized_name)
+            kind = cls._validate_kind(item.kind)
             indexers.append(
                 {
                     "name": name,
                     "url": cls._validate_url(item.url),
-                    "kind": cls._validate_kind(item.kind).value,
-                    "download_client_id": cls._validate_download_client_id(item.download_client_id),
+                    "kind": kind.value,
+                    "download_client_ids": cls._validate_download_client_ids(
+                        item.download_client_ids,
+                        indexer_kind=kind,
+                        indexer_name=name,
+                    ),
                 }
             )
 
         return indexers
 
     @staticmethod
-    def _validate_download_client_id(value: int) -> int:
-        if value <= 0:
+    def _validate_download_client_ids(
+        values: List[int],
+        *,
+        indexer_kind: IndexerKind,
+        indexer_name: str,
+    ) -> List[int]:
+        # 每个索引器至少绑一个下载器；重复 id 拒绝，保持绑定顺序（挑选时同 kind 内按此顺序）。
+        if not values:
             raise ApiError(
                 422,
-                "invalid_indexer_settings_download_client_id",
-                "download_client_id must be a positive integer",
-                {"download_client_id": value},
+                "invalid_indexer_settings_download_client_ids",
+                "download_client_ids must contain at least one client",
             )
-        client = DownloadClient.get_or_none(DownloadClient.id == value)
-        if client is None:
-            raise ApiError(
-                404,
-                "indexer_settings_download_client_not_found",
-                "Download client not found",
-                {"download_client_id": value},
-            )
-        return client.id
+        seen: Set[int] = set()
+        for value in values:
+            if value <= 0:
+                raise ApiError(
+                    422,
+                    "invalid_indexer_settings_download_client_ids",
+                    "download_client_ids must be positive integers",
+                    {"download_client_id": value},
+                )
+            if value in seen:
+                raise ApiError(
+                    422,
+                    "duplicate_indexer_settings_download_client_id",
+                    "download_client_ids must be unique",
+                    {"download_client_id": value},
+                )
+            seen.add(value)
+            download_client = DownloadClient.get_or_none(DownloadClient.id == value)
+            if download_client is None:
+                raise ApiError(
+                    404,
+                    "indexer_settings_download_client_not_found",
+                    "Download client not found",
+                    {"download_client_id": value},
+                )
+            if (
+                indexer_kind is IndexerKind.PT
+                and download_client.kind == DownloadClientKind.CLOUD115.value
+            ):
+                raise ApiError(
+                    422,
+                    "pt_indexer_cloud115_binding_unsupported",
+                    "PT 索引器不能绑定 115 下载入口",
+                    {
+                        "indexer_name": indexer_name,
+                        "download_client_id": download_client.id,
+                    },
+                )
+        return list(values)
 
     @classmethod
     def _replace_indexers(cls, items: Optional[List[IndexerItemUpdatePayload]]) -> None:
         validated_items = cls._validate_indexers(items)
         with Indexer._meta.database.atomic():
+            # 中间表挂 CASCADE，删 indexer 会连带清空绑定；显式先删保证语义清晰。
+            IndexerDownloadClient.delete().execute()
             Indexer.delete().execute()
-            if validated_items:
-                Indexer.insert_many(validated_items).execute()
+            for item in validated_items:
+                client_ids = item.pop("download_client_ids")
+                indexer = Indexer.create(**item)
+                IndexerDownloadClient.insert_many(
+                    [
+                        {"indexer": indexer.id, "download_client": client_id}
+                        for client_id in client_ids
+                    ]
+                ).execute()

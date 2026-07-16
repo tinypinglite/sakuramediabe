@@ -20,6 +20,13 @@ from .media_import import (
     RenameFailedFileRequest,
     RetryFailedFilesRequest,
 )
+from .rapid_upload import (
+    MediaRapidUploadBatchListItemResource,
+    MediaRapidUploadBatchResource,
+    MediaRapidUploadCreateRequest,
+    MediaRapidUploadItemResource,
+    MediaRapidUploadTriggerResponse,
+)
 
 __all__ = [
     "DownloadClientCreateRequest",
@@ -40,4 +47,9 @@ __all__ = [
     "ImportJobTriggerResponse",
     "RenameFailedFileRequest",
     "RetryFailedFilesRequest",
+    "MediaRapidUploadBatchListItemResource",
+    "MediaRapidUploadBatchResource",
+    "MediaRapidUploadCreateRequest",
+    "MediaRapidUploadItemResource",
+    "MediaRapidUploadTriggerResponse",
 ]

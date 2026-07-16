@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import Field, field_validator
 
@@ -85,6 +86,29 @@ class InvalidMediaResource(SchemaModel):
     library_id: int | None
     library_name: str | None
     file_size_bytes: int
+    updated_at: datetime
+
+
+class MediaListItemResource(SchemaModel):
+    id: int
+    # 归属判别：jav 关联 movie_number，video 关联 video_item_id，二者互斥。
+    kind: Literal["jav", "video"]
+    movie_number: str | None = None
+    video_item_id: int | None = None
+    title: str | None = None
+    cover_image: ImageResource | None = None
+    thin_cover_image: ImageResource | None = None
+    library_id: int | None = None
+    library_name: str | None = None
+    path: str
+    file_size_bytes: int
+    duration_seconds: int
+    resolution: str | None = None
+    special_tags: str
+    valid: bool
+    # 仅 JAV 媒体有意义，非 JAV 视频恒为 None。
+    heat: int | None = None
+    created_at: datetime
     updated_at: datetime
 
 

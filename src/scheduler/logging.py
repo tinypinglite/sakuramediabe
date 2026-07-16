@@ -33,6 +33,9 @@ def get_task_logger(task_name: str):
             compression="gz",
             filter=lambda record: record.get("extra", {}).get("task") == task_name,
             enqueue=False,
+            # 关闭诊断回溯：定时任务里的 cloud115 cookies、qb 密码等敏感局部变量
+            # 不允许因 logger.exception 被写入按任务分割的日志文件。
+            diagnose=False,
         )
         _TASK_LEVELS[sink_key] = level_name
     return logger.bind(task=task_name)

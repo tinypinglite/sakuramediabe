@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from loguru import logger
-from src.metadata._providers.dmm import DmmProvider
+from src.metadata._providers.dmm import (
+    DmmMovieDescNotFoundError,
+    DmmMovieNumberNotFoundError,
+    DmmProvider,
+)
 
 from src.common.runtime_time import utc_now_for_db
 from src.model import Actor, Image, Movie, MovieActor, MoviePlotImage, MovieSeries, MovieTag, Tag, get_database
@@ -361,8 +365,11 @@ class CatalogImportService:
                     )
             else:
                 self._dmm_request_failures = 0
-            # DMM 已明确确认不存在该番号时，直接标记为终态失败，避免后续自动任务反复重试。
-            is_terminal = False
+            # DMM 已确认番号不存在或详情页没有描述时标记为终态，避免自动任务反复请求。
+            is_terminal = isinstance(
+                exc,
+                (DmmMovieNumberNotFoundError, DmmMovieDescNotFoundError),
+            )
             with lock_context:
                 self._mark_movie_desc_fetch_failed(movie, str(exc), terminal=is_terminal)
             logger.warning(

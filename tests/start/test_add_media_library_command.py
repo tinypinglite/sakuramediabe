@@ -24,7 +24,11 @@ def test_add_media_library_command_reports_service_validation_error(monkeypatch)
 
 def test_add_media_library_command_prints_created_library(monkeypatch):
     def fake_create_library(payload):
-        return SimpleNamespace(id=3, name="Main", root_path="/library/main")
+        return SimpleNamespace(
+            id=3,
+            name="Main",
+            backend_config={"root_path": "/library/main"},
+        )
 
     runner = CliRunner()
     monkeypatch.setattr("src.start.commands._ensure_database_ready", lambda: None)

@@ -254,6 +254,9 @@ class Scheduler(BaseModel):
     download_task_sync_cron: str = "*/5 * * * *"
     download_task_auto_import_cron: str = "*/10 * * * *"
     download_small_file_cleanup_cron: str = "*/5 * * * *"
+    # cloud115 离线任务对账：远端进度回写 + 完成触发导入 + 超时放弃。cron 最小粒度即 1 分钟；
+    # 没有活跃任务时对账是零请求空转，不会打扰 115。
+    cloud115_offline_sync_cron: str = "* * * * *"
     movie_collection_sync_cron: str = "0 1 * * *"
     movie_heat_cron: str = "15 0 * * *"
     movie_interaction_sync_cron: str = "0 5 * * *"
@@ -272,6 +275,9 @@ class Scheduler(BaseModel):
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
     activity_cleanup_cron: str = "30 5 * * *"
+    # cloud115 cookies 保活：acw_tc（阿里云 WAF token）30 分钟过期，每 20 分钟探活一次
+    # 并把 SDK merge 到的最新快照回写库配置；长效凭据失效时发通知引导重新扫码。
+    cloud115_keepalive_cron: str = "*/20 * * * *"
     # GFriends Filetree 缓存刷新：默认每周一 04:00，对齐 disk cache 默认 7 天 TTL。
     gfriends_filetree_refresh_cron: str = "0 4 * * 1"
     # 活动中心三张表的保留期：事件流只保留最近 N 天，每个 task_key 只保留最近 N 条运行记录，
@@ -309,6 +315,13 @@ class Downloads(BaseModel):
     small_file_cleanup_threshold_mb: int = 256
     # SSE 下载进度轮询 qBittorrent Sync API 的间隔；低于 0.2 秒会无谓放大 qB Web API 压力。
     progress_stream_poll_interval_seconds: float = Field(default=1.0, ge=0.2, le=10.0)
+    # SSE 下载进度轮询 115 离线列表的间隔：公网 API 且有风控，禁止低于 2 秒。
+    cloud115_progress_poll_interval_seconds: float = Field(default=8.0, ge=2.0, le=60.0)
+    # 下载入口 kind 的全局偏好顺序：索引器绑定多个下载器时按此顺序挑选，列表外的 kind 排最后。
+    # 只影响挑选顺序，不做白名单；选中的下载器执行失败时直接报错，不自动换下一个。
+    preferred_client_kinds: list[str] = Field(default_factory=lambda: ["qbittorrent", "cloud115"])
+    # cloud115 离线任务超过该时长仍未完成即本地放弃：不清理 115 侧任务、停止轮询并通知用户。
+    cloud115_offline_abandon_hours: int = Field(default=24, ge=1)
 
 
 class MediaImport(BaseModel):

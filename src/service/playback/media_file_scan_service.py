@@ -8,8 +8,6 @@ from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.model import Media
 from src.service.catalog.movie_subtitle_service import MovieSubtitleService
-from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
-from src.service.transfers.tag_rules import build_scanned_media_special_tags
 
 
 @dataclass(frozen=True)
@@ -28,9 +26,6 @@ class MediaFileCheckResult:
 class MediaFileScanService:
     DEFAULT_BATCH_SIZE = 100
 
-    def __init__(self, metadata_probe_service: MediaMetadataProbeService | None = None):
-        self.metadata_probe_service = metadata_probe_service or MediaMetadataProbeService()
-
     @staticmethod
     def _build_candidate_query(last_media_id: int = 0):
         return (
@@ -45,7 +40,69 @@ class MediaFileScanService:
             return
         progress_callback(payload)
 
+    @staticmethod
+    def _is_cloud115_media(media: Media) -> bool:
+        from src.model.enums import MediaLibraryBackend
+
+        library = media.library
+        return library is not None and library.backend == MediaLibraryBackend.CLOUD115.value
+
+    def _scan_cloud115_media(self, media: Media) -> dict[str, bool | datetime]:
+        """cloud115 媒体对账：pickcode_info 探活判存在性。
+
+        - NotFound → 远端已删/封禁 → 标 invalid；重新出现 → 复活。
+        - AuthError / 限流 / 网络错 → **跳过本条不动 valid**：cookies 失效不代表文件没了，
+          误标 invalid 会让整库在凭据过期期间集体失效。
+        """
+        import asyncio
+
+        from src.lib.cloud115 import Cloud115Error, Cloud115NotFoundError
+        from src.service.playback.cloud115_backend_service import cloud115_client_for
+
+        checked_at = utc_now_for_db()
+        result = {
+            "updated": False,
+            "invalidated": False,
+            "revived": False,
+            "file_exists": bool(media.valid),
+            "checked_at": checked_at,
+        }
+        pickcode = (media.backend_locator or {}).get("pickcode")
+        if not pickcode:
+            logger.warning("Cloud115 media missing pickcode media_id={}", media.id)
+            return result
+
+        async def _probe() -> bool:
+            async with cloud115_client_for(media.library) as client:
+                await client.pickcode_info(pickcode)
+                return True
+
+        try:
+            file_exists = asyncio.run(_probe())
+        except Cloud115NotFoundError:
+            file_exists = False
+        except Cloud115Error as exc:
+            # 上游不可用：本轮跳过，保持现状（不误标 invalid）。
+            logger.warning(
+                "Cloud115 media probe skipped media_id={} detail={}", media.id, exc
+            )
+            return result
+
+        result["file_exists"] = file_exists
+        if media.valid != file_exists:
+            media.valid = file_exists
+            media.updated_at = checked_at
+            media.save(only=[Media.valid, Media.updated_at])
+            result["updated"] = True
+            result["invalidated"] = not file_exists
+            result["revived"] = file_exists
+        if media.movie_number:
+            MovieSubtitleService.sync_movie_subtitles(media.movie)
+        return result
+
     def _scan_single_media(self, media: Media) -> dict[str, bool | datetime]:
+        if self._is_cloud115_media(media):
+            return self._scan_cloud115_media(media)
         file_path = Path(media.path).expanduser().resolve()
         file_exists = file_path.exists() and file_path.is_file()
         checked_at = utc_now_for_db()
@@ -63,29 +120,6 @@ class MediaFileScanService:
             updates[Media.valid] = file_exists
             result["invalidated"] = not file_exists
             result["revived"] = file_exists
-
-        if file_exists and media.video_info is None:
-            # 只在缺失 video_info 时重新探测，避免每轮全量解析媒体文件。
-            metadata = self.metadata_probe_service.probe_file(file_path)
-            file_size_bytes = file_path.stat().st_size
-            if media.file_size_bytes != file_size_bytes:
-                updates[Media.file_size_bytes] = file_size_bytes
-            if metadata.resolution and media.resolution != metadata.resolution:
-                updates[Media.resolution] = metadata.resolution
-            if metadata.duration_seconds > 0 and media.duration_seconds != metadata.duration_seconds:
-                updates[Media.duration_seconds] = metadata.duration_seconds
-            if metadata.video_info is not None and media.video_info != metadata.video_info:
-                updates[Media.video_info] = metadata.video_info
-
-        if file_exists:
-            effective_video_info = updates.get(Media.video_info, media.video_info)
-            special_tags = build_scanned_media_special_tags(
-                media.special_tags,
-                video_info=effective_video_info,
-                has_subtitle=self._has_sidecar_subtitle(file_path),
-            )
-            if media.special_tags != special_tags:
-                updates[Media.special_tags] = special_tags
 
         if not updates:
             # 字幕同步是 JAV 影片维度能力，非 JAV 媒体跳过。
@@ -118,7 +152,7 @@ class MediaFileScanService:
         # 单条复查直接返回状态变化，前端无需再推断 valid 是否被本次修正。
         return MediaFileCheckResult(
             id=media.id,
-            path=media.path,
+            path=media.display_path,
             file_exists=bool(result["file_exists"]),
             valid_before=valid_before,
             valid_after=bool(media.valid),
@@ -127,21 +161,6 @@ class MediaFileScanService:
             revived=bool(result["revived"]),
             checked_at=result["checked_at"],
         )
-
-    @staticmethod
-    def _has_sidecar_subtitle(media_path: Path) -> bool:
-        media_directory = media_path.parent
-        if not media_directory.exists() or not media_directory.is_dir():
-            return False
-
-        media_stem = media_path.stem.lower()
-        for subtitle_path in media_directory.iterdir():
-            if not subtitle_path.is_file() or subtitle_path.suffix.lower() != ".srt":
-                continue
-            subtitle_stem = subtitle_path.stem.lower()
-            if subtitle_stem == media_stem or subtitle_stem.startswith(f"{media_stem}."):
-                return True
-        return False
 
     def scan_media_files(
         self,

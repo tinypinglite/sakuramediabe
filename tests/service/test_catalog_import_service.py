@@ -40,7 +40,6 @@ def import_tables(test_db):
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
-    test_db.drop_tables(list(reversed(models)))
 
 
 def _build_detail(
@@ -745,7 +744,9 @@ def test_upsert_movie_from_javdb_detail_downloads_all_images_concurrently(
         assert len(started_urls) == expected_parallel_downloads
 
     release.set()
-    worker.join(timeout=2)
+    # 图片下载并发性已由 ready 断言覆盖；后续还会串行写电影、演员、标签、图片与任务状态，
+    # 慢速 PostgreSQL/并行 CI 下 2 秒不足以完成，不能把落库耗时误判为并发失败。
+    worker.join(timeout=15)
 
     assert not worker.is_alive()
     assert Movie.select().count() == 1

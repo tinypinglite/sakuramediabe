@@ -273,17 +273,37 @@ class MediaMetadataProbeService:
         path = Path(file_path).expanduser().resolve()
         if not path.exists() or not path.is_file():
             return MediaMetadataProbeResult()
+        try:
+            file_size_bytes = path.stat().st_size
+        except OSError:
+            return MediaMetadataProbeResult()
+
+        return cls.probe_source(
+            str(path),
+            file_size_bytes=file_size_bytes,
+            source_label=str(path),
+        )
+
+    @classmethod
+    def probe_source(
+        cls,
+        source: Any,
+        *,
+        file_size_bytes: int,
+        source_label: str = "<media-source>",
+    ) -> MediaMetadataProbeResult:
+        """探测路径或 seekable file-like，供本地文件与远端 Range reader 共用。"""
 
         if av is None:
             logger.warning(
-                "Media metadata probe skipped because pyav is unavailable path={}",
-                str(path),
+                "Media metadata probe skipped because pyav is unavailable source={}",
+                source_label,
             )
             return MediaMetadataProbeResult()
 
         container = None
         try:
-            container = av.open(str(path))
+            container = av.open(source)
             if not container.streams.video:
                 return MediaMetadataProbeResult()
 
@@ -295,7 +315,6 @@ class MediaMetadataProbeService:
                 getattr(container, "metadata", None),
                 getattr(stream, "metadata", None),
             )
-            file_size_bytes = path.stat().st_size
             video_info = {
                 "container": cls._build_container_info(
                     container=container,
@@ -315,7 +334,7 @@ class MediaMetadataProbeService:
                 creation_time=creation_time,
             )
         except Exception as exc:
-            logger.warning("Media metadata probe failed path={} detail={}", str(path), exc)
+            logger.warning("Media metadata probe failed source={} detail={}", source_label, exc)
             return MediaMetadataProbeResult()
         finally:
             if container is not None:

@@ -71,6 +71,22 @@ def test_activity_service_does_not_notify_when_success_only_has_skipped(test_db)
     assert SystemNotification.select().count() == 0
 
 
+def test_activity_service_can_delegate_terminal_notification_to_business_service(test_db):
+    models = [BackgroundTaskRun, SystemNotification, SystemEvent]
+    test_db.bind(models, bind_refs=False, bind_backrefs=False)
+    test_db.create_tables(models)
+
+    ActivityService.run_task(
+        task_key="media_rapid_upload",
+        trigger_type="manual",
+        notify_result=False,
+        func=lambda _reporter: {"failed_count": 1},
+    )
+
+    assert BackgroundTaskRun.get().state == "completed"
+    assert SystemNotification.select().count() == 0
+
+
 def test_activity_service_resolves_movie_interaction_sync_task_name(test_db):
     models = [BackgroundTaskRun, SystemNotification, SystemEvent]
     test_db.bind(models, bind_refs=False, bind_backrefs=False)

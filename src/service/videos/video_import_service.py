@@ -39,6 +39,7 @@ from src.model import (
     VideoItem,
     get_database,
 )
+from src.model.enums import MediaLibraryBackend
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
@@ -107,6 +108,13 @@ class VideoImportService:
         library = MediaLibrary.get_or_none(MediaLibrary.id == library_id)
         if library is None:
             raise ApiError(404, "media_library_not_found", "Media library not found", {"library_id": library_id})
+        if library.backend != MediaLibraryBackend.LOCAL.value:
+            raise ApiError(
+                422,
+                "media_library_backend_mismatch",
+                "Video import requires a local media library",
+                {"library_id": library_id, "actual_backend": library.backend},
+            )
         return library
 
     @staticmethod
@@ -174,7 +182,11 @@ class VideoImportService:
         video = VideoItem.create(title=file_path.stem, release_date=probe.creation_time)
         target_path: Path | None = None
         try:
-            entity_directory = Path(library.root_path).expanduser() / VIDEOS_LIBRARY_SUBDIR / str(video.id)
+            entity_directory = (
+                Path(library.backend_config["root_path"]).expanduser()
+                / VIDEOS_LIBRARY_SUBDIR
+                / str(video.id)
+            )
             target_directory = create_version_directory(entity_directory, now_ms=self.now_ms())
             target_path = target_directory / file_path.name
             storage_mode = transfer_file(file_path, target_path, transfer_mode=transfer_mode)

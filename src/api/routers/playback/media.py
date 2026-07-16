@@ -1,29 +1,144 @@
 import mimetypes
+from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
-from src.common import resolve_media_file_path, verify_media_signature
+from src.common import verify_media_signature
 from src.common.range_streaming import range_requests_response
+from src.model import Media
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
     InvalidMediaResource,
+    MediaListItemResource,
     MediaPointCreateRequest,
+    MediaPointKind,
     MediaPointResource,
     MediaProgressResource,
     MediaProgressUpdateRequest,
     MediaThumbnailResource,
     MediaValidityCheckResponse,
 )
+from src.schema.transfers.rapid_upload import (
+    MediaRapidUploadBatchListItemResource,
+    MediaRapidUploadBatchResource,
+    MediaRapidUploadCreateRequest,
+    MediaRapidUploadTriggerResponse,
+)
 from src.service.playback import MediaService
+from src.service.transfers import MediaRapidUploadService
 
 router = APIRouter(
     prefix="/media",
     tags=["media"],
     dependencies=[Depends(db_deps)],
 )
+
+
+def _parse_csv_positive_ints(raw: str | None, field_name: str) -> list[int] | None:
+    if raw is None:
+        return None
+
+    # 数组筛选参数必须显式传入正整数，避免把空串或脏值静默吞掉。
+    parts = [part.strip() for part in raw.split(",")]
+    if not parts or any(not part for part in parts):
+        raise ApiError(
+            422,
+            "invalid_media_filter",
+            "Invalid filter value",
+            {field_name: raw},
+        )
+
+    try:
+        values = [int(part) for part in parts]
+    except ValueError as exc:
+        raise ApiError(
+            422,
+            "invalid_media_filter",
+            "Invalid filter value",
+            {field_name: raw},
+        ) from exc
+
+    if any(value <= 0 for value in values):
+        raise ApiError(
+            422,
+            "invalid_media_filter",
+            "Invalid filter value",
+            {field_name: raw},
+        )
+    return values
+
+
+@router.get("", response_model=PageResponse[MediaListItemResource])
+def list_media(
+    kind: MediaPointKind = Query(default=MediaPointKind.ALL),
+    library_id: int | None = Query(default=None),
+    actor_ids: str | None = Query(default=None),
+    sort: str | None = Query(default=None),
+    page: int = 1,
+    page_size: int = 20,
+    current_user=Depends(get_current_user),
+):
+    return MediaService.list_media(
+        kind=kind,
+        library_id=library_id,
+        actor_ids=_parse_csv_positive_ints(actor_ids, "actor_ids"),
+        sort=sort,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.post(
+    "/rapid-uploads",
+    response_model=MediaRapidUploadTriggerResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_media_rapid_upload(
+    payload: MediaRapidUploadCreateRequest,
+    current_user=Depends(get_current_user),
+):
+    return MediaRapidUploadService.trigger_batch(
+        media_ids=payload.media_ids,
+        target_library_id=payload.target_library_id,
+    )
+
+
+@router.get(
+    "/rapid-uploads",
+    response_model=PageResponse[MediaRapidUploadBatchListItemResource],
+)
+def list_media_rapid_uploads(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user=Depends(get_current_user),
+):
+    return MediaRapidUploadService.list_batches(page=page, page_size=page_size)
+
+
+@router.get(
+    "/rapid-uploads/{batch_id}",
+    response_model=MediaRapidUploadBatchResource,
+)
+def get_media_rapid_upload(
+    batch_id: int,
+    current_user=Depends(get_current_user),
+):
+    return MediaRapidUploadService.get_batch(batch_id)
+
+
+@router.post(
+    "/rapid-uploads/{batch_id}/retry",
+    response_model=MediaRapidUploadTriggerResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_media_rapid_upload(
+    batch_id: int,
+    current_user=Depends(get_current_user),
+):
+    return MediaRapidUploadService.retry_batch(batch_id)
 
 
 @router.get("/invalid", response_model=PageResponse[InvalidMediaResource])
@@ -76,7 +191,7 @@ def delete_media_point(
 
 
 @router.get("/{media_id}/stream")
-def stream_media_file(
+async def stream_media_file(
     request: Request,
     media_id: int,
     expires: int | None = None,
@@ -86,7 +201,22 @@ def stream_media_file(
         raise ApiError(403, "file_signature_invalid", "文件签名无效")
 
     verify_media_signature(media_id, expires, signature)
-    absolute_path = resolve_media_file_path(media_id)
+    media = Media.get_or_none(Media.id == media_id)
+    if media is None:
+        raise ApiError(404, "media_not_found", "媒体不存在")
+
+    # cloud115 库：现拿绑定请求方 UA 的直链后 302（签名 URL 保护 /stream，302 之后是 115 CDN）。
+    # signature 参与直链缓存键：换一次签名 URL（前端换会话/超 12h 续签）就重取。
+    if MediaService.is_cloud115_media(media):
+        user_agent = request.headers.get("user-agent") or "SakuraMedia-Player/1.0"
+        direct_url = await MediaService.resolve_cloud115_stream_url(
+            media, user_agent, signature
+        )
+        return RedirectResponse(direct_url, status_code=status.HTTP_302_FOUND)
+
+    if not media.path:
+        raise ApiError(404, "file_not_found", "文件不存在")
+    absolute_path = Path(media.path).expanduser().resolve()
     if not absolute_path.exists() or not absolute_path.is_file():
         raise ApiError(404, "file_not_found", "文件不存在")
 

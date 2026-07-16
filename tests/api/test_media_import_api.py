@@ -28,7 +28,7 @@ def stub_runner_submit(monkeypatch):
 
 
 def _create_library(tmp_path) -> MediaLibrary:
-    return MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    return MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
 
 def test_media_import_endpoints_require_authentication(client):
@@ -45,6 +45,30 @@ def test_media_import_endpoints_require_authentication(client):
     for response in responses:
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_local_media_import_rejects_cloud115_library(
+    client, account_user, tmp_path, stub_runner_submit
+):
+    token = _login(client, username=account_user.username)
+    library = MediaLibrary.create(
+        name="Cloud",
+        backend="cloud115",
+        backend_account_key="cloud115:local-import-mismatch",
+        backend_config={"cookies": "UID=x_A1_y", "root_cid": "root", "app": "web"},
+    )
+    source = tmp_path / "incoming"
+    source.mkdir()
+
+    response = client.post(
+        "/import-jobs",
+        json={"library_id": library.id, "source_path": str(source)},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "media_library_backend_mismatch"
+    assert ImportJob.select().count() == 0
 
 
 def test_browse_filesystem_returns_dirs_and_videos(client, account_user, tmp_path):

@@ -43,8 +43,11 @@ SECTION_EFFECT: dict[str, ConfigEffectLevel] = {
     "qdrant": ConfigEffectLevel.HOT,                     # 现读 + refresh 清 lru 单例
 }
 
-# 字段级覆盖：偏离所在节默认的少数字段（当前无覆盖，保留扩展点）。
-FIELD_EFFECT_OVERRIDE: dict[str, ConfigEffectLevel] = {}
+# 字段级覆盖：下载配置分别由 API SSE 与 APS 消费，按真实读取时机细分。
+FIELD_EFFECT_OVERRIDE: dict[str, ConfigEffectLevel] = {
+    "downloads.cloud115_progress_poll_interval_seconds": ConfigEffectLevel.HOT,
+    "downloads.progress_stream_poll_interval_seconds": ConfigEffectLevel.RESTART_API,
+}
 
 
 def _is_config_section(annotation: Any) -> bool:

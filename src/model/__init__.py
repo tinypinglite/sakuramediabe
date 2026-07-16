@@ -35,7 +35,15 @@ from .system import (
     User,
     UserRefreshToken,
 )
-from .transfers import DownloadClient, DownloadTask, ImportJob, Indexer
+from .transfers import (
+    DownloadClient,
+    DownloadTask,
+    ImportJob,
+    Indexer,
+    IndexerDownloadClient,
+    MediaRapidUploadBatch,
+    MediaRapidUploadItem,
+)
 from .videos import (
     VideoCollection,
     VideoCollectionItem,
@@ -57,12 +65,15 @@ __all__ = [
     "ImageSearchSession",
     "RankingItem",
     "Indexer",
+    "IndexerDownloadClient",
     "ImportJob",
     "Media",
     "MediaClip",
     "MediaLibrary",
     "MediaPoint",
     "MediaProgress",
+    "MediaRapidUploadBatch",
+    "MediaRapidUploadItem",
     "MediaThumbnail",
     "MomentRecommendation",
     "Movie",

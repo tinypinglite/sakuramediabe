@@ -16,11 +16,10 @@ def cleanup_tables(test_db):
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
-    test_db.drop_tables(list(reversed(models)))
 
 
 def _create_client(*, name: str, local_root_path: str) -> DownloadClient:
-    library = MediaLibrary.create(name=f"lib-{name}", root_path=f"/library/{name}")
+    library = MediaLibrary.create(name=f"lib-{name}", backend="local", backend_config={"root_path": f"/library/{name}"})
     return DownloadClient.create(
         name=name,
         base_url="http://localhost:8080",
@@ -209,3 +208,27 @@ def test_failed_client_is_counted_and_does_not_block_others(
     assert stats["total_clients"] == 2
     assert calls["set"] == [("hash-b", [0])]
     assert stats["deselected_files"] == 1
+
+
+def test_cleanup_ignores_cloud115_clients(cleanup_tables, tmp_path, _threshold_256mb):
+    library = MediaLibrary.create(
+        name="cloud-lib", backend="cloud115", backend_config={"cookies": "x"}
+    )
+    cloud_client = DownloadClient.create(
+        name="cloud115", kind="cloud115", media_library=library
+    )
+    calls = {"from_client": []}
+
+    class _FailIfConstructed:
+        @classmethod
+        def from_download_client(cls, client):
+            calls["from_client"].append(client.id)
+            raise AssertionError("cloud115 client must not be dispatched to qB cleanup")
+
+    stats = DownloadSmallFileCleanupService(
+        qbittorrent_client_cls=_FailIfConstructed
+    ).cleanup_small_files()
+
+    assert calls["from_client"] == []
+    assert stats["total_clients"] == 0
+    assert DownloadClient.get_by_id(cloud_client.id).kind == "cloud115"

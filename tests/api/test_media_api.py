@@ -1,15 +1,18 @@
 from datetime import datetime
 
 from src.model import (
+    Actor,
     ClipCollection,
     ClipCollectionItem,
     Image,
     Media,
     MediaClip,
+    MediaLibrary,
     MediaPoint,
     MediaProgress,
     MediaThumbnail,
     Movie,
+    MovieActor,
     PLAYLIST_KIND_RECENTLY_PLAYED,
     Playlist,
     PlaylistMovie,
@@ -58,6 +61,7 @@ def test_update_media_progress_requires_authentication(client):
     response = client.put("/media/1/progress", json={"position_seconds": 600})
     thumbnails_response = client.get("/media/1/thumbnails")
     validity_check_response = client.post("/media/1/validity-check")
+    media_list_response = client.get("/media")
     media_points_response = client.get("/media-points")
     media_point_list_response = client.get("/media/1/points")
     media_point_create_response = client.post("/media/1/points", json={"thumbnail_id": 1})
@@ -70,6 +74,8 @@ def test_update_media_progress_requires_authentication(client):
     assert thumbnails_response.json()["error"]["code"] == "unauthorized"
     assert validity_check_response.status_code == 401
     assert validity_check_response.json()["error"]["code"] == "unauthorized"
+    assert media_list_response.status_code == 401
+    assert media_list_response.json()["error"]["code"] == "unauthorized"
     assert media_points_response.status_code == 401
     assert media_points_response.json()["error"]["code"] == "unauthorized"
     assert media_point_list_response.status_code == 401
@@ -80,6 +86,173 @@ def test_update_media_progress_requires_authentication(client):
     assert media_point_delete_response.json()["error"]["code"] == "unauthorized"
     assert delete_response.status_code == 401
     assert delete_response.json()["error"]["code"] == "unauthorized"
+
+
+def test_list_media_returns_mixed_jav_and_video_kind(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-200", "MovieA200", title="Movie 200")
+    jav_media = Media.create(
+        movie=movie, path="/library/main/abc-200.mp4", valid=True, file_size_bytes=100,
+    )
+    video_item = VideoItem.create(title="家庭录像")
+    video_media = Media.create(
+        video_item=video_item, path="/library/main/home.mp4", valid=True, file_size_bytes=200,
+    )
+
+    response = client.get("/media", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    items_by_id = {item["id"]: item for item in payload["items"]}
+    assert items_by_id[jav_media.id]["kind"] == "jav"
+    assert items_by_id[jav_media.id]["movie_number"] == "ABC-200"
+    assert items_by_id[jav_media.id]["video_item_id"] is None
+    assert items_by_id[jav_media.id]["title"] == "Movie 200"
+    assert items_by_id[jav_media.id]["heat"] == movie.heat
+    assert items_by_id[video_media.id]["kind"] == "video"
+    assert items_by_id[video_media.id]["movie_number"] is None
+    assert items_by_id[video_media.id]["video_item_id"] == video_item.id
+    assert items_by_id[video_media.id]["title"] == "家庭录像"
+    assert items_by_id[video_media.id]["heat"] is None
+
+
+def test_list_media_filters_by_kind(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-201", "MovieA201", title="Movie 201")
+    jav_media = Media.create(movie=movie, path="/library/main/abc-201.mp4", valid=True)
+    video_item = VideoItem.create(title="家庭录像2")
+    video_media = Media.create(video_item=video_item, path="/library/main/home2.mp4", valid=True)
+
+    headers = {"Authorization": f"Bearer {token}"}
+    jav_response = client.get("/media?kind=jav", headers=headers)
+    video_response = client.get("/media?kind=video", headers=headers)
+    all_response = client.get("/media?kind=all", headers=headers)
+
+    assert [item["id"] for item in jav_response.json()["items"]] == [jav_media.id]
+    assert [item["id"] for item in video_response.json()["items"]] == [video_media.id]
+    assert {item["id"] for item in all_response.json()["items"]} == {jav_media.id, video_media.id}
+
+
+def test_list_media_filters_by_library_id(client, account_user):
+    token = _login(client, username=account_user.username)
+    library_a = MediaLibrary.create(name="Library A")
+    library_b = MediaLibrary.create(name="Library B")
+    movie_a = _create_movie("ABC-202", "MovieA202", title="Movie 202")
+    movie_b = _create_movie("ABC-203", "MovieA203", title="Movie 203")
+    media_a = Media.create(movie=movie_a, library=library_a, path="/library/a/abc-202.mp4", valid=True)
+    Media.create(movie=movie_b, library=library_b, path="/library/b/abc-203.mp4", valid=True)
+
+    response = client.get(
+        f"/media?library_id={library_a.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["id"] == media_a.id
+    assert payload["items"][0]["library_id"] == library_a.id
+    assert payload["items"][0]["library_name"] == "Library A"
+
+
+def test_list_media_filters_by_actor_ids_with_or_semantics_and_excludes_video(
+    client, account_user,
+):
+    token = _login(client, username=account_user.username)
+    actor_a = Actor.create(name="三上悠亚", javdb_id="ActorMediaA1", alias_name="")
+    actor_b = Actor.create(name="河北彩花", javdb_id="ActorMediaA2", alias_name="")
+    unrelated_actor = Actor.create(name="鬼头桃菜", javdb_id="ActorMediaA3", alias_name="")
+
+    movie_with_a = _create_movie("ABC-204", "MovieA204", title="Movie 204")
+    movie_with_b = _create_movie("ABC-205", "MovieA205", title="Movie 205")
+    movie_with_unrelated = _create_movie("ABC-206", "MovieA206", title="Movie 206")
+    MovieActor.create(movie=movie_with_a, actor=actor_a)
+    MovieActor.create(movie=movie_with_b, actor=actor_b)
+    MovieActor.create(movie=movie_with_unrelated, actor=unrelated_actor)
+
+    media_with_a = Media.create(movie=movie_with_a, path="/library/main/abc-204.mp4", valid=True)
+    media_with_b = Media.create(movie=movie_with_b, path="/library/main/abc-205.mp4", valid=True)
+    Media.create(movie=movie_with_unrelated, path="/library/main/abc-206.mp4", valid=True)
+    # 非 JAV 视频没有演员关联，即便 kind=all 也不该命中 actor_ids 过滤。
+    video_item = VideoItem.create(title="家庭录像3")
+    Media.create(video_item=video_item, path="/library/main/home3.mp4", valid=True)
+
+    response = client.get(
+        f"/media?actor_ids={actor_a.id},{actor_b.id}&kind=all",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 2
+    assert {item["id"] for item in payload["items"]} == {media_with_a.id, media_with_b.id}
+
+
+def test_list_media_rejects_invalid_actor_ids(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    response = client.get(
+        "/media?actor_ids=1,abc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_media_filter"
+
+
+def test_list_media_sorts_by_file_size_bytes(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-207", "MovieA207", title="Movie 207")
+    small_media = Media.create(
+        movie=movie, path="/library/main/small.mp4", valid=True, file_size_bytes=100,
+    )
+    video_item = VideoItem.create(title="大文件视频")
+    large_media = Media.create(
+        video_item=video_item, path="/library/main/large.mp4", valid=True, file_size_bytes=999,
+    )
+
+    headers = {"Authorization": f"Bearer {token}"}
+    desc_response = client.get("/media?sort=file_size_bytes:desc", headers=headers)
+    asc_response = client.get("/media?sort=file_size_bytes:asc", headers=headers)
+
+    assert [item["id"] for item in desc_response.json()["items"]] == [large_media.id, small_media.id]
+    assert [item["id"] for item in asc_response.json()["items"]] == [small_media.id, large_media.id]
+
+
+def test_list_media_sorts_by_heat_and_puts_video_media_last(client, account_user):
+    token = _login(client, username=account_user.username)
+    low_heat_movie = _create_movie("ABC-208", "MovieA208", title="Movie 208", heat=10)
+    high_heat_movie = _create_movie("ABC-209", "MovieA209", title="Movie 209", heat=90)
+    low_heat_media = Media.create(movie=low_heat_movie, path="/library/main/abc-208.mp4", valid=True)
+    high_heat_media = Media.create(movie=high_heat_movie, path="/library/main/abc-209.mp4", valid=True)
+    video_item = VideoItem.create(title="无热度视频")
+    video_media = Media.create(video_item=video_item, path="/library/main/no-heat.mp4", valid=True)
+
+    response = client.get(
+        "/media?sort=heat:desc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    # heat 为 NULL 的非 JAV 视频统一排在末尾，不受排序方向影响。
+    assert [item["id"] for item in response.json()["items"]] == [
+        high_heat_media.id,
+        low_heat_media.id,
+        video_media.id,
+    ]
+
+
+def test_list_media_rejects_invalid_sort(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    response = client.get(
+        "/media?sort=id:desc",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_media_filter"
 
 
 def test_check_media_validity_invalidates_missing_file(client, account_user, tmp_path):
@@ -194,6 +367,38 @@ def test_list_invalid_media_returns_null_cover_images_when_missing(client, accou
     item = response.json()["items"][0]
     assert item["cover_image"] is None
     assert item["thin_cover_image"] is None
+
+
+def test_list_invalid_cloud115_media_uses_locator_display_path(client, account_user):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("ABC-115", "MovieCloud115", title="Cloud Movie")
+    library = MediaLibrary.create(
+        name="Cloud",
+        backend="cloud115",
+        backend_account_key="cloud115:invalid-list",
+        backend_config={"cookies": "UID=invalid-list_A1_x", "root_cid": "root", "app": "web"},
+    )
+    media = Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={
+            "fid": "fid-115",
+            "pickcode": "pc-115",
+            "name": "ABC-115.mp4",
+            "source_path": "incoming/ABC-115.mp4",
+        },
+        content_fingerprint="sha1:CLOUDINVALID",
+        valid=False,
+    )
+
+    response = client.get(
+        "/media/invalid",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    item = next(item for item in response.json()["items"] if item["id"] == media.id)
+    assert item["path"] == "cloud115:ABC-115.mp4"
 
 
 def test_check_media_validity_returns_not_found_for_missing_media(client, account_user):
@@ -989,3 +1194,246 @@ def test_delete_media_returns_not_found_for_missing_media(client, account_user):
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "media_not_found"
+
+
+def test_stream_cloud115_media_redirects_to_direct_url(
+    client, build_signed_media_url, monkeypatch
+):
+    """cloud115 媒体：/stream 现拿绑定请求 UA 的直链后 302，不做本地 Range。"""
+    from src.lib.cloud115.types import DirectUrl
+    from src.service.playback import cloud115_backend_service as backend_module
+
+    library = MediaLibrary.create(
+        name="cloud",
+        backend="cloud115",
+        backend_config={
+            "cookies": "UID=12345678_A1_1700000000; CID=abc",
+            "root_cid": "lib-root",
+            "app": "alipaymini",
+        },
+    )
+    movie = _create_movie("ABC-115", "MovieC115", title="Cloud Movie")
+    media = Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={"fid": "f-1", "pickcode": "pc-115", "name": "ABC-115.mp4"},
+        content_fingerprint="sha1:AAA",
+        valid=True,
+    )
+
+    captured = {}
+
+    class _FakeStreamClient:
+        def __init__(self, cookies: str):
+            self._cookies = cookies
+
+        async def close(self):
+            pass
+
+        def snapshot_cookies(self):
+            return self._cookies
+
+        async def get_download_url(self, pickcode: str, user_agent: str):
+            captured["pickcode"] = pickcode
+            captured["user_agent"] = user_agent
+            return DirectUrl(
+                file_id="f-1", file_name="ABC-115.mp4", file_size=1, sha1="AAA",
+                pickcode=pickcode, url="https://cdn.115.example/video.mp4?t=99",
+                user_agent=user_agent, expires_at=99,
+            )
+
+    monkeypatch.setattr(backend_module, "Cloud115Client", _FakeStreamClient)
+
+    response = client.get(
+        build_signed_media_url(media.id),
+        headers={"User-Agent": "SakuraMedia-TestPlayer/9.9"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://cdn.115.example/video.mp4?t=99"
+    assert captured["pickcode"] == "pc-115"
+    # 绑定的 UA 必须是请求方 UA（302 后播放器跟随请求 CDN 时 UA 天然一致）
+    assert captured["user_agent"] == "SakuraMedia-TestPlayer/9.9"
+
+
+def test_stream_cloud115_media_maps_not_found(client, build_signed_media_url, monkeypatch):
+    from src.lib.cloud115 import Cloud115NotFoundError
+    from src.service.playback import cloud115_backend_service as backend_module
+
+    library = MediaLibrary.create(
+        name="cloud-2",
+        backend="cloud115",
+        backend_config={
+            "cookies": "UID=12345678_A1_1700000000; CID=abc",
+            "root_cid": "lib-root",
+            "app": "alipaymini",
+        },
+    )
+    movie = _create_movie("ABC-116", "MovieC116", title="Gone Movie")
+    media = Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={"fid": "f-2", "pickcode": "pc-gone", "name": "ABC-116.mp4"},
+        valid=True,
+    )
+
+    class _GoneClient:
+        def __init__(self, cookies: str):
+            self._cookies = cookies
+
+        async def close(self):
+            pass
+
+        def snapshot_cookies(self):
+            return self._cookies
+
+        async def get_download_url(self, pickcode: str, user_agent: str):
+            raise Cloud115NotFoundError("banned or deleted")
+
+    monkeypatch.setattr(backend_module, "Cloud115Client", _GoneClient)
+
+    response = client.get(build_signed_media_url(media.id), follow_redirects=False)
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "cloud115_dir_not_found"
+
+
+def test_delete_cloud115_media_deletes_remote_file_and_records(
+    client, account_user, monkeypatch
+):
+    """删除 cloud115 Media：SDK 删云端文件（按 locator.fid）+ 删记录，对齐本地删除语义。"""
+    from contextlib import asynccontextmanager
+
+    from src.service.playback import cloud115_backend_service as backend_module
+
+    token = _login(client, username=account_user.username)
+    library = MediaLibrary.create(
+        name="cloud-del",
+        backend="cloud115",
+        backend_config={
+            "cookies": "UID=12345678_A1_1700000000; CID=abc",
+            "root_cid": "lib-root",
+            "app": "alipaymini",
+        },
+    )
+    movie = _create_movie("ABC-118", "MovieC118", title="Delete Me")
+    media = Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={"fid": "f-del", "pickcode": "pc-del", "name": "ABC-118.mp4"},
+        valid=True,
+    )
+    deleted_fids = []
+
+    class _DeleteClient:
+        async def delete_files(self, fids, *, pid=None):
+            deleted_fids.extend(fids)
+
+    @asynccontextmanager
+    async def fake_client_for(_library):
+        yield _DeleteClient()
+
+    monkeypatch.setattr(backend_module, "cloud115_client_for", fake_client_for)
+
+    response = client.delete(
+        f"/media/{media.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 204
+    assert deleted_fids == ["f-del"]
+    assert Media.get_or_none(Media.id == media.id) is None
+
+
+def test_delete_cloud115_media_tolerates_remote_already_gone(
+    client, account_user, monkeypatch
+):
+    from contextlib import asynccontextmanager
+
+    from src.lib.cloud115 import Cloud115NotFoundError
+    from src.service.playback import cloud115_backend_service as backend_module
+
+    token = _login(client, username=account_user.username)
+    library = MediaLibrary.create(
+        name="cloud-del-2",
+        backend="cloud115",
+        backend_config={
+            "cookies": "UID=12345678_A1_1700000000; CID=abc",
+            "root_cid": "lib-root",
+            "app": "alipaymini",
+        },
+    )
+    movie = _create_movie("ABC-119", "MovieC119", title="Already Gone")
+    media = Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={"fid": "f-gone", "pickcode": "pc-gone", "name": "ABC-119.mp4"},
+        valid=True,
+    )
+
+    class _GoneClient:
+        async def delete_files(self, fids, *, pid=None):
+            raise Cloud115NotFoundError("already deleted")
+
+    @asynccontextmanager
+    async def fake_client_for(_library):
+        yield _GoneClient()
+
+    monkeypatch.setattr(backend_module, "cloud115_client_for", fake_client_for)
+
+    response = client.delete(
+        f"/media/{media.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    # 云端已经没了：容忍并继续删记录
+    assert response.status_code == 204
+    assert Media.get_or_none(Media.id == media.id) is None
+
+
+def test_delete_cloud115_media_keeps_record_on_upstream_error(
+    client, account_user, monkeypatch
+):
+    """cookies 失效等上游错误：不静默吞——记录保留，避免云端孤儿文件。"""
+    from contextlib import asynccontextmanager
+
+    from src.lib.cloud115 import Cloud115AuthError
+    from src.service.playback import cloud115_backend_service as backend_module
+
+    token = _login(client, username=account_user.username)
+    library = MediaLibrary.create(
+        name="cloud-del-3",
+        backend="cloud115",
+        backend_config={
+            "cookies": "UID=12345678_A1_1700000000; CID=abc",
+            "root_cid": "lib-root",
+            "app": "alipaymini",
+        },
+    )
+    movie = _create_movie("ABC-120", "MovieC120", title="Locked")
+    media = Media.create(
+        movie=movie,
+        library=library,
+        backend_locator={"fid": "f-lock", "pickcode": "pc-lock", "name": "ABC-120.mp4"},
+        valid=True,
+    )
+
+    class _DeadClient:
+        async def delete_files(self, fids, *, pid=None):
+            raise Cloud115AuthError("cookies expired")
+
+    @asynccontextmanager
+    async def fake_client_for(_library):
+        yield _DeadClient()
+
+    monkeypatch.setattr(backend_module, "cloud115_client_for", fake_client_for)
+
+    response = client.delete(
+        f"/media/{media.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "cloud115_cookies_invalid"
+    assert Media.get_or_none(Media.id == media.id) is not None

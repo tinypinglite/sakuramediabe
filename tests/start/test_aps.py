@@ -203,10 +203,10 @@ def test_aps_generate_media_thumbnails_command_runs_job(monkeypatch):
         "generate-media-thumbnails",
         {
             "pending_media": 3, "successful_media": 2, "generated_thumbnails": 6,
-            "retryable_failed_media": 1, "terminal_failed_media": 0,
+            "deferred_media": 0, "retryable_failed_media": 1, "terminal_failed_media": 0,
         },
         "thumbnail generation finished: pending_media=3 successful_media=2 "
-        "generated_thumbnails=6 retryable_failed_media=1 terminal_failed_media=0",
+        "generated_thumbnails=6 deferred_media=0 retryable_failed_media=1 terminal_failed_media=0",
     )
 
 
@@ -233,6 +233,19 @@ def test_aps_cleanup_download_small_files_command_runs_job(monkeypatch):
         },
         "download small file cleanup finished: total_clients=2 scanned_torrents=5 "
         "deselected_files=4 deleted_files=3 failed_count=1",
+    )
+
+
+def test_aps_sync_cloud115_offline_tasks_command_runs_job(monkeypatch):
+    _test_cli_command(
+        monkeypatch,
+        "sync-cloud115-offline-tasks",
+        {
+            "total_clients": 1, "updated_count": 3, "import_triggered_count": 1,
+            "abandoned_count": 1, "failed_count": 0,
+        },
+        "cloud115 offline sync finished: total_clients=1 updated_count=3 "
+        "import_triggered_count=1 abandoned_count=1 failed_count=0",
     )
 
 
@@ -561,6 +574,35 @@ def test_aps_recovers_task_related_business_running_states(monkeypatch):
         "build",
         "scheduler.start",
     ]
+
+
+def test_media_directory_recovery_also_resets_cloud115_download_import(monkeypatch):
+    from src.start.recovery import recover_interrupted_tasks
+
+    monkeypatch.setattr(
+        "src.start.recovery.ActivityService.recover_interrupted_task_runs",
+        lambda **kwargs: [
+            type("TaskRun", (), {"task_key": "media_directory_import"})()
+        ]
+        if kwargs["trigger_type"] == "manual"
+        else [],
+    )
+    calls = []
+    monkeypatch.setattr(
+        "src.start.recovery.MediaImportJobService.recover_orphaned_jobs",
+        lambda: calls.append("media") or {"recovered_count": 1},
+    )
+    monkeypatch.setattr(
+        "src.start.recovery.Cloud115OfflineSyncService.recover_interrupted_imports",
+        lambda: calls.append("cloud115") or 1,
+    )
+
+    recovered = recover_interrupted_tasks(
+        trigger_types=("manual",), error_message="容器重启"
+    )
+
+    assert recovered == {"media_directory_import"}
+    assert calls == ["media", "cloud115"]
 
 
 # ---------------------------------------------------------------------------

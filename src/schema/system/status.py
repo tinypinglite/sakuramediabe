@@ -2,6 +2,7 @@ from datetime import datetime
 
 from pydantic import Field
 
+from src.lib.cloud115 import Cloud115CookieStatus
 from src.schema.common.base import SchemaModel
 
 
@@ -38,6 +39,25 @@ class StatusResource(SchemaModel):
     media_files: StatusMediaFileSummary
     media_libraries: StatusMediaLibrarySummary
     thumbnails: StatusThumbnailSummary
+
+
+class StatusCloud115LibraryCookieResource(SchemaModel):
+    library_id: int
+    name: str
+    cookie_status: Cloud115CookieStatus
+
+
+class StatusCloud115CookieSummary(SchemaModel):
+    total: int
+    alive: int
+    expired: int
+    unavailable: int
+
+
+class StatusCloud115CookiesResource(SchemaModel):
+    checked_at: datetime
+    summary: StatusCloud115CookieSummary
+    libraries: list[StatusCloud115LibraryCookieResource]
 
 
 class StatusJoyTagSummary(SchemaModel):

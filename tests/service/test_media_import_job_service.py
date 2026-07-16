@@ -38,7 +38,6 @@ def import_job_tables(test_db):
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
-    test_db.drop_tables(list(reversed(models)))
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +54,7 @@ def stub_runner_submit(monkeypatch):
 
 
 def _create_library(tmp_path) -> MediaLibrary:
-    return MediaLibrary.create(name="Main", root_path=str(tmp_path / "library"))
+    return MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": str(tmp_path / "library")})
 
 
 def _create_failed_job(library: MediaLibrary, source_dir, failed_files) -> ImportJob:

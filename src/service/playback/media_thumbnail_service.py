@@ -12,6 +12,13 @@ except ImportError:  # pragma: no cover - exercised by runtime environment, not 
     av = None
 
 from src.config.config import settings
+from src.lib.cloud115 import (
+    Cloud115AuthError,
+    Cloud115CipherError,
+    Cloud115MembershipRequiredError,
+    Cloud115RateLimitedError,
+    Cloud115RequestError,
+)
 from src.model import Image, Media, MediaThumbnail, ResourceTaskState, get_database
 from src.schema.catalog.actors import ImageResource
 from src.schema.playback.media import MediaThumbnailResource
@@ -36,12 +43,82 @@ class MediaThumbnailService:
     TASK_KEY = "media_thumbnail_generation"
     THUMBNAIL_MAX_RETRIES = 2
     INTERRUPTED_GENERATION_ERROR_MESSAGE = "媒体缩略图生成任务中断，等待重试"
+    # cloud115 抽帧 UA：拿直链与后续 Range 读必须同 UA（115 把 UA 绑进直链 f= 指纹）。
+    CLOUD115_THUMBNAIL_UA = "Mozilla/5.0 SakuraMedia-Thumbnail/1.0"
+    # 账号或上游级故障与具体媒体无关，延后该媒体且不消耗它的有限重试次数。
+    CLOUD115_SYSTEM_FAILURES = (
+        Cloud115AuthError,
+        Cloud115CipherError,
+        Cloud115MembershipRequiredError,
+        Cloud115RateLimitedError,
+        Cloud115RequestError,
+    )
+    # 抽帧全过程受控 Range 累计字节上限：单张缩略图仅需读若干个 GOP 关键帧片段，
+    # 单个视频抽 6-10 张封面通常远小于这个数量级；给到 512MB 是为了兜住 CDN 偶发
+    # 不遵守 Range 直接吐 200 全量 body 的情况——即使碰到，也不会把整部影片读进内存。
+    CLOUD115_THUMBNAIL_FETCH_BUDGET_BYTES = 512 * 1024 * 1024
 
     @staticmethod
     def _ensure_worker_database_ready() -> None:
         database = get_database()
         if database.is_closed():
             database.connect()
+
+    @staticmethod
+    def _is_cloud115_media(media: Media) -> bool:
+        # backend 判定的权威来源是所属库（Media 不冗余 backend 字段）。
+        from src.model.enums import MediaLibraryBackend
+
+        library = media.library
+        return library is not None and library.backend == MediaLibraryBackend.CLOUD115.value
+
+    @classmethod
+    def _open_cloud115_reader(cls, media: Media):
+        """现拿直链并构造受控 Range reader；返回 (reader, 日志标签)。
+
+        不把 ffmpeg/PyAV 默认 http 层裸连直链（open/seek 突发请求撞每链 ~4 并发上限，
+        会被误报 InvalidData），受控顺序读是纪要实测过的方案：190 帧 24 秒。
+        """
+        import asyncio
+
+        from src.lib.cloud115 import Cloud115RangeReader
+        from src.service.playback.cloud115_backend_service import cloud115_client_for
+
+        locator = media.backend_locator or {}
+        pickcode = locator.get("pickcode")
+        if not pickcode:
+            raise RuntimeError("cloud115_locator_missing")
+
+        async def _resolve():
+            async with cloud115_client_for(media.library) as client:
+                return await client.get_download_url(pickcode, cls.CLOUD115_THUMBNAIL_UA)
+
+        direct = asyncio.run(_resolve())
+        reader = Cloud115RangeReader(
+            direct.url,
+            user_agent=cls.CLOUD115_THUMBNAIL_UA,
+            file_size=direct.file_size,
+            max_fetched_bytes=cls.CLOUD115_THUMBNAIL_FETCH_BUDGET_BYTES,
+        )
+        return reader, f"cloud115:{pickcode}"
+
+    @staticmethod
+    def _backfill_cloud115_resolution(media: Media, webp_files: list[Path]) -> None:
+        """cloud115 导入时拿不到分辨率（无本地 probe），用抽帧产物（无缩放全分辨率帧）回填。"""
+        if media.resolution or not webp_files:
+            return
+        try:
+            from PIL import Image as PILImage
+
+            with PILImage.open(webp_files[0]) as image:
+                width, height = image.size
+        except Exception as exc:
+            logger.warning(
+                "Backfill cloud115 resolution failed media_id={} detail={}", media.id, exc
+            )
+            return
+        media.resolution = f"{width}x{height}"
+        media.save()
 
     @staticmethod
     def _pending_media_ids() -> list[int]:
@@ -198,19 +275,26 @@ class MediaThumbnailService:
     @classmethod
     def _generate_webp_with_pyav(
         cls,
-        video_path: Path,
+        video_source,
         webp_dir: Path,
         *,
         interval_seconds: int = 10,
+        source_label: str | None = None,
     ) -> Exception | None:
+        """从 video_source 每 interval_seconds 抽一帧存 webp_dir。
+
+        video_source: 本地路径字符串，或受控 file-like（cloud115 直链的 Cloud115RangeReader）。
+        source_label 仅用于日志（file-like 没有可读路径）。
+        """
         if av is None:
             return RuntimeError("pyav_not_installed")
 
+        video_path = source_label or str(video_source)
         cls._lower_process_priority()
         container = None
         first_error: Exception | None = None
         try:
-            container = av.open(str(video_path))
+            container = av.open(video_source)
             if not container.streams.video:
                 return RuntimeError("video_stream_missing")
 
@@ -351,30 +435,61 @@ class MediaThumbnailService:
                 media.id,
             )
             return {}
-        ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
         if not media.content_fingerprint:
+            ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
             error_key = cls._mark_failure(media, "content_fingerprint_missing", terminal=True)
             cls._log_aborted(media, "content_fingerprint_missing", error_key)
             return {error_key: 1}
 
-        video_path = Path(media.path).expanduser().resolve()
-        if not video_path.exists() or not video_path.is_file():
-            error_key = cls._mark_failure(media, "video_file_missing")
-            cls._log_aborted(media, "video_file_missing", error_key)
-            return {error_key: 1}
+        # cloud115 媒体没有本地 path：走直链 + 受控 Range reader 抽帧（每 10s 一帧，实测方案）。
+        is_cloud115 = cls._is_cloud115_media(media)
+        reader = None
+        if is_cloud115:
+            try:
+                reader, source_label = cls._open_cloud115_reader(media)
+            except cls.CLOUD115_SYSTEM_FAILURES as exc:
+                # 直链解析失败前不进入 running，保留原任务状态和 attempt_count 供后续轮次重试。
+                logger.warning(
+                    "Deferred cloud115 media thumbnail generation media_id={} detail={} retry_count={}",
+                    media.id,
+                    exc,
+                    ResourceTaskStateService.get_state_or_default(
+                        cls.TASK_KEY, media.id
+                    ).attempt_count,
+                )
+                return {"deferred_media": 1}
+            except Exception as exc:
+                ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
+                error_key = cls._mark_failure(media, f"cloud115_direct_url_failed: {exc}")
+                cls._log_aborted(media, "cloud115_direct_url_failed", error_key)
+                return {error_key: 1}
+            ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
+        else:
+            ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
+            video_path = Path(media.path).expanduser().resolve()
+            if not video_path.exists() or not video_path.is_file():
+                error_key = cls._mark_failure(media, "video_file_missing")
+                cls._log_aborted(media, "video_file_missing", error_key)
+                return {error_key: 1}
+            source_label = str(video_path)
 
         logger.info(
             "Generating media thumbnails media_id={} movie_number={} video_path={}",
             media.id,
             # 解耦后非 JAV 媒体 movie 为空，读外键原始列（None-safe），避免解引用 None 崩溃整轮任务。
             media.movie_number,
-            video_path,
+            source_label,
         )
         started_at = time.time()
         try:
             webp_dir = cls._thumbnail_directory(media)
             cls._clear_webp_directory(webp_dir)
-            pyav_error = cls._generate_webp_with_pyav(video_path, webp_dir)
+            if is_cloud115:
+                pyav_error = cls._generate_webp_with_pyav(
+                    reader, webp_dir, source_label=source_label
+                )
+            else:
+                pyav_error = cls._generate_webp_with_pyav(str(video_path), webp_dir)
 
             if pyav_error is not None:
                 logger.warning(
@@ -393,6 +508,8 @@ class MediaThumbnailService:
                 generated_count = cls._persist_generated_files(media, parseable_webp_files)
                 if generated_count == 0:
                     raise RuntimeError("thumbnail_generation_unparseable_filenames")
+                if is_cloud115:
+                    cls._backfill_cloud115_resolution(media, parseable_webp_files)
                 cls._mark_success(media)
                 elapsed_ms = int((time.time() - started_at) * 1000)
                 if pyav_error is not None:
@@ -445,6 +562,8 @@ class MediaThumbnailService:
             if generated_count == 0:
                 raise RuntimeError("thumbnail_generation_unparseable_filenames")
 
+            if is_cloud115:
+                cls._backfill_cloud115_resolution(media, parseable_webp_files)
             cls._mark_success(media)
             elapsed_ms = int((time.time() - started_at) * 1000)
             logger.info(
@@ -465,6 +584,9 @@ class MediaThumbnailService:
                 task_state.attempt_count,
             )
             return {error_key: 1}
+        finally:
+            if reader is not None:
+                reader.close()
 
     @staticmethod
     def _emit_progress(progress_callback, **payload) -> None:
@@ -480,6 +602,7 @@ class MediaThumbnailService:
             "pending_media": len(media_ids),
             "successful_media": 0,
             "generated_thumbnails": 0,
+            "deferred_media": 0,
             "retryable_failed_media": 0,
             "terminal_failed_media": 0,
         }
@@ -520,10 +643,11 @@ class MediaThumbnailService:
                 )
         elapsed_ms = int((time.time() - started_at) * 1000)
         logger.info(
-            "Finished media thumbnail generation pending_media={} successful_media={} generated_thumbnails={} retryable_failed_media={} terminal_failed_media={} elapsed_ms={}",
+            "Finished media thumbnail generation pending_media={} successful_media={} generated_thumbnails={} deferred_media={} retryable_failed_media={} terminal_failed_media={} elapsed_ms={}",
             stats["pending_media"],
             stats["successful_media"],
             stats["generated_thumbnails"],
+            stats["deferred_media"],
             stats["retryable_failed_media"],
             stats["terminal_failed_media"],
             elapsed_ms,

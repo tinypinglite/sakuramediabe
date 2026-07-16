@@ -14,7 +14,6 @@ def activity_tables(test_db):
     test_db.bind(_ACTIVITY_MODELS, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(_ACTIVITY_MODELS)
     yield test_db
-    test_db.drop_tables(list(reversed(_ACTIVITY_MODELS)))
 
 
 def _make_task_run(task_key: str) -> BackgroundTaskRun:

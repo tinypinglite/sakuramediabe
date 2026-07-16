@@ -40,7 +40,6 @@ def video_tables(test_db):
     test_db.bind(_MODELS, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(_MODELS)
     yield test_db
-    test_db.drop_tables(list(reversed(_MODELS)))
     # 还原到全局 proxy，避免把模型永久绑定在已关闭的测试库上污染后续用例。
     for model in _MODELS:
         model.bind(database_proxy, bind_refs=False, bind_backrefs=False)

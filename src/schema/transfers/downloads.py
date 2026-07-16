@@ -16,10 +16,12 @@ if TYPE_CHECKING:
 class DownloadClientResource(SchemaModel):
     id: int
     name: str
-    base_url: str
-    username: str
-    client_save_path: str
-    local_root_path: str
+    # 下载入口种类：qbittorrent / cloud115。qb 专属连接字段对 cloud115 kind 为 None。
+    kind: str
+    base_url: Optional[str] = None
+    username: Optional[str] = None
+    client_save_path: Optional[str] = None
+    local_root_path: Optional[str] = None
     media_library_id: int
     has_password: bool
     created_at: datetime
@@ -31,6 +33,7 @@ class DownloadClientResource(SchemaModel):
             {
                 "id": client.id,
                 "name": client.name,
+                "kind": client.kind,
                 "base_url": client.base_url,
                 "username": client.username,
                 "client_save_path": client.client_save_path,
@@ -49,15 +52,19 @@ class DownloadClientResource(SchemaModel):
 
 class DownloadClientCreateRequest(SchemaModel):
     name: str
-    base_url: str
-    username: str
-    password: str
-    client_save_path: str
-    local_root_path: str
+    # qbittorrent（默认）需提供全部 qb 连接字段；cloud115 只需 name + media_library_id
+    #（凭据在 cloud115 媒体库的 backend_config 里，不在下载器上）。
+    kind: str = "qbittorrent"
+    base_url: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    client_save_path: Optional[str] = None
+    local_root_path: Optional[str] = None
     media_library_id: int
 
 
 class DownloadClientUpdateRequest(SchemaModel):
+    # kind 不可更新：入口种类决定了字段语义，改种类应删除重建。
     name: Optional[str] = None
     base_url: Optional[str] = None
     username: Optional[str] = None
@@ -77,7 +84,8 @@ class DownloadClientTestResponse(SchemaModel):
     checked_at: datetime
     client_id: int
     client_name: str
-    base_url: str
+    # cloud115 kind 没有 base_url / 版本概念，相关字段为 None。
+    base_url: Optional[str] = None
     elapsed_ms: int
     version: Optional[str] = None
     web_api_version: Optional[str] = None
@@ -148,12 +156,24 @@ class DownloadClientProbeStorageTestRequest(SchemaModel):
     client_id: Optional[int] = None
 
 
+class DownloadCandidateClientResource(SchemaModel):
+    """候选资源允许选择的下载器概要。"""
+
+    id: int
+    name: str
+    kind: str
+
+
 class DownloadCandidateResource(SchemaModel):
     source: str
     indexer_name: str
     indexer_kind: str
+    # 按全局 kind 偏好预解析出的下载器；提交时用户可用 client_id 显式覆盖。
     resolved_client_id: int
     resolved_client_name: str
+    resolved_client_kind: str
+    # 当前索引器绑定的全部下载器；前端以 resolved_client_id 为默认选项。
+    download_clients: List[DownloadCandidateClientResource]
     movie_number: str
     title: str
     size_bytes: int

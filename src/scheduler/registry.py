@@ -22,10 +22,15 @@ from src.service.discovery import (
     MovieRecommendationService,
     RankingSyncService,
 )
-from src.service.playback import MediaFileScanService, MediaThumbnailService
+from src.service.playback import (
+    Cloud115KeepaliveService,
+    MediaFileScanService,
+    MediaThumbnailService,
+)
 from src.service.system import ActivityCleanupService
 
 from src.service.transfers import (
+    Cloud115OfflineSyncService,
     DownloadSmallFileCleanupService,
     DownloadSyncService,
     SubscribedMovieAutoDownloadService,
@@ -227,6 +232,22 @@ JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: DownloadSyncService().enqueue_auto_imports(),
     ),
     JobDefinition(
+        task_key="cloud115_offline_sync",
+        log_name="cloud115-offline-sync",
+        cli_name="sync-cloud115-offline-tasks",
+        cli_help="执行一次 cloud115 离线任务对账（进度回写 / 完成导入 / 超时放弃）",
+        cron_setting="cloud115_offline_sync_cron",
+        service_factory=lambda _reporter: Cloud115OfflineSyncService().run(),
+        format_stats=_build_stats_formatter(
+            "cloud115 offline sync finished:",
+            ("total_clients", "total_clients", 0),
+            ("updated_count", "updated_count", 0),
+            ("import_triggered_count", "import_triggered_count", 0),
+            ("abandoned_count", "abandoned_count", 0),
+            ("failed_count", "failed_count", 0),
+        ),
+    ),
+    JobDefinition(
         task_key="download_small_file_cleanup",
         log_name="download-small-file-cleanup",
         cli_name="cleanup-download-small-files",
@@ -347,6 +368,7 @@ JOB_REGISTRY: list[JobDefinition] = [
             ("pending_media", "pending_media", 0),
             ("successful_media", "successful_media", 0),
             ("generated_thumbnails", "generated_thumbnails", 0),
+            ("deferred_media", "deferred_media", 0),
             ("retryable_failed_media", "retryable_failed_media", 0),
             ("terminal_failed_media", "terminal_failed_media", 0),
         ),
@@ -457,6 +479,21 @@ JOB_REGISTRY: list[JobDefinition] = [
             ("deleted_events", "deleted_events", 0),
             ("deleted_task_runs", "deleted_task_runs", 0),
             ("deleted_notifications", "deleted_notifications", 0),
+        ),
+    ),
+    JobDefinition(
+        task_key="cloud115_cookies_keepalive",
+        log_name="cloud115-cookies-keepalive",
+        cli_name="keepalive-cloud115-cookies",
+        cli_help="执行一次 cloud115 库 cookies 探活与快照回写",
+        cron_setting="cloud115_keepalive_cron",
+        service_factory=lambda _reporter: Cloud115KeepaliveService().run(),
+        format_stats=_build_stats_formatter(
+            "cloud115 keepalive finished:",
+            ("total", "total", 0),
+            ("alive", "alive", 0),
+            ("expired", "expired", 0),
+            ("unavailable", "unavailable", 0),
         ),
     ),
 ]

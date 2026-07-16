@@ -4,18 +4,25 @@
 片段是独立资产，与来源 Media 解耦：来源被删除后片段记录与文件仍保留。
 """
 
+import asyncio
 import subprocess
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from loguru import logger
 from peewee import IntegrityError
+
+try:
+    import av
+except ImportError:  # pragma: no cover - runtime dependency check
+    av = None
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_clip_url, media_clip_root_path
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import require_record, resolve_sort, validate_page
 from src.config.config import settings
+from src.lib.cloud115 import Cloud115Error
 from src.model import (
     ClipCollection,
     ClipCollectionItem,
@@ -24,6 +31,7 @@ from src.model import (
     MediaClip,
     MediaThumbnail,
 )
+from src.model.enums import MediaLibraryBackend
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.clip_collections import ClipCollectionSummary
 from src.schema.common.pagination import PageResponse
@@ -38,6 +46,11 @@ from src.service.playback.media_metadata_probe_service import MediaMetadataProbe
 
 
 class MediaClipService:
+    CLOUD115_CLIP_USER_AGENT = "Mozilla/5.0 SakuraMedia-Clip/1.0"
+    # 切片 remux 累计字节上限：一次片段截取只需读起止两处附近的少量数据，1GB 足以
+    # 覆盖码率极高的长片段；给上限的目的是兜住 CDN 偶发不遵守 Range 直接吐 200 全量
+    # body 的情况，防止大文件被整体读进内存。
+    CLOUD115_CLIP_FETCH_BUDGET_BYTES = 1024 * 1024 * 1024
     MEDIA_CLIP_SORT_FIELDS = {
         "created_at:desc": [MediaClip.created_at.desc(), MediaClip.id.desc()],
         "created_at:asc": [MediaClip.created_at.asc(), MediaClip.id.asc()],
@@ -135,17 +148,22 @@ class MediaClipService:
         return f"{prefix}/{clip_id}.mp4"
 
     @staticmethod
-    def _cut_clip_file(source_path: Path, target_path: Path, start: int, end: int) -> None:
-        """ffmpeg 流复制切片：-ss/-to 放输入端做关键帧快速定位，-c copy 不重编码。
+    def _run_ffmpeg_clip(
+        source: str,
+        target_path: Path,
+        start: int,
+        end: int,
+    ) -> None:
+        """对本地文件执行 ffmpeg 流复制切片。
 
         直接用 subprocess 执行而非 ffmpy，以便用 timeout 兜住坏文件/慢挂载导致的进程卡死；
         超时会 kill 子进程干净回收，避免同步切片无限占住请求线程。
         """
-        command = [
-            "ffmpeg",
-            "-ss", str(start), "-to", str(end), "-i", str(source_path),
+        command = ["ffmpeg", "-ss", str(start), "-to", str(end)]
+        command.extend([
+            "-i", source,
             "-c", "copy", "-avoid_negative_ts", "make_zero", "-y", str(target_path),
-        ]
+        ])
         try:
             subprocess.run(
                 command,
@@ -160,6 +178,135 @@ class MediaClipService:
             raise RuntimeError("clip_cut_failed") from exc
         if not target_path.exists() or target_path.stat().st_size <= 0:
             raise RuntimeError("clip_output_empty")
+
+    @classmethod
+    def _cut_clip_file(cls, source_path: Path, target_path: Path, start: int, end: int) -> None:
+        cls._run_ffmpeg_clip(str(source_path), target_path, start, end)
+
+    @classmethod
+    def _cut_cloud115_clip_file(
+        cls,
+        media: Media,
+        target_path: Path,
+        start: int,
+        end: int,
+    ) -> None:
+        """现取绑定 UA 的 115 直链，通过受控串行 RangeReader 做无转码 remux。"""
+        from src.lib.cloud115 import Cloud115RangeReader
+        from src.service.playback.cloud115_backend_service import cloud115_client_for
+
+        locator = media.backend_locator or {}
+        pickcode = locator.get("pickcode")
+        if not pickcode:
+            raise ApiError(
+                422,
+                "cloud115_locator_missing",
+                "云媒体缺少可用的 pickcode",
+                {"media_id": media.id},
+            )
+
+        async def _resolve_direct_url():
+            async with cloud115_client_for(media.library) as client:
+                return await client.get_download_url(pickcode, cls.CLOUD115_CLIP_USER_AGENT)
+
+        direct = asyncio.run(_resolve_direct_url())
+        file_size = direct.file_size or media.file_size_bytes
+        if not file_size:
+            raise ApiError(
+                422,
+                "cloud115_file_size_missing",
+                "云媒体缺少可用的文件大小",
+                {"media_id": media.id},
+            )
+        reader = Cloud115RangeReader(
+            direct.url,
+            user_agent=direct.user_agent,
+            file_size=file_size,
+            max_fetched_bytes=cls.CLOUD115_CLIP_FETCH_BUDGET_BYTES,
+        )
+        try:
+            cls._remux_cloud115_clip(reader, target_path, start, end)
+        finally:
+            reader.close()
+
+    @staticmethod
+    def _remux_cloud115_clip(
+        reader: Any,
+        target_path: Path,
+        start: int,
+        end: int,
+    ) -> None:
+        """从同步可 seek 的受控 reader 截取音视频包，时间戳归零后写入 MP4。"""
+        if av is None:
+            raise RuntimeError("pyav_not_installed")
+
+        input_container = av.open(reader, mode="r")
+        try:
+            video_streams = list(input_container.streams.video)
+            if not video_streams:
+                raise RuntimeError("clip_video_stream_missing")
+            # 只保留主视频轨；额外 video stream 常见于封面图，不应进入片段。
+            selected_streams = [video_streams[0], *input_container.streams.audio]
+
+            # 先定位 start 之前最近的视频关键帧；这与本地 ffmpeg -ss ... -c copy 的
+            # 关键帧边界语义一致。RangeReader 始终只有一个在途请求。
+            input_container.seek(start * av.time_base, backward=True, any_frame=False)
+            origin_seconds: float | None = None
+            for packet in input_container.demux(video_streams[0]):
+                if packet.dts is None or packet.time_base is None:
+                    continue
+                origin_seconds = float(packet.dts * packet.time_base)
+                break
+            if origin_seconds is None:
+                raise RuntimeError("clip_seek_failed")
+
+            input_container.seek(
+                max(0, int(origin_seconds * av.time_base)),
+                backward=True,
+                any_frame=False,
+            )
+            with av.open(
+                str(target_path),
+                mode="w",
+                format="mp4",
+                options={"movflags": "+faststart"},
+            ) as output_container:
+                stream_map = {
+                    stream: output_container.add_stream_from_template(stream)
+                    for stream in selected_streams
+                }
+                muxed_packets = 0
+                for packet in input_container.demux(*selected_streams):
+                    input_stream = packet.stream
+                    if packet.dts is None or packet.time_base is None:
+                        continue
+                    packet_seconds = float(packet.dts * packet.time_base)
+                    if packet_seconds + 1e-9 < origin_seconds:
+                        continue
+                    if packet_seconds >= end:
+                        break
+
+                    timestamp_shift = int(round(origin_seconds / float(packet.time_base)))
+                    if packet.pts is not None:
+                        packet.pts -= timestamp_shift
+                    packet.dts -= timestamp_shift
+                    packet.stream = stream_map[input_stream]
+                    output_container.mux(packet)
+                    muxed_packets += 1
+                if muxed_packets == 0:
+                    raise RuntimeError("clip_packet_range_empty")
+
+        finally:
+            input_container.close()
+        if not target_path.exists() or target_path.stat().st_size <= 0:
+            raise RuntimeError("clip_output_empty")
+
+    @staticmethod
+    def _is_cloud115_media(media: Media) -> bool:
+        return (
+            media.library_id is not None
+            and media.library.backend == MediaLibraryBackend.CLOUD115.value
+        )
 
     @classmethod
     def create_clip(
@@ -198,9 +345,14 @@ class MediaClipService:
         if existing is not None:
             return cls.build_clip_resource(existing, cls._resolve_single_cover(existing)), False
 
-        source_path = Path(media.path).expanduser().resolve()
-        if not source_path.exists() or not source_path.is_file():
-            raise ApiError(404, "file_not_found", "媒体文件不存在", {"media_id": media.id})
+        is_cloud115 = cls._is_cloud115_media(media)
+        source_path: Path | None = None
+        if not is_cloud115:
+            if not media.path:
+                raise ApiError(404, "file_not_found", "媒体文件不存在", {"media_id": media.id})
+            source_path = Path(media.path).expanduser().resolve()
+            if not source_path.exists() or not source_path.is_file():
+                raise ApiError(404, "file_not_found", "媒体文件不存在", {"media_id": media.id})
 
         # 解耦后非 JAV 媒体 movie 为空，读外键原始列（None-safe）；下游 _clip_relative_path 已兜 None。
         movie_number = media.movie_number
@@ -231,7 +383,10 @@ class MediaClipService:
         target_path = media_clip_root_path() / relative_path
         try:
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            cls._cut_clip_file(source_path, target_path, start, end)
+            if is_cloud115:
+                cls._cut_cloud115_clip_file(media, target_path, start, end)
+            else:
+                cls._cut_clip_file(source_path, target_path, start, end)
             probe = MediaMetadataProbeService.probe_file(target_path)
             clip.file_path = relative_path
             clip.file_size_bytes = target_path.stat().st_size
@@ -242,6 +397,12 @@ class MediaClipService:
             clip.delete_instance()
             cls._unlink_clip_file(target_path)
             logger.warning("Media clip generation failed media_id={} detail={}", media.id, exc)
+            if isinstance(exc, ApiError):
+                raise
+            if isinstance(exc, Cloud115Error):
+                from src.service.playback.cloud115_backend_service import map_cloud115_error
+
+                raise map_cloud115_error(exc) from exc
             raise ApiError(
                 500,
                 "media_clip_generation_failed",

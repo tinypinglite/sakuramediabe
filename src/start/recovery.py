@@ -12,11 +12,25 @@ from src.service.catalog import (
 )
 from src.service.playback import MediaThumbnailService
 from src.service.system import ActivityService
-from src.service.transfers import DownloadSyncService, MediaImportJobService
+from src.service.transfers import (
+    Cloud115OfflineSyncService,
+    DownloadSyncService,
+    MediaImportJobService,
+    MediaRapidUploadService,
+)
 from src.service.videos import VideoImportJobService
 
 # 注册表: task_key -> 业务层回收 callable。
 # 启动恢复在任务层 (BackgroundTaskRun) 回收之后，按 task_key 查表联动清理业务状态。
+def _recover_media_directory_imports() -> dict:
+    """回收普通目录导入，并让 Cloud115 下载导入回到可重试状态。"""
+    result = MediaImportJobService.recover_orphaned_jobs()
+    result["cloud115_download_import_recovered_count"] = (
+        Cloud115OfflineSyncService.recover_interrupted_imports()
+    )
+    return result
+
+
 BUSINESS_RECOVERY_HANDLERS: dict[str, Callable[[], object]] = {
     "movie_interaction_sync": lambda: MovieInteractionSyncService.recover_interrupted_running_movies(
         error_message=MovieInteractionSyncService.INTERRUPTED_SYNC_ERROR_MESSAGE,
@@ -34,9 +48,13 @@ BUSINESS_RECOVERY_HANDLERS: dict[str, Callable[[], object]] = {
         error_message=MediaThumbnailService.INTERRUPTED_GENERATION_ERROR_MESSAGE,
     ),
     "download_task_import": lambda: DownloadSyncService().recover_orphaned_imports_only(),
-    "media_directory_import": lambda: MediaImportJobService.recover_orphaned_jobs(),
+    "media_directory_import": _recover_media_directory_imports,
     "video_directory_import": lambda: VideoImportJobService.recover_orphaned_jobs(),
+    "media_rapid_upload": lambda: MediaRapidUploadService.recover_interrupted_batches(),
 }
+
+# 秒传批次需要在业务恢复完成、统计已收敛后才能发送一条汇总通知。
+BUSINESS_MANAGED_NOTIFICATION_TASK_KEYS = {"media_rapid_upload"}
 
 
 def recover_interrupted_tasks(
@@ -56,6 +74,7 @@ def recover_interrupted_tasks(
             error_message=error_message,
             allow_null_owner=True,
             force=True,
+            suppress_notification_task_keys=BUSINESS_MANAGED_NOTIFICATION_TASK_KEYS,
         ):
             recovered_task_keys.add(task_run.task_key)
 

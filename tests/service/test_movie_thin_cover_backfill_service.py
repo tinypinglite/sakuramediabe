@@ -21,7 +21,6 @@ def movie_tables(test_db):
     test_db.bind(models, bind_refs=False, bind_backrefs=False)
     test_db.create_tables(models)
     yield test_db
-    test_db.drop_tables(list(reversed(models)))
 
 
 def test_backfill_missing_thin_cover_images_updates_and_skips(movie_tables):
