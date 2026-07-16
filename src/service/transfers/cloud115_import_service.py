@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List
 
@@ -66,8 +67,6 @@ from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 from src.service.transfers.file_transfer import JAV_LIBRARY_SUBDIR
 from src.service.transfers.cloud115_import_common import (
-    CLOUD_NAME_MAX_LENGTH,
-    CLOUD_NAME_SEPARATOR,
     CLOUD115_METADATA_PROBE_MAX_BYTES,
     CLOUD115_METADATA_PROBE_UA,
     CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
@@ -75,9 +74,11 @@ from src.service.transfers.cloud115_import_common import (
     CLOUD115_TRANSFER_MODE_LEGACY_MOVE,
     build_cloud115_dir_map,
     cloud115_rel_dir_parts,
-    encode_cloud_file_name,
+    create_cloud115_version_subdir,
+    list_cloud115_entity_target_files,
     list_cloud115_target_files,
     normalize_cloud115_transfer_mode,
+    normalize_jav_media_filename,
     probe_cloud115_media,
     resolve_cloud115_copied_entry,
     verify_cloud115_renamed_file,
@@ -356,10 +357,7 @@ class Cloud115ImportService:
             if not groups:
                 return
 
-            # 2) 两种模式都先复制：预扫目标 sha1，重跑复用已复制产物。
-            target_entries_by_sha1 = await self._list_target_files(client, jav_cid)
-
-            # 3) 元数据并发抓取 + 逐番号搬运登记
+            # 2) 元数据并发抓取 + 逐番号搬运登记（目标目录/版本目录按番号在 _import_group 里建）
             with self._media_import_service.metadata_import_batch(
                 [group.movie_number for group in groups],
                 thread_name_prefix="cloud115-import-metadata",
@@ -425,7 +423,6 @@ class Cloud115ImportService:
                         group=group,
                         jav_cid=jav_cid,
                         transfer_mode=transfer_mode,
-                        target_entries_by_sha1=target_entries_by_sha1,
                         failure_items=failure_items,
                         stats=stats,
                         new_playable_movies=new_playable_movies,
@@ -578,61 +575,138 @@ class Cloud115ImportService:
         group: CloudImportGroup,
         jav_cid: str,
         transfer_mode: str,
-        target_entries_by_sha1: Dict[str, List[DirEntry]],
         failure_items: List[dict],
         stats: dict,
         new_playable_movies: Dict[int, dict],
     ) -> None:
-        """复制并登记一个番号组；任一改名失败时整组不入库、不清源。"""
-        # 1) 两种模式都复制；目标已有同 sha1 表示上次已完成复制，直接复用。
-        preexisting_target_sha1 = set(target_entries_by_sha1)
-        pending_transfer = [
-            cloud_file
-            for cloud_file in group.files
-            if cloud_file.sha1 not in target_entries_by_sha1
-        ]
+        """复制并登记一个番号组；任一改名失败时整组不入库、不清源。
+
+        目标结构对齐本地：``jav/{番号}/{版本ms}/{番号}{ext}``。同番号多分部共享
+        实体目录，各自版本子目录；中断恢复时按番号目录做 sha1 对账，命中即复用远端
+        已复制条目，不重复复制。
+        """
         try:
-            if pending_transfer:
-                fids = [cloud_file.fid for cloud_file in pending_transfer]
-                await client.copy_files(fids, pid=jav_cid)
-                # 复制产生新 fid/pickcode → re-list 对账刷新。
-                target_entries_by_sha1.clear()
-                target_entries_by_sha1.update(
-                    await self._list_target_files(client, jav_cid)
-                )
+            entity_cid = await find_or_create_subdir(
+                client, parent_cid=jav_cid, name=group.movie_number
+            )
         except Exception as exc:
             self._record_group_failure(
                 group,
                 reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
-                detail=str(exc),
+                detail=f"创建番号目录失败: {exc}",
                 failure_items=failure_items,
                 stats=stats,
             )
             logger.exception(
-                "Cloud115 copy failed movie_number={} mode={} detail={}",
-                group.movie_number, transfer_mode, exc,
+                "Cloud115 entity dir failed movie_number={} detail={}",
+                group.movie_number, exc,
             )
             return
 
-        # 2) 按 sha1 对账每个复制产物。
+        # 1) 预扫番号目录下所有版本子目录里的 sha1，用于中断恢复对账。
+        try:
+            entity_entries_by_sha1 = await list_cloud115_entity_target_files(
+                client, entity_cid
+            )
+        except Exception as exc:
+            self._record_group_failure(
+                group,
+                reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
+                detail=f"列出番号目录失败: {exc}",
+                failure_items=failure_items,
+                stats=stats,
+            )
+            logger.exception(
+                "Cloud115 entity list failed movie_number={} detail={}",
+                group.movie_number, exc,
+            )
+            return
+        preexisting_target_sha1 = set(entity_entries_by_sha1)
+
+        # 1b) 主动清理多余候选：同一 sha1 在实体目录下有多个副本，说明是历史 job 崩溃
+        # 或重跑遗留的脏数据。保留 mtime 最新的作为权威条目，其余进回收站；
+        # 删失败仅告警不中断本次导入（下次运行时可再次尝试）。
+        # entity 目录完全由 SakuraMedia 管，用户不会往里塞文件，主动收敛安全。
+        for sha1, candidates in list(entity_entries_by_sha1.items()):
+            if len(candidates) <= 1:
+                continue
+            winner = max(candidates, key=lambda entry: entry.mtime)
+            stale = [entry for entry in candidates if entry.entry_id != winner.entry_id]
+            entity_entries_by_sha1[sha1] = [winner]
+            stale_fids = [entry.entry_id for entry in stale]
+            try:
+                await client.delete_files(stale_fids)
+                logger.warning(
+                    "Cloud115 entity stale duplicates cleaned movie_number={} sha1={} kept_fid={} kept_mtime={} deleted_fids={}",
+                    group.movie_number, sha1, winner.entry_id, winner.mtime, stale_fids,
+                )
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "Cloud115 entity stale duplicates cleanup failed movie_number={} sha1={} stale_fids={} detail={}",
+                    group.movie_number, sha1, stale_fids, cleanup_exc,
+                )
+
+        # 2) 逐文件处理：sha1 已在实体下则复用；否则新建版本目录 + 复制。
         resolved: List[tuple[CloudSourceFile, str, str, str, str]] = []
         for cloud_file in group.files:
-            encoded_name = encode_cloud_file_name(cloud_file.rel_dir_parts, cloud_file.name)
+            target_name = normalize_jav_media_filename(
+                group.movie_number, cloud_file.name
+            )
             existing_valid = self._find_library_media(library, cloud_file.sha1, valid=True)
-            target_entry = None
             reuse_managed_target = (
                 existing_valid is not None
                 and cloud_file.sha1 in preexisting_target_sha1
             )
-            if reuse_managed_target:
-                target_entry = self._resolve_registered_entry(
-                    target_entries_by_sha1.get(cloud_file.sha1) or [],
-                    existing_valid,
-                )
-            if target_entry is None:
+            target_entry: DirEntry | None = None
+            if cloud_file.sha1 in entity_entries_by_sha1:
+                candidates = entity_entries_by_sha1[cloud_file.sha1]
+                if reuse_managed_target:
+                    target_entry = self._resolve_registered_entry(
+                        candidates, existing_valid
+                    )
+                target_entry = target_entry or candidates[0]
+            else:
+                # 需要新复制：为本文件建独立版本目录，跟本地 create_version_directory 对齐。
+                version_cid: str | None = None
+                try:
+                    version_cid = await create_cloud115_version_subdir(
+                        client,
+                        parent_cid=entity_cid,
+                        now_ms=int(time.time() * 1000),
+                    )
+                    await client.copy_files([cloud_file.fid], pid=version_cid)
+                    version_entries = await self._list_target_files(client, version_cid)
+                except Exception as exc:
+                    # copy/list 失败时，version_cid 是本次新建的独占目录，回收避免
+                    # 在 jav/{番号}/ 下累积空/半成品目录（走回收站有缓冲）。
+                    # entity_cid 可能被同番号其它导入共享，此处不动。
+                    if version_cid is not None:
+                        try:
+                            await client.delete_files([version_cid])
+                        except Exception as cleanup_exc:
+                            logger.warning(
+                                "Cloud115 version dir rollback failed movie_number={} version_cid={} detail={}",
+                                group.movie_number, version_cid, cleanup_exc,
+                            )
+                    self._record_group_failure(
+                        group,
+                        reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
+                        detail=str(exc),
+                        failure_items=failure_items,
+                        stats=stats,
+                    )
+                    logger.exception(
+                        "Cloud115 copy failed movie_number={} mode={} detail={}",
+                        group.movie_number, transfer_mode, exc,
+                    )
+                    return
                 target_entry = self._resolve_copied_entry(
-                    target_entries_by_sha1, cloud_file, encoded_name
+                    version_entries, cloud_file, target_name
                 )
+                if target_entry is not None:
+                    # 让同批次后续同 sha1 命中能看到刚复制的条目，避免二次 copy。
+                    entity_entries_by_sha1[cloud_file.sha1] = [target_entry]
+
             if target_entry is None:
                 self._record_group_failure(
                     group,
@@ -648,8 +722,8 @@ class Cloud115ImportService:
                     target_entry.entry_id,
                     target_entry.pickcode,
                     target_entry.name,
-                    # cleanup-source 的正常重复不应改名已有受管文件；只核验/对账后清理来源。
-                    target_entry.name if reuse_managed_target else encoded_name,
+                    # 复用已登记条目时保留原名，不改动已在库的命名；新复制统一规范名。
+                    target_entry.name if reuse_managed_target else target_name,
                 )
             )
 

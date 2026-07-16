@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, Dict, List
 
 from src.lib.cloud115 import Cloud115Client, Cloud115RangeReader, DirEntry
+from src.service.playback.cloud115_backend_service import find_or_create_subdir
 from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeResult,
     MediaMetadataProbeService,
+)
+from src.service.transfers.file_transfer import (
+    JAV_LIBRARY_SUBDIR,
+    VIDEOS_LIBRARY_SUBDIR,
 )
 
 CLOUD115_TRANSFER_MODE_COPY = "copy"
@@ -18,10 +24,6 @@ CLOUD115_TRANSFER_MODE_LEGACY_MOVE = "move"
 CLOUD115_METADATA_PROBE_MAX_BYTES = 64 * 1024 * 1024
 CLOUD115_METADATA_PROBE_UA = "Mozilla/5.0 SakuraMedia-Cloud115-Metadata/1.0"
 CLOUD115_COVER_UA = "Mozilla/5.0 SakuraMedia-Cloud115-Cover/1.0"
-
-# 相对路径段编码到扁平受管目录文件名时使用的公共规则。
-CLOUD_NAME_SEPARATOR = "＿"
-CLOUD_NAME_MAX_LENGTH = 200
 
 
 def normalize_cloud115_transfer_mode(
@@ -44,26 +46,111 @@ def cloud115_import_mutex_key(library_id: int) -> str:
     return f"media_import:cloud115:{library_id}"
 
 
-def encode_cloud_file_name(
-    rel_dir_parts: tuple[str, ...],
-    file_name: str,
-    *,
-    max_length: int = CLOUD_NAME_MAX_LENGTH,
+# ---------------------------------------------------------------------------
+# 分层目录构造：把 115 的存储结构对齐本地 MediaImportService/VideoImportService。
+# 布局：
+#   <root_cid>/jav/<番号>/<版本ms>/<番号>{ext}
+#   <root_cid>/videos/<video_id>/<版本ms>/<原文件名>
+# 调用方靠 cloud115_import_mutex_key 拿库级互斥锁，避免同 parent 下并发双建。
+# ---------------------------------------------------------------------------
+
+
+def normalize_jav_media_filename(movie_number: str, source_name: str) -> str:
+    """按本地 JAV 命名规范：``{番号}{源扩展名小写}``。
+
+    源无扩展名时（例如 ``.iso`` 之外的裸文件）沿用本地 ``_import_single_media_file``
+    行为返回不带扩展名的番号。
+    """
+    if not movie_number:
+        raise ValueError("movie_number is required for JAV rename")
+    ext = Path(source_name).suffix.lower()
+    return f"{movie_number}{ext}"
+
+
+async def create_cloud115_version_subdir(
+    client: Cloud115Client, *, parent_cid: str, now_ms: int
 ) -> str:
-    """把源内相对路径编码进扁平目标文件名，并保留文件名与扩展名。"""
-    parts = [part for part in rel_dir_parts if part]
-    name = CLOUD_NAME_SEPARATOR.join([*parts, file_name]) if parts else file_name
-    while len(name) > max_length and parts:
-        parts.pop(0)
-        name = CLOUD_NAME_SEPARATOR.join([*parts, file_name]) if parts else file_name
-    if len(name) > max_length:
-        stem, dot, suffix = file_name.rpartition(".")
-        if dot:
-            keep = max(1, max_length - len(suffix) - 1)
-            name = f"{stem[:keep]}.{suffix}"
-        else:
-            name = file_name[:max_length]
-    return name
+    """在 parent_cid 下建一个新版本目录，冲突时按 ``{ms}-N`` 递增。
+
+    对齐 ``file_transfer.create_version_directory``：先分页 list 判存在再建，
+    因为 115 允许同名目录并存。调用方应持有库级写锁，避免并发下同名双建。
+    """
+    base = str(now_ms)
+    candidate = base
+    suffix = 1
+    while True:
+        existing = await _lookup_cloud115_subdir_cid(
+            client, parent_cid=parent_cid, name=candidate
+        )
+        if existing is None:
+            return await client.mkdir(parent_cid, candidate)
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+
+
+async def _lookup_cloud115_subdir_cid(
+    client: Cloud115Client, *, parent_cid: str, name: str
+) -> str | None:
+    offset = 0
+    while True:
+        entries, total = await client.list_dir(parent_cid, offset=offset, limit=1150)
+        for entry in entries:
+            if entry.is_dir and entry.name == name:
+                return entry.entry_id
+        offset += len(entries)
+        if not entries or offset >= total:
+            return None
+
+
+async def ensure_cloud115_jav_target_dir(
+    client: Cloud115Client,
+    *,
+    root_cid: str,
+    movie_number: str,
+    now_ms: int,
+) -> tuple[str, str]:
+    """建 ``jav/{番号}/{版本ms}/``，返回 ``(entity_cid, version_cid)``。"""
+    jav_cid = await find_or_create_subdir(client, parent_cid=root_cid, name=JAV_LIBRARY_SUBDIR)
+    entity_cid = await find_or_create_subdir(client, parent_cid=jav_cid, name=movie_number)
+    version_cid = await create_cloud115_version_subdir(
+        client, parent_cid=entity_cid, now_ms=now_ms
+    )
+    return entity_cid, version_cid
+
+
+async def ensure_cloud115_videos_target_dir(
+    client: Cloud115Client,
+    *,
+    root_cid: str,
+    video_id: int,
+    now_ms: int,
+) -> tuple[str, str]:
+    """建 ``videos/{video_id}/{版本ms}/``，返回 ``(entity_cid, version_cid)``。"""
+    videos_cid = await find_or_create_subdir(
+        client, parent_cid=root_cid, name=VIDEOS_LIBRARY_SUBDIR
+    )
+    entity_cid = await find_or_create_subdir(
+        client, parent_cid=videos_cid, name=str(video_id)
+    )
+    version_cid = await create_cloud115_version_subdir(
+        client, parent_cid=entity_cid, now_ms=now_ms
+    )
+    return entity_cid, version_cid
+
+
+async def list_cloud115_entity_target_files(
+    client: Cloud115Client, entity_cid: str
+) -> Dict[str, List[DirEntry]]:
+    """递归列实体目录（jav/番号 或 videos/id）下所有版本目录里的文件，按 SHA1 索引。
+
+    用于按番号/视频粒度做中断恢复对账：一个实体的多次导入分散在多个版本子目录里，
+    需要跨版本聚合。
+    """
+    by_sha1: Dict[str, List[DirEntry]] = {}
+    async for entry in client.iter_files_recursive(entity_cid):
+        if not entry.is_dir and entry.sha1:
+            by_sha1.setdefault(entry.sha1.upper(), []).append(entry)
+    return by_sha1
 
 
 async def build_cloud115_dir_map(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Callable, Dict, List
 
@@ -32,7 +33,6 @@ from src.model import Media, MediaLibrary, VideoImportJob, VideoItem, get_databa
 from src.service.playback.cloud115_backend_service import (
     assert_cid_outside_library_root,
     cloud115_client_for,
-    find_or_create_subdir,
     require_cloud115_library,
 )
 from src.service.playback.media_metadata_probe_service import (
@@ -46,7 +46,7 @@ from src.service.transfers.cloud115_import_common import (
     CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
     build_cloud115_dir_map,
     cloud115_rel_dir_parts,
-    encode_cloud_file_name,
+    ensure_cloud115_videos_target_dir,
     list_cloud115_target_files,
     normalize_cloud115_transfer_mode,
     open_cloud115_range_reader,
@@ -57,7 +57,6 @@ from src.service.transfers.cloud115_import_common import (
 from src.service.transfers.cloud115_import_service import (
     CloudSourceFile,
 )
-from src.service.transfers.file_transfer import VIDEOS_LIBRARY_SUBDIR
 from src.service.transfers.tag_rules import build_media_special_tags
 from src.service.videos.video_collection_service import VideoCollectionService
 from src.service.videos.video_cover_service import VideoCoverService
@@ -366,10 +365,8 @@ class Cloud115VideoImportService:
                 )
                 return
 
-            videos_cid = await find_or_create_subdir(
-                client, parent_cid=config["root_cid"], name=VIDEOS_LIBRARY_SUBDIR
-            )
-            target_entries = await list_cloud115_target_files(client, videos_cid)
+            # 每个视频独立版本目录（videos/{video_id}/{版本ms}/），跨视频不共享。
+            root_cid = config["root_cid"]
             seen_sha1: set[str] = set()
             total = len(sources)
             self._emit(
@@ -447,10 +444,9 @@ class Cloud115VideoImportService:
                     client,
                     library=library,
                     source=source,
-                    videos_cid=videos_cid,
+                    root_cid=root_cid,
                     transfer_mode=transfer_mode,
                     collection_id=collection_id,
-                    target_entries=target_entries,
                     failure_items=failure_items,
                     stats=stats,
                 )
@@ -468,60 +464,27 @@ class Cloud115VideoImportService:
         *,
         library: MediaLibrary,
         source: CloudSourceFile,
-        videos_cid: str,
+        root_cid: str,
         transfer_mode: str,
         collection_id: int | None,
-        target_entries: Dict[str, List[DirEntry]],
         failure_items: List[dict],
         stats: dict,
     ) -> None:
-        target_name = encode_cloud_file_name(source.rel_dir_parts, source.name)
-        target_entry = resolve_cloud115_copied_entry(
-            target_entries, source, target_name
-        )
-        try:
-            if target_entry is None:
-                await client.copy_files([source.fid], pid=videos_cid)
-                target_entries.clear()
-                target_entries.update(
-                    await list_cloud115_target_files(client, videos_cid)
-                )
-                target_entry = resolve_cloud115_copied_entry(
-                    target_entries, source, target_name
-                )
-            if target_entry is None:
-                raise RuntimeError(f"复制后未找到 sha1={source.sha1} 的目标文件")
-        except Exception as exc:
-            stats["failed"] += 1
-            failure_items.append(
-                make_failure_item(
-                    source.rel_path, FAILURE_REASON_CLOUD115_TRANSFER_FAILED, str(exc)
-                )
-            )
-            return
+        """把一个 115 源视频复制进受管结构 ``videos/{video_id}/{版本ms}/{原名}``。
 
-        if target_entry.name != target_name:
-            try:
-                await client.rename_file(target_entry.entry_id, target_name)
-                await verify_cloud115_renamed_file(
-                    client, target_entry.entry_id, target_name
-                )
-            except Exception as exc:
-                stats["failed"] += 1
-                failure_items.append(
-                    make_failure_item(
-                        source.rel_path, FAILURE_REASON_CLOUD115_RENAME_FAILED, str(exc)
-                    )
-                )
-                return
-
+        对齐本地 VideoImportService 的顺序：先 probe → create VideoItem 拿 id →
+        建目标目录 → copy → rename → create Media。probe 使用 **源 pickcode**，
+        跳过"必须先落到受管目录才能读"的鸡生蛋。
+        """
+        target_name = source.name  # videos 域对齐本地：保留原文件名，不做 rename
+        # 1) 用源 pickcode probe，因为目标目录还没建。
         metadata: MediaMetadataProbeResult | None = None
         if not source.censored:
             try:
                 metadata, fetched_bytes = await probe_cloud115_media(
                     client,
                     self._media_metadata_probe_service,
-                    pickcode=target_entry.pickcode,
+                    pickcode=source.pickcode,
                     file_size_bytes=source.size,
                 )
                 logger.info(
@@ -536,6 +499,93 @@ class Cloud115VideoImportService:
                         source.rel_path,
                         FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED,
                         str(exc),
+                    )
+                )
+                return
+
+        # 2) create VideoItem 拿到 video_id，作为实体目录名。
+        video = VideoItem.create(
+            title=Path(source.name).stem,
+            release_date=metadata.creation_time if metadata is not None else None,
+        )
+
+        # entity_cid / version_cid / target_fid 每推进一步就落一个变量，
+        # 任一失败分支统一走 _rollback_video_import 反向清理，避免 VideoItem
+        # 与已 copy 的 115 文件成为孤儿（对齐本地 video_import_service 的语义）。
+        entity_cid: str | None = None
+        version_cid: str | None = None
+        target_entry: DirEntry | None = None
+
+        # 3) 建 videos/{video_id}/{版本ms}/。
+        try:
+            entity_cid, version_cid = await ensure_cloud115_videos_target_dir(
+                client,
+                root_cid=root_cid,
+                video_id=video.id,
+                now_ms=int(time.time() * 1000),
+            )
+        except Exception as exc:
+            await self._rollback_video_import(
+                client,
+                video=video,
+                entity_cid=entity_cid,
+                version_cid=version_cid,
+                target_fid=None,
+            )
+            stats["failed"] += 1
+            failure_items.append(
+                make_failure_item(
+                    source.rel_path,
+                    FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
+                    f"创建视频目录失败: {exc}",
+                )
+            )
+            return
+
+        # 4) copy → list → 拿到目标 entry。
+        try:
+            await client.copy_files([source.fid], pid=version_cid)
+            version_entries = await list_cloud115_target_files(client, version_cid)
+            target_entry = resolve_cloud115_copied_entry(
+                version_entries, source, target_name
+            )
+            if target_entry is None:
+                raise RuntimeError(f"复制后未找到 sha1={source.sha1} 的目标文件")
+        except Exception as exc:
+            await self._rollback_video_import(
+                client,
+                video=video,
+                entity_cid=entity_cid,
+                version_cid=version_cid,
+                target_fid=target_entry.entry_id if target_entry is not None else None,
+            )
+            stats["failed"] += 1
+            failure_items.append(
+                make_failure_item(
+                    source.rel_path, FAILURE_REASON_CLOUD115_TRANSFER_FAILED, str(exc)
+                )
+            )
+            return
+
+        # 5) copy 出来的默认文件名通常等于源名，一般不需要 rename；名字不一致时对齐目标名。
+        if target_entry.name != target_name:
+            try:
+                await client.rename_file(target_entry.entry_id, target_name)
+                await verify_cloud115_renamed_file(
+                    client, target_entry.entry_id, target_name
+                )
+            except Exception as exc:
+                await self._rollback_video_import(
+                    client,
+                    video=video,
+                    entity_cid=entity_cid,
+                    version_cid=version_cid,
+                    target_fid=target_entry.entry_id,
+                )
+                stats["failed"] += 1
+                failure_items.append(
+                    make_failure_item(
+                        source.rel_path, FAILURE_REASON_CLOUD115_RENAME_FAILED, str(exc)
                     )
                 )
                 return
@@ -557,10 +607,6 @@ class Cloud115VideoImportService:
         }
         try:
             with get_database().atomic():
-                video = VideoItem.create(
-                    title=Path(source.name).stem,
-                    release_date=metadata.creation_time if metadata is not None else None,
-                )
                 media = Media.create(
                     video_item=video,
                     library=library,
@@ -577,6 +623,13 @@ class Cloud115VideoImportService:
                 if collection_id is not None:
                     VideoCollectionService.add_item(collection_id, video.id)
         except Exception as exc:
+            await self._rollback_video_import(
+                client,
+                video=video,
+                entity_cid=entity_cid,
+                version_cid=version_cid,
+                target_fid=target_entry.entry_id,
+            )
             stats["failed"] += 1
             failure_items.append(
                 make_failure_item(
@@ -628,6 +681,52 @@ class Cloud115VideoImportService:
                     "Cloud115 video source delete failed rel_path={} detail={}",
                     source.rel_path, exc,
                 )
+
+    @staticmethod
+    async def _rollback_video_import(
+        client: Cloud115Client,
+        *,
+        video: VideoItem,
+        entity_cid: str | None,
+        version_cid: str | None,
+        target_fid: str | None,
+    ) -> None:
+        """按已推进的步骤反向清理云端 + VideoItem。每步失败仅告警不中断，尽力回滚。
+
+        顺序：文件（target_fid）→ 版本目录 → 实体目录 → VideoItem。
+        videos 侧的 entity_cid（``videos/{video_id}/``）是本次导入独占，可以放心删。
+        """
+        if target_fid is not None:
+            try:
+                await client.delete_files([target_fid])
+            except Exception as exc:
+                logger.warning(
+                    "Cloud115 video rollback file failed video_id={} fid={} detail={}",
+                    video.id, target_fid, exc,
+                )
+        if version_cid is not None:
+            try:
+                await client.delete_files([version_cid])
+            except Exception as exc:
+                logger.warning(
+                    "Cloud115 video rollback version_cid failed video_id={} cid={} detail={}",
+                    video.id, version_cid, exc,
+                )
+        if entity_cid is not None:
+            try:
+                await client.delete_files([entity_cid])
+            except Exception as exc:
+                logger.warning(
+                    "Cloud115 video rollback entity_cid failed video_id={} cid={} detail={}",
+                    video.id, entity_cid, exc,
+                )
+        try:
+            video.delete_instance()
+        except Exception as exc:
+            logger.warning(
+                "Cloud115 video rollback VideoItem delete failed video_id={} detail={}",
+                video.id, exc,
+            )
 
     async def _cleanup_source_only(
         self,

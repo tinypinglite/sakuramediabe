@@ -32,7 +32,6 @@ from src.model import (
 from src.service.transfers import cloud115_import_service as service_module
 from src.service.transfers.cloud115_import_service import (
     Cloud115ImportService,
-    encode_cloud_file_name,
 )
 from src.service.transfers.media_import_service import MediaImportService, MetadataImportResult
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeResult
@@ -75,6 +74,10 @@ class FakeCloud115FS:
     delete_calls: list = field(default_factory=list)
     rename_fail_fids: set[str] = field(default_factory=set)
     rename_noop_fids: set[str] = field(default_factory=set)
+    # 分层布局下 fid 依赖 mkdir/copy 顺序，测试很难猜准；按 sha1 拦 copy/rename 更稳。
+    copy_fail_sha1s: set[str] = field(default_factory=set)
+    rename_fail_sha1s: set[str] = field(default_factory=set)
+    rename_noop_sha1s: set[str] = field(default_factory=set)
     delete_fail_fids: set[str] = field(default_factory=set)
     subtitle_error: Exception | None = None
     _fid_counter: itertools.count = field(default_factory=lambda: itertools.count(1000))
@@ -86,6 +89,26 @@ class FakeCloud115FS:
         f = FakeCloudFile(**kwargs)
         self.files[f.fid] = f
         return f
+
+    def add_managed_jav_file(
+        self,
+        *,
+        movie_number: str,
+        fid: str,
+        name: str,
+        sha1: str,
+        jav_dir_cid: str = "jav-dir",
+        version_ms: int = 1_700_000_000_000,
+    ) -> FakeCloudFile:
+        """模拟"上一次导入已经把该 sha1 的文件放到 jav/{番号}/{版本ms}/ 下"，
+        用于中断恢复 / duplicate 命中场景的预置。同番号重复调用会共享 entity 目录、
+        分别建独立版本目录，跟真实 create_cloud115_version_subdir 语义一致。"""
+        entity_cid = f"managed-entity-{movie_number}"
+        if entity_cid not in self.dirs:
+            self.add_dir(entity_cid, movie_number, jav_dir_cid)
+        version_cid = f"managed-ver-{fid}"
+        self.add_dir(version_cid, str(version_ms), entity_cid)
+        return self.add_file(fid=fid, parent=version_cid, name=name, sha1=sha1)
 
     # ---- SDK 接口 ----
 
@@ -146,6 +169,8 @@ class FakeCloud115FS:
         self.copy_calls.append((tuple(fids), pid))
         for fid in fids:
             src = self.files[fid]
+            if src.sha1 in self.copy_fail_sha1s:
+                raise RuntimeError("copy denied")
             new_fid = f"{fid}-copy{next(self._fid_counter)}"
             # 复制产生新 fid + 新 pickcode，sha1 不变（与真实 115 行为一致）
             self.files[new_fid] = FakeCloudFile(
@@ -163,10 +188,12 @@ class FakeCloud115FS:
 
     async def rename_file(self, fid, new_name):
         self.rename_calls.append((fid, new_name))
-        if fid in self.rename_fail_fids:
+        target_sha1 = self.files[fid].sha1 if fid in self.files else None
+        if fid in self.rename_fail_fids or (target_sha1 and target_sha1 in self.rename_fail_sha1s):
             raise RuntimeError("rename denied")
-        if fid not in self.rename_noop_fids:
-            self.files[fid].name = new_name
+        if fid in self.rename_noop_fids or (target_sha1 and target_sha1 in self.rename_noop_sha1s):
+            return
+        self.files[fid].name = new_name
 
     async def file_info(self, fid):
         f = self.files[fid]
@@ -318,28 +345,6 @@ def _run_import(library, source_cid="src-1", **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# encode_cloud_file_name
-# ---------------------------------------------------------------------------
-
-
-def test_encode_cloud_file_name_joins_rel_parts():
-    assert encode_cloud_file_name(("ABP-123", "CD1"), "movie.mp4") == "ABP-123＿CD1＿movie.mp4"
-    assert encode_cloud_file_name((), "movie.mp4") == "movie.mp4"
-
-
-def test_encode_cloud_file_name_drops_head_dirs_when_too_long():
-    # 超长时先丢最靠近源根的目录段（保尾），文件名+扩展名完整
-    name = encode_cloud_file_name(("A" * 100, "B" * 100), "movie.mp4", max_length=120)
-    assert name == "B" * 100 + "＿movie.mp4"
-
-
-def test_encode_cloud_file_name_truncates_stem_preserving_suffix():
-    name = encode_cloud_file_name((), "X" * 300 + ".mp4", max_length=50)
-    assert name.endswith(".mp4")
-    assert len(name) <= 50
-
-
-# ---------------------------------------------------------------------------
 # cleanup-source 模式全流程
 # ---------------------------------------------------------------------------
 
@@ -361,10 +366,11 @@ def test_cleanup_source_import_registers_then_deletes_source(
     assert "f-1" not in fs.files
     media = Media.get()
     assert media.path is None
+    # 新分层布局：jav/{番号}/{版本ms}/{番号}{ext} — target_name 规范化为番号+源后缀
     assert media.backend_locator == {
         "fid": media.backend_locator["fid"],
         "pickcode": media.backend_locator["pickcode"],
-        "name": "ABP-123＿movie.mp4",
+        "name": "ABP-123.mp4",
         "source_path": "ABP-123/movie.mp4",
     }
     assert media.backend_locator["fid"] != "f-1"
@@ -375,9 +381,9 @@ def test_cleanup_source_import_registers_then_deletes_source(
     assert media.video_info["video"]["codec_name"] == "h264"
     assert media.valid is True
     assert media.library_id == cloud_library.id
-    # 字幕：先下载登记，整组成功后与源视频一起清理。
+    # 字幕：跟随规范化后的视频名（{番号}.srt），先下载登记，整组成功后与源视频一起清理。
     subtitle = Subtitle.get()
-    assert subtitle.file_path.endswith("ABP-123＿movie.srt")
+    assert subtitle.file_path.endswith("ABP-123.srt")
     assert "ABP-123" in subtitle.file_path
     assert ("f-srt",) in fs.delete_calls
     assert ("f-1",) in fs.delete_calls
@@ -445,19 +451,25 @@ def test_copy_import_reconciles_new_fid_and_pickcode(cloud_library, patched_clie
     assert media.backend_locator["fid"] != "f-2"
     assert media.backend_locator["pickcode"] != source.pickcode
     assert media.content_fingerprint == "sha1:BBB222"
-    # 复制产物已改路径编码名
+    # 分层布局：复制产物在 jav/ABP-456/{版本ms}/{番号}{ext} 下
     copied = fs.files[media.backend_locator["fid"]]
-    assert copied.parent == "jav-dir"
-    assert copied.name == "ABP-456＿ABP-456.mp4"
+    assert copied.name == "ABP-456.mp4"
+    version_dir = fs.dirs[copied.parent]
+    entity_dir = fs.dirs[version_dir["parent"]]
+    assert entity_dir["name"] == "ABP-456"
+    assert entity_dir["parent"] == "jav-dir"
 
 
 def test_copy_import_skips_transfer_when_target_already_has_sha1(cloud_library, patched_client):
-    """幂等：上次中断已复制的文件（目标目录同 sha1），重跑不再 copy、直接对账登记。"""
+    """幂等：上次中断已复制的文件（jav/番号/{版本ms}/ 下同 sha1），重跑不再 copy、直接对账登记。"""
     fs = patched_client
     fs.add_dir("d-abp", "ABP-789", "src-1")
     fs.add_file(fid="f-3", parent="d-abp", name="ABP-789.mp4", sha1="CCC333")
-    # 目标目录已有上次复制的同 sha1 条目
-    fs.add_file(fid="f-3-old-copy", parent="jav-dir", name="ABP-789.mp4", sha1="CCC333")
+    # 目标实体目录 jav/ABP-789/{ms}/ 下已有上次复制的同 sha1 条目
+    fs.add_managed_jav_file(
+        movie_number="ABP-789", fid="f-3-old-copy",
+        name="ABP-789.mp4", sha1="CCC333",
+    )
 
     job = _run_import(cloud_library, transfer_mode="copy")
 
@@ -607,9 +619,11 @@ def test_rename_must_be_visible_before_register_or_cleanup(
 ):
     fs = patched_client
     fs.add_dir("d-abp", "ABP-500", "src-1")
-    fs.add_file(fid="f-r", parent="d-abp", name="ABP-500.mp4", sha1="R500")
-    # 复制产物 fid 可预测为 f-r-copy1000；模拟接口返回成功但实际名称不变。
-    fs.rename_noop_fids.add("f-r-copy1000")
+    # 源名与规范化后目标名（ABP-500.mp4）不一致，才会触发 rename 分支被测。
+    fs.add_file(fid="f-r", parent="d-abp", name="raw-source.mp4", sha1="R500")
+    # 分层布局下复制产物 fid 依赖 mkdir/copy 递增，改按 sha1 拦更稳。
+    # 模拟接口返回成功但实际名称不变（rename 不可见）。
+    fs.rename_noop_sha1s.add("R500")
 
     job = _run_import(cloud_library)
 
@@ -623,21 +637,24 @@ def test_rename_must_be_visible_before_register_or_cleanup(
 def test_partial_rename_retry_reuses_copied_targets(cloud_library, patched_client):
     fs = patched_client
     fs.add_dir("d-abp", "ABP-501", "src-1")
+    # 分部源名 vs 规范化目标名（ABP-501.mp4）不同 → 走 rename 分支；按 sha1 拦第二个失败。
     fs.add_file(fid="f-r1", parent="d-abp", name="ABP-501-1.mp4", sha1="R501A")
     fs.add_file(fid="f-r2", parent="d-abp", name="ABP-501-2.mp4", sha1="R501B")
-    fs.rename_fail_fids.add("f-r2-copy1001")
+    fs.rename_fail_sha1s.add("R501B")
 
     first = _run_import(cloud_library, transfer_mode="copy")
     assert first.state == "failed"
     assert Media.select().count() == 0
-    assert len(fs.copy_calls) == 1
+    # 两个源文件各自建了独立版本目录，各 copy 一次。
+    assert len(fs.copy_calls) == 2
 
-    fs.rename_fail_fids.clear()
+    fs.rename_fail_sha1s.clear()
     second = _run_import(cloud_library, transfer_mode="copy")
 
     assert second.state == "completed"
     assert Media.select().count() == 2
-    assert len(fs.copy_calls) == 1
+    # 重跑时 sha1 已在实体目录（entity_entries_by_sha1），复用不再 copy。
+    assert len(fs.copy_calls) == 2
 
 
 def test_cleanup_source_subtitle_failure_keeps_all_sources(
@@ -719,7 +736,11 @@ def test_cleanup_source_duplicate_does_not_rename_managed_target(
     fs = patched_client
     fs.add_dir("d-abp", "ABP-505", "src-1")
     fs.add_file(fid="f-duplicate-source", parent="d-abp", name="another-name.mp4", sha1="R505")
-    fs.add_file(fid="f-managed", parent="jav-dir", name="managed-name.mp4", sha1="R505")
+    # 库中已有同 sha1 受管条目：放在 jav/ABP-505/{ms}/ 下（分层布局），且已在 Media 登记。
+    fs.add_managed_jav_file(
+        movie_number="ABP-505", fid="f-managed",
+        name="managed-name.mp4", sha1="R505",
+    )
     movie = Movie.create(javdb_id="jd-ABP-505", movie_number="ABP-505", title="ABP-505")
     media = Media.create(
         movie=movie,
@@ -742,3 +763,103 @@ def test_cleanup_source_duplicate_does_not_rename_managed_target(
     assert fs.rename_calls == []
     assert "f-duplicate-source" not in fs.files
     assert Media.get_by_id(media.id).backend_locator["fid"] == "f-managed"
+
+
+# ---------------------------------------------------------------------------
+# rollback / 主动清理（code review 修复回归）
+# ---------------------------------------------------------------------------
+
+
+def test_copy_failure_rolls_back_empty_version_dir(cloud_library, patched_client):
+    """copy_files 失败时，本次新建的 version_cid 是空目录，必须被回收（走 delete_files 进回收站），
+    避免反复失败在 jav/{番号}/ 下累积垃圾目录。entity_cid 是共享的，不动。"""
+    fs = patched_client
+    fs.add_dir("d-abp", "ABP-506", "src-1")
+    fs.add_file(fid="f-copy-fail", parent="d-abp", name="ABP-506.mp4", sha1="R506")
+    fs.copy_fail_sha1s.add("R506")
+
+    job = _run_import(cloud_library, transfer_mode="copy")
+
+    assert job.state == "failed"
+    assert "cloud115_transfer_failed" in job.failed_files
+    # 版本目录曾被建（find_or_create_subdir 里 mkdir），且 fid 出现在 delete_calls。
+    version_dirs = [
+        cid for cid, info in fs.dirs.items()
+        if info["parent"] not in {"0", "src-1", "lib-root"}
+        and fs.dirs.get(info["parent"], {}).get("name") == "ABP-506"
+    ]
+    assert len(version_dirs) == 1
+    version_cid = version_dirs[0]
+    # rollback 分支调 delete_files([version_cid])
+    assert any(call == (version_cid,) for call in fs.delete_calls)
+    # entity（jav/ABP-506/）不删——可能被同番号后续导入复用。
+    entity_dirs = [cid for cid, info in fs.dirs.items() if info["name"] == "ABP-506" and info["parent"] == "jav-dir"]
+    assert len(entity_dirs) == 1
+    assert not any(call == (entity_dirs[0],) for call in fs.delete_calls)
+
+
+def test_entity_stale_duplicates_are_pruned_keeping_newest(cloud_library, patched_client):
+    """Finding 4 回归：同一 sha1 在 entity 下有多个历史副本（旧 job 崩溃遗留），
+    预扫应保留 mtime 最新的作为权威条目，其余进回收站；不能靠 iter 顺序赌命。"""
+    fs = patched_client
+    fs.add_dir("d-abp", "ABP-507", "src-1")
+    fs.add_file(fid="f-copy-fresh", parent="d-abp", name="ABP-507.mp4", sha1="R507")
+    # 预置 3 份历史遗留同 sha1 副本：mtime 从旧到新
+    fs.add_managed_jav_file(
+        movie_number="ABP-507", fid="f-old-1", name="ABP-507.mp4", sha1="R507",
+        version_ms=1_700_000_000_000,
+    )
+    fs.add_managed_jav_file(
+        movie_number="ABP-507", fid="f-old-2", name="ABP-507.mp4", sha1="R507",
+        version_ms=1_700_000_001_000,
+    )
+    fs.add_managed_jav_file(
+        movie_number="ABP-507", fid="f-newest", name="ABP-507.mp4", sha1="R507",
+        version_ms=1_700_000_002_000,
+    )
+    # 让最新条目 mtime 更大，模拟真实场景（fake fs 里 DirEntry.mtime 默认 0，
+    # 这里手动覆盖 FakeCloud115FS._file_entry 就太重；换个思路：让 winner 的
+    # entry_id 最"新"以外没别的信号，走 max(candidates, key=mtime) 时会退化到
+    # 遍历顺序。改用 monkeypatch iter_files_recursive 输出 mtime）。
+    real_iter = fs.iter_files_recursive
+
+    async def iter_with_mtime(cid, *, page_size=1000):
+        async for entry in real_iter(cid, page_size=page_size):
+            if entry.entry_id == "f-newest":
+                yield DirEntry(
+                    entry_id=entry.entry_id, parent_id=entry.parent_id, name=entry.name,
+                    is_dir=False, size=entry.size, sha1=entry.sha1, pickcode=entry.pickcode,
+                    mtime=1_700_000_002, ctime=0, is_video=True,
+                    play_long=entry.play_long, ic=entry.ic,
+                )
+            elif entry.entry_id == "f-old-2":
+                yield DirEntry(
+                    entry_id=entry.entry_id, parent_id=entry.parent_id, name=entry.name,
+                    is_dir=False, size=entry.size, sha1=entry.sha1, pickcode=entry.pickcode,
+                    mtime=1_700_000_001, ctime=0, is_video=True,
+                    play_long=entry.play_long, ic=entry.ic,
+                )
+            elif entry.entry_id == "f-old-1":
+                yield DirEntry(
+                    entry_id=entry.entry_id, parent_id=entry.parent_id, name=entry.name,
+                    is_dir=False, size=entry.size, sha1=entry.sha1, pickcode=entry.pickcode,
+                    mtime=1_700_000_000, ctime=0, is_video=True,
+                    play_long=entry.play_long, ic=entry.ic,
+                )
+            else:
+                yield entry
+
+    fs.iter_files_recursive = iter_with_mtime  # type: ignore[assignment]
+
+    job = _run_import(cloud_library, transfer_mode="copy")
+
+    assert job.state == "completed"
+    # 保留 mtime 最新的 f-newest，其余进回收站。
+    assert "f-newest" in fs.files
+    assert "f-old-1" not in fs.files
+    assert "f-old-2" not in fs.files
+    # source 因 sha1 已在实体下命中 reuse，不再 copy。
+    assert fs.copy_calls == []
+    # Media 指向 winner。
+    media = Media.get()
+    assert media.backend_locator["fid"] == "f-newest"

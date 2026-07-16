@@ -351,6 +351,24 @@ class Cloud115Client:
             raise ValueError("pickcode is required")
         return await self._get_info(param_key="pick_code", param_value=pickcode, human_id=pickcode)
 
+    # 秒传/初始化 upload 返回后，115 侧的 pickcode 索引可能还没生效，即时反查会拿
+    # 到 Cloud115NotFoundError（data=[]）。这里做与 verify_cloud115_renamed_file
+    # 同风格的短退避：首次立即 + 4 次退避（0.3/0.8/1.5/2.5s），总窗口 ~5s；
+    # 只对 NotFound 兜底，其他错误立刻透传避免掩盖真问题。
+    _PICKCODE_INDEX_WAIT_DELAYS = (0.0, 0.3, 0.8, 1.5, 2.5)
+
+    async def _wait_pickcode_indexed(self, pickcode: str) -> FileMeta:
+        last_exc: Cloud115NotFoundError | None = None
+        for delay in self._PICKCODE_INDEX_WAIT_DELAYS:
+            if delay:
+                await asyncio.sleep(delay)
+            try:
+                return await self.pickcode_info(pickcode)
+            except Cloud115NotFoundError as exc:
+                last_exc = exc
+        assert last_exc is not None  # 循环至少执行一次
+        raise last_exc
+
     async def _get_info(self, *, param_key: str, param_value: str, human_id: str) -> FileMeta:
         url = f"{self._BASE_WEBAPI}/files/get_info"
         payload = await self._request_json("GET", url, params={param_key: param_value})
@@ -773,14 +791,30 @@ class Cloud115Client:
                 sha1=file_sha1,
                 raw_response=response,
             )
+        # initupload 的 status=2 响应里 pickcode 才是真实稳定标识；同响应里
+        # 的 fileid 字段是 int 占位符（多为 0，见 SheltonZhu/115driver 里
+        # "Useless fields" 注释与 ChenyangGao/p115client 的处理）。业务层需要
+        # 真 file_id 走 rename/delete/file_info，只能靠 pickcode 反查。
+        pickcode = self._first_text(data, "pick_code", "pickcode")
+        if not pickcode:
+            raise Cloud115RequestError(
+                "upload init status=2 missing pickcode",
+                method="POST",
+                url=f"{self._BASE_UPLOAD}/4.0/initupload.php",
+                detail=str(data)[:200],
+            )
+        # 新落地文件的索引在 115 侧不是即时的：initupload 刚返回 status=2 就查
+        # pickcode 常常撞上 Cloud115NotFoundError（data=[]）。做短退避重试，跟
+        # verify_cloud115_renamed_file 一样只兜索引窗口，其它错误立刻透传出去。
+        meta = await self._wait_pickcode_indexed(pickcode)
         return RapidUploadResult(
             status=RapidUploadStatus.SUCCESS,
             path=str(file_path),
             filename=file_path.name,
             size=size,
             sha1=file_sha1,
-            file_id=self._first_text(data, "file_id", "fileid", "fid"),
-            pickcode=self._first_text(data, "pick_code", "pickcode"),
+            file_id=meta.file_id,
+            pickcode=meta.pickcode or pickcode,
             raw_response=response,
         )
 

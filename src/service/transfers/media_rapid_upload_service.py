@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,16 +28,16 @@ from src.schema.transfers.rapid_upload import (
 )
 from src.service.playback.cloud115_backend_service import (
     cloud115_client_for,
-    find_or_create_subdir,
     require_cloud115_library,
 )
 from src.service.system import ActivityService
 from src.service.transfers.cloud115_import_common import (
     cloud115_import_mutex_key,
-    encode_cloud_file_name,
+    ensure_cloud115_jav_target_dir,
+    ensure_cloud115_videos_target_dir,
+    normalize_jav_media_filename,
     verify_cloud115_renamed_file,
 )
-from src.service.transfers.file_transfer import JAV_LIBRARY_SUBDIR, VIDEOS_LIBRARY_SUBDIR
 from src.service.transfers.import_runner import MediaRapidUploadRunner
 
 
@@ -405,13 +406,12 @@ class MediaRapidUploadService:
     @classmethod
     async def _process_batch(cls, batch, reporter) -> None:
         target_library = MediaLibrary.get_by_id(batch.target_library_id)
-        require_cloud115_library(target_library)
+        config = require_cloud115_library(target_library)
         items = list(
             MediaRapidUploadItem.select()
             .where(MediaRapidUploadItem.batch == batch)
             .order_by(MediaRapidUploadItem.id.asc())
         )
-        target_cids: dict[str, str] = {}
         async with cloud115_client_for(target_library) as client:
             for index, item in enumerate(items, start=1):
                 item.state = ITEM_STATE_RUNNING
@@ -423,8 +423,11 @@ class MediaRapidUploadService:
                     if item.action == ITEM_ACTION_CLEANUP_ONLY:
                         try:
                             cls._cleanup_source(item)
-                        except OSError:
-                            cls._mark_item_cleanup_failed(item)
+                        except OSError as exc:
+                            cls._mark_item_cleanup_failed(
+                                item,
+                                cls._format_error(exc, fallback=GENERIC_CLEANUP_ERROR),
+                            )
                     elif item.action == ITEM_ACTION_RESUME_REMOTE:
                         media = cls._require_current_local_media(item)
                         await cls._resume_remote_item(
@@ -435,22 +438,21 @@ class MediaRapidUploadService:
                         )
                     else:
                         media = cls._require_current_local_media(item)
-                        subdir = JAV_LIBRARY_SUBDIR if media.movie_number else VIDEOS_LIBRARY_SUBDIR
-                        target_cid = target_cids.get(subdir)
-                        if target_cid is None:
-                            config = require_cloud115_library(target_library)
-                            target_cid = await find_or_create_subdir(
-                                client,
-                                parent_cid=config["root_cid"],
-                                name=subdir,
-                            )
-                            target_cids[subdir] = target_cid
+                        # 每个 media 独立建版本目录，跟本地 create_version_directory 对齐；
+                        # 同批次里两条 media 不共享版本目录。
+                        target_cid, target_name = await cls._prepare_target_dir_and_name(
+                            client,
+                            root_cid=config["root_cid"],
+                            media=media,
+                            source_path=item.source_path,
+                        )
                         await cls._rapid_upload_item(
                             client,
                             item=item,
                             media=media,
                             target_library=target_library,
                             target_cid=target_cid,
+                            target_name=target_name,
                         )
                 except Exception as exc:
                     logger.warning(
@@ -460,7 +462,7 @@ class MediaRapidUploadService:
                         item.media_id,
                         exc,
                     )
-                    cls._mark_item_failed(item, GENERIC_ITEM_ERROR)
+                    cls._mark_item_failed(item, cls._format_error(exc))
                 counts = cls._item_counts(batch.id)
                 reporter.emit(
                     current=index,
@@ -468,6 +470,41 @@ class MediaRapidUploadService:
                     text=f"已处理 {index}/{len(items)} 个媒体",
                     summary_patch=counts,
                 )
+
+    @staticmethod
+    async def _prepare_target_dir_and_name(
+        client,
+        *,
+        root_cid: str,
+        media: Media,
+        source_path: str,
+    ) -> tuple[str, str]:
+        """按 media 类型建 <root>/jav/{番号}/{版本ms}/ 或 <root>/videos/{video_id}/{版本ms}/。
+
+        返回 (版本目录 cid, 目标文件名)。JAV 命名规范化为 ``{番号}{ext}``；videos 保留
+        原文件名，跟本地 MediaImportWriter / VideoImportService 对齐。
+        """
+        now_ms = int(time.time() * 1000)
+        source_name = Path(source_path).name
+        if media.movie_number:
+            _entity_cid, version_cid = await ensure_cloud115_jav_target_dir(
+                client,
+                root_cid=root_cid,
+                movie_number=media.movie_number,
+                now_ms=now_ms,
+            )
+            target_name = normalize_jav_media_filename(media.movie_number, source_name)
+        else:
+            if media.video_item_id is None:
+                raise RuntimeError("media is neither JAV nor videos, cannot pick target dir")
+            _entity_cid, version_cid = await ensure_cloud115_videos_target_dir(
+                client,
+                root_cid=root_cid,
+                video_id=media.video_item_id,
+                now_ms=now_ms,
+            )
+            target_name = source_name
+        return version_cid, target_name
 
     @classmethod
     async def _rapid_upload_item(
@@ -478,28 +515,30 @@ class MediaRapidUploadService:
         media: Media,
         target_library: MediaLibrary,
         target_cid: str,
+        target_name: str,
     ) -> None:
-        result = await client.rapid_upload(item.source_path, pid=target_cid)
-        if result.status is not RapidUploadStatus.SUCCESS:
-            raise RuntimeError(f"rapid upload status={result.status.value}")
-        if not result.file_id or not result.pickcode:
-            raise RuntimeError("rapid upload success response missing fid or pickcode")
-        target_name = encode_cloud_file_name(
-            (f"media-{media.id}",),
-            Path(item.source_path).name,
-        )
-        # 秒传接口一旦成功，立刻持久化远端定位。后续校验或回滚失败时，
-        # 重试可以接管这个远端文件，不能再次秒传产生重复文件。
-        item.source_sha1 = result.sha1.upper()
-        item.target_cid = target_cid
-        item.target_fid = result.file_id
-        item.target_pickcode = result.pickcode
-        item.target_name = target_name
-        item.state = ITEM_STATE_REMOTE_UPLOADED
-        item.updated_at = utc_now_for_db()
-        item.save()
+        # target_cid 是 _prepare_target_dir_and_name 本次为该 media 新建的独占版本目录；
+        # 任何抛出路径都要保证不给 115 侧留下空目录。
+        file_created = False
         media_switched = False
+        result = None
         try:
+            result = await client.rapid_upload(item.source_path, pid=target_cid)
+            if result.status is not RapidUploadStatus.SUCCESS:
+                raise RuntimeError(f"rapid upload status={result.status.value}")
+            if not result.file_id or not result.pickcode:
+                raise RuntimeError("rapid upload success response missing fid or pickcode")
+            file_created = True
+            # 秒传接口一旦成功，立刻持久化远端定位。后续校验或回滚失败时，
+            # 重试可以接管这个远端文件，不能再次秒传产生重复文件。
+            item.source_sha1 = result.sha1.upper()
+            item.target_cid = target_cid
+            item.target_fid = result.file_id
+            item.target_pickcode = result.pickcode
+            item.target_name = target_name
+            item.state = ITEM_STATE_REMOTE_UPLOADED
+            item.updated_at = utc_now_for_db()
+            item.save()
             meta = await client.file_info(result.file_id)
             if (
                 meta.parent_id != target_cid
@@ -525,26 +564,43 @@ class MediaRapidUploadService:
             )
             media_switched = True
         except Exception:
-            # 云端已生成但尚未成为 Media 权威定位时，尽力回收本次产生的文件。
-            # 回收失败必须保留先前落库的定位，供重试接管已有远端文件。
+            # 已切云端（权威定位在 Media 上）就什么都不动；否则按已推进阶段反向回收。
             if not media_switched:
-                try:
-                    await client.delete_files([result.file_id], pid=target_cid)
-                    item.source_sha1 = None
-                    item.target_cid = None
-                    item.target_fid = None
-                    item.target_pickcode = None
-                    item.target_name = None
-                    item.updated_at = utc_now_for_db()
-                    item.save()
-                except Exception as cleanup_exc:
-                    logger.warning(
-                        "Rapid upload remote rollback failed item_id={} fid={} detail={}",
-                        item.id,
-                        result.file_id,
-                        cleanup_exc,
-                    )
+                file_rolled_back = not file_created
+                if file_created and result is not None:
+                    try:
+                        await client.delete_files([result.file_id], pid=target_cid)
+                        item.source_sha1 = None
+                        item.target_cid = None
+                        item.target_fid = None
+                        item.target_pickcode = None
+                        item.target_name = None
+                        item.updated_at = utc_now_for_db()
+                        item.save()
+                        file_rolled_back = True
+                    except Exception as cleanup_exc:
+                        # 回收文件失败必须保留 item 定位，供重试接管已有远端文件；
+                        # 此时也不再动版本目录，避免与残留文件解耦丢失定位。
+                        logger.warning(
+                            "Rapid upload remote rollback failed item_id={} fid={} detail={}",
+                            item.id,
+                            result.file_id,
+                            cleanup_exc,
+                        )
+                # 只有确认版本目录是空的（未产生文件或文件已回收）才动它，删了
+                # 避免反复失败在 jav/{番号}/ 或 videos/{video_id}/ 下累积空目录。
+                if file_rolled_back:
+                    try:
+                        await client.delete_files([target_cid])
+                    except Exception as cleanup_exc:
+                        logger.warning(
+                            "Rapid upload remote version dir cleanup failed item_id={} version_cid={} detail={}",
+                            item.id,
+                            target_cid,
+                            cleanup_exc,
+                        )
             raise
+        assert result is not None  # media_switched 为真必然经过 rapid_upload 成功
 
         try:
             cls._cleanup_source(item)
@@ -555,7 +611,10 @@ class MediaRapidUploadService:
                 item.source_path,
                 exc,
             )
-            cls._mark_item_cleanup_failed(item)
+            cls._mark_item_cleanup_failed(
+                item,
+                cls._format_error(exc, fallback=GENERIC_CLEANUP_ERROR),
+            )
 
     @classmethod
     async def _resume_remote_item(
@@ -586,10 +645,16 @@ class MediaRapidUploadService:
             or meta.pickcode != item.target_pickcode
         ):
             raise RuntimeError("interrupted rapid upload verification failed")
-        target_name = item.target_name or encode_cloud_file_name(
-            (f"media-{media.id}",),
-            Path(item.source_path).name,
-        )
+        # 中断项在首次落远端时就写入了 target_name，正常路径直接沿用；老结构中断
+        # 保留旧命名不改动。target_name 缺失属于病态数据，按当前 media 类型重建。
+        target_name = item.target_name
+        if not target_name:
+            source_name = Path(item.source_path).name
+            target_name = (
+                normalize_jav_media_filename(media.movie_number, source_name)
+                if media.movie_number
+                else source_name
+            )
         if meta.name != target_name:
             await client.rename_file(item.target_fid, target_name)
             await verify_cloud115_renamed_file(client, item.target_fid, target_name)
@@ -607,8 +672,11 @@ class MediaRapidUploadService:
         )
         try:
             cls._cleanup_source(item)
-        except OSError:
-            cls._mark_item_cleanup_failed(item)
+        except OSError as exc:
+            cls._mark_item_cleanup_failed(
+                item,
+                cls._format_error(exc, fallback=GENERIC_CLEANUP_ERROR),
+            )
 
     @staticmethod
     def _switch_media_to_remote(
@@ -822,13 +890,29 @@ class MediaRapidUploadService:
         item.save()
 
     @staticmethod
-    def _mark_item_cleanup_failed(item: MediaRapidUploadItem) -> None:
+    def _mark_item_cleanup_failed(
+        item: MediaRapidUploadItem,
+        message: str = GENERIC_CLEANUP_ERROR,
+    ) -> None:
         item.state = ITEM_STATE_CLEANUP_FAILED
         item.active_media_id = None
-        item.error_message = GENERIC_CLEANUP_ERROR
+        item.error_message = message
         item.finished_at = utc_now_for_db()
         item.updated_at = utc_now_for_db()
         item.save()
+
+    # 前端只能看到 error_message，异常原文入库能省一次翻服务器日志的功夫。
+    # 空串或空白回退到通用文案，避免 UI 展示空白无信息。
+    _ERROR_MESSAGE_MAX_LEN = 500
+
+    @classmethod
+    def _format_error(cls, exc: BaseException, *, fallback: str = GENERIC_ITEM_ERROR) -> str:
+        text = str(exc).strip()
+        if not text:
+            return fallback
+        if len(text) <= cls._ERROR_MESSAGE_MAX_LEN:
+            return text
+        return text[: cls._ERROR_MESSAGE_MAX_LEN - 1] + "…"
 
     @staticmethod
     def _item_counts(batch_id: int) -> dict[str, int]:
@@ -853,6 +937,10 @@ class MediaRapidUploadService:
 
     @classmethod
     def _fail_unfinished_items(cls, batch, *, detail: str) -> None:
+        # 兜底路径拿不到具体条目的异常，只有批次级 detail；空 detail 时回退到通用文案。
+        message = (detail or "").strip() or GENERIC_ITEM_ERROR
+        if len(message) > cls._ERROR_MESSAGE_MAX_LEN:
+            message = message[: cls._ERROR_MESSAGE_MAX_LEN - 1] + "…"
         for item in MediaRapidUploadItem.select().where(
             MediaRapidUploadItem.batch == batch,
             MediaRapidUploadItem.active_media_id.is_null(False),
@@ -862,7 +950,7 @@ class MediaRapidUploadService:
                 item.id,
                 detail,
             )
-            cls._mark_item_failed(item, GENERIC_ITEM_ERROR)
+            cls._mark_item_failed(item, message)
 
     @classmethod
     def _fail_unstarted_batch(cls, batch, detail: str) -> None:

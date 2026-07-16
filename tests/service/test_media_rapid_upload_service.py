@@ -36,6 +36,9 @@ class _StubRapidUploadClient:
         self.names: dict[str, str] = {}
         self.file_info_parent_id = "videos-cid"
         self.delete_error: Exception | None = None
+        # 记录 rollback 里 delete 的 fids（可能是文件 fid，也可能是 version_cid），
+        # 用来断言 rapid_upload 早失败/回滚后本次新建的空版本目录被回收。
+        self.delete_calls: list[tuple[str, ...]] = []
 
     async def rapid_upload(self, path, *, pid: str):
         source = Path(path)
@@ -80,6 +83,7 @@ class _StubRapidUploadClient:
         self.names[fid] = new_name
 
     async def delete_files(self, fids, *, pid=None):
+        self.delete_calls.append(tuple(fids))
         if self.delete_error is not None:
             raise self.delete_error
         return None
@@ -120,16 +124,28 @@ def _patch_cloud(monkeypatch, client):
     async def _fake_client_for(_library):
         yield client
 
-    async def _fake_find_or_create(_client, *, parent_cid, name):
-        assert parent_cid == "root-cid"
-        assert name == "videos"
-        return "videos-cid"
+    async def _fake_ensure_videos_dir(_client, *, root_cid, video_id, now_ms):
+        # 版本目录 cid 固定为 "videos-cid"，测试可通过 stub.file_info_parent_id 制造
+        # 验证失败（parent_id != target_cid）走 rollback 分支。
+        assert root_cid == "root-cid"
+        assert isinstance(video_id, int)
+        return f"videos-{video_id}-entity", "videos-cid"
+
+    async def _fake_ensure_jav_dir(_client, *, root_cid, movie_number, now_ms):
+        assert root_cid == "root-cid"
+        assert movie_number
+        return f"jav-{movie_number}-entity", "videos-cid"
 
     async def _fake_verify(_client, fid, expected_name):
         assert client.names[fid] == expected_name
 
     monkeypatch.setattr(rapid_module, "cloud115_client_for", _fake_client_for)
-    monkeypatch.setattr(rapid_module, "find_or_create_subdir", _fake_find_or_create)
+    monkeypatch.setattr(
+        rapid_module, "ensure_cloud115_videos_target_dir", _fake_ensure_videos_dir
+    )
+    monkeypatch.setattr(
+        rapid_module, "ensure_cloud115_jav_target_dir", _fake_ensure_jav_dir
+    )
     monkeypatch.setattr(rapid_module, "verify_cloud115_renamed_file", _fake_verify)
     monkeypatch.setattr(rapid_module.MediaRapidUploadRunner, "submit", lambda *args, **kwargs: None)
 
@@ -188,10 +204,40 @@ def test_batch_not_hit_marks_item_failed_and_keeps_local_media(
 
     item = MediaRapidUploadItem.get()
     assert item.state == ITEM_STATE_FAILED
-    assert item.error_message == "秒传失败"
+    # error_message 现在带具体原因（rapid_upload status=not_hit），而不是通用"秒传失败"
+    assert item.error_message == "rapid upload status=not_hit"
     assert Path(media.path).exists()
     assert Media.get_by_id(media.id).library_id == local.id
     assert SystemNotification.get().category == "warning"
+
+
+def test_failed_item_error_message_carries_specific_exception_detail(
+    test_db, tmp_path, monkeypatch
+):
+    """rapid_upload 抛异常时，item.error_message 要带具体原因而不是通用'秒传失败'，
+    前端才能看到 '参数错误 (errno=990002)' 这种真实反馈。"""
+    local, cloud = _create_libraries(tmp_path)
+    media = _create_local_media(local, tmp_path / "raise.mp4", "raise")
+
+    class _RaisingClient:
+        async def rapid_upload(self, path, *, pid):
+            raise RuntimeError("参数错误 (errno=990002)")
+
+    _patch_cloud(monkeypatch, _RaisingClient())
+
+    trigger = MediaRapidUploadService.trigger_batch(
+        media_ids=[media.id],
+        target_library_id=cloud.id,
+    )
+    MediaRapidUploadService._run_batch(
+        trigger.rapid_upload_batch_id,
+        trigger.task_run_id,
+    )
+
+    item = MediaRapidUploadItem.get()
+    assert item.state == ITEM_STATE_FAILED
+    assert item.error_message == "参数错误 (errno=990002)"
+    assert Path(media.path).exists()
 
 
 def test_retry_batch_retries_cleanup_without_uploading_again(
@@ -303,7 +349,8 @@ def test_retry_adopts_remote_file_when_rollback_failed(
     assert first_item.state == ITEM_STATE_FAILED
     assert first_item.target_fid == "fid-1"
     assert first_item.target_pickcode == "pc-1"
-    assert first_item.target_name == f"media-{media.id}＿rollback.mp4"
+    # 新布局：videos 保留原文件名，无 media-<id>＿ 前缀
+    assert first_item.target_name == "rollback.mp4"
     assert Path(first_item.source_path).exists()
 
     stub.file_info_parent_id = "videos-cid"
@@ -368,3 +415,87 @@ def test_delete_library_rejects_when_rapid_upload_history_exists(
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.code == "media_library_in_use"
+
+
+def test_rapid_upload_not_hit_rolls_back_empty_version_dir(
+    test_db, tmp_path, monkeypatch
+):
+    """rapid_upload 返回 NOT_HIT（早失败，未生成远端文件）时，本次为该 media 新建的空版本
+    目录必须被回收，避免反复重试在 jav/{番号}/ 或 videos/{video_id}/ 下累积空目录。
+    回归 code review Finding 3。"""
+    local, cloud = _create_libraries(tmp_path)
+    media = _create_local_media(local, tmp_path / "miss.mp4", "miss")
+    client = _StubRapidUploadClient(statuses=[RapidUploadStatus.NOT_HIT])
+    _patch_cloud(monkeypatch, client)
+
+    trigger = MediaRapidUploadService.trigger_batch(
+        media_ids=[media.id], target_library_id=cloud.id
+    )
+    MediaRapidUploadService._run_batch(
+        trigger.rapid_upload_batch_id, trigger.task_run_id
+    )
+
+    item = MediaRapidUploadItem.get()
+    assert item.state == ITEM_STATE_FAILED
+    # NOT_HIT → 没走到文件生成阶段，但版本目录已经建了；delete_calls 里应有 target_cid
+    # （_patch_cloud 里返回的 "videos-cid"）。
+    assert ("videos-cid",) in client.delete_calls
+    # 本地媒体保持不动。
+    assert Path(media.path).exists()
+
+
+def test_rapid_upload_rollback_deletes_file_then_version_dir(
+    test_db, tmp_path, monkeypatch
+):
+    """rapid_upload 成功但 file_info 校验失败（parent_id 不对）时，rollback 顺序：
+    先删已生成的文件，再删版本目录，让 115 侧完全回到导入前的状态。"""
+    local, cloud = _create_libraries(tmp_path)
+    media = _create_local_media(local, tmp_path / "verify.mp4", "verify")
+    client = _StubRapidUploadClient(statuses=[RapidUploadStatus.SUCCESS])
+    # 制造 verification 失败：让 file_info 返回不对的 parent_id。
+    client.file_info_parent_id = "wrong-parent"
+    _patch_cloud(monkeypatch, client)
+
+    trigger = MediaRapidUploadService.trigger_batch(
+        media_ids=[media.id], target_library_id=cloud.id
+    )
+    MediaRapidUploadService._run_batch(
+        trigger.rapid_upload_batch_id, trigger.task_run_id
+    )
+
+    item = MediaRapidUploadItem.get()
+    assert item.state == ITEM_STATE_FAILED
+    # rollback 里先 delete 已生成的 fid，再 delete 版本目录 "videos-cid"。
+    assert ("fid-1",) in client.delete_calls
+    assert ("videos-cid",) in client.delete_calls
+    # item 的远端定位被清（rollback 里成功回收）。
+    assert item.target_fid is None
+    assert item.target_cid is None
+
+
+def test_rapid_upload_keeps_version_dir_when_file_rollback_fails(
+    test_db, tmp_path, monkeypatch
+):
+    """rollback 里删文件失败时不能顺手删版本目录——否则 item 定位没清但空间已回收，
+    重试路径接管不到远端文件，反而会重复秒传产生垃圾。"""
+    local, cloud = _create_libraries(tmp_path)
+    media = _create_local_media(local, tmp_path / "keep.mp4", "keep")
+    client = _StubRapidUploadClient(statuses=[RapidUploadStatus.SUCCESS])
+    client.file_info_parent_id = "wrong-parent"  # 触发 verification 失败
+    client.delete_error = RuntimeError("delete denied")
+    _patch_cloud(monkeypatch, client)
+
+    trigger = MediaRapidUploadService.trigger_batch(
+        media_ids=[media.id], target_library_id=cloud.id
+    )
+    MediaRapidUploadService._run_batch(
+        trigger.rapid_upload_batch_id, trigger.task_run_id
+    )
+
+    item = MediaRapidUploadItem.get()
+    assert item.state == ITEM_STATE_FAILED
+    # 只尝试了删文件（失败），没尝试删版本目录（不能与残留文件解耦丢失定位）。
+    assert client.delete_calls == [("fid-1",)]
+    # item 保留远端定位，供 RESUME_REMOTE 接管。
+    assert item.target_fid == "fid-1"
+    assert item.target_cid == "videos-cid"

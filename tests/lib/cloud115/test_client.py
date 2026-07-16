@@ -441,6 +441,17 @@ async def test_rapid_upload_status_two_returns_success_without_upload_fallback(
             return httpx.Response(200, json={"state": True, "data": {"userkey": "uk"}})
         if request.url.host == "appversion.115.com":
             return httpx.Response(200, json={"state": True, "data": {"Android": {"version_code": "37.2.5"}}})
+        if request.url.host == "webapi.115.com":
+            # SDK 走 pickcode 反查真 file_id：/files/get_info?pick_code=pc
+            assert request.url.path == "/files/get_info"
+            assert request.url.params.get("pick_code") == "pc"
+            return httpx.Response(200, json={
+                "state": True,
+                "data": [{
+                    "fid": "999", "cid": "0", "n": "movie.mkv", "s": 13,
+                    "sha": "A" * 40, "pc": "pc", "te": 1, "tp": 2, "iv": 1,
+                }],
+            })
         assert request.url.host == "uplb.115.com"
         assert request.url.path == "/4.0/initupload.php"
         assert request.method == "POST"
@@ -453,14 +464,172 @@ async def test_rapid_upload_status_two_returns_success_without_upload_fallback(
     monkeypatch.setattr(
         client_module,
         "decrypt_upload_response",
-        lambda _content: {"state": True, "data": {"status": 2, "file_id": "fid", "pick_code": "pc"}},
+        lambda _content: {"state": True, "data": {"status": 2, "pickcode": "pc"}},
     )
     client = _make_client(handler, cookies="UID=12345678_R2_1700000000; CID=abc; SEID=xyz")
     result = await client.rapid_upload(file_path)
     assert result.status is RapidUploadStatus.SUCCESS
-    assert result.file_id == "fid"
+    # 真 file_id 来自 pickcode_info 反查，不是 initupload 响应
+    assert result.file_id == "999"
     assert result.pickcode == "pc"
     assert sum("uplb.115.com" in url for _, url in calls) == 1
+    assert sum("webapi.115.com" in url for _, url in calls) == 1
+    await client.close()
+
+
+async def test_rapid_upload_ignores_zero_fileid_placeholder_and_resolves_via_pickcode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """115 的 initupload status=2 响应里 fileid 是 int 占位符（通常为 0），SDK
+    不应把它当真 file_id 传出去。真实 fid 必须靠 pickcode 反查。回归自:
+    生产环境 log 里 fid=0 引发 file_info 报 990002、rollback 报 231011。"""
+    file_path = tmp_path / "movie.mkv"
+    file_path.write_bytes(b"content")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "proapi.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"userkey": "uk"}})
+        if request.url.host == "appversion.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"Android": {"version_code": "37.2.5"}}})
+        if request.url.host == "webapi.115.com":
+            assert request.url.params.get("pick_code") == "real-pc"
+            return httpx.Response(200, json={
+                "state": True,
+                "data": [{
+                    "fid": "1234567", "cid": "0", "n": "movie.mkv", "s": 7,
+                    "sha": "A" * 40, "pc": "real-pc", "te": 1, "tp": 2, "iv": 1,
+                }],
+            })
+        return httpx.Response(200, content=b"encrypted")
+
+    monkeypatch.setattr(
+        client_module,
+        "decrypt_upload_response",
+        # 关键：真实响应结构 —— fileid 是 int 0 占位符；pickcode 才是稳定标识
+        lambda _content: {"state": True, "data": {"status": 2, "fileid": 0, "pickcode": "real-pc"}},
+    )
+    client = _make_client(handler, cookies="UID=12345678_R2_1700000000; CID=abc; SEID=xyz")
+    result = await client.rapid_upload(file_path)
+    assert result.status is RapidUploadStatus.SUCCESS
+    assert result.file_id == "1234567"
+    assert result.file_id != "0"
+    assert result.pickcode == "real-pc"
+    await client.close()
+
+
+async def test_rapid_upload_status_two_without_pickcode_raises_request_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """协议不变形保护：status=2 一定带 pickcode，否则说明 115 变了响应结构。"""
+    file_path = tmp_path / "movie.mkv"
+    file_path.write_bytes(b"content")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "proapi.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"userkey": "uk"}})
+        if request.url.host == "appversion.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"Android": {"version_code": "37.2.5"}}})
+        return httpx.Response(200, content=b"encrypted")
+
+    monkeypatch.setattr(
+        client_module,
+        "decrypt_upload_response",
+        lambda _content: {"state": True, "data": {"status": 2}},
+    )
+    client = _make_client(handler, cookies="UID=12345678_R2_1700000000; CID=abc; SEID=xyz")
+    with pytest.raises(Cloud115RequestError, match="missing pickcode"):
+        await client.rapid_upload(file_path)
+    await client.close()
+
+
+async def test_rapid_upload_retries_pickcode_lookup_while_index_lags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """115 侧的 pickcode 索引延迟窗口内，反查会返回 data=[] → Cloud115NotFoundError。
+    rapid_upload 应在短退避窗口内重试，最终拿到真 file_id 而不是把成功的秒传误报为失败。
+    回归自：pickcode_info 竞态首次反查失败导致上层 item 被误标 failed。"""
+    file_path = tmp_path / "movie.mkv"
+    file_path.write_bytes(b"content")
+
+    get_info_calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "proapi.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"userkey": "uk"}})
+        if request.url.host == "appversion.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"Android": {"version_code": "37.2.5"}}})
+        if request.url.host == "webapi.115.com":
+            assert request.url.path == "/files/get_info"
+            get_info_calls["count"] += 1
+            # 前两次索引未就绪：data=[] → Cloud115NotFoundError；第三次返回真 fid
+            if get_info_calls["count"] < 3:
+                return httpx.Response(200, json={"state": True, "data": []})
+            return httpx.Response(200, json={
+                "state": True,
+                "data": [{
+                    "fid": "777", "cid": "0", "n": "movie.mkv", "s": 7,
+                    "sha": "A" * 40, "pc": "lag-pc", "te": 1, "tp": 2, "iv": 1,
+                }],
+            })
+        return httpx.Response(200, content=b"encrypted")
+
+    monkeypatch.setattr(
+        client_module,
+        "decrypt_upload_response",
+        lambda _content: {"state": True, "data": {"status": 2, "pickcode": "lag-pc"}},
+    )
+    # 拦 sleep 避免真等，同时断言退避确实被触发过（至少调 2 次）。
+    sleep_calls: list[float] = []
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", _fake_sleep)
+
+    client = _make_client(handler, cookies="UID=12345678_R2_1700000000; CID=abc; SEID=xyz")
+    result = await client.rapid_upload(file_path)
+    assert result.status is RapidUploadStatus.SUCCESS
+    assert result.file_id == "777"
+    assert result.pickcode == "lag-pc"
+    assert get_info_calls["count"] == 3  # 前 2 次 NotFound + 第 3 次成功
+    assert len(sleep_calls) >= 2 and all(delay > 0 for delay in sleep_calls)
+    await client.close()
+
+
+async def test_rapid_upload_gives_up_when_pickcode_index_never_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """索引窗口用完仍然 NotFound → 最后一次的 Cloud115NotFoundError 直接透传出来。"""
+    file_path = tmp_path / "movie.mkv"
+    file_path.write_bytes(b"content")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "proapi.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"userkey": "uk"}})
+        if request.url.host == "appversion.115.com":
+            return httpx.Response(200, json={"state": True, "data": {"Android": {"version_code": "37.2.5"}}})
+        if request.url.host == "webapi.115.com":
+            return httpx.Response(200, json={"state": True, "data": []})
+        return httpx.Response(200, content=b"encrypted")
+
+    monkeypatch.setattr(
+        client_module,
+        "decrypt_upload_response",
+        lambda _content: {"state": True, "data": {"status": 2, "pickcode": "never-ready"}},
+    )
+
+    async def _fake_sleep(_delay: float) -> None:
+        return None
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", _fake_sleep)
+
+    client = _make_client(handler, cookies="UID=12345678_R2_1700000000; CID=abc; SEID=xyz")
+    with pytest.raises(Cloud115NotFoundError):
+        await client.rapid_upload(file_path)
     await client.close()
 
 
@@ -489,13 +658,21 @@ async def test_rapid_upload_android_cookie_uses_android_userkey_endpoint(
             return httpx.Response(200, json={"state": True, "data": {"userkey": "android-uk"}})
         if request.url.host == "appversion.115.com":
             return httpx.Response(200, json={"state": True, "data": {"Android": {"version_code": "37.2.5"}}})
+        if request.url.host == "webapi.115.com":
+            return httpx.Response(200, json={
+                "state": True,
+                "data": [{
+                    "fid": "42", "cid": "0", "n": "android-demo.exe", "s": 14,
+                    "sha": "B" * 40, "pc": "and-pc", "te": 1, "tp": 2, "iv": 0,
+                }],
+            })
         assert request.url.path == "/4.0/initupload.php"
         return httpx.Response(200, content=b"encrypted")
 
     monkeypatch.setattr(
         client_module,
         "decrypt_upload_response",
-        lambda _content: {"state": True, "data": {"status": 2}},
+        lambda _content: {"state": True, "data": {"status": 2, "pickcode": "and-pc"}},
     )
     client = _make_client(handler, cookies="UID=12345678_F1_1700000000; CID=abc; SEID=xyz")
     result = await client.rapid_upload(file_path)
