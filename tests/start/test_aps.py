@@ -488,6 +488,7 @@ def test_aps_recovers_interrupted_scheduled_tasks_before_starting_scheduler(monk
                 "error_message": "APS进程重启，任务已中断",
                 "allow_null_owner": True,
                 "force": True,
+                "suppress_notification_task_keys": {"media_rapid_upload"},
             },
         ),
         (
@@ -497,6 +498,7 @@ def test_aps_recovers_interrupted_scheduled_tasks_before_starting_scheduler(monk
                 "error_message": "APS进程重启，任务已中断",
                 "allow_null_owner": True,
                 "force": True,
+                "suppress_notification_task_keys": {"media_rapid_upload"},
             },
         ),
         (
@@ -506,6 +508,7 @@ def test_aps_recovers_interrupted_scheduled_tasks_before_starting_scheduler(monk
                 "error_message": "APS进程重启，任务已中断",
                 "allow_null_owner": True,
                 "force": True,
+                "suppress_notification_task_keys": {"media_rapid_upload"},
             },
         ),
         (
@@ -515,6 +518,7 @@ def test_aps_recovers_interrupted_scheduled_tasks_before_starting_scheduler(monk
                 "error_message": "APS进程重启，任务已中断",
                 "allow_null_owner": True,
                 "force": True,
+                "suppress_notification_task_keys": {"media_rapid_upload"},
             },
         ),
         "build",
