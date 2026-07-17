@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -15,6 +16,7 @@ from src.lib.cloud115 import (
     VideoSegment,
 )
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
+from src.service.playback import media_thumbnail_service as thumbnail_module
 
 
 def _segment(index: int, duration: float = 10.0) -> VideoSegment:
@@ -155,6 +157,70 @@ def test_hls_segment_generation_never_exceeds_three_workers(
 
     assert error is None
     assert peak == 3
+
+
+def test_hls_segment_decode_limits_network_and_ffmpeg_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeReader:
+        fetched_bytes = 0
+
+        def close(self) -> None:
+            return None
+
+    class FakeImage:
+        @staticmethod
+        def save(buffer, **_kwargs) -> None:
+            buffer.write(b"webp")
+
+    class FakeFrame:
+        is_corrupt = False
+
+        @staticmethod
+        def to_image() -> FakeImage:
+            return FakeImage()
+
+    class FakeContainer:
+        streams = SimpleNamespace(video=[object()])
+
+        @staticmethod
+        def decode(_stream):
+            return iter([FakeFrame()])
+
+        @staticmethod
+        def close() -> None:
+            return None
+
+    def fake_reader(_url: str, **kwargs) -> FakeReader:
+        captured["reader_kwargs"] = kwargs
+        return FakeReader()
+
+    def fake_open(_reader: FakeReader, **kwargs) -> FakeContainer:
+        captured["open_kwargs"] = kwargs
+        return FakeContainer()
+
+    monkeypatch.setattr(thumbnail_module, "Cloud115HlsSegmentReader", fake_reader)
+    monkeypatch.setattr(thumbnail_module.av, "open", fake_open)
+
+    generated_count = MediaThumbnailService._decode_hls_segment_to_webp(
+        _segment(0),
+        [0],
+        tmp_path,
+    )
+
+    assert generated_count == 1
+    assert captured["reader_kwargs"] == {
+        "user_agent": MediaThumbnailService.CLOUD115_THUMBNAIL_UA,
+        "chunk_size": 16 * 1024,
+    }
+    assert captured["open_kwargs"] == {
+        "format": "mpegts",
+        "options": {"probesize": str(128 * 1024)},
+    }
+    assert (tmp_path / "0.webp").read_bytes() == b"webp"
 
 
 def test_local_media_are_parallel_while_cloud115_media_remain_serial(

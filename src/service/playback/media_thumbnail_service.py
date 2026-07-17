@@ -63,6 +63,8 @@ class MediaThumbnailService:
     # 115 会把 UA 绑定进 HLS variant/TS URL，签发与消费必须逐字节一致。
     CLOUD115_THUMBNAIL_UA = "Mozilla/5.0 SakuraMedia-Thumbnail/1.0"
     CLOUD115_HLS_SEGMENT_MAX_WORKERS = 3
+    CLOUD115_HLS_STREAM_CHUNK_SIZE = 16 * 1024
+    CLOUD115_HLS_PROBE_SIZE = 128 * 1024
     THUMBNAIL_INTERVAL_SECONDS = 10
     # 账号或上游级故障与具体媒体无关，延后该媒体且不消耗它的有限重试次数。
     CLOUD115_SYSTEM_FAILURES = (
@@ -193,11 +195,16 @@ class MediaThumbnailService:
         reader = Cloud115HlsSegmentReader(
             segment.url,
             user_agent=cls.CLOUD115_THUMBNAIL_UA,
+            chunk_size=cls.CLOUD115_HLS_STREAM_CHUNK_SIZE,
         )
         container = None
         try:
-            # 显式指定 mpegts，避免探测阶段为了识别格式读取过多分片内容。
-            container = av.open(reader, format="mpegts")
+            # 格式已知且只需首帧，限制 FFmpeg 探测量避免多读 TS 内容。
+            container = av.open(
+                reader,
+                format="mpegts",
+                options={"probesize": str(cls.CLOUD115_HLS_PROBE_SIZE)},
+            )
             if not container.streams.video:
                 raise RuntimeError(f"hls_video_stream_missing segment={segment.index}")
             stream = container.streams.video[0]
