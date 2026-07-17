@@ -70,7 +70,7 @@ cookies 明确失效后，重新执行扫码 token/status 两步；确认完成�
 ### 运行时行为
 
 - **播放**：`GET /media/{id}/stream`（签名 URL 不变）对 cloud115 媒体现拿一条绑定请求方 UA 的 115 直链后 `302`；直链有 `t=` 过期，播放器 seek 重新请求 `/stream` 即重新拿链。
-- **缩略图**：APS `generate-media-thumbnails` 对 cloud115 媒体走直链受控 Range 读抽帧（每 10s 一帧），并用首帧回填 `resolution`；解析直链时遇到认证、限流、网络/上游等系统性故障会延后该媒体，不消耗它的缩略图重试次数。
+- **缩略图**：APS `generate-media-thumbnails` 对 cloud115 媒体只使用最低可用清晰度的 HLS TS，每 10 秒固定一个目标点；媒体严格串行，单媒体内最多并发读取 3 个不同分片。同一 TS 命中多个目标时只解码一次。转码未完成或认证、会员、限流、网络/上游暂不可用时延后处理且不消耗重试次数，不回退整文件 Range。
 - **片段**：创建片段时现取绑定专用 UA 的 115 直链，经单请求、可 seek 的受控 RangeReader 交给 PyAV 按缩略图区间无转码 remux，生成本地独立片段资产；不会让 ffmpeg 并发直读 115 URL。
 - **删除**：删除 cloud115 Media 会同时删 115 云端文件（进 115 回收站）；cookies 失效等上游错误时记录保留并报错，避免云端孤儿文件。
 - **有效性对账**：APS `scan-media-files` 对 cloud115 媒体按 pickcode 探活——远端已删/封禁标 `invalid`、重新出现复活；cookies 失效等上游不可用**跳过本条不动 valid**。

@@ -1,3 +1,5 @@
+import asyncio
+import io
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,11 +17,22 @@ from src.config.config import settings
 from src.lib.cloud115 import (
     Cloud115AuthError,
     Cloud115CipherError,
+    Cloud115HlsSegmentReader,
     Cloud115MembershipRequiredError,
     Cloud115RateLimitedError,
     Cloud115RequestError,
+    Cloud115VideoNotReadyError,
+    VideoDefinition,
+    VideoSegment,
 )
-from src.model import Image, Media, MediaThumbnail, ResourceTaskState, get_database
+from src.model import (
+    Image,
+    Media,
+    MediaLibrary,
+    MediaThumbnail,
+    ResourceTaskState,
+    get_database,
+)
 from src.schema.catalog.actors import ImageResource
 from src.schema.playback.media import MediaThumbnailResource
 from src.service.system.activity_service import ActivityService
@@ -39,12 +52,18 @@ def _parse_resolution(resolution: str | None) -> tuple[int | None, int | None]:
         return None, None
 
 
+class _Cloud115HlsDeferredError(RuntimeError):
+    """HLS 尚未形成可抽帧时间轴；保持任务 pending 等待下轮。"""
+
+
 class MediaThumbnailService:
     TASK_KEY = "media_thumbnail_generation"
     THUMBNAIL_MAX_RETRIES = 2
     INTERRUPTED_GENERATION_ERROR_MESSAGE = "媒体缩略图生成任务中断，等待重试"
-    # cloud115 抽帧 UA：拿直链与后续 Range 读必须同 UA（115 把 UA 绑进直链 f= 指纹）。
+    # 115 会把 UA 绑定进 HLS variant/TS URL，签发与消费必须逐字节一致。
     CLOUD115_THUMBNAIL_UA = "Mozilla/5.0 SakuraMedia-Thumbnail/1.0"
+    CLOUD115_HLS_SEGMENT_MAX_WORKERS = 3
+    THUMBNAIL_INTERVAL_SECONDS = 10
     # 账号或上游级故障与具体媒体无关，延后该媒体且不消耗它的有限重试次数。
     CLOUD115_SYSTEM_FAILURES = (
         Cloud115AuthError,
@@ -52,11 +71,8 @@ class MediaThumbnailService:
         Cloud115MembershipRequiredError,
         Cloud115RateLimitedError,
         Cloud115RequestError,
+        Cloud115VideoNotReadyError,
     )
-    # 抽帧全过程受控 Range 累计字节上限：单张缩略图仅需读若干个 GOP 关键帧片段，
-    # 单个视频抽 6-10 张封面通常远小于这个数量级；给到 512MB 是为了兜住 CDN 偶发
-    # 不遵守 Range 直接吐 200 全量 body 的情况——即使碰到，也不会把整部影片读进内存。
-    CLOUD115_THUMBNAIL_FETCH_BUDGET_BYTES = 512 * 1024 * 1024
 
     @staticmethod
     def _ensure_worker_database_ready() -> None:
@@ -73,15 +89,75 @@ class MediaThumbnailService:
         return library is not None and library.backend == MediaLibraryBackend.CLOUD115.value
 
     @classmethod
-    def _open_cloud115_reader(cls, media: Media):
-        """现拿直链并构造受控 Range reader；返回 (reader, 日志标签)。
+    def _select_lowest_hls_definition(
+        cls,
+        definitions: list[VideoDefinition],
+    ) -> VideoDefinition:
+        if not definitions:
+            raise _Cloud115HlsDeferredError("cloud115_hls_definitions_empty")
 
-        不把 ffmpeg/PyAV 默认 http 层裸连直链（open/seek 突发请求撞每链 ~4 并发上限，
-        会被误报 InvalidData），受控顺序读是纪要实测过的方案：190 帧 24 秒。
-        """
-        import asyncio
+        def _sort_key(definition: VideoDefinition) -> tuple[int, int, int, int]:
+            width, height = _parse_resolution(definition.resolution)
+            if width is None or height is None or width <= 0 or height <= 0:
+                return (1, 0, 0, max(0, definition.bandwidth))
+            return (0, width * height, height, max(0, definition.bandwidth))
 
-        from src.lib.cloud115 import Cloud115RangeReader
+        # 优先按真实像素面积选最低清晰度；全部缺失尺寸时按带宽最低者确定。
+        parseable = [
+            definition
+            for definition in definitions
+            if all(
+                value is not None and value > 0
+                for value in _parse_resolution(definition.resolution)
+            )
+        ]
+        candidates = parseable or definitions
+        return min(candidates, key=_sort_key)
+
+    @classmethod
+    def _build_hls_thumbnail_targets(
+        cls,
+        segments: list[VideoSegment],
+        *,
+        interval_seconds: int | None = None,
+    ) -> tuple[list[tuple[VideoSegment, list[int]]], int]:
+        interval = interval_seconds or cls.THUMBNAIL_INTERVAL_SECONDS
+        if interval <= 0:
+            raise ValueError("interval_seconds must be positive")
+
+        timeline: list[tuple[VideoSegment, float, float]] = []
+        cursor = 0.0
+        for segment in segments:
+            duration = max(0.0, float(segment.duration_seconds))
+            if duration <= 0:
+                continue
+            end = cursor + duration
+            timeline.append((segment, cursor, end))
+            cursor = end
+        if not timeline or cursor <= 0:
+            raise _Cloud115HlsDeferredError("cloud115_hls_segments_empty")
+
+        grouped: dict[int, tuple[VideoSegment, list[int]]] = {}
+        timeline_index = 0
+        target = 0
+        while target < cursor:
+            # 半开区间 [start, end)：精确落在边界的目标归下一个分片。
+            while (
+                timeline_index < len(timeline) - 1
+                and target >= timeline[timeline_index][2]
+            ):
+                timeline_index += 1
+            segment = timeline[timeline_index][0]
+            item = grouped.setdefault(segment.index, (segment, []))
+            item[1].append(target)
+            target += interval
+        return list(grouped.values()), sum(len(offsets) for _, offsets in grouped.values())
+
+    @classmethod
+    async def _resolve_cloud115_hls_targets(
+        cls,
+        media: Media,
+    ) -> tuple[list[tuple[VideoSegment, list[int]]], int, str]:
         from src.service.playback.cloud115_backend_service import cloud115_client_for
 
         locator = media.backend_locator or {}
@@ -89,36 +165,105 @@ class MediaThumbnailService:
         if not pickcode:
             raise RuntimeError("cloud115_locator_missing")
 
-        async def _resolve():
-            async with cloud115_client_for(media.library) as client:
-                return await client.get_download_url(pickcode, cls.CLOUD115_THUMBNAIL_UA)
-
-        direct = asyncio.run(_resolve())
-        reader = Cloud115RangeReader(
-            direct.url,
+        async with cloud115_client_for(
+            media.library,
             user_agent=cls.CLOUD115_THUMBNAIL_UA,
-            file_size=direct.file_size,
-            max_fetched_bytes=cls.CLOUD115_THUMBNAIL_FETCH_BUDGET_BYTES,
+        ) as client:
+            info = await client.get_video_info(pickcode)
+            definition = cls._select_lowest_hls_definition(info.definitions)
+            segments = await client.get_video_segments_for_definition(definition)
+
+        targets, expected_count = cls._build_hls_thumbnail_targets(segments)
+        definition_label = (
+            definition.label or definition.resolution or str(definition.bandwidth)
         )
-        return reader, f"cloud115:{pickcode}"
+        source_label = f"cloud115-hls:{pickcode}:{definition_label}"
+        return targets, expected_count, source_label
 
-    @staticmethod
-    def _backfill_cloud115_resolution(media: Media, webp_files: list[Path]) -> None:
-        """cloud115 导入时拿不到分辨率（无本地 probe），用抽帧产物（无缩放全分辨率帧）回填。"""
-        if media.resolution or not webp_files:
-            return
+    @classmethod
+    def _decode_hls_segment_to_webp(
+        cls,
+        segment: VideoSegment,
+        offsets: list[int],
+        webp_dir: Path,
+    ) -> int:
+        if av is None:
+            raise RuntimeError("pyav_not_installed")
+
+        reader = Cloud115HlsSegmentReader(
+            segment.url,
+            user_agent=cls.CLOUD115_THUMBNAIL_UA,
+        )
+        container = None
         try:
-            from PIL import Image as PILImage
-
-            with PILImage.open(webp_files[0]) as image:
-                width, height = image.size
-        except Exception as exc:
-            logger.warning(
-                "Backfill cloud115 resolution failed media_id={} detail={}", media.id, exc
+            # 显式指定 mpegts，避免探测阶段为了识别格式读取过多分片内容。
+            container = av.open(reader, format="mpegts")
+            if not container.streams.video:
+                raise RuntimeError(f"hls_video_stream_missing segment={segment.index}")
+            stream = container.streams.video[0]
+            clean_frame = next(
+                (frame for frame in container.decode(stream) if not frame.is_corrupt),
+                None,
             )
-            return
-        media.resolution = f"{width}x{height}"
-        media.save()
+            if clean_frame is None:
+                raise RuntimeError(f"hls_clean_frame_missing segment={segment.index}")
+
+            # 同一 TS 可能覆盖两个固定 10 秒目标；只编码一次，再写入多个 offset 文件。
+            buffer = io.BytesIO()
+            clean_frame.to_image().save(buffer, format="WEBP", quality=80)
+            content = buffer.getvalue()
+            for offset in offsets:
+                (webp_dir / f"{offset}.webp").write_bytes(content)
+            logger.debug(
+                "Decoded cloud115 HLS segment segment_index={} offsets={} fetched_bytes={}",
+                segment.index,
+                offsets,
+                reader.fetched_bytes,
+            )
+            return len(offsets)
+        finally:
+            if container is not None:
+                container.close()
+            reader.close()
+
+    @classmethod
+    def _generate_cloud115_hls_webp(
+        cls,
+        targets: list[tuple[VideoSegment, list[int]]],
+        webp_dir: Path,
+        *,
+        source_label: str,
+    ) -> Exception | None:
+        first_error: Exception | None = None
+        with ThreadPoolExecutor(
+            max_workers=cls.CLOUD115_HLS_SEGMENT_MAX_WORKERS,
+            thread_name_prefix="cloud115-hls-thumbnail",
+        ) as executor:
+            futures = {
+                executor.submit(
+                    cls._decode_hls_segment_to_webp,
+                    segment,
+                    offsets,
+                    webp_dir,
+                ): (segment, offsets)
+                for segment, offsets in targets
+            }
+            for future in as_completed(futures):
+                segment, offsets = futures[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    if first_error is None:
+                        first_error = exc
+                    logger.warning(
+                        "Cloud115 HLS thumbnail segment failed source={} "
+                        "segment_index={} offsets={} detail={}",
+                        source_label,
+                        segment.index,
+                        offsets,
+                        exc,
+                    )
+        return first_error
 
     @staticmethod
     def _pending_media_ids() -> list[int]:
@@ -150,6 +295,23 @@ class MediaThumbnailService:
         )
         return [item.id for item in query]
 
+    @staticmethod
+    def _cloud115_media_ids(media_ids: list[int]) -> set[int]:
+        if not media_ids:
+            return set()
+
+        from src.model.enums import MediaLibraryBackend
+
+        query = (
+            Media.select(Media.id)
+            .join(MediaLibrary)
+            .where(
+                Media.id.in_(media_ids),
+                MediaLibrary.backend == MediaLibraryBackend.CLOUD115.value,
+            )
+        )
+        return {media.id for media in query}
+
     @classmethod
     def count_pending_media(cls) -> int:
         # 待生成缩略图的媒体文件数量：直接复用 _pending_media_ids 的判定口径，确保与缩略图生成实际处理范围完全一致。
@@ -161,6 +323,17 @@ class MediaThumbnailService:
         if not image_root_path.is_absolute():
             image_root_path = (Path.cwd() / image_root_path).resolve()
         return image_root_path
+
+    @classmethod
+    def _read_thumbnail_dimensions(
+        cls,
+        image_origin: str,
+    ) -> tuple[int | None, int | None]:
+        from PIL import Image as PILImage
+
+        image_path = cls._image_root_path() / image_origin
+        with PILImage.open(image_path) as image:
+            return image.size
 
     @classmethod
     def _thumbnail_directory(cls, media: Media) -> Path:
@@ -281,11 +454,7 @@ class MediaThumbnailService:
         interval_seconds: int = 10,
         source_label: str | None = None,
     ) -> Exception | None:
-        """从 video_source 每 interval_seconds 抽一帧存 webp_dir。
-
-        video_source: 本地路径字符串，或受控 file-like（cloud115 直链的 Cloud115RangeReader）。
-        source_label 仅用于日志（file-like 没有可读路径）。
-        """
+        """从本地视频每 interval_seconds 抽一帧存入 webp_dir。"""
         if av is None:
             return RuntimeError("pyav_not_installed")
 
@@ -441,16 +610,19 @@ class MediaThumbnailService:
             cls._log_aborted(media, "content_fingerprint_missing", error_key)
             return {error_key: 1}
 
-        # cloud115 媒体没有本地 path：走直链 + 受控 Range reader 抽帧（每 10s 一帧，实测方案）。
+        # Cloud115 只走官方 HLS；转码未就绪时保持 pending，不回退整文件直链。
         is_cloud115 = cls._is_cloud115_media(media)
-        reader = None
+        hls_targets: list[tuple[VideoSegment, list[int]]] = []
+        hls_expected_count = 0
         if is_cloud115:
             try:
-                reader, source_label = cls._open_cloud115_reader(media)
-            except cls.CLOUD115_SYSTEM_FAILURES as exc:
-                # 直链解析失败前不进入 running，保留原任务状态和 attempt_count 供后续轮次重试。
+                hls_targets, hls_expected_count, source_label = asyncio.run(
+                    cls._resolve_cloud115_hls_targets(media)
+                )
+            except (cls.CLOUD115_SYSTEM_FAILURES, _Cloud115HlsDeferredError) as exc:
+                # HLS 尚不可用时不进入 running，保留 attempt_count 等待后续调度轮次。
                 logger.warning(
-                    "Deferred cloud115 media thumbnail generation media_id={} detail={} retry_count={}",
+                    "Deferred cloud115 HLS thumbnail generation media_id={} detail={} retry_count={}",
                     media.id,
                     exc,
                     ResourceTaskStateService.get_state_or_default(
@@ -460,8 +632,11 @@ class MediaThumbnailService:
                 return {"deferred_media": 1}
             except Exception as exc:
                 ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
-                error_key = cls._mark_failure(media, f"cloud115_direct_url_failed: {exc}")
-                cls._log_aborted(media, "cloud115_direct_url_failed", error_key)
+                error_key = cls._mark_failure(
+                    media,
+                    f"cloud115_hls_prepare_failed: {exc}",
+                )
+                cls._log_aborted(media, "cloud115_hls_prepare_failed", error_key)
                 return {error_key: 1}
             ResourceTaskStateService.mark_started(cls.TASK_KEY, media.id)
         else:
@@ -485,8 +660,10 @@ class MediaThumbnailService:
             webp_dir = cls._thumbnail_directory(media)
             cls._clear_webp_directory(webp_dir)
             if is_cloud115:
-                pyav_error = cls._generate_webp_with_pyav(
-                    reader, webp_dir, source_label=source_label
+                pyav_error = cls._generate_cloud115_hls_webp(
+                    hls_targets,
+                    webp_dir,
+                    source_label=source_label,
                 )
             else:
                 pyav_error = cls._generate_webp_with_pyav(str(video_path), webp_dir)
@@ -500,16 +677,17 @@ class MediaThumbnailService:
 
             parseable_webp_files, total_webp_count = cls._collect_parseable_webp_files(webp_dir)
             parseable_count = len(parseable_webp_files)
-            duration_seconds = cls._duration_seconds_for_threshold(media)
-            expected_count = cls._expected_thumbnail_count(duration_seconds)
+            if is_cloud115:
+                expected_count = hls_expected_count
+            else:
+                duration_seconds = cls._duration_seconds_for_threshold(media)
+                expected_count = cls._expected_thumbnail_count(duration_seconds)
             minimum_count = cls._minimum_acceptable_thumbnail_count(expected_count)
 
             if expected_count > 0 and parseable_count >= minimum_count:
                 generated_count = cls._persist_generated_files(media, parseable_webp_files)
                 if generated_count == 0:
                     raise RuntimeError("thumbnail_generation_unparseable_filenames")
-                if is_cloud115:
-                    cls._backfill_cloud115_resolution(media, parseable_webp_files)
                 cls._mark_success(media)
                 elapsed_ms = int((time.time() - started_at) * 1000)
                 if pyav_error is not None:
@@ -562,8 +740,6 @@ class MediaThumbnailService:
             if generated_count == 0:
                 raise RuntimeError("thumbnail_generation_unparseable_filenames")
 
-            if is_cloud115:
-                cls._backfill_cloud115_resolution(media, parseable_webp_files)
             cls._mark_success(media)
             elapsed_ms = int((time.time() - started_at) * 1000)
             logger.info(
@@ -584,9 +760,6 @@ class MediaThumbnailService:
                 task_state.attempt_count,
             )
             return {error_key: 1}
-        finally:
-            if reader is not None:
-                reader.close()
 
     @staticmethod
     def _emit_progress(progress_callback, **payload) -> None:
@@ -618,29 +791,51 @@ class MediaThumbnailService:
             summary_patch=stats,
         )
         logger.info(
-            "Starting media thumbnail generation pending_media={} max_workers={}",
+            "Starting media thumbnail generation pending_media={} "
+            "local_media_workers={} cloud115_media_workers=1 hls_segment_workers={}",
             len(media_ids),
             settings.media.max_thumbnail_process_count,
+            cls.CLOUD115_HLS_SEGMENT_MAX_WORKERS,
         )
+
+        cloud115_media_ids = cls._cloud115_media_ids(media_ids)
+        local_media_ids = [
+            media_id for media_id in media_ids if media_id not in cloud115_media_ids
+        ]
+        ordered_cloud115_media_ids = [
+            media_id for media_id in media_ids if media_id in cloud115_media_ids
+        ]
+        completed_count = 0
+
+        def record_result(result: dict[str, int]) -> None:
+            nonlocal completed_count
+            completed_count += 1
+            for key, value in result.items():
+                stats[key] += value
+            cls._emit_progress(
+                progress_callback,
+                current=completed_count,
+                total=len(media_ids),
+                text=f"已处理缩略图任务 {completed_count}/{len(media_ids)}",
+                summary_patch=stats,
+            )
+
+        # 本地抽帧保留受控并行；Cloud115 媒体严格串行，单媒体内部最多并发 3 个 TS。
         with ThreadPoolExecutor(
             max_workers=settings.media.max_thumbnail_process_count,
-            thread_name_prefix="media-thumbnail",
+            thread_name_prefix="media-thumbnail-local",
         ) as executor:
-            futures = [
-                executor.submit(ActivityService.wrap_current_task_run_context(cls._process_media), media_id)
-                for media_id in media_ids
-            ]
-            for completed_count, future in enumerate(as_completed(futures), start=1):
-                result = future.result()
-                for key, value in result.items():
-                    stats[key] += value
-                cls._emit_progress(
-                    progress_callback,
-                    current=completed_count,
-                    total=len(media_ids),
-                    text=f"已处理缩略图任务 {completed_count}/{len(media_ids)}",
-                    summary_patch=stats,
+            local_futures = [
+                executor.submit(
+                    ActivityService.wrap_current_task_run_context(cls._process_media),
+                    media_id,
                 )
+                for media_id in local_media_ids
+            ]
+            for media_id in ordered_cloud115_media_ids:
+                record_result(cls._process_media(media_id))
+            for future in as_completed(local_futures):
+                record_result(future.result())
         elapsed_ms = int((time.time() - started_at) * 1000)
         logger.info(
             "Finished media thumbnail generation pending_media={} successful_media={} generated_thumbnails={} deferred_media={} retryable_failed_media={} terminal_failed_media={} elapsed_ms={}",
@@ -656,15 +851,24 @@ class MediaThumbnailService:
 
     @staticmethod
     def list_media_thumbnails(media_id: int) -> list[MediaThumbnailResource]:
-        # 缩略图无缩放、整组共享所属媒体分辨率，先查一次 media 拿宽高，未探测出分辨率则为 None。
-        media = Media.get_or_none(Media.id == media_id)
-        width, height = _parse_resolution(media.resolution if media else None)
-        query = (
+        thumbnails = list(
             MediaThumbnail.select(MediaThumbnail, Image)
             .join(Image)
             .where(MediaThumbnail.media == media_id)
             .order_by(MediaThumbnail.offset.asc(), MediaThumbnail.id.asc())
         )
+        width, height = None, None
+        if thumbnails:
+            try:
+                width, height = MediaThumbnailService._read_thumbnail_dimensions(
+                    thumbnails[0].image.origin
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Resolve media thumbnail dimensions failed media_id={} detail={}",
+                    media_id,
+                    exc,
+                )
         return [
             MediaThumbnailResource(
                 thumbnail_id=thumbnail.id,
@@ -674,5 +878,5 @@ class MediaThumbnailService:
                 width=width,
                 height=height,
             )
-            for thumbnail in query
+            for thumbnail in thumbnails
         ]
