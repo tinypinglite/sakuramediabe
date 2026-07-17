@@ -208,7 +208,16 @@ async def stream_media_file(
     # cloud115 库：现拿绑定请求方 UA 的直链后 302（签名 URL 保护 /stream，302 之后是 115 CDN）。
     # signature 参与直链缓存键：换一次签名 URL（前端换会话/超 12h 续签）就重取。
     if MediaService.is_cloud115_media(media):
-        user_agent = request.headers.get("user-agent") or "SakuraMedia-Player/1.0"
+        # 用 getlist 排查"客户端塞了多条 User-Agent"这类隐蔽情况——libmpv/ffmpeg 某些版本
+        # 用 -headers 覆盖 UA 时会与默认 UA 同时出现在报文里，Starlette 只取第一条，与
+        # CDN 侧解析的 UA 可能是不同一条，进而造成签名不一致。
+        ua_list = request.headers.getlist("user-agent")
+        user_agent = (ua_list[0] if ua_list else "") or "SakuraMedia-Player/1.0"
+        from loguru import logger
+        logger.info(
+            "cloud115 stream request media_id={} ua_count={} ua_first={!r} ua_all={!r} sig={} client={}",
+            media_id, len(ua_list), user_agent, ua_list, signature[:12], request.client.host if request.client else "?",
+        )
         direct_url = await MediaService.resolve_cloud115_stream_url(
             media, user_agent, signature
         )

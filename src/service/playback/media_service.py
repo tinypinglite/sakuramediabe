@@ -90,8 +90,11 @@ class MediaService:
         增加超时缓解，这里 5s 已经足够覆盖正常一跳。
         """
         try:
+            # trust_env=False 与 SDK client 对齐，避免探活走系统代理而 downurl 直连。
             async with httpx.AsyncClient(
-                timeout=cls._CLOUD115_URL_PROBE_TIMEOUT, follow_redirects=True
+                timeout=cls._CLOUD115_URL_PROBE_TIMEOUT,
+                follow_redirects=True,
+                trust_env=False,
             ) as probe:
                 response = await probe.get(
                     url,
@@ -105,9 +108,16 @@ class MediaService:
             return False
         if response.status_code in (200, 206):
             return True
+        # 403 时把 UA / 完整 URL / CDN 响应体全打出来，用于对齐"backend 收到的 UA"、
+        # "签名时用的 UA"、"CDN 见到的 UA/签名"三者是否一致（Aliyun OSS 会回
+        # {"status":403,"message":"invalid signature"}，能据此判是 UA 不一致还是别的）。
+        try:
+            body_preview = response.content[:300].decode("utf-8", errors="replace")
+        except Exception:
+            body_preview = "<binary>"
         logger.warning(
-            "cloud115 stream url probe rejected status={} url_head={}",
-            response.status_code, url[:80],
+            "cloud115 stream url probe rejected status={} ua={!r} url={} body={}",
+            response.status_code, user_agent, url, body_preview,
         )
         return False
 
@@ -174,9 +184,10 @@ class MediaService:
             direct.url,
             now + cls._CLOUD115_URL_TTL_SECONDS,
         )
+        # 记录用于签名的 UA 与新链地址，便于对齐后续探活/播放器一路请求是否一致。
         logger.info(
-            "cloud115 stream url refetched media_id={} pickcode={}",
-            media.id, pickcode,
+            "cloud115 stream url refetched media_id={} pickcode={} ua={!r} url={}",
+            media.id, pickcode, user_agent, direct.url,
         )
         return direct.url
 
