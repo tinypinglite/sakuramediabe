@@ -6,12 +6,20 @@ from fastapi import status
 from fastapi.encoders import jsonable_encoder
 from loguru import logger
 from starlette.responses import JSONResponse
+
 from src.api.exception.errors import ApiError
 
 
-def _error_response(status_code: int, code: str, message: str, details=None):
+def _error_response(
+    status_code: int,
+    code: str,
+    message: str,
+    details=None,
+    headers: dict[str, str] | None = None,
+):
     return JSONResponse(
         status_code=status_code,
+        headers=headers,
         content={
             "error": {
                 "code": code,
@@ -23,7 +31,13 @@ def _error_response(status_code: int, code: str, message: str, details=None):
 
 
 async def api_error_handler(request, exc: ApiError):
-    return _error_response(exc.status_code, exc.code, exc.message, exc.details)
+    return _error_response(
+        exc.status_code,
+        exc.code,
+        exc.message,
+        exc.details,
+        exc.response_headers,
+    )
 
 
 async def http_exception_handler(request, exc):
@@ -58,5 +72,6 @@ async def all_exception_handler(request, exc):
             exc.code,
             exc.message,
             exc.details,
+            exc.response_headers,
         )
     return _error_response(500, "internal_error", "Internal server error")

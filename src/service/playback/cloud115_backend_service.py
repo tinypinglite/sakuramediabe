@@ -92,12 +92,16 @@ def _persist_cookies_snapshot(
 
 
 @asynccontextmanager
-async def cloud115_client_for(library: MediaLibrary) -> AsyncIterator[Cloud115Client]:
-    """按库配置建 Cloud115Client；退出时回写 cookies 快照（有变化才写库）。"""
+async def cloud115_client_for(
+    library: MediaLibrary,
+    *,
+    user_agent: str | None = None,
+) -> AsyncIterator[Cloud115Client]:
+    """按库配置建 Cloud115Client；可指定请求 UA，退出时回写 cookies 快照。"""
     config = require_cloud115_library(library)
     original_config = dict(config)
     original_cookies = original_config["cookies"]
-    client = Cloud115Client(cookies=original_cookies)
+    client = Cloud115Client(cookies=original_cookies, user_agent=user_agent)
     try:
         yield client
     finally:

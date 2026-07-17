@@ -11,6 +11,8 @@ from src.common.range_streaming import range_requests_response
 from src.model import Media
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
+    HlsStreamListResponse,
+    HlsStreamResource,
     InvalidMediaResource,
     MediaListItemResource,
     MediaPointCreateRequest,
@@ -27,7 +29,7 @@ from src.schema.transfers.rapid_upload import (
     MediaRapidUploadCreateRequest,
     MediaRapidUploadTriggerResponse,
 )
-from src.service.playback import MediaService
+from src.service.playback import Cloud115HlsService, MediaService
 from src.service.transfers import MediaRapidUploadService
 
 router = APIRouter(
@@ -234,6 +236,76 @@ async def stream_media_file(
         request,
         file_path=str(absolute_path),
         content_type=content_type or "application/octet-stream",
+    )
+
+
+@router.get("/{media_id}/hls-streams", response_model=HlsStreamListResponse)
+async def list_media_hls_streams(
+    media_id: int,
+    expires: int | None = None,
+    signature: str | None = None,
+):
+    if expires is None or not signature:
+        raise ApiError(403, "file_signature_invalid", "文件签名无效")
+
+    verify_media_signature(media_id, expires, signature)
+    media = Media.get_or_none(Media.id == media_id)
+    if media is None:
+        raise ApiError(404, "media_not_found", "媒体不存在")
+    if not MediaService.is_cloud115_media(media):
+        raise ApiError(
+            400,
+            "hls_not_cloud115_media",
+            "本地媒体不支持 HLS",
+            {"media_id": media_id},
+        )
+
+    streams = await Cloud115HlsService.list_hls_streams(media)
+    return HlsStreamListResponse(
+        streams=[
+            HlsStreamResource(
+                quality=stream.quality,
+                resolution=stream.resolution,
+                bandwidth=stream.bandwidth,
+                url=(
+                    f"/media/{media_id}/hls-streams/{stream.bandwidth}.m3u8"
+                    f"?expires={expires}&signature={signature}"
+                ),
+            )
+            for stream in streams
+        ],
+    )
+
+
+@router.get("/{media_id}/hls-streams/{bandwidth}.m3u8")
+async def redirect_media_hls_stream(
+    request: Request,
+    media_id: int,
+    bandwidth: int,
+    expires: int | None = None,
+    signature: str | None = None,
+):
+    if expires is None or not signature:
+        raise ApiError(403, "file_signature_invalid", "文件签名无效")
+
+    verify_media_signature(media_id, expires, signature)
+    media = Media.get_or_none(Media.id == media_id)
+    if media is None:
+        raise ApiError(404, "media_not_found", "媒体不存在")
+
+    # 必须用播放器本次请求携带的真实 UA 向 115 获取签名地址；播放器跟随 302 时会沿用同一 UA。
+    ua_list = request.headers.getlist("user-agent")
+    user_agent = (ua_list[0] if ua_list else "") or ""
+    variant_url = await Cloud115HlsService.resolve_hls_variant_url(
+        media,
+        bandwidth=bandwidth,
+        user_agent=user_agent,
+    )
+    return RedirectResponse(
+        variant_url,
+        status_code=status.HTTP_302_FOUND,
+        # 防止播放器长期缓存已过期的 115 签名地址；重新打开时应再次经过本端点。
+        headers={"Cache-Control": "no-store"},
     )
 
 

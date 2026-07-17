@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 from unittest.mock import Mock
 import logging
+from types import SimpleNamespace
 
 from src.api.routers import deps
 from src.api.routers.catalog import tags
@@ -8,6 +10,7 @@ from src.api.routers.files import images
 from src.api.routers.discovery import hot_reviews
 from src.api.routers.discovery import image_search
 from src.api.routers.discovery import ranking_sources
+from src.api.routers.playback import media as media_router
 from src.api.routers.playback import media_libraries
 from src.api.routers.system import account
 from src.api.routers.system import activity
@@ -22,6 +25,8 @@ from src.api.routers.videos import collections as video_collections
 from src.api.routers.videos import imports as video_imports
 from src.api.routers.videos import items as video_items
 from src.api.app import create_app
+from src.api.exception.errors import ApiError
+from src.api.exception.exception import api_error_handler
 from src.config.config import settings
 
 
@@ -253,6 +258,107 @@ def test_create_app_registers_media_clip_routes():
     assert "/clip-collections/{collection_id}" in paths
     assert "/clip-collections/{collection_id}/clips" in paths
     assert "/clip-collections/{collection_id}/clips/{clip_id}" in paths
+
+
+def test_create_app_registers_media_hls_streams_route():
+    app = create_app()
+    paths = {getattr(route, "path", None) for route in app.routes}
+
+    assert "/media/{media_id}/hls-streams" in paths
+    assert "/media/{media_id}/hls-streams/{bandwidth}.m3u8" in paths
+
+
+async def test_hls_stream_list_returns_backend_redirect_urls(monkeypatch):
+    media = SimpleNamespace(id=5048)
+    monkeypatch.setattr(media_router, "verify_media_signature", Mock())
+    monkeypatch.setattr(media_router.Media, "get_or_none", Mock(return_value=media))
+    monkeypatch.setattr(
+        media_router.MediaService,
+        "is_cloud115_media",
+        Mock(return_value=True),
+    )
+
+    async def list_streams(_media):
+        assert _media is media
+        return [SimpleNamespace(quality="UD", resolution="1920x1080", bandwidth=3000000)]
+
+    monkeypatch.setattr(
+        media_router.Cloud115HlsService,
+        "list_hls_streams",
+        list_streams,
+    )
+
+    response = await media_router.list_media_hls_streams(
+        media_id=5048,
+        expires=1700000900,
+        signature="signed",
+    )
+
+    assert response.streams[0].url == (
+        "/media/5048/hls-streams/3000000.m3u8"
+        "?expires=1700000900&signature=signed"
+    )
+
+
+async def test_hls_redirect_resolves_variant_with_player_user_agent(monkeypatch):
+    media = SimpleNamespace(id=5048)
+    monkeypatch.setattr(media_router, "verify_media_signature", Mock())
+    monkeypatch.setattr(media_router.Media, "get_or_none", Mock(return_value=media))
+    captured = {}
+
+    async def resolve_variant(_media, *, bandwidth, user_agent):
+        captured.update(
+            media=_media,
+            bandwidth=bandwidth,
+            user_agent=user_agent,
+        )
+        return "https://cpats01.115.com/video.m3u8"
+
+    monkeypatch.setattr(
+        media_router.Cloud115HlsService,
+        "resolve_hls_variant_url",
+        resolve_variant,
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/media/5048/hls-streams/3000000.m3u8",
+            "headers": [(b"user-agent", b"Frontend-Player/2.0")],
+        }
+    )
+
+    response = await media_router.redirect_media_hls_stream(
+        request=request,
+        media_id=5048,
+        bandwidth=3000000,
+        expires=1700000900,
+        signature="signed",
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://cpats01.115.com/video.m3u8"
+    assert response.headers["cache-control"] == "no-store"
+    assert captured == {
+        "media": media,
+        "bandwidth": 3000000,
+        "user_agent": "Frontend-Player/2.0",
+    }
+
+
+async def test_api_error_handler_preserves_response_headers():
+    response = await api_error_handler(
+        None,
+        ApiError(
+            503,
+            "cloud115_video_transcoding",
+            "115 视频正在转码，请稍后再试",
+            response_headers={"Retry-After": "300"},
+        ),
+    )
+
+    assert response.status_code == 503
+    assert response.headers["Retry-After"] == "300"
 
 
 def test_create_app_does_not_register_removed_api_endpoints():

@@ -8,6 +8,17 @@ from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
 
 
+class HlsStreamResource(SchemaModel):
+    quality: str
+    resolution: str
+    bandwidth: int
+    url: str
+
+
+class HlsStreamListResponse(SchemaModel):
+    streams: list[HlsStreamResource]
+
+
 class MediaPointKind(str, Enum):
     # 时刻归属过滤：JAV 仅影片媒体、VIDEO 仅非 JAV 视频媒体、ALL 不限。
     JAV = "jav"
@@ -69,7 +80,7 @@ class MediaThumbnailResource(SchemaModel):
     media_id: int
     offset_seconds: int
     image: ImageResource
-    # 缩略图按视频原始帧尺寸落盘、无缩放，尺寸恒等于所属媒体分辨率；未探测出分辨率时为 None。
+    # 尺寸来自实际落盘 WebP；同一媒体的一组缩略图共享同一 HLS 清晰度或本地视频流尺寸。
     width: int | None = None
     height: int | None = None
 

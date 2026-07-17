@@ -5,9 +5,11 @@ class ApiError(Exception):
         code: str,
         message: str,
         details: dict | None = None,
+        response_headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.code = code
         self.message = message
         self.details = details
+        self.response_headers = response_headers
