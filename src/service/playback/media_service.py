@@ -31,6 +31,7 @@ from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
     InvalidMediaResource,
     MediaListItemResource,
+    MediaRapidUploadFilterStatus,
     MediaValidityCheckResponse,
     MediaPointCreateRequest,
     MediaPointKind,
@@ -385,11 +386,12 @@ class MediaService:
         kind: MediaPointKind = MediaPointKind.ALL,
         library_id: int | None = None,
         actor_ids: list[int] | None = None,
+        rapid_upload_status: MediaRapidUploadFilterStatus | None = None,
         sort: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> PageResponse[MediaListItemResource]:
-        """跨 JAV 与 videos 域分页列出全部媒体，支持归属/库/订阅女优筛选与排序。"""
+        """跨 JAV 与 videos 域分页列出全部媒体，支持归属/库/订阅女优/上次秒传状态筛选与排序。"""
         validate_page(page, page_size, error_code="invalid_media_filter")
 
         # 非 JAV 媒体没有 movie，Movie 改为 LEFT OUTER，并补 VideoItem 兜底标题/封面。
@@ -431,6 +433,28 @@ class MediaService:
                 Movie.id.in_(actor_movie_ids)
             )
             base_query = base_query.where(Media.movie.in_(movie_numbers))
+        if rapid_upload_status is not None:
+            # 延迟 import 规避 transfers <-> playback 的循环依赖（同 delete_media / status 填充）。
+            from src.service.transfers.media_rapid_upload_service import (
+                MediaRapidUploadService,
+            )
+
+            if rapid_upload_status == MediaRapidUploadFilterStatus.NONE:
+                # NONE 反选：排除"最新非 retried item 存在且非 succeeded"的 media，
+                # 剩下的就是"从未秒传过 or 最近一次已成功切云端"。
+                base_query = base_query.where(
+                    Media.id.not_in(
+                        MediaRapidUploadService.active_media_id_subquery()
+                    )
+                )
+            else:
+                base_query = base_query.where(
+                    Media.id.in_(
+                        MediaRapidUploadService.media_id_subquery_for_status(
+                            rapid_upload_status.value
+                        )
+                    )
+                )
 
         total = base_query.count()
         order_by = cls._build_media_list_sort(sort)

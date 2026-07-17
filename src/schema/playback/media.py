@@ -15,6 +15,17 @@ class MediaPointKind(str, Enum):
     ALL = "all"
 
 
+class MediaRapidUploadFilterStatus(str, Enum):
+    # media 列表接口按上次秒传状态筛选的枚举。前四个对应 MediaListItemResource
+    # 里 last_rapid_upload_status 的四个"有状态"值；none 显式筛"未秒传或最近一次
+    # 已成功切云端"的 media，用来让前端"未参与秒传"的分类也能独立命中。
+    NOT_HIT = "not_hit"
+    FAILED = "failed"
+    CLEANUP_FAILED = "cleanup_failed"
+    IN_PROGRESS = "in_progress"
+    NONE = "none"
+
+
 class MediaProgressUpdateRequest(SchemaModel):
     position_seconds: int = Field(ge=0)
 

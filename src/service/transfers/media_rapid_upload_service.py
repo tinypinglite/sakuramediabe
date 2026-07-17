@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from loguru import logger
-from peewee import IntegrityError
+from peewee import IntegrityError, fn
 
 from src.api.exception.errors import ApiError
 from src.common.database import ensure_database_ready
@@ -251,6 +251,86 @@ class MediaRapidUploadService:
                 return PUBLIC_STATUS_NOT_HIT
             return PUBLIC_STATUS_FAILED
         return None
+
+    @classmethod
+    def media_id_subquery_for_status(cls, public_status: str):
+        """返回一个 SELECT media_id 的 peewee 子查询，覆盖"最新一次非 retried item
+        命中给定对外 status"的所有 media。调用方直接 ``Media.id.in_(subq)``。
+
+        用相关子查询 (MAX(id)) 定位"当前 item 是最新"，再叠加 (state, failure_reason)
+        predicate。这样避免"先按 filter 再 DISTINCT ON"造成的语义错位：
+        举例 media A 依次有 failed(not_hit) / failed(file_changed) / succeeded 三条时，
+        筛 not_hit 不应命中，因为最新已成功。
+
+        本方法只处理"有状态"的 4 个值；none 走 :meth:`active_media_id_subquery`
+        + ``Media.id.not_in(...)`` 反选。
+        """
+        predicate = cls._predicate_for_public_status(public_status)
+        max_id = cls._latest_non_retried_max_id_subquery()
+        return (
+            MediaRapidUploadItem.select(MediaRapidUploadItem.media).where(
+                MediaRapidUploadItem.id == max_id,
+                predicate,
+            )
+        )
+
+    @classmethod
+    def active_media_id_subquery(cls):
+        """当前"最新非 retried item 存在且非 succeeded"的 media_id 集合。
+
+        专供 list_media 的 ``rapid_upload_status='none'`` 反选：
+        ``Media.id.not_in(active_media_id_subquery())`` 等价于"从未参与秒传"
+        或"最近一次已 succeeded 切云端"。
+        """
+        max_id = cls._latest_non_retried_max_id_subquery()
+        return (
+            MediaRapidUploadItem.select(MediaRapidUploadItem.media).where(
+                MediaRapidUploadItem.id == max_id,
+                MediaRapidUploadItem.state != ITEM_STATE_SUCCEEDED,
+            )
+        )
+
+    @staticmethod
+    def _latest_non_retried_max_id_subquery():
+        # 相关子查询：outer 每条 item 都取自己 media_id 下最新非 retried item.id；
+        # 别名让 inner.media 能不歧义地绑到 outer 的 MediaRapidUploadItem.media。
+        inner = MediaRapidUploadItem.alias()
+        return (
+            inner.select(fn.MAX(inner.id))
+            .where(
+                inner.media == MediaRapidUploadItem.media,
+                inner.state != "retried",
+            )
+        )
+
+    @staticmethod
+    def _predicate_for_public_status(public_status: str):
+        # (state, failure_reason) → predicate 表达式；对外 4 个 status 的解释来源。
+        # 语义反映了 _map_item_to_public_status 的分类逻辑，改一处两边一起调。
+        if public_status == PUBLIC_STATUS_NOT_HIT:
+            return (
+                (MediaRapidUploadItem.state == ITEM_STATE_FAILED)
+                & (MediaRapidUploadItem.failure_reason == FAILURE_REASON_NOT_HIT)
+            )
+        if public_status == PUBLIC_STATUS_FAILED:
+            # failed 桶收纳所有非 not_hit 的失败原因（含 NULL：老数据未回填的 item）。
+            return (
+                (MediaRapidUploadItem.state == ITEM_STATE_FAILED)
+                & (
+                    (MediaRapidUploadItem.failure_reason != FAILURE_REASON_NOT_HIT)
+                    | MediaRapidUploadItem.failure_reason.is_null()
+                )
+            )
+        if public_status == PUBLIC_STATUS_CLEANUP_FAILED:
+            return MediaRapidUploadItem.state == ITEM_STATE_CLEANUP_FAILED
+        if public_status == PUBLIC_STATUS_IN_PROGRESS:
+            return MediaRapidUploadItem.state.in_(list(_IN_PROGRESS_ITEM_STATES))
+        raise ApiError(
+            422,
+            "invalid_media_filter",
+            "Invalid rapid_upload_status",
+            {"rapid_upload_status": public_status},
+        )
 
     @staticmethod
     def has_active_media(media_id: int) -> bool:
