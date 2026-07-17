@@ -3,7 +3,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
-import httpx
 import peewee
 from loguru import logger
 from src.api.exception.errors import ApiError
@@ -77,58 +76,18 @@ class MediaService:
     # signature 由 /stream 签名 URL 提供，变了说明前端换了会话；UA 变要重取因为 115
     # 用 f= 指纹绑 UA，共享会 403。TTL 6h 远小于直链 t= 实测寿命，留足播放余量。
     _CLOUD115_URL_TTL_SECONDS = 6 * 60 * 60
-    # 命中缓存时的探活超时；探活只拉 1 字节，不该拖住 /stream 的 302。
-    _CLOUD115_URL_PROBE_TIMEOUT = 5.0
     _cloud115_url_cache: dict[tuple[int, str, str], tuple[str, float]] = {}
-
-    @classmethod
-    async def _probe_cloud115_direct_url(cls, url: str, user_agent: str) -> bool:
-        """对直链发 bytes=0-0 Range 探活；200/206 视为可用。
-
-        必须用与拿链时相同的 UA：115 CDN 用 f= 指纹绑 UA，UA 不一致会直接 403。
-        网络异常/超时保守视为不可用，交给上层重取；避免网络抖动时假阴性可通过
-        增加超时缓解，这里 5s 已经足够覆盖正常一跳。
-        """
-        try:
-            # trust_env=False 与 SDK client 对齐，避免探活走系统代理而 downurl 直连。
-            async with httpx.AsyncClient(
-                timeout=cls._CLOUD115_URL_PROBE_TIMEOUT,
-                follow_redirects=True,
-                trust_env=False,
-            ) as probe:
-                response = await probe.get(
-                    url,
-                    headers={"User-Agent": user_agent, "Range": "bytes=0-0"},
-                )
-        except httpx.HTTPError as exc:
-            logger.warning(
-                "cloud115 stream url probe network error detail={} url_head={}",
-                exc, url[:80],
-            )
-            return False
-        if response.status_code in (200, 206):
-            return True
-        # 403 时把 UA / 完整 URL / CDN 响应体全打出来，用于对齐"backend 收到的 UA"、
-        # "签名时用的 UA"、"CDN 见到的 UA/签名"三者是否一致（Aliyun OSS 会回
-        # {"status":403,"message":"invalid signature"}，能据此判是 UA 不一致还是别的）。
-        try:
-            body_preview = response.content[:300].decode("utf-8", errors="replace")
-        except Exception:
-            body_preview = "<binary>"
-        logger.warning(
-            "cloud115 stream url probe rejected status={} ua={!r} url={} body={}",
-            response.status_code, user_agent, url, body_preview,
-        )
-        return False
 
     @classmethod
     async def resolve_cloud115_stream_url(
         cls, media: Media, user_agent: str, signature: str
     ) -> str:
-        """按 (media_id, signature, user_agent) 复用直链；未命中或探活失败才调 115 downurl。
+        """按 (media_id, signature, user_agent) 复用直链；未命中才调 115 downurl。
 
         UA 绑定链路：播放器请求 /stream 的 UA → 绑进直链 f= 指纹 → 302 后播放器
-        跟随请求 CDN 时 UA 天然一致；缓存命中先探活一次再复用该链。
+        跟随请求 CDN 时 UA 天然一致；缓存命中直接复用该链。
+
+       
         """
         from src.lib.cloud115 import Cloud115Error
         from src.service.playback.cloud115_backend_service import (
@@ -151,20 +110,12 @@ class MediaService:
         if cached is not None:
             url, expires_at = cached
             if expires_at > now:
-                # 命中未过期：先探活一次，避免把 115 侧已吊销/CDN 已拒的链回给播放器。
-                if await cls._probe_cloud115_direct_url(url, user_agent):
-                    logger.info(
-                        "cloud115 stream url cache hit media_id={} pickcode={}",
-                        media.id, pickcode,
-                    )
-                    return url
-                logger.warning(
-                    "cloud115 stream url cache probe failed, refetching media_id={} pickcode={}",
+                logger.info(
+                    "cloud115 stream url cache hit media_id={} pickcode={}",
                     media.id, pickcode,
                 )
-                cls._cloud115_url_cache.pop(cache_key, None)
-            else:
-                cls._cloud115_url_cache.pop(cache_key, None)
+                return url
+            cls._cloud115_url_cache.pop(cache_key, None)
 
         # 惰性清理已过期项，避免 dict 长期运行下无限膨胀（signature 每 12h 换一批）。
         for stale_key in [k for k, (_, exp) in cls._cloud115_url_cache.items() if exp <= now]:
@@ -184,7 +135,7 @@ class MediaService:
             direct.url,
             now + cls._CLOUD115_URL_TTL_SECONDS,
         )
-        # 记录用于签名的 UA 与新链地址，便于对齐后续探活/播放器一路请求是否一致。
+        # 记录签名 UA 与新链地址，便于线上出问题时对比播放器实际访问 CDN 的报文。
         logger.info(
             "cloud115 stream url refetched media_id={} pickcode={} ua={!r} url={}",
             media.id, pickcode, user_agent, direct.url,
