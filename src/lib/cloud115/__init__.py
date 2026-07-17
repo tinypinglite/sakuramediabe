@@ -17,6 +17,7 @@ Cookies 保活：客户端内部维护 cookies dict，每次响应自动 merge �
 """
 
 from src.lib.cloud115.client import Cloud115Client
+from src.lib.cloud115.hls_reader import Cloud115HlsSegmentReader
 from src.lib.cloud115.qrlogin import APPS, Cloud115QrLogin
 from src.lib.cloud115.reader import Cloud115RangeReader
 from src.lib.cloud115.exceptions import (
@@ -29,6 +30,7 @@ from src.lib.cloud115.exceptions import (
     Cloud115OfflineTaskExistsError,
     Cloud115RateLimitedError,
     Cloud115RequestError,
+    Cloud115VideoNotReadyError,
 )
 from src.lib.cloud115.types import (
     Cloud115CookieStatus,
@@ -46,11 +48,15 @@ from src.lib.cloud115.types import (
     QrCodeToken,
     QrLoginResult,
     QrStatus,
+    VideoDefinition,
+    VideoInfo,
+    VideoSegment,
 )
 
 __all__ = [
     "Cloud115Client",
     "Cloud115QrLogin",
+    "Cloud115HlsSegmentReader",
     "Cloud115RangeReader",
     "Cloud115CookieStatus",
     "APPS",
@@ -62,6 +68,9 @@ __all__ = [
     "DirBreadcrumb",
     "FileMeta",
     "DirectUrl",
+    "VideoDefinition",
+    "VideoInfo",
+    "VideoSegment",
     "OfflineTask",
     "OfflineTaskPage",
     "OfflineQuota",
@@ -75,6 +84,7 @@ __all__ = [
     "Cloud115CipherError",
     "Cloud115RateLimitedError",
     "Cloud115MembershipRequiredError",
+    "Cloud115VideoNotReadyError",
     "Cloud115OfflineQuotaExceededError",
     "Cloud115OfflineTaskExistsError",
 ]

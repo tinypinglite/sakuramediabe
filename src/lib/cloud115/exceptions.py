@@ -40,6 +40,24 @@ class Cloud115MembershipRequiredError(Cloud115Error):
     """
 
 
+class Cloud115VideoNotReadyError(Cloud115Error):
+    """视频转码未就绪（响应 ``file_status != 1``）。
+
+    文件真实存在且登录态有效，只是 115 尚未产出可播放的 HLS 流。调用方可以
+    根据 ``file_status`` 安排重试，不应把媒体标记为永久失效。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        file_status: int | None = None,
+        endpoint: str | None = None,
+    ) -> None:
+        self.file_status = file_status
+        super().__init__(message, endpoint=endpoint)
+
+
 class Cloud115RequestError(Cloud115Error):
     """HTTP 层错误、超时、5xx 重试耗尽后的最终失败。
 

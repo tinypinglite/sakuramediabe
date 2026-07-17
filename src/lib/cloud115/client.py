@@ -7,6 +7,8 @@
     - pickcode_info             （by pickcode，业务侧持久化的稳定 ID 通常是 pickcode）
     - dir_info                  （目录元信息 + 面包屑）
     - get_download_url          （非会员亦可，但直链限速 100KB/s + CDN 多请求拉黑）
+    - get_video_info            （VIP 专属：拿视频 master m3u8 + 清晰度列表）
+    - get_video_segments        （VIP 专属：拿指定/最高清晰度的 HLS ts 分段列表）
     - list_offline_tasks / offline_quota / default_download_dir      （离线下载：读）
     - add_offline_urls / delete_offline_tasks / clear_offline_tasks  （离线下载：写）
     - restart_offline_task                                           （离线下载：失败重试）
@@ -30,7 +32,7 @@ import hashlib
 import re
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import httpx
 from loguru import logger
@@ -50,6 +52,7 @@ from src.lib.cloud115.exceptions import (
     Cloud115OfflineTaskExistsError,
     Cloud115RateLimitedError,
     Cloud115RequestError,
+    Cloud115VideoNotReadyError,
 )
 from src.lib.cloud115.types import (
     Cloud115CookieStatus,
@@ -64,6 +67,9 @@ from src.lib.cloud115.types import (
     OfflineTaskPage,
     RapidUploadResult,
     RapidUploadStatus,
+    VideoDefinition,
+    VideoInfo,
+    VideoSegment,
 )
 
 
@@ -198,6 +204,11 @@ class Cloud115Client:
     def user_id(self) -> str:
         """当前登录用户的数字 ID（从 UID cookie 前段解出）。只读。"""
         return self._user_id
+
+    @property
+    def user_agent(self) -> str:
+        """SDK 对 115 发请求时使用的 UA；HLS URL 消费方必须原样复用。"""
+        return self._user_agent
 
     def snapshot_cookies(self) -> str:
         """拿当前完整 cookies 字符串（含服务端最新推送的 acw_tc 等临时字段）。
@@ -696,6 +707,84 @@ class Cloud115Client:
             url=direct_url,
             user_agent=user_agent,
             expires_at=self._parse_expires_at(direct_url),
+        )
+
+    async def get_video_info(self, pickcode: str) -> VideoInfo:
+        """获取视频元数据与 master m3u8 中的清晰度列表（VIP 专属）。"""
+        if not pickcode:
+            raise ValueError("pickcode is required")
+        url = f"{self._BASE_WEBAPI}/files/video"
+        payload = await self._request_json(
+            "GET",
+            url,
+            params={"pickcode": pickcode},
+        )
+        if not payload.get("state"):
+            raise self._map_errno(payload, endpoint=url)
+
+        # 先判断转码状态，避免把尚未生成 video_url 的视频误判成非视频文件。
+        raw_status = payload.get("file_status")
+        if raw_status is not None:
+            try:
+                file_status = int(raw_status)
+            except (TypeError, ValueError):
+                file_status = 1
+            if file_status != 1:
+                raise Cloud115VideoNotReadyError(
+                    f"video not ready for pickcode {pickcode} "
+                    f"(file_status={file_status})",
+                    file_status=file_status,
+                    endpoint=url,
+                )
+
+        master_m3u8_url = str(payload.get("video_url", "") or "")
+        if not master_m3u8_url:
+            raise Cloud115NotFoundError(
+                f"video_url missing for pickcode {pickcode} (not a video)",
+                endpoint=url,
+            )
+
+        master_text = await self._get_text(master_m3u8_url)
+        definitions = self._parse_master_m3u8(
+            master_text,
+            base_url=master_m3u8_url,
+        )
+        return VideoInfo(
+            pickcode=pickcode,
+            width=int(payload.get("width") or 0),
+            height=int(payload.get("height") or 0),
+            thumb_url=str(payload.get("thumb_url", "") or ""),
+            master_m3u8_url=master_m3u8_url,
+            definitions=definitions,
+        )
+
+    async def get_video_segments(
+        self,
+        pickcode: str,
+        *,
+        prefer_bandwidth: int | None = None,
+    ) -> list[VideoSegment]:
+        """获取指定码率或最高码率 variant 的 HLS TS 分段列表。"""
+        info = await self.get_video_info(pickcode)
+        if not info.definitions:
+            raise Cloud115NotFoundError(
+                f"no video definitions available for pickcode {pickcode}",
+                endpoint=info.master_m3u8_url,
+            )
+        variant = self._pick_variant(info.definitions, prefer_bandwidth)
+        return await self.get_video_segments_for_definition(variant)
+
+    async def get_video_segments_for_definition(
+        self,
+        definition: VideoDefinition,
+    ) -> list[VideoSegment]:
+        """读取已解析清晰度分支，避免上层重复请求 master playlist。"""
+        if not definition.m3u8_url:
+            raise ValueError("definition.m3u8_url is required")
+        variant_text = await self._get_text(definition.m3u8_url)
+        return self._parse_variant_m3u8(
+            variant_text,
+            base_url=definition.m3u8_url,
         )
 
     async def rapid_upload(
@@ -1370,6 +1459,16 @@ class Cloud115Client:
                 detail=str(exc),
             ) from exc
 
+    async def _get_text(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> str:
+        """GET 文本资源；用于读取 HLS playlist。"""
+        response = await self._request("GET", url, headers=headers)
+        return response.text
+
     @staticmethod
     def _map_errno(payload: dict[str, Any], *, endpoint: str) -> Cloud115Error:
         """把 state=False 的响应按 errno 映射到具体异常子类。"""
@@ -1536,3 +1635,105 @@ class Cloud115Client:
         except Exception:
             pass
         return -1
+
+    # ---- m3u8 解析工具 ----
+
+    _M3U8_ATTR_PATTERN = re.compile(r'([A-Z0-9-]+)=(?:"([^"]*)"|([^,]*))')
+
+    @classmethod
+    def _parse_master_m3u8(
+        cls,
+        text: str,
+        *,
+        base_url: str,
+    ) -> list[VideoDefinition]:
+        """解析 master playlist，并把相对 variant 地址转换为绝对地址。"""
+        definitions: list[VideoDefinition] = []
+        pending_attrs: dict[str, str] | None = None
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#EXT-X-STREAM-INF:"):
+                attrs_text = line[len("#EXT-X-STREAM-INF:") :]
+                pending_attrs = {}
+                for match in cls._M3U8_ATTR_PATTERN.finditer(attrs_text):
+                    value = (
+                        match.group(2)
+                        if match.group(2) is not None
+                        else match.group(3)
+                    )
+                    pending_attrs[match.group(1)] = value
+                continue
+            if line.startswith("#"):
+                continue
+
+            attrs = pending_attrs or {}
+            pending_attrs = None
+            try:
+                bandwidth = int(attrs.get("BANDWIDTH", "0") or "0")
+            except ValueError:
+                bandwidth = 0
+            definitions.append(
+                VideoDefinition(
+                    bandwidth=bandwidth,
+                    resolution=attrs.get("RESOLUTION", ""),
+                    label=attrs.get("NAME", ""),
+                    m3u8_url=urljoin(base_url, line),
+                )
+            )
+        return definitions
+
+    @classmethod
+    def _parse_variant_m3u8(
+        cls,
+        text: str,
+        *,
+        base_url: str,
+    ) -> list[VideoSegment]:
+        """解析 variant playlist，并把相对 TS 地址转换为绝对地址。"""
+        segments: list[VideoSegment] = []
+        pending_duration: float | None = None
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#EXTINF:"):
+                duration_text = line[len("#EXTINF:") :].split(",", 1)[0]
+                try:
+                    pending_duration = float(duration_text)
+                except ValueError:
+                    pending_duration = None
+                continue
+            if line.startswith("#"):
+                continue
+
+            duration = pending_duration if pending_duration is not None else 0.0
+            pending_duration = None
+            segments.append(
+                VideoSegment(
+                    index=len(segments),
+                    url=urljoin(base_url, line),
+                    duration_seconds=duration,
+                )
+            )
+        return segments
+
+    @staticmethod
+    def _pick_variant(
+        definitions: list[VideoDefinition],
+        prefer_bandwidth: int | None,
+    ) -> VideoDefinition:
+        """精确匹配偏好码率；未命中时选择最高码率。"""
+        if prefer_bandwidth is not None:
+            exact = next(
+                (
+                    definition
+                    for definition in definitions
+                    if definition.bandwidth == prefer_bandwidth
+                ),
+                None,
+            )
+            if exact is not None:
+                return exact
+        return max(definitions, key=lambda definition: definition.bandwidth)

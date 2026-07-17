@@ -148,6 +148,37 @@ class DirectUrl:
     expires_at: int
 
 
+@dataclass(frozen=True, slots=True)
+class VideoDefinition:
+    """HLS master playlist 中的一个清晰度分支。"""
+
+    bandwidth: int
+    resolution: str
+    label: str
+    m3u8_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class VideoInfo:
+    """115 视频元数据与全部 HLS 清晰度分支。"""
+
+    pickcode: str
+    width: int
+    height: int
+    thumb_url: str
+    master_m3u8_url: str
+    definitions: list[VideoDefinition]
+
+
+@dataclass(frozen=True, slots=True)
+class VideoSegment:
+    """HLS variant playlist 中的一个 TS 分段。"""
+
+    index: int
+    url: str
+    duration_seconds: float
+
+
 # ============================================================
 # 离线下载相关数据类型
 # ============================================================

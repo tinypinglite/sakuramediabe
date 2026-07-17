@@ -6,7 +6,7 @@ SakuraMediaBE 内部维护的 115 网盘极简异步客户端。**仅支持 cook
 - 入口：`Cloud115Client`
 - 运行时依赖：`httpx`、`loguru`（都已在 `pyproject.toml`）；**未引入 `cryptography` / `pycryptodome`**，RSA/KDF 全用 Python 内置 `pow()` 手撸
 
-> **重要**：直链由调用时的 User-Agent 绑定，后续播放和受控 Range 读取必须使用同一 UA；缩略图链路通过受控顺序读取避免触发 CDN 并发限制。
+> **重要**：115 直链以及 HLS variant/TS 都会校验签发时的 User-Agent。后续播放、Range 读取和 HLS 子请求必须逐字节复用同一 UA；Cookie 不能弥补 UA 不一致。
 
 ## 目录
 
@@ -15,6 +15,7 @@ SakuraMediaBE 内部维护的 115 网盘极简异步客户端。**仅支持 cook
 - [Cookies 保活](#cookies-保活)
 - [仅秒传](#仅秒传)
 - [接口清单](#接口清单)
+- [VIP 视频接口](#vip-视频接口)
 - [数据类型](#数据类型)
 - [异常层次](#异常层次)
 - [关键机制](#关键机制)
@@ -304,13 +305,13 @@ print(du.user_agent)   # 回传给你，用于后续 Range GET
 
 **参数**：
 - `cookies`：见 [认证与 cookies](#认证与-cookies)
-- `user_agent`：**客户端 -> 115 的请求 UA**（不是直链绑定的 UA！）。默认写死一个稳定的 Chrome UA。用途：`check_cookies_alive` / `list_dir` / `file_info` / `get_download_url` **POST 请求本身**的 UA
+- `user_agent`：客户端请求 115 的固定 UA，也是 `get_video_info` 签发 HLS variant/TS 时绑定的 UA；默认使用稳定 Chrome UA
 - `timeout`：httpx 请求超时秒
 - `http_client`：可选，注入外部 `httpx.AsyncClient`（用于测试或复用连接池）；不注入时 SDK 自建一个，`close()` 时释放
 
 **注意 UA 有两个层次**：
-- 构造参数 `user_agent`：客户端 -> 115 的请求 UA
-- `get_download_url(pickcode, user_agent=...)` 的参数：**灌进直链**给下游播放器/抽帧用的 UA
+- 构造参数 `user_agent`：客户端 -> 115 的请求 UA，也是 `get_video_info` 生成的 HLS variant/TS 所绑定的 UA；可通过只读属性 `client.user_agent` 获取
+- `get_download_url(pickcode, user_agent=...)` 的参数：**灌进直链**给下游播放器或其它需要 seek 的消费者使用的 UA
 
 这两个是独立的，不要混淆。
 
@@ -350,6 +351,62 @@ print(du.user_agent)   # 回传给你，用于后续 Range GET
 ### `download_bytes(pickcode, *, user_agent, max_bytes=10MB) -> bytes`
 
 小文件（字幕等）全量下载。内部先 `get_download_url` 再用**同一 UA** GET 直链——封装"拿链接与 GET 必须同 UA"这一易错点。超过 max_bytes 抛 `Cloud115RequestError`，视频请走 302 或受控 Range 读。
+
+---
+
+## VIP 视频接口
+
+仅 VIP 账号可用。非会员调用会抛 `Cloud115MembershipRequiredError`（errno=406）；
+登录态仍然有效，业务侧应提示会员限制并回落到直链，不能引导用户重新登录。
+
+### `get_video_info(pickcode) -> VideoInfo`
+
+先请求 `webapi.115.com/files/video` 获取 master m3u8 地址，再解析所有 variant：
+
+```python
+info = await client.get_video_info("bijccwbcsacpi842c")
+print(client.user_agent)  # 播放 variant 与 TS 时必须原样复用
+for definition in info.definitions:
+    print(
+        definition.bandwidth,
+        definition.resolution,
+        definition.label,
+        definition.m3u8_url,
+    )
+```
+
+- `file_status != 1`：抛 `Cloud115VideoNotReadyError`，并保留 `file_status`；新视频通常需要等待转码。
+- `video_url` 为空：抛 `Cloud115NotFoundError`，表示 pickcode 不是可转码视频。
+- variant 地址位于 115 转码 CDN，可直接交给播放器，不需要携带 Cookie，但必须使用 `client.user_agent`。
+
+### `get_video_segments(pickcode, *, prefer_bandwidth=None) -> list[VideoSegment]`
+
+读取指定码率 variant 的 TS 分段；未指定或指定码率不存在时选择最高码率：
+
+```python
+segments = await client.get_video_segments(
+    "bijccwbcsacpi842c",
+    prefer_bandwidth=1800000,
+)
+for segment in segments:
+    print(segment.index, segment.duration_seconds, segment.url)
+```
+
+每个分段是独立签名 URL。2026-07-18 真机复测确认，variant m3u8 与 TS URL
+均带 `se=u,ua` 并严格校验签发 UA：匹配 UA 返回 `200`，httpx/mpv/ffmpeg
+默认 UA 均返回 `403`，即使额外携带 Cookie 也不会放行。播放器必须把同一
+`User-Agent` 应用于 variant 及其所有 TS 子请求。
+
+### `get_video_segments_for_definition(definition) -> list[VideoSegment]`
+
+读取已经由 `get_video_info` 解析出的清晰度分支，避免业务层为了获取同一 variant
+的分片再次请求 master playlist。缩略图任务用它选择最低分辨率后解析 TS 时间轴。
+
+### `Cloud115HlsSegmentReader(url, *, user_agent, chunk_size=64KiB)`
+
+单个 TS 的同步、前向、不可 seek file-like。读取器使用绑定 UA 发起惰性流式 GET，
+只在 PyAV 调用 `read()` 时继续消费响应；解出首个完整帧并关闭后，不再下载分片余下内容。
+它不使用整文件直链，也不发送 HTTP Range，专供 HLS 分片首帧抽取。
 
 ---
 
@@ -419,6 +476,12 @@ print(du.user_agent)   # 回传给你，用于后续 Range GET
 | `user_agent` | `str` | **调用时传的 UA 原样回传**，调用方后续 Range GET 必须复用 |
 | `expires_at` | `int` | 从 URL 的 `t=` 参数解出的过期 unix 秒；`-1` 表示 URL 里未含该字段 |
 
+### `VideoInfo` / `VideoDefinition` / `VideoSegment`
+
+- `VideoInfo`：原视频尺寸、缩略图、master m3u8 与全部清晰度分支。
+- `VideoDefinition`：variant 的 `bandwidth`、`resolution`、`label` 与绝对 m3u8 地址。
+- `VideoSegment`：分段序号、绝对 TS 地址与 `EXTINF` 时长。
+
 ---
 
 ## 异常层次
@@ -429,6 +492,7 @@ print(du.user_agent)   # 回传给你，用于后续 Range GET
 Cloud115Error                          # 基类
 ├── Cloud115AuthError                  # cookies 失效 / UID 缺失 / 账号冻结（errno=99/990009/990017/20130827/...）
 ├── Cloud115MembershipRequiredError    # 接口需要 VIP 会员（errno=406 "需要VIP会员"）
+├── Cloud115VideoNotReadyError          # 视频尚未完成 HLS 转码；带 file_status
 ├── Cloud115NotFoundError              # 文件不存在 / pickcode 无效 / 被封禁
 ├── Cloud115RequestError               # HTTP 层错、5xx 重试耗尽、非 JSON 响应
 ├── Cloud115CipherError                # RSA 解密失败（响应结构异常）
@@ -484,18 +548,26 @@ except Cloud115Error:
 
 **关键**：
 - 拿直链时的 UA 和消费直链时的 UA **必须逐字节一致**
-- Flutter media_kit 原生端：`Media(url, httpHeaders: {"User-Agent": ...})` 显式带上
-- Flutter web：浏览器 UA 由浏览器决定，后端读 request header 传给 SDK 即可
-- ffmpeg/PyAV 抽帧：`av.open(url, options={"user_agent": ua})` 显式覆写（默认 UA 是 `Lavf/*`，和拿链接时用的 UA 不一致会 403）
+- SakuraMedia 前端直接打开后端 `/stream` 或 HLS `.m3u8` 地址即可；后端读取播放器
+  自然 UA 后签发 115 地址，前端不需要设置 UA，只需正常跟随 302 且不要在跳转时改写 UA
+- 只有绕过 SakuraMediaBE、直接消费 SDK 返回的 115 原始 URL 时，调用方才需要自行保证 UA 一致
+- 直接把 HLS URL 交给 ffmpeg/PyAV 时需要显式覆写 UA；后端缩略图任务则用 `Cloud115HlsSegmentReader` 保证 UA 一致并在首个完整帧后停止读取
+
+HLS 同样受 UA 绑定约束。`get_video_info` 使用 `Cloud115Client.user_agent` 签发
+master、variant 和 TS 地址；消费方无需 Cookie，但必须对 m3u8 及其所有子请求使用
+这一 UA。SakuraMediaBE 不要求前端播放器设置 UA：`/media/{media_id}/hls-streams`
+返回后端 `.m3u8` 地址，播放器请求该地址时，后端以请求里的真实 UA 调
+`get_video_info`，再 `302` 到对应的 115 variant。播放器跟随重定向及请求 TS 时会
+自然沿用自己的 UA，因此可通过 115 的校验；后端不代理 m3u8 或 TS 字节流。
 
 ### 直链生命周期
 
 - URL 里的 `t=<unix_ts>` 是**过期时间点**
-- 一般 5 分钟内有效（不严格保证）
+- 真机观察常为十几小时，但不假定固定寿命，始终以 URL 中的 `t` 为准
 - 过期后 CDN 返 403 或 EOF
 - SDK 只解析过期时间戳，不做主动刷新；**上层的策略**：
   - 播放场景：让客户端 seek 时重新请求 `/stream`（触发拿新直链）
-  - 抽帧场景：抽第一帧前拿一次，遇 403 重新拿再继续
+  - HLS 缩略图场景：每个媒体开始时获取一次 playlist；当前任务不在处理中刷新 URL
 
 ### 重试与限流
 
@@ -524,6 +596,9 @@ uv run python -m src.lib.cloud115 dir-info --cid 0                    # 根目�
 uv run python -m src.lib.cloud115 dir-info --cid 3428707991046116541  # 子目录面包屑
 uv run python -m src.lib.cloud115 downurl --pickcode bijccwbcsacpi842c
 uv run python -m src.lib.cloud115 downurl --pickcode xxx --user-agent "Mozilla/5.0 CustomPlayer/1.0"
+uv run python -m src.lib.cloud115 video-info --pickcode bijccwbcsacpi842c
+uv run python -m src.lib.cloud115 video-segments --pickcode bijccwbcsacpi842c
+uv run python -m src.lib.cloud115 video-segments --pickcode xxx --prefer-bandwidth 1800000 --all
 uv run python -m src.lib.cloud115 snapshot-cookies   # 打印 Set-Cookie merge 后的完整 cookies
 
 # 文件管理（导入管线用）
@@ -553,14 +628,19 @@ uv run python -m src.lib.cloud115 list-dir --help
 
 ## 集成测试
 
-`tests/lib/cloud115/test_integration.py` 提供 10 条端到端用例（含 cookies 保活刷新验证），默认 skip，需显式 flag + `COOKIE_115` 环境变量：
+`tests/lib/cloud115/test_integration.py` 提供真实端到端用例与 HLS 历史样本协议回归，
+默认整体 skip，需显式传入 `--run-cloud115-integration`。真实 115 用例还需要
+`COOKIE_115`；不访问外网的 TS 惰性读取与缩略图时间轴回归位于
+`test_hls_thumbnail.py`，默认测试会直接执行：
 
 ```fish
 set -x COOKIE_115 "UID=...; CID=...; SEID=...; KID=..."
 uv run pytest tests/lib/cloud115/ --run-cloud115-integration -n0 -v
+uv run pytest tests/lib/cloud115/test_integration.py --run-cloud115-integration \
+  -k "video_info or video_segments or m3u8 or pick_variant" -n0 -v
 ```
 
-无 flag 时正常 `uv run pytest` 会跳过集成用例（不影响 CI），只跑单元测试（cipher + client 共约 100 条）。
+无 flag 时正常 `uv run pytest` 会跳过该文件，避免 CI 访问真实 115 端点。
 
 **意义**：cipher 单元测试无法端到端验证（`rsa_encode` / `rsa_decode` 不是数学逆变换，见下面协议注解），所以集成测试是 cipher 正确性的唯一权威证据。
 
