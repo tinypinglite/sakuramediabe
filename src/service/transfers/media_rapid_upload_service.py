@@ -58,9 +58,37 @@ ITEM_ACTION_CLEANUP_ONLY = "cleanup_only"
 ITEM_ACTION_RESUME_REMOTE = "resume_remote"
 RETRYABLE_ITEM_STATES = {ITEM_STATE_FAILED, ITEM_STATE_CLEANUP_FAILED}
 
+# 只在 state='failed' 时有值，用来把"115 库里没有相同 sha1"（重试无意义）跟其它
+# 可重试失败区分开；对外 API 层用这个字段派生列表中的 last_rapid_upload_status。
+FAILURE_REASON_NOT_HIT = "not_hit"
+FAILURE_REASON_FILE_CHANGED = "file_changed"
+FAILURE_REASON_REMOTE_ERROR = "remote_error"
+FAILURE_REASON_VERIFICATION_FAILED = "verification_failed"
+FAILURE_REASON_OTHER = "other"
+
 TASK_KEY = "media_rapid_upload"
 GENERIC_ITEM_ERROR = "秒传失败"
 GENERIC_CLEANUP_ERROR = "本地文件删除失败"
+
+# 对外暴露给 media 查询接口的紧凑值域；见 MediaRapidUploadService.get_latest_status_by_media。
+PUBLIC_STATUS_NOT_HIT = "not_hit"
+PUBLIC_STATUS_FAILED = "failed"
+PUBLIC_STATUS_CLEANUP_FAILED = "cleanup_failed"
+PUBLIC_STATUS_IN_PROGRESS = "in_progress"
+_IN_PROGRESS_ITEM_STATES = frozenset(
+    (ITEM_STATE_PENDING, ITEM_STATE_RUNNING, ITEM_STATE_REMOTE_UPLOADED)
+)
+
+
+class _RapidUploadFailure(RuntimeError):
+    """带 failure_reason 的秒传失败信号，让 _process_batch 兜底能落到 failure_reason 列。
+
+    非本类型的其它异常仍按 REMOTE_ERROR 归类，保持"未指明原因即视为可重试"。
+    """
+
+    def __init__(self, message: str, *, failure_reason: str) -> None:
+        super().__init__(message)
+        self.failure_reason = failure_reason
 
 
 @dataclass(frozen=True)
@@ -176,6 +204,54 @@ class MediaRapidUploadService:
         )
         return MediaRapidUploadBatchResource.from_model(batch, items=items)
 
+    @classmethod
+    def get_latest_status_by_media(cls, media_ids: list[int]) -> dict[int, str]:
+        """按 media_id 取最新一次非 retried 的 item，映射成对外紧凑 status。
+
+        返回值域：``'not_hit' | 'failed' | 'cleanup_failed' | 'in_progress'``；
+        缺席 key 即"该 media 未参与过秒传"或"最新一次已 succeeded"（succeeded 意味着 media
+        已切云端，本地视角不需要该提示）。
+        """
+        if not media_ids:
+            return {}
+        # PostgreSQL DISTINCT ON：按 media_id 分组、id DESC 取每组第一条，一趟走
+        # (media_id) 索引即可拿到"最新一次非 retried item"；比 IN(SELECT MAX GROUP BY)
+        # 子查询少一次扫描。state != 'retried' 排除重试接管后的老条目。
+        rows = (
+            MediaRapidUploadItem.select(
+                MediaRapidUploadItem.media,
+                MediaRapidUploadItem.state,
+                MediaRapidUploadItem.failure_reason,
+            )
+            .where(
+                MediaRapidUploadItem.media.in_(media_ids),
+                MediaRapidUploadItem.state != "retried",
+            )
+            .order_by(MediaRapidUploadItem.media, MediaRapidUploadItem.id.desc())
+            .distinct(MediaRapidUploadItem.media)
+        )
+        result: dict[int, str] = {}
+        for row in rows:
+            status = cls._map_item_to_public_status(row.state, row.failure_reason)
+            if status is not None:
+                result[row.media_id] = status
+        return result
+
+    @staticmethod
+    def _map_item_to_public_status(state: str, failure_reason: str | None) -> str | None:
+        # 内部 state/reason 到对外紧凑值域的唯一映射点，新增值域时改这一处。
+        if state == ITEM_STATE_SUCCEEDED:
+            return None
+        if state in _IN_PROGRESS_ITEM_STATES:
+            return PUBLIC_STATUS_IN_PROGRESS
+        if state == ITEM_STATE_CLEANUP_FAILED:
+            return PUBLIC_STATUS_CLEANUP_FAILED
+        if state == ITEM_STATE_FAILED:
+            if failure_reason == FAILURE_REASON_NOT_HIT:
+                return PUBLIC_STATUS_NOT_HIT
+            return PUBLIC_STATUS_FAILED
+        return None
+
     @staticmethod
     def has_active_media(media_id: int) -> bool:
         return (
@@ -236,6 +312,8 @@ class MediaRapidUploadService:
                 else:
                     item.state = ITEM_STATE_FAILED
                     item.error_message = GENERIC_ITEM_ERROR
+                    # 启动兜底不知道原始失败原因，标 OTHER 让前端按可重试处理。
+                    item.failure_reason = FAILURE_REASON_OTHER
                 item.active_media_id = None
                 item.finished_at = utc_now_for_db()
                 item.updated_at = utc_now_for_db()
@@ -458,7 +536,18 @@ class MediaRapidUploadService:
                         item.media_id,
                         exc,
                     )
-                    cls._mark_item_failed(item, cls._format_error(exc))
+                    # _RapidUploadFailure 明确告知失败原因；未指明的按 REMOTE_ERROR 处理，
+                    # 语义上"可重试"，跟 NOT_HIT 区分开。
+                    failure_reason = (
+                        exc.failure_reason
+                        if isinstance(exc, _RapidUploadFailure)
+                        else FAILURE_REASON_REMOTE_ERROR
+                    )
+                    cls._mark_item_failed(
+                        item,
+                        cls._format_error(exc),
+                        failure_reason=failure_reason,
+                    )
                 counts = cls._item_counts(batch.id)
                 reporter.emit(
                     current=index,
@@ -521,9 +610,22 @@ class MediaRapidUploadService:
         try:
             result = await client.rapid_upload(item.source_path, pid=target_cid)
             if result.status is not RapidUploadStatus.SUCCESS:
-                raise RuntimeError(f"rapid upload status={result.status.value}")
+                # NOT_HIT / FILE_CHANGED 都没有产生云端文件（file_created 仍为 False），
+                # 走已有 except 分支只做空版本目录清理即可，其它回滚不必要。
+                reason = (
+                    FAILURE_REASON_NOT_HIT
+                    if result.status is RapidUploadStatus.NOT_HIT
+                    else FAILURE_REASON_FILE_CHANGED
+                )
+                raise _RapidUploadFailure(
+                    f"rapid upload status={result.status.value}",
+                    failure_reason=reason,
+                )
             if not result.file_id or not result.pickcode:
-                raise RuntimeError("rapid upload success response missing fid or pickcode")
+                raise _RapidUploadFailure(
+                    "rapid upload success response missing fid or pickcode",
+                    failure_reason=FAILURE_REASON_REMOTE_ERROR,
+                )
             file_created = True
             # 秒传接口一旦成功，立刻持久化远端定位。后续校验或回滚失败时，
             # 重试可以接管这个远端文件，不能再次秒传产生重复文件。
@@ -542,7 +644,10 @@ class MediaRapidUploadService:
                 or meta.sha1.upper() != result.sha1.upper()
                 or meta.pickcode != result.pickcode
             ):
-                raise RuntimeError("rapid upload verification failed")
+                raise _RapidUploadFailure(
+                    "rapid upload verification failed",
+                    failure_reason=FAILURE_REASON_VERIFICATION_FAILED,
+                )
 
             if meta.name != target_name:
                 await client.rename_file(result.file_id, target_name)
@@ -550,7 +655,10 @@ class MediaRapidUploadService:
 
             # SDK 校验覆盖哈希阶段；入库前再核对一次，避免上传请求期间源路径被替换。
             if not cls._snapshot_matches(item, Path(item.source_path).stat()):
-                raise RuntimeError("source file changed during rapid upload")
+                raise _RapidUploadFailure(
+                    "source file changed during rapid upload",
+                    failure_reason=FAILURE_REASON_FILE_CHANGED,
+                )
 
             cls._switch_media_to_remote(
                 media=media,
@@ -640,7 +748,10 @@ class MediaRapidUploadService:
             or meta.sha1.upper() != item.source_sha1.upper()
             or meta.pickcode != item.target_pickcode
         ):
-            raise RuntimeError("interrupted rapid upload verification failed")
+            raise _RapidUploadFailure(
+                "interrupted rapid upload verification failed",
+                failure_reason=FAILURE_REASON_VERIFICATION_FAILED,
+            )
         # 中断项在首次落远端时就写入了 target_name，正常路径直接沿用；老结构中断
         # 保留旧命名不改动。target_name 缺失属于病态数据，按当前 media 类型重建。
         target_name = item.target_name
@@ -659,7 +770,10 @@ class MediaRapidUploadService:
         item.updated_at = utc_now_for_db()
         item.save()
         if not cls._snapshot_matches(item, Path(item.source_path).stat()):
-            raise RuntimeError("source file changed before interrupted upload recovery")
+            raise _RapidUploadFailure(
+                "source file changed before interrupted upload recovery",
+                failure_reason=FAILURE_REASON_FILE_CHANGED,
+            )
         cls._switch_media_to_remote(
             media=media,
             item=item,
@@ -691,7 +805,10 @@ class MediaRapidUploadService:
         with get_database().atomic():
             current_media = Media.get_by_id(media.id)
             if current_media.path != item.source_path:
-                raise RuntimeError("media storage changed during rapid upload")
+                raise _RapidUploadFailure(
+                    "media storage changed during rapid upload",
+                    failure_reason=FAILURE_REASON_FILE_CHANGED,
+                )
             current_media.library = target_library
             current_media.path = None
             current_media.backend_locator = locator
@@ -725,12 +842,21 @@ class MediaRapidUploadService:
     def _require_current_local_media(cls, item: MediaRapidUploadItem) -> Media:
         media = Media.get_or_none(Media.id == item.media_id)
         if media is None or not media.path or media.path != item.source_path:
-            raise RuntimeError("local media is unavailable")
+            raise _RapidUploadFailure(
+                "local media is unavailable",
+                failure_reason=FAILURE_REASON_OTHER,
+            )
         if media.library_id is None or media.library.backend != MediaLibraryBackend.LOCAL.value:
-            raise RuntimeError("media is not stored in a local library")
+            raise _RapidUploadFailure(
+                "media is not stored in a local library",
+                failure_reason=FAILURE_REASON_OTHER,
+            )
         stat = Path(media.path).stat()
         if not cls._snapshot_matches(item, stat):
-            raise RuntimeError("source file changed before rapid upload")
+            raise _RapidUploadFailure(
+                "source file changed before rapid upload",
+                failure_reason=FAILURE_REASON_FILE_CHANGED,
+            )
         return media
 
     @classmethod
@@ -869,10 +995,16 @@ class MediaRapidUploadService:
         item.save()
 
     @staticmethod
-    def _mark_item_failed(item: MediaRapidUploadItem, message: str) -> None:
+    def _mark_item_failed(
+        item: MediaRapidUploadItem,
+        message: str,
+        *,
+        failure_reason: str = FAILURE_REASON_OTHER,
+    ) -> None:
         item.state = ITEM_STATE_FAILED
         item.active_media_id = None
         item.error_message = message
+        item.failure_reason = failure_reason
         item.finished_at = utc_now_for_db()
         item.updated_at = utc_now_for_db()
         item.save()
@@ -938,7 +1070,8 @@ class MediaRapidUploadService:
                 item.id,
                 detail,
             )
-            cls._mark_item_failed(item, message)
+            # 批次级兜底看不到具体条目原因，归为 OTHER（前端按"可重试"展示）。
+            cls._mark_item_failed(item, message, failure_reason=FAILURE_REASON_OTHER)
 
     @classmethod
     def _fail_unstarted_batch(cls, batch, detail: str) -> None:

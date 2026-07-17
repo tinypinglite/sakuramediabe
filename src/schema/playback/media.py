@@ -108,6 +108,12 @@ class MediaListItemResource(SchemaModel):
     valid: bool
     # 仅 JAV 媒体有意义，非 JAV 视频恒为 None。
     heat: int | None = None
+    # 上一次 115 秒传结果的紧凑投影，用来在列表上提示"是否值得再点秒传"。
+    # not_hit=115 无相同 sha1（重试无用）；failed=其它可重试失败；cleanup_failed=
+    # 云端已成功但本地残留；in_progress=当前批次仍在跑；null=从未秒传或最近一次已成功。
+    last_rapid_upload_status: (
+        Literal["not_hit", "failed", "cleanup_failed", "in_progress"] | None
+    ) = None
     created_at: datetime
     updated_at: datetime
 

@@ -1050,6 +1050,117 @@ def test_cloud115_unique_client_migration_rejects_existing_duplicates(clean_db):
     assert "42" in str(excinfo.value)
 
 
+def test_run_pending_migrations_adds_media_rapid_upload_item_failure_reason(clean_db):
+    """20260720_01：老库补 failure_reason 列并按 error_message 精确回填。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    # 模拟老库：抹掉本迁移引入的新列，并把 SchemaMigration 里对应记录清掉让 runner 重跑。
+    clean_db.execute_sql(
+        'ALTER TABLE "media_rapid_upload_item" DROP COLUMN "failure_reason"'
+    )
+    with clean_db.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
+        SchemaMigration.delete().where(
+            SchemaMigration.name == "20260720_01_add_media_rapid_upload_item_failure_reason"
+        ).execute()
+
+    from src.model import (
+        Media,
+        MediaRapidUploadBatch,
+        Movie,
+    )
+
+    library = MediaLibrary.create(
+        name="lib", backend="local", backend_config={"root_path": "/lib"}
+    )
+    # Media 必须挂 movie 或 video_item；用 JAV 分支满足不变量。
+    # (batch_id, media_id) 是唯一键，用 3 个不同 media 承载 3 种失败样本。
+    movies = [
+        Movie.create(movie_number=f"ABP-00{i}", javdb_id=f"a-00{i}", title=f"a{i}")
+        for i in range(1, 4)
+    ]
+    medias = [
+        Media.create(library=library, movie=movie, path=f"/lib/a{idx}.mp4")
+        for idx, movie in enumerate(movies, start=1)
+    ]
+    batch = MediaRapidUploadBatch.create(target_library=library)
+    # 三种老 error_message：not_hit / file_changed 应被回填；其它维持 null。
+    clean_db.execute_sql(
+        """
+        INSERT INTO media_rapid_upload_item (
+            created_at, updated_at, batch_id, media_id, action, state,
+            source_path, source_size_bytes, source_mtime_ns, error_message
+        ) VALUES
+            (%s, %s, %s, %s, 'rapid_upload', 'failed',
+             '/lib/a1.mp4', 0, 0, 'rapid upload status=not_hit'),
+            (%s, %s, %s, %s, 'rapid_upload', 'failed',
+             '/lib/a2.mp4', 0, 0, 'rapid upload status=file_changed'),
+            (%s, %s, %s, %s, 'rapid_upload', 'failed',
+             '/lib/a3.mp4', 0, 0, 'connection reset')
+        """,
+        (
+            datetime(2026, 7, 20), datetime(2026, 7, 20), batch.id, medias[0].id,
+            datetime(2026, 7, 20), datetime(2026, 7, 20), batch.id, medias[1].id,
+            datetime(2026, 7, 20), datetime(2026, 7, 20), batch.id, medias[2].id,
+        ),
+    )
+
+    run_pending_migrations(clean_db)
+
+    columns = {column.name for column in clean_db.get_columns("media_rapid_upload_item")}
+    assert "failure_reason" in columns
+    rows = clean_db.execute_sql(
+        "SELECT error_message, failure_reason FROM media_rapid_upload_item "
+        "ORDER BY id"
+    ).fetchall()
+    assert rows == [
+        ("rapid upload status=not_hit", "not_hit"),
+        ("rapid upload status=file_changed", "file_changed"),
+        ("connection reset", None),
+    ]
+    assert (
+        "20260720_01_add_media_rapid_upload_item_failure_reason"
+        in _schema_migration_names(clean_db)
+    )
+
+
+def test_run_pending_migrations_adds_media_rapid_upload_item_media_index(clean_db):
+    """20260720_02：老库补 media_id 单列索引；幂等地跳过已存在索引。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    # 模拟老库：抹掉 initdb 建出的 (media_id,) 单列索引并清 SchemaMigration 记录让 runner 重跑。
+    # 索引名由 peewee 生成，不同版本可能不同，用列匹配定位后按实际名 DROP。
+    stale_indexes = [
+        index.name
+        for index in clean_db.get_indexes("media_rapid_upload_item")
+        if tuple(index.columns) == ("media_id",)
+    ]
+    for index_name in stale_indexes:
+        clean_db.execute_sql(f'DROP INDEX IF EXISTS "{index_name}"')
+    with clean_db.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
+        SchemaMigration.delete().where(
+            SchemaMigration.name == "20260720_02_add_media_rapid_upload_item_media_index"
+        ).execute()
+
+    run_pending_migrations(clean_db)
+
+    indexed_columns = {
+        tuple(index.columns)
+        for index in clean_db.get_indexes("media_rapid_upload_item")
+    }
+    assert ("media_id",) in indexed_columns
+    assert (
+        "20260720_02_add_media_rapid_upload_item_media_index"
+        in _schema_migration_names(clean_db)
+    )
+
+    # 幂等：再跑一次不应重复建索引出错。
+    with clean_db.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
+        SchemaMigration.delete().where(
+            SchemaMigration.name == "20260720_02_add_media_rapid_upload_item_media_index"
+        ).execute()
+    run_pending_migrations(clean_db)
+
+
 def test_run_pending_migrations_moves_indexer_binding_to_junction_table(clean_db):
     """20260714_07：indexer 单 FK 迁到 indexer_download_client 中间表并删旧列。"""
     _create_legacy_download_tables(clean_db)

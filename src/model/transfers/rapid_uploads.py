@@ -64,6 +64,9 @@ class MediaRapidUploadItem(TimestampedMixin, BaseModel):
         backref="rapid_upload_items",
         on_delete="SET NULL",
         column_name="media_id",
+        # 供 list_media 批量查最新秒传状态的 DISTINCT ON 走索引；
+        # 现有 (batch, media) UNIQUE 前缀是 batch，跨 batch 查询用不上。
+        index=True,
     )
     # 活动作业持有 media id；进入终态后置空。唯一约束阻止同一媒体并发进入多个批次。
     active_media_id = peewee.IntegerField(null=True, unique=True)
@@ -79,6 +82,9 @@ class MediaRapidUploadItem(TimestampedMixin, BaseModel):
     target_pickcode = peewee.CharField(max_length=128, null=True)
     target_name = peewee.CharField(max_length=255, null=True)
     error_message = peewee.TextField(null=True)
+    # 只在 state='failed' 时有值，用来区分 not_hit / file_changed / remote_error / verification_failed / other，
+    # 供列表接口把"未命中"跟其它可重试失败分开告诉前端。
+    failure_reason = peewee.CharField(max_length=32, null=True)
     started_at = peewee.DateTimeField(null=True)
     finished_at = peewee.DateTimeField(null=True)
 

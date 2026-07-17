@@ -323,7 +323,11 @@ class MediaService:
         return [ordered_field, tie_breaker]
 
     @staticmethod
-    def _to_media_list_item_resource(media: Media) -> MediaListItemResource:
+    def _to_media_list_item_resource(
+        media: Media,
+        *,
+        last_rapid_upload_status: str | None = None,
+    ) -> MediaListItemResource:
         # 按归属拆分：JAV 媒体展示番号、影片封面与热度，非 JAV 媒体回退到 VideoItem 标题。
         if media.movie_number:
             movie = media.movie
@@ -347,6 +351,7 @@ class MediaService:
                 special_tags=media.special_tags,
                 valid=media.valid,
                 heat=movie.heat,
+                last_rapid_upload_status=last_rapid_upload_status,
                 created_at=media.created_at,
                 updated_at=media.updated_at,
             )
@@ -368,6 +373,7 @@ class MediaService:
             special_tags=media.special_tags,
             valid=media.valid,
             heat=None,
+            last_rapid_upload_status=last_rapid_upload_status,
             created_at=media.created_at,
             updated_at=media.updated_at,
         )
@@ -433,7 +439,22 @@ class MediaService:
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        items = [cls._to_media_list_item_resource(media) for media in rows]
+        # 一次子查询批量拿本页所有 media 的最新秒传状态，避免逐条 N+1。
+        # 延迟 import 规避 transfers <-> playback 的循环依赖（同 delete_media 的处理）。
+        from src.service.transfers.media_rapid_upload_service import (
+            MediaRapidUploadService,
+        )
+
+        rapid_upload_status = MediaRapidUploadService.get_latest_status_by_media(
+            [media.id for media in rows]
+        )
+        items = [
+            cls._to_media_list_item_resource(
+                media,
+                last_rapid_upload_status=rapid_upload_status.get(media.id),
+            )
+            for media in rows
+        ]
         return PageResponse[MediaListItemResource](
             items=items,
             page=page,

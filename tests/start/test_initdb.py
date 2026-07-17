@@ -108,6 +108,16 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
     assert Subtitle.table_exists()
     assert MediaRapidUploadBatch.table_exists()
     assert MediaRapidUploadItem.table_exists()
+    # 秒传 item 需带 failure_reason 列，用来区分 not_hit / 其它可重试失败。
+    rapid_upload_item_columns = _column_names(clean_db, "media_rapid_upload_item")
+    assert "failure_reason" in rapid_upload_item_columns
+    assert _column_is_nullable(clean_db, "media_rapid_upload_item", "failure_reason") is True
+    # media_id 单列索引：list_media 批量查最新秒传状态的 DISTINCT ON 依赖它。
+    rapid_upload_item_indexed_columns = {
+        tuple(index.columns)
+        for index in clean_db.get_indexes("media_rapid_upload_item")
+    }
+    assert ("media_id",) in rapid_upload_item_indexed_columns
 
 
 def test_create_tables_creates_videos_domain_tables_and_decoupled_media(clean_db, monkeypatch):
