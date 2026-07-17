@@ -562,6 +562,70 @@ def add_media_library(name: str, root_path: str):
     )
 
 
+@main.command(name="reset-account")
+@click.option(
+    "--username",
+    prompt="新账号用户名",
+    type=str,
+    help="重建后的单账号用户名（不传时交互式输入）。",
+)
+@click.option(
+    "--password",
+    prompt="新账号密码",
+    hide_input=True,
+    confirmation_prompt=True,
+    type=str,
+    help="重建后的单账号明文密码（不传时交互式隐式输入并二次确认）。",
+)
+def reset_account(username: str, password: str):
+    """删除所有已有账号与 refresh token，按 --username/--password 重建单账号。
+
+    忘记密码时使用；命令直接覆盖运行时账号，不校验旧密码。所有 refresh token
+    一并清空，已登录客户端会立即失效需重新登录。
+    """
+    from passlib.context import CryptContext
+
+    from src.model import User, UserRefreshToken
+    from src.model.base import get_database
+
+    normalized_username = username.strip()
+    if not normalized_username:
+        raise click.ClickException("username must not be blank")
+    if not password:
+        raise click.ClickException("password must not be blank")
+
+    logger.info("CLI reset-account start username={}", normalized_username)
+    _ensure_database_ready()
+
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    password_hash = pwd_context.hash(password)
+
+    # 事务内原子完成：先清空旧账号与所有 refresh token，再落新账号。
+    # 中途失败整体回滚，避免出现"旧账号删了新账号没建"导致完全无法登录。
+    with get_database().atomic():
+        deleted_users = User.delete().execute()
+        deleted_tokens = UserRefreshToken.delete().execute()
+        new_user = User.create(
+            username=normalized_username,
+            password_hash=password_hash,
+        )
+
+    logger.info(
+        "CLI reset-account finished user_id={} username={} deleted_users={} deleted_tokens={}",
+        new_user.id,
+        new_user.username,
+        deleted_users,
+        deleted_tokens,
+    )
+    click.echo(
+        "account reset: "
+        f"user_id={new_user.id} "
+        f"username={new_user.username} "
+        f"deleted_users={deleted_users} "
+        f"deleted_refresh_tokens={deleted_tokens}"
+    )
+
+
 @main.command(name="backfill-movie-thin-cover-images")
 def backfill_movie_thin_cover_images():
     logger.info("CLI backfill-movie-thin-cover-images start")

@@ -64,3 +64,18 @@
 错误语义：
 
 - `invalid_credentials`: 当前密码错误
+
+## CLI 强制重置账号
+
+忘记密码、或需要在数据库层面强制重建单账号时，使用：
+
+```bash
+uv run python -m src.start.commands reset-account --username <name> --password <plain>
+```
+
+行为：
+
+- 事务内先 `DELETE FROM users` 与 `DELETE FROM user_refresh_tokens`（所有已登录客户端立即失效），再按 `--username` / `--password` 建单账号；中途失败整体回滚。
+- 不校验旧密码，直接覆盖运行时账号。
+- `--username` / `--password` 未提供时会交互式提示；密码为隐式输入并要求二次确认。
+- 与 `config.toml` 的 `auth.username` / `auth.password` 无关——那两个只在首次 `initdb` 建种子账号时读一次，后续以 DB 中账号为准。
