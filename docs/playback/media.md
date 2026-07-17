@@ -5,7 +5,7 @@
 媒体资源代表影片对应的可播放实体。当前播放域已经落地的能力主要包括：
 
 - 视频流访问
-- 115 官方 HLS 多清晰度播放地址查询
+- 115 官方 HLS 智能播放派发
 - 播放进度上报
 - 媒体书签按媒体查询
 - 媒体书签添加与删除
@@ -141,8 +141,6 @@
 | `POST` | `/media/{media_id}/points` | 为指定媒体添加书签；重复缩略图幂等返回已有书签 |
 | `DELETE` | `/media/{media_id}/points/{point_id}` | 删除指定媒体下的单个书签 |
 | `GET` | `/media/{media_id}/stream` | 获取媒体播放流 |
-| `GET` | `/media/{media_id}/hls-streams` | 获取 115 HLS 多清晰度地址 |
-| `GET` | `/media/{media_id}/hls-streams/{bandwidth}.m3u8` | 按播放器 UA 302 到指定 115 HLS 清晰度 |
 | `PUT` | `/media/{media_id}/progress` | 更新播放进度并维护最近播放 |
 | `GET` | `/media/{media_id}/thumbnails` | 获取媒体缩略图列表 |
 | `DELETE` | `/media/{media_id}` | 硬删除媒体并清理关联播放数据 |
@@ -783,7 +781,7 @@ Authorization: Bearer <token>
 
 - `200 OK`: 返回完整视频流（本地媒体）
 - `206 Partial Content`: 返回分段视频流（本地媒体）
-- `302 Found`: 重定向到 115 CDN 直链（cloud115 媒体）
+- `302 Found`: 重定向到最高码率 115 HLS，或 HLS 不可用时重定向到 115 原画直链
 
 ### Error Responses
 
@@ -802,11 +800,17 @@ Authorization: Bearer <token>
   - `Accept-Ranges: bytes`
   - `Content-Length`
   - `Content-Encoding: identity`
-- **cloud115 媒体**：每次请求现拿一条 115 直链后 `302`。直链绑定了**本次请求的 User-Agent**
-  （115 CDN 校验后续请求 UA 必须一字不差），播放器跟随 302 时 UA 天然一致；直链带 `t=`
-  过期时间（实测十几小时），播放器 seek 触发重新请求 `/stream` 即重新拿链，无需前端特殊处理。
-  Flutter media_kit 等自定义 http 客户端需保证跟随重定向时不改写 UA。
-  - `Content-Range`（仅 `206` 时返回）
+  - `Content-Range`（仅本地媒体 `206` 时返回）
+- **cloud115 媒体**：后端使用本次请求的 User-Agent 获取 115 HLS，选择最高码率 variant
+  并直接 `302`。HLS variant 与后续 TS 都绑定该 User-Agent，播放器跟随跳转时必须保持
+  一致；HLS 分段由播放器直连 115 CDN，不经过 SakuraMediaBE。
+- HLS 正在转码、账号非 VIP、115 限流、临时上游异常或未返回清晰度时，后端静默降级到
+  现有 115 原画直链，不向前端暴露 HLS 错误。直链同样绑定本次请求的 User-Agent。
+- cookies 失效、媒体不存在/被封等确定性错误不降级，仍返回既有的
+  `cloud115_cookies_invalid` 或 `404`。
+- HLS variant 在进程内按 `media_id + pickcode + User-Agent` 缓存 10 分钟；直链继续按
+  `media_id + signature + User-Agent` 缓存。`302` 带 `Cache-Control: no-store`。
+- Flutter media_kit 等自定义 http 客户端需保证跟随重定向时不改写 User-Agent。
 
 ### Example Request
 
@@ -814,106 +818,6 @@ Authorization: Bearer <token>
 GET /media/100/stream?expires=1700000900&signature=<signature>
 Range: bytes=0-1023
 ```
-
-### Endpoint
-
-`GET /media/{media_id}/hls-streams`
-
-### Purpose
-
-获取 cloud115 媒体已转码的多档 HLS 清晰度。每个 `url` 都是 SakuraMediaBE
-自己的 `.m3u8` 地址；前端选择清晰度后直接把该地址交给播放器，无需也不应控制
-User-Agent。
-
-### Auth
-
-不需要 Bearer Token，但必须复用媒体 `play_url` 中的 `expires` 与 `signature`。
-
-### Path Params
-
-- `media_id`: 媒体 ID
-
-### Query Params
-
-- `expires`: 媒体签名过期时间戳
-- `signature`: 与 `/media/{media_id}/stream` 共用的媒体签名
-
-### Success Responses
-
-- `200 OK`: `streams` 按 `bandwidth` 从高到低排列
-
-```json
-{
-  "streams": [
-    {
-      "quality": "UD",
-      "resolution": "1920x1080",
-      "bandwidth": 3000000,
-      "url": "/media/100/hls-streams/3000000.m3u8?expires=1700000900&signature=<signature>"
-    },
-    {
-      "quality": "HD",
-      "resolution": "1280x720",
-      "bandwidth": 1800000,
-      "url": "/media/100/hls-streams/1800000.m3u8?expires=1700000900&signature=<signature>"
-    }
-  ]
-}
-```
-
-前端示例：
-
-```dart
-Media(
-  '$apiBaseUrl${selectedStream.url}',
-)
-```
-
-播放器请求上述 `.m3u8` 地址后，SakuraMediaBE 会返回 `302 Found`，`Location`
-指向按该播放器真实 User-Agent 签发的 115 variant m3u8。播放器正常跟随重定向即可。
-
-### Error Responses
-
-- `400 hls_not_cloud115_media`: 本地媒体不支持 115 HLS
-- `403 file_signature_invalid` / `file_signature_expired`: 签名无效或过期
-- `404 media_not_found`: 媒体不存在
-- `404 hls_not_video`: pickcode 不是可转码视频
-- `404 hls_stream_not_found`: 请求的 `bandwidth` 不存在
-- `422 cloud115_membership_required`: 当前 115 账号不是 VIP
-- `422 cloud115_cookies_invalid`: 115 cookies 已失效
-- `429 cloud115_rate_limited`: 115 正在限流
-- `502 cloud115_upstream_error`: 未识别的 115 上游异常
-- `503 cloud115_video_transcoding`: 视频尚未完成转码；响应带 `Retry-After: 300`
-
-### Behavior
-
-- 清晰度元数据进程内缓存 10 分钟，缓存键为 `media_id + pickcode`
-- variant URL 进程内缓存 10 分钟，缓存键额外包含播放器 User-Agent，绝不跨 UA 复用
-- 115 HLS variant 与 TS 严格绑定签发时的 User-Agent。后端在 `.m3u8` 跳转请求中读取
-  播放器的自然 UA，以相同 UA 获取 115 地址后返回 302；前端不需要控制 UA
-- 302 响应带 `Cache-Control: no-store`，避免播放器跨会话复用已经过期的 115 签名地址
-- HLS CDN 请求不需要 Cookie；Cookie 无法补救 UA 不一致导致的 `403`
-- HLS 不可用时前端回落到现有 `/media/{media_id}/stream` 直链
-- HLS 分段不经过 SakuraMediaBE，播放流量由播放器直接访问 115 转码 CDN
-
-### Example Request
-
-```http
-GET /media/100/hls-streams?expires=1700000900&signature=<signature>
-```
-
-选择清晰度后：
-
-```http
-GET /media/100/hls-streams/3000000.m3u8?expires=1700000900&signature=<signature>
-User-Agent: <播放器自己的 UA>
-
-HTTP/1.1 302 Found
-Location: https://cpats01.115.com/path/video-1080.m3u8?...
-```
-
-该跳转端点沿用列表接口的签名校验；若请求完全缺少 `User-Agent`，返回
-`400 hls_user_agent_missing`。
 
 ### Endpoint
 

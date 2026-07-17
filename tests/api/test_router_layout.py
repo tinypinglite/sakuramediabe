@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 from starlette.requests import Request
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 import logging
 from types import SimpleNamespace
 
@@ -28,6 +28,8 @@ from src.api.app import create_app
 from src.api.exception.errors import ApiError
 from src.api.exception.exception import api_error_handler
 from src.config.config import settings
+from src.service.playback.cloud115_hls_service import Cloud115HlsService
+from src.service.playback.media_service import MediaService
 
 
 def test_auth_router_uses_db_deps_as_router_level_dependency():
@@ -260,15 +262,15 @@ def test_create_app_registers_media_clip_routes():
     assert "/clip-collections/{collection_id}/clips/{clip_id}" in paths
 
 
-def test_create_app_registers_media_hls_streams_route():
+def test_create_app_does_not_register_removed_media_hls_streams_routes():
     app = create_app()
     paths = {getattr(route, "path", None) for route in app.routes}
 
-    assert "/media/{media_id}/hls-streams" in paths
-    assert "/media/{media_id}/hls-streams/{bandwidth}.m3u8" in paths
+    assert "/media/{media_id}/hls-streams" not in paths
+    assert "/media/{media_id}/hls-streams/{bandwidth}.m3u8" not in paths
 
 
-async def test_hls_stream_list_returns_backend_redirect_urls(monkeypatch):
+async def test_cloud115_stream_uses_smart_playback_dispatch(monkeypatch):
     media = SimpleNamespace(id=5048)
     monkeypatch.setattr(media_router, "verify_media_signature", Mock())
     monkeypatch.setattr(media_router.Media, "get_or_none", Mock(return_value=media))
@@ -277,73 +279,163 @@ async def test_hls_stream_list_returns_backend_redirect_urls(monkeypatch):
         "is_cloud115_media",
         Mock(return_value=True),
     )
-
-    async def list_streams(_media):
-        assert _media is media
-        return [SimpleNamespace(quality="UD", resolution="1920x1080", bandwidth=3000000)]
-
-    monkeypatch.setattr(
-        media_router.Cloud115HlsService,
-        "list_hls_streams",
-        list_streams,
-    )
-
-    response = await media_router.list_media_hls_streams(
-        media_id=5048,
-        expires=1700000900,
-        signature="signed",
-    )
-
-    assert response.streams[0].url == (
-        "/media/5048/hls-streams/3000000.m3u8"
-        "?expires=1700000900&signature=signed"
-    )
-
-
-async def test_hls_redirect_resolves_variant_with_player_user_agent(monkeypatch):
-    media = SimpleNamespace(id=5048)
-    monkeypatch.setattr(media_router, "verify_media_signature", Mock())
-    monkeypatch.setattr(media_router.Media, "get_or_none", Mock(return_value=media))
     captured = {}
 
-    async def resolve_variant(_media, *, bandwidth, user_agent):
+    async def resolve_playback(_media, user_agent, signature):
         captured.update(
             media=_media,
-            bandwidth=bandwidth,
             user_agent=user_agent,
+            signature=signature,
         )
-        return "https://cpats01.115.com/video.m3u8"
+        return "https://cpats01.115.com/highest.m3u8"
 
     monkeypatch.setattr(
-        media_router.Cloud115HlsService,
-        "resolve_hls_variant_url",
-        resolve_variant,
+        media_router.MediaService,
+        "resolve_cloud115_playback_url",
+        resolve_playback,
     )
     request = Request(
         {
             "type": "http",
             "method": "GET",
-            "path": "/media/5048/hls-streams/3000000.m3u8",
+            "path": "/media/5048/stream",
             "headers": [(b"user-agent", b"Frontend-Player/2.0")],
+            "client": ("127.0.0.1", 1234),
         }
     )
 
-    response = await media_router.redirect_media_hls_stream(
+    response = await media_router.stream_media_file(
         request=request,
         media_id=5048,
-        bandwidth=3000000,
         expires=1700000900,
         signature="signed",
     )
 
     assert response.status_code == 302
-    assert response.headers["location"] == "https://cpats01.115.com/video.m3u8"
+    assert response.headers["location"] == "https://cpats01.115.com/highest.m3u8"
     assert response.headers["cache-control"] == "no-store"
     assert captured == {
         "media": media,
-        "bandwidth": 3000000,
         "user_agent": "Frontend-Player/2.0",
+        "signature": "signed",
     }
+
+
+async def test_cloud115_playback_prefers_highest_hls(monkeypatch):
+    media = SimpleNamespace(id=5048)
+    hls_resolver = AsyncMock(return_value="https://cdn/highest.m3u8")
+    direct_resolver = AsyncMock(return_value="https://cdn/original.mp4")
+    monkeypatch.setattr(
+        Cloud115HlsService,
+        "resolve_highest_variant_url",
+        hls_resolver,
+    )
+    monkeypatch.setattr(MediaService, "resolve_cloud115_stream_url", direct_resolver)
+
+    result = await MediaService.resolve_cloud115_playback_url(
+        media,
+        "Frontend-Player/2.0",
+        "signed",
+    )
+
+    assert result == "https://cdn/highest.m3u8"
+    hls_resolver.assert_awaited_once_with(media, user_agent="Frontend-Player/2.0")
+    direct_resolver.assert_not_awaited()
+
+
+async def test_cloud115_hls_dispatch_selects_highest_bandwidth(monkeypatch):
+    media = SimpleNamespace(id=5049)
+    video_info = SimpleNamespace(
+        definitions=[
+            SimpleNamespace(bandwidth=900000, m3u8_url="https://cdn/720p.m3u8"),
+            SimpleNamespace(bandwidth=3000000, m3u8_url="https://cdn/1080p.m3u8"),
+            SimpleNamespace(bandwidth=600000, m3u8_url="https://cdn/540p.m3u8"),
+        ]
+    )
+    monkeypatch.setattr(Cloud115HlsService, "_highest_variant_cache", {})
+    monkeypatch.setattr(
+        Cloud115HlsService,
+        "_require_pickcode",
+        Mock(return_value="pickcode"),
+    )
+    video_info_resolver = AsyncMock(return_value=video_info)
+    monkeypatch.setattr(
+        Cloud115HlsService,
+        "_get_video_info",
+        video_info_resolver,
+    )
+
+    result = await Cloud115HlsService.resolve_highest_variant_url(
+        media,
+        user_agent="Frontend-Player/2.0",
+    )
+
+    assert result == "https://cdn/1080p.m3u8"
+    video_info_resolver.assert_awaited_once_with(
+        media,
+        "pickcode",
+        user_agent="Frontend-Player/2.0",
+    )
+
+
+async def test_cloud115_playback_falls_back_for_recoverable_hls_error(monkeypatch):
+    media = SimpleNamespace(id=5048)
+    hls_resolver = AsyncMock(
+        side_effect=ApiError(
+            503,
+            "cloud115_video_transcoding",
+            "115 视频正在转码，请稍后再试",
+        )
+    )
+    direct_resolver = AsyncMock(return_value="https://cdn/original.mp4")
+    monkeypatch.setattr(
+        Cloud115HlsService,
+        "resolve_highest_variant_url",
+        hls_resolver,
+    )
+    monkeypatch.setattr(MediaService, "resolve_cloud115_stream_url", direct_resolver)
+
+    result = await MediaService.resolve_cloud115_playback_url(
+        media,
+        "Frontend-Player/2.0",
+        "signed",
+    )
+
+    assert result == "https://cdn/original.mp4"
+    direct_resolver.assert_awaited_once_with(
+        media,
+        "Frontend-Player/2.0",
+        "signed",
+    )
+
+
+async def test_cloud115_playback_preserves_cookie_error(monkeypatch):
+    media = SimpleNamespace(id=5048)
+    cookie_error = ApiError(
+        422,
+        "cloud115_cookies_invalid",
+        "115 cookies 已失效，请重新扫码登录",
+    )
+    hls_resolver = AsyncMock(side_effect=cookie_error)
+    direct_resolver = AsyncMock(return_value="https://cdn/original.mp4")
+    monkeypatch.setattr(
+        Cloud115HlsService,
+        "resolve_highest_variant_url",
+        hls_resolver,
+    )
+    monkeypatch.setattr(MediaService, "resolve_cloud115_stream_url", direct_resolver)
+
+    try:
+        await MediaService.resolve_cloud115_playback_url(
+            media,
+            "Frontend-Player/2.0",
+            "signed",
+        )
+    except ApiError as exc:
+        assert exc is cookie_error
+    else:
+        raise AssertionError("cloud115 cookie error must not fall back to direct stream")
+    direct_resolver.assert_not_awaited()
 
 
 async def test_api_error_handler_preserves_response_headers():

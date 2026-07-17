@@ -78,6 +78,41 @@ class MediaService:
     _CLOUD115_URL_TTL_SECONDS = 6 * 60 * 60
     _cloud115_url_cache: dict[tuple[int, str, str], tuple[str, float]] = {}
 
+    # 这些错误只表示 HLS 当前不可用，不应阻断仍可通过原画直链完成的播放。
+    _CLOUD115_HLS_FALLBACK_CODES = {
+        "cloud115_membership_required",
+        "cloud115_video_transcoding",
+        "cloud115_rate_limited",
+        "cloud115_upstream_error",
+        "cloud115_hls_unavailable",
+        "hls_not_video",
+    }
+
+    @classmethod
+    async def resolve_cloud115_playback_url(
+        cls, media: Media, user_agent: str, signature: str
+    ) -> str:
+        """优先返回最高码率 HLS；可恢复的 HLS 错误静默降级到原画直链。"""
+        from src.service.playback.cloud115_hls_service import Cloud115HlsService
+
+        try:
+            return await Cloud115HlsService.resolve_highest_variant_url(
+                media,
+                user_agent=user_agent,
+            )
+        except ApiError as exc:
+            if exc.code not in cls._CLOUD115_HLS_FALLBACK_CODES:
+                # cookies 失效、媒体不存在/被封等确定性错误必须原样暴露。
+                raise
+            logger.info(
+                "cloud115 hls unavailable, falling back to direct stream "
+                "media_id={} code={} detail={}",
+                media.id,
+                exc.code,
+                exc.message,
+            )
+            return await cls.resolve_cloud115_stream_url(media, user_agent, signature)
+
     @classmethod
     async def resolve_cloud115_stream_url(
         cls, media: Media, user_agent: str, signature: str

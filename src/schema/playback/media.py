@@ -8,17 +8,6 @@ from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
 
 
-class HlsStreamResource(SchemaModel):
-    quality: str
-    resolution: str
-    bandwidth: int
-    url: str
-
-
-class HlsStreamListResponse(SchemaModel):
-    streams: list[HlsStreamResource]
-
-
 class MediaPointKind(str, Enum):
     # 时刻归属过滤：JAV 仅影片媒体、VIDEO 仅非 JAV 视频媒体、ALL 不限。
     JAV = "jav"

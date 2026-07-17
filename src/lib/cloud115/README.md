@@ -548,17 +548,17 @@ except Cloud115Error:
 
 **关键**：
 - 拿直链时的 UA 和消费直链时的 UA **必须逐字节一致**
-- SakuraMedia 前端直接打开后端 `/stream` 或 HLS `.m3u8` 地址即可；后端读取播放器
-  自然 UA 后签发 115 地址，前端不需要设置 UA，只需正常跟随 302 且不要在跳转时改写 UA
+- SakuraMedia 前端只需打开既有 `/stream` 地址；后端读取播放器自然 UA，优先签发
+  最高码率 HLS，暂不可用时自动降级到原画直链。前端只需正常跟随 302 且不要改写 UA
 - 只有绕过 SakuraMediaBE、直接消费 SDK 返回的 115 原始 URL 时，调用方才需要自行保证 UA 一致
 - 直接把 HLS URL 交给 ffmpeg/PyAV 时需要显式覆写 UA；后端缩略图任务则用 `Cloud115HlsSegmentReader` 保证 UA 一致并在首个完整帧后停止读取
 
 HLS 同样受 UA 绑定约束。`get_video_info` 使用 `Cloud115Client.user_agent` 签发
 master、variant 和 TS 地址；消费方无需 Cookie，但必须对 m3u8 及其所有子请求使用
-这一 UA。SakuraMediaBE 不要求前端播放器设置 UA：`/media/{media_id}/hls-streams`
-返回后端 `.m3u8` 地址，播放器请求该地址时，后端以请求里的真实 UA 调
-`get_video_info`，再 `302` 到对应的 115 variant。播放器跟随重定向及请求 TS 时会
-自然沿用自己的 UA，因此可通过 115 的校验；后端不代理 m3u8 或 TS 字节流。
+这一 UA。SakuraMediaBE 的 `/media/{media_id}/stream` 以请求里的真实 UA 调
+`get_video_info`，再 `302` 到最高码率 115 variant；播放器跟随重定向及请求 TS 时会
+自然沿用自己的 UA，因此可通过 115 的校验。后端不代理 m3u8 或 TS 字节流，也不再
+对外暴露独立 HLS 清晰度端点。
 
 ### 直链生命周期
 

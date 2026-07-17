@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
 
 from loguru import logger
 
@@ -22,22 +21,11 @@ from src.service.playback.cloud115_backend_service import (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class HlsStream:
-    quality: str
-    resolution: str
-    bandwidth: int
-
-
 class Cloud115HlsService:
-    """解析 HLS 清晰度，并按播放器 UA 获取可 302 的 variant 地址。"""
+    """按播放器 UA 解析最高码率 HLS，并为 ``/stream`` 提供内部派发地址。"""
 
     _HLS_TTL_SECONDS = 10 * 60
-    _metadata_cache: dict[tuple[int, str], tuple[list[HlsStream], float]] = {}
-    _variant_cache: dict[
-        tuple[int, str, str],
-        tuple[dict[int, str], float],
-    ] = {}
+    _highest_variant_cache: dict[tuple[int, str, str], tuple[str, float]] = {}
 
     @staticmethod
     def _require_pickcode(media: Media) -> str:
@@ -103,96 +91,33 @@ class Cloud115HlsService:
     def _cleanup_expired_cache(cls, now: float) -> None:
         for stale_key in [
             key
-            for key, (_, expires_at) in cls._metadata_cache.items()
+            for key, (_, expires_at) in cls._highest_variant_cache.items()
             if expires_at <= now
         ]:
-            cls._metadata_cache.pop(stale_key, None)
-        for stale_key in [
-            key
-            for key, (_, expires_at) in cls._variant_cache.items()
-            if expires_at <= now
-        ]:
-            cls._variant_cache.pop(stale_key, None)
+            cls._highest_variant_cache.pop(stale_key, None)
 
     @classmethod
-    async def list_hls_streams(cls, media: Media) -> list[HlsStream]:
-        """获取清晰度元数据；上游 URL 仅用于解析，不直接暴露给前端。"""
-        pickcode = cls._require_pickcode(media)
-        cache_key = (media.id, pickcode)
-        now = time.monotonic()
-        cached = cls._metadata_cache.get(cache_key)
-        if cached is not None:
-            streams, expires_at = cached
-            if expires_at > now:
-                logger.debug(
-                    "cloud115 hls metadata cache hit media_id={} pickcode={}",
-                    media.id,
-                    pickcode,
-                )
-                return streams
-            cls._metadata_cache.pop(cache_key, None)
-
-        cls._cleanup_expired_cache(now)
-        video_info = await cls._get_video_info(media, pickcode)
-
-        streams = sorted(
-            (
-                HlsStream(
-                    quality=definition.label,
-                    resolution=definition.resolution,
-                    bandwidth=definition.bandwidth,
-                )
-                for definition in video_info.definitions
-            ),
-            key=lambda stream: stream.bandwidth,
-            reverse=True,
-        )
-        cls._metadata_cache[cache_key] = (
-            streams,
-            now + cls._HLS_TTL_SECONDS,
-        )
-        return streams
-
-    @classmethod
-    async def resolve_hls_variant_url(
+    async def resolve_highest_variant_url(
         cls,
         media: Media,
         *,
-        bandwidth: int,
         user_agent: str,
     ) -> str:
-        """按播放器真实 UA 签发并返回指定码率的 115 variant m3u8 URL。"""
-        if not user_agent:
-            raise ApiError(
-                400,
-                "hls_user_agent_missing",
-                "播放器请求缺少 User-Agent",
-                {"media_id": media.id},
-            )
+        """按播放器真实 UA 签发并返回最高码率的 115 variant m3u8 URL。"""
         pickcode = cls._require_pickcode(media)
         cache_key = (media.id, pickcode, user_agent)
         now = time.monotonic()
-        cached = cls._variant_cache.get(cache_key)
+        cached = cls._highest_variant_cache.get(cache_key)
         if cached is not None:
-            variants, expires_at = cached
+            url, expires_at = cached
             if expires_at > now:
-                url = variants.get(bandwidth)
-                if url is not None:
-                    logger.debug(
-                        "cloud115 hls variant cache hit media_id={} bandwidth={} ua={!r}",
-                        media.id,
-                        bandwidth,
-                        user_agent,
-                    )
-                    return url
-                raise ApiError(
-                    404,
-                    "hls_stream_not_found",
-                    "请求的 HLS 清晰度不存在",
-                    {"media_id": media.id, "bandwidth": bandwidth},
+                logger.debug(
+                    "cloud115 highest hls variant cache hit media_id={} ua={!r}",
+                    media.id,
+                    user_agent,
                 )
-            else:
-                cls._variant_cache.pop(cache_key, None)
+                return url
+            cls._highest_variant_cache.pop(cache_key, None)
 
         cls._cleanup_expired_cache(now)
         video_info = await cls._get_video_info(
@@ -200,20 +125,18 @@ class Cloud115HlsService:
             pickcode,
             user_agent=user_agent,
         )
-        # 同码率分支按 master playlist 首次出现者为准，与 SDK _pick_variant 契约一致。
-        variants: dict[int, str] = {}
-        for definition in video_info.definitions:
-            variants.setdefault(definition.bandwidth, definition.m3u8_url)
-        cls._variant_cache[cache_key] = (
-            variants,
+        if not video_info.definitions:
+            raise ApiError(
+                502,
+                "cloud115_hls_unavailable",
+                "115 未返回可用的 HLS 清晰度",
+                {"media_id": media.id},
+            )
+
+        # 只做自动派发，不对外暴露清晰度选择；同码率时保持 master playlist 原始顺序。
+        highest = max(video_info.definitions, key=lambda item: item.bandwidth)
+        cls._highest_variant_cache[cache_key] = (
+            highest.m3u8_url,
             now + cls._HLS_TTL_SECONDS,
         )
-        url = variants.get(bandwidth)
-        if url is None:
-            raise ApiError(
-                404,
-                "hls_stream_not_found",
-                "请求的 HLS 清晰度不存在",
-                {"media_id": media.id, "bandwidth": bandwidth},
-            )
-        return url
+        return highest.m3u8_url
