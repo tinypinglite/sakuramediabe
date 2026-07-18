@@ -338,6 +338,20 @@ class CatalogImportService:
                 self.image_service.cleanup_prepared_image_files(prepared_files)
 
     def sync_movie_desc(self, movie: Movie) -> bool:
+        task_state = ResourceTaskStateService.get_state(self.TASK_KEY, movie.id)
+        if (
+            task_state is not None
+            and isinstance(task_state.extra, dict)
+            and task_state.extra.get("terminal") is True
+        ):
+            # 终态必须在公共入口统一拦截，避免热评同步、影片导入等 upsert 链路绕过候选过滤。
+            logger.info(
+                "Catalog movie desc sync skipped terminal failure movie_id={} movie_number={}",
+                movie.id,
+                movie.movie_number,
+            )
+            return False
+
         # DMM 已在本实例生命周期内判定不可用：直接跳过，不再发起请求，
         # 影片描述状态保持原样，留待后续 sync-movie-desc 任务在网络恢复后补抓。
         if self._dmm_circuit_open:
