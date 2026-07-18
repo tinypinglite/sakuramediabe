@@ -12,6 +12,8 @@ from src.schema.system.activity import (
     TaskRunResource,
 )
 from src.schema.system.resource_task_state import (
+    MediaThumbnailTaskBatchResetRequest,
+    MediaThumbnailTaskBatchResetResponse,
     ResourceTaskDefinitionResource,
     ResourceTaskRecordResource,
 )
@@ -126,6 +128,24 @@ def list_resource_task_states(
         state=state,
         search=search,
         sort=sort,
+    )
+
+
+@router.post(
+    "/system/resource-task-states/media_thumbnail_generation/reset",
+    response_model=MediaThumbnailTaskBatchResetResponse,
+)
+def reset_failed_media_thumbnail_task_states(
+    payload: MediaThumbnailTaskBatchResetRequest,
+):
+    resource_ids = ResourceTaskStateService.reset_failed_media_thumbnail_states(
+        payload.resource_ids
+    )
+    return MediaThumbnailTaskBatchResetResponse(
+        task_key="media_thumbnail_generation",
+        state=ResourceTaskStateService.STATE_PENDING,
+        reset_count=len(resource_ids),
+        resource_ids=resource_ids,
     )
 
 

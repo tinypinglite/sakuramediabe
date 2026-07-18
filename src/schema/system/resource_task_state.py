@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from pydantic import Field, field_validator
+
 from src.schema.common.base import SchemaModel
 
 
@@ -41,3 +43,24 @@ class ResourceTaskRecordResource(SchemaModel):
     created_at: datetime
     updated_at: datetime
     resource: TaskRecordResourceSummary | None = None
+
+
+class MediaThumbnailTaskBatchResetRequest(SchemaModel):
+    resource_ids: list[int] = Field(min_length=1, max_length=200)
+
+    @field_validator("resource_ids")
+    @classmethod
+    def validate_resource_ids(cls, value: list[int]) -> list[int]:
+        # 批量重置只接受唯一的正整数主键，避免重复项被误计入重置数量。
+        if any(resource_id <= 0 for resource_id in value):
+            raise ValueError("resource_ids must contain positive integers")
+        if len(value) != len(set(value)):
+            raise ValueError("resource_ids must be unique")
+        return value
+
+
+class MediaThumbnailTaskBatchResetResponse(SchemaModel):
+    task_key: str
+    state: str
+    reset_count: int
+    resource_ids: list[int]

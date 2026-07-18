@@ -10,6 +10,7 @@
 
 - `GET /system/resource-task-states/definitions`
 - `GET /system/resource-task-states`
+- `POST /system/resource-task-states/media_thumbnail_generation/reset`
 
 如果是活动中心首屏，请优先使用：
 
@@ -142,6 +143,55 @@
 - 未传 `sort` 时使用任务定义里的 `default_sort`
 - 这个接口只返回已落到 `resource_task_state` 的记录
 - 前端可结合 `last_task_run_id` 跳转到批次级任务详情
+
+媒体缩略图失败列表直接复用本接口：
+
+```http
+GET /system/resource-task-states?task_key=media_thumbnail_generation&state=failed&page=1&page_size=20&sort=last_error_at:desc
+```
+
+返回记录的 `resource_id` 即 `media_id`；`resource` 摘要同时包含影片番号、标题、媒体路径和有效状态。
+
+### `POST /system/resource-task-states/media_thumbnail_generation/reset`
+
+批量把媒体缩略图失败记录重置为 `pending`，由现有 `generate-media-thumbnails` 调度任务重新处理。
+
+请求体：
+
+```json
+{
+  "resource_ids": [101, 102, 103]
+}
+```
+
+约束：
+
+- 一次接受 `1` 到 `200` 个唯一正整数 ID
+- 每个 ID 都必须存在 `media_thumbnail_generation` 任务记录，且当前状态必须为 `failed`
+- 对应媒体必须仍然存在且 `valid = true`
+- 整批采用原子语义；任一 ID 不满足条件时，所有记录均不重置
+
+重置后：
+
+- `state = pending`
+- `attempt_count = 0`
+- 清空 `last_error`、`last_error_at` 和 `last_task_run_id`
+- `last_trigger_type = manual`
+- 清除 `extra.terminal`，重新开放自动重试预算
+- 保留 `last_attempted_at`、`last_succeeded_at` 作为历史痕迹
+
+成功响应：
+
+```json
+{
+  "task_key": "media_thumbnail_generation",
+  "state": "pending",
+  "reset_count": 3,
+  "resource_ids": [101, 102, 103]
+}
+```
+
+本接口只负责重新入队，不会同步生成缩略图，也不会触发全量任务。
 
 ### `GET /system/events/stream`
 

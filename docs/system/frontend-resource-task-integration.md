@@ -170,6 +170,32 @@
 - 列表项优先展示 `resource.movie_number`、`resource.title`
 - `media` 任务额外展示 `resource.path` 和 `resource.valid`
 
+媒体缩略图失败页固定使用：
+
+```http
+GET /system/resource-task-states?task_key=media_thumbnail_generation&state=failed
+```
+
+列表选择主键使用 `resource_id`。当 `resource.valid = false` 时应禁用重置操作，后端也会拒绝失效媒体。
+
+### `POST /system/resource-task-states/media_thumbnail_generation/reset`
+
+批量重置选中的媒体缩略图失败记录：
+
+```json
+{
+  "resource_ids": [101, 102, 103]
+}
+```
+
+前端接入建议：
+
+- 仅在 `media_thumbnail_generation` 的失败列表显示批量重置操作
+- 一次最多提交 `200` 个互不重复的媒体 ID
+- 接口成功后重新加载当前失败列表和任务定义计数
+- 接口采用整批原子语义；失败响应的 `details.resource_ids` 可用于标记不符合条件的选择项
+- 重置只将记录放回 `pending`，实际生成进度继续由任务中心和 `/system/events/stream` 展示
+
 ### 1. 资源任务入口页
 
 后端依赖：

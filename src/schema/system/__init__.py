@@ -10,6 +10,8 @@ from .movie_desc_translation_settings import (
     MovieDescTranslationSettingsTestResource,
 )
 from .resource_task_state import (
+    MediaThumbnailTaskBatchResetRequest,
+    MediaThumbnailTaskBatchResetResponse,
     ResourceTaskDefinitionResource,
     ResourceTaskRecordResource,
     TaskRecordResourceSummary,
@@ -24,6 +26,8 @@ __all__ = [
     "NotificationResource",
     "MovieDescTranslationSettingsTestRequest",
     "MovieDescTranslationSettingsTestResource",
+    "MediaThumbnailTaskBatchResetRequest",
+    "MediaThumbnailTaskBatchResetResponse",
     "ResourceTaskDefinitionResource",
     "ResourceTaskRecordResource",
     "SystemEventEnvelope",

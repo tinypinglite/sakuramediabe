@@ -9,7 +9,7 @@ from peewee import IntegrityError, fn
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import resolve_sort, validate_page
 from src.common.runtime_time import utc_now_for_db
-from src.model import ResourceTaskState
+from src.model import Media, ResourceTaskState
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
 from src.schema.system.resource_task_state import (
@@ -416,6 +416,118 @@ class ResourceTaskStateService:
             ]
         )
         return record
+
+    @classmethod
+    def reset_failed_media_thumbnail_states(cls, resource_ids: list[int]) -> list[int]:
+        task_key = "media_thumbnail_generation"
+        task_definition = cls._require_task_definition(task_key)
+        normalized_resource_ids = [int(resource_id) for resource_id in resource_ids]
+
+        database = get_database()
+        with database.atomic():
+            # 锁住所选记录并整批校验，避免只重置部分媒体造成前端状态不一致。
+            records = list(
+                ResourceTaskState.select()
+                .where(
+                    ResourceTaskState.task_key == task_definition.task_key,
+                    ResourceTaskState.resource_type == task_definition.resource_type,
+                    ResourceTaskState.resource_id.in_(normalized_resource_ids),
+                )
+                .for_update()
+            )
+            records_by_resource_id = {record.resource_id: record for record in records}
+            missing_resource_ids = [
+                resource_id
+                for resource_id in normalized_resource_ids
+                if resource_id not in records_by_resource_id
+            ]
+            if missing_resource_ids:
+                raise ApiError(
+                    404,
+                    "media_thumbnail_task_state_not_found",
+                    "部分媒体没有缩略图任务记录",
+                    {"resource_ids": missing_resource_ids},
+                )
+
+            not_failed_resource_ids = [
+                resource_id
+                for resource_id in normalized_resource_ids
+                if records_by_resource_id[resource_id].state != cls.STATE_FAILED
+            ]
+            if not_failed_resource_ids:
+                raise ApiError(
+                    422,
+                    "media_thumbnail_task_reset_forbidden",
+                    "仅允许重置失败的媒体缩略图任务",
+                    {"resource_ids": not_failed_resource_ids},
+                )
+
+            media_by_id = {
+                media.id: media
+                for media in Media.select(Media.id, Media.valid).where(
+                    Media.id.in_(normalized_resource_ids)
+                )
+            }
+            missing_media_ids = [
+                resource_id
+                for resource_id in normalized_resource_ids
+                if resource_id not in media_by_id
+            ]
+            if missing_media_ids:
+                raise ApiError(
+                    404,
+                    "media_not_found",
+                    "部分媒体不存在",
+                    {"resource_ids": missing_media_ids},
+                )
+
+            invalid_media_ids = [
+                resource_id
+                for resource_id in normalized_resource_ids
+                if not media_by_id[resource_id].valid
+            ]
+            if invalid_media_ids:
+                raise ApiError(
+                    422,
+                    "media_thumbnail_task_media_invalid",
+                    "失效媒体不能重新生成缩略图",
+                    {"resource_ids": invalid_media_ids},
+                )
+
+            now = utc_now_for_db()
+            for resource_id in normalized_resource_ids:
+                record = records_by_resource_id[resource_id]
+                if isinstance(record.extra, dict):
+                    extra: dict | list | None = dict(record.extra)
+                    # 清除终态标记，重新开放现有调度器的自动重试预算。
+                    extra.pop("terminal", None)
+                elif isinstance(record.extra, list):
+                    extra = list(record.extra)
+                else:
+                    extra = None
+
+                record.state = cls.STATE_PENDING
+                record.attempt_count = 0
+                record.last_error = None
+                record.last_error_at = None
+                record.last_trigger_type = "manual"
+                record.last_task_run_id = None
+                record.extra = extra or None
+                record.updated_at = now
+                record.save(
+                    only=[
+                        ResourceTaskState.state,
+                        ResourceTaskState.attempt_count,
+                        ResourceTaskState.last_error,
+                        ResourceTaskState.last_error_at,
+                        ResourceTaskState.last_trigger_type,
+                        ResourceTaskState.last_task_run_id,
+                        ResourceTaskState.extra,
+                        ResourceTaskState.updated_at,
+                    ]
+                )
+
+        return normalized_resource_ids
 
     @classmethod
     def list_definition_resources(cls) -> list[ResourceTaskDefinitionResource]:
