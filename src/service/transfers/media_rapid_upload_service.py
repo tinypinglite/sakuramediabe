@@ -117,11 +117,11 @@ class MediaRapidUploadService:
         media_ids: list[int],
         target_library_id: int,
     ) -> MediaRapidUploadTriggerResponse:
-        if not media_ids or len(media_ids) > 200 or len(media_ids) != len(set(media_ids)):
+        if not media_ids or len(media_ids) > 1000 or len(media_ids) != len(set(media_ids)):
             raise ApiError(
                 422,
                 "invalid_media_rapid_upload_selection",
-                "media_ids 必须包含 1 至 200 个不重复的媒体 ID",
+                "media_ids 必须包含 1 至 1000 个不重复的媒体 ID",
             )
         target_library = cls._require_target_library(target_library_id)
         specs = [cls._build_local_item_spec(media_id) for media_id in media_ids]

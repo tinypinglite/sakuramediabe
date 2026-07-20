@@ -160,7 +160,7 @@
 }
 ```
 
-- `media_ids` 必须是 1 至 200 个不重复的本地媒体 ID；JAV 和 videos 媒体可以混合提交。
+- `media_ids` 必须是 1 至 1000 个不重复的本地媒体 ID；JAV 和 videos 媒体可以混合提交。
 - `target_library_id` 必须指向 `backend=cloud115` 的媒体库。
 - 接口只创建后台作业并立即返回 `202 Accepted`：
 

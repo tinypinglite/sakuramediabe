@@ -6,7 +6,7 @@ from src.schema.common.base import SchemaModel
 
 
 class MediaRapidUploadCreateRequest(SchemaModel):
-    media_ids: list[int] = Field(min_length=1, max_length=200)
+    media_ids: list[int] = Field(min_length=1, max_length=1000)
     target_library_id: int = Field(gt=0)
 
     @field_validator("media_ids")
