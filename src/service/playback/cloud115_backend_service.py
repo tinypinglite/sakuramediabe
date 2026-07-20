@@ -27,6 +27,7 @@ from src.lib.cloud115 import (
     Cloud115Error,
     Cloud115NotFoundError,
     Cloud115RateLimitedError,
+    Cloud115RiskControlError,
 )
 from src.model import MediaLibrary
 from src.model.enums import MediaLibraryBackend
@@ -96,12 +97,21 @@ async def cloud115_client_for(
     library: MediaLibrary,
     *,
     user_agent: str | None = None,
+    min_request_interval: float = 0.0,
 ) -> AsyncIterator[Cloud115Client]:
-    """按库配置建 Cloud115Client；可指定请求 UA，退出时回写 cookies 快照。"""
+    """按库配置建 Cloud115Client；可指定请求 UA，退出时回写 cookies 快照。
+
+    min_request_interval>0 时开启全局请求限速（秒/次），用于批量秒传等高频写入场景，
+    把请求匀速化以规避 webapi 前置 WAF 的风控阈值；浏览/播放等低频场景保持 0（不限速）。
+    """
     config = require_cloud115_library(library)
     original_config = dict(config)
     original_cookies = original_config["cookies"]
-    client = Cloud115Client(cookies=original_cookies, user_agent=user_agent)
+    client = Cloud115Client(
+        cookies=original_cookies,
+        user_agent=user_agent,
+        min_request_interval=min_request_interval,
+    )
     try:
         yield client
     finally:
@@ -133,6 +143,13 @@ def map_cloud115_error(exc: Cloud115Error) -> ApiError:
         return ApiError(
             429, "cloud115_rate_limited",
             "115 正在限流，请稍后再试",
+            {"detail": str(exc)},
+        )
+    if isinstance(exc, Cloud115RiskControlError):
+        # 触发 115 风控（WAF 405）：账号被临时冻结，语义接近限流，明确回 429 引导稍后重试。
+        return ApiError(
+            429, "cloud115_risk_control",
+            "115 触发风控（账号被临时限制），请稍后再试",
             {"detail": str(exc)},
         )
     return ApiError(

@@ -30,6 +30,7 @@ from src.lib.cloud115.exceptions import (
     Cloud115OfflineTaskExistsError,
     Cloud115RateLimitedError,
     Cloud115RequestError,
+    Cloud115RiskControlError,
     Cloud115VideoNotReadyError,
 )
 from src.lib.cloud115.types import (
@@ -83,6 +84,7 @@ __all__ = [
     "Cloud115RequestError",
     "Cloud115CipherError",
     "Cloud115RateLimitedError",
+    "Cloud115RiskControlError",
     "Cloud115MembershipRequiredError",
     "Cloud115VideoNotReadyError",
     "Cloud115OfflineQuotaExceededError",

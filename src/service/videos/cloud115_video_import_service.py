@@ -39,8 +39,6 @@ from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeResult,
     MediaMetadataProbeService,
 )
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
-from src.service.system.resource_task_state_service import ResourceTaskStateService
 from src.service.transfers.cloud115_import_common import (
     CLOUD115_COVER_UA,
     CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
@@ -57,6 +55,7 @@ from src.service.transfers.cloud115_import_common import (
 from src.service.transfers.cloud115_import_service import (
     CloudSourceFile,
 )
+from src.service.transfers.cloud115_media_registrar import Cloud115MediaRegistrar
 from src.service.transfers.tag_rules import build_media_special_tags
 from src.service.videos.video_collection_service import VideoCollectionService
 from src.service.videos.video_cover_service import VideoCoverService
@@ -81,18 +80,6 @@ class Cloud115VideoImportService:
     @staticmethod
     def _suffix(name: str) -> str:
         return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
-
-    @staticmethod
-    def _find_library_media(library: MediaLibrary, sha1: str) -> Media | None:
-        return (
-            Media.select()
-            .where(
-                Media.library == library,
-                Media.content_fingerprint == f"sha1:{sha1}",
-            )
-            .order_by(Media.id.desc())
-            .first()
-        )
 
     @staticmethod
     async def _assert_file_outside_library_root(
@@ -395,7 +382,7 @@ class Cloud115VideoImportService:
                         )
                     )
                     continue
-                existing = self._find_library_media(library, source.sha1)
+                existing = Cloud115MediaRegistrar.find_library_media(library, source.sha1)
                 # 同批次去重永远跳过（第二个副本没有独立价值）。
                 # 库内已存在时的行为按 transfer_mode 分派：
                 #   - copy 模式：跳过，保留源文件；
@@ -599,21 +586,21 @@ class Cloud115VideoImportService:
             if metadata is not None
             else (source.play_long or 0)
         )
-        locator = {
-            "fid": target_entry.entry_id,
-            "pickcode": target_entry.pickcode,
-            "name": target_name,
-            "source_path": source.rel_path,
-        }
+        locator = Cloud115MediaRegistrar.build_locator(
+            fid=target_entry.entry_id,
+            pickcode=target_entry.pickcode,
+            name=target_name,
+            source_path=source.rel_path,
+        )
         try:
             with get_database().atomic():
-                media = Media.create(
+                media = Cloud115MediaRegistrar.create_cloud115_media(
                     video_item=video,
                     library=library,
-                    backend_locator=locator,
-                    storage_mode="copy",
-                    content_fingerprint=f"sha1:{source.sha1}",
+                    locator=locator,
+                    fingerprint=Cloud115MediaRegistrar.build_fingerprint(source.sha1),
                     file_size_bytes=source.size,
+                    storage_mode="copy",
                     resolution=metadata.resolution if metadata is not None else None,
                     duration_seconds=duration_seconds,
                     video_info=effective_video_info,
@@ -648,9 +635,7 @@ class Cloud115VideoImportService:
                 )
             )
         else:
-            ResourceTaskStateService.reset_for_requeue(
-                MediaThumbnailService.TASK_KEY, media.id
-            )
+            Cloud115MediaRegistrar.reset_thumbnail_state(media.id)
             try:
                 reader = await open_cloud115_range_reader(
                     client,

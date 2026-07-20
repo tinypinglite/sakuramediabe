@@ -322,6 +322,9 @@ class Downloads(BaseModel):
     preferred_client_kinds: list[str] = Field(default_factory=lambda: ["qbittorrent", "cloud115"])
     # cloud115 离线任务超过该时长仍未完成即本地放弃：不清理 115 侧任务、停止轮询并通知用户。
     cloud115_offline_abandon_hours: int = Field(default=24, ge=1)
+    # 批量秒传对 115 webapi 的全局请求限速：相邻请求最小间隔（秒）。webapi 前置阿里云 WAF
+    # 约 1-2 r/s 阈值，默认 1.0（=1 r/s，对标 AList 115 驱动 limit_rate）。0 关闭限速。
+    cloud115_rapid_upload_min_interval_seconds: float = Field(default=1.0, ge=0.0, le=10.0)
 
 
 class MediaImport(BaseModel):

@@ -24,7 +24,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, NamedTuple
 
 from loguru import logger
 
@@ -63,8 +63,6 @@ from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeResult,
     MediaMetadataProbeService,
 )
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
-from src.service.system.resource_task_state_service import ResourceTaskStateService
 from src.service.transfers.file_transfer import JAV_LIBRARY_SUBDIR
 from src.service.transfers.cloud115_import_common import (
     CLOUD115_METADATA_PROBE_MAX_BYTES,
@@ -83,6 +81,7 @@ from src.service.transfers.cloud115_import_common import (
     resolve_cloud115_copied_entry,
     verify_cloud115_renamed_file,
 )
+from src.service.transfers.cloud115_media_registrar import Cloud115MediaRegistrar
 from src.service.transfers.media_import_service import MediaImportService
 from src.service.transfers.tag_rules import build_media_special_tags
 
@@ -131,6 +130,16 @@ class CloudImportGroup:
 
     movie_number: str
     files: List[CloudSourceFile] = field(default_factory=list)
+
+
+class _ResolvedFile(NamedTuple):
+    """_import_group 中 copy + 对账后的单个待登记条目。"""
+
+    cloud_file: CloudSourceFile
+    target_fid: str
+    target_pickcode: str
+    current_name: str
+    target_name: str
 
 
 class Cloud115ImportService:
@@ -542,7 +551,7 @@ class Cloud115ImportService:
                 )
                 continue
             # 库内去重（限本库；sha1: 前缀与本地 sha256 裸 hex 值域天然不相交）。
-            existing = self._find_library_media(library, video.sha1, valid=True)
+            existing = Cloud115MediaRegistrar.find_library_media(library, video.sha1, valid=True)
             if (
                 existing is not None
                 and transfer_mode != CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE
@@ -647,12 +656,12 @@ class Cloud115ImportService:
                 )
 
         # 2) 逐文件处理：sha1 已在实体下则复用；否则新建版本目录 + 复制。
-        resolved: List[tuple[CloudSourceFile, str, str, str, str]] = []
+        resolved: List[_ResolvedFile] = []
         for cloud_file in group.files:
             target_name = normalize_jav_media_filename(
                 group.movie_number, cloud_file.name
             )
-            existing_valid = self._find_library_media(library, cloud_file.sha1, valid=True)
+            existing_valid = Cloud115MediaRegistrar.find_library_media(library, cloud_file.sha1, valid=True)
             reuse_managed_target = (
                 existing_valid is not None
                 and cloud_file.sha1 in preexisting_target_sha1
@@ -716,65 +725,63 @@ class Cloud115ImportService:
                     stats=stats,
                 )
                 return
-            resolved.append(
-                (
-                    cloud_file,
-                    target_entry.entry_id,
-                    target_entry.pickcode,
-                    target_entry.name,
-                    # 复用已登记条目时保留原名，不改动已在库的命名；新复制统一规范名。
-                    target_entry.name if reuse_managed_target else target_name,
-                )
-            )
+            resolved.append(_ResolvedFile(
+                cloud_file=cloud_file,
+                target_fid=target_entry.entry_id,
+                target_pickcode=target_entry.pickcode,
+                current_name=target_entry.name,
+                # 复用已登记条目时保留原名，不改动已在库的命名；新复制统一规范名。
+                target_name=target_entry.name if reuse_managed_target else target_name,
+            ))
 
         # 3) 逐文件改名；每次请求后按 fid 查询实际名称，失败立即终止整组。
-        for cloud_file, target_fid, _pickcode, current_name, target_name in resolved:
-            if current_name == target_name:
+        for r in resolved:
+            if r.current_name == r.target_name:
                 continue
             try:
-                await client.rename_file(target_fid, target_name)
-                await self._verify_renamed_file(client, target_fid, target_name)
+                await client.rename_file(r.target_fid, r.target_name)
+                await self._verify_renamed_file(client, r.target_fid, r.target_name)
             except Exception as exc:
                 self._record_group_failure(
                     group,
                     reason=FAILURE_REASON_CLOUD115_RENAME_FAILED,
-                    detail=f"fid={target_fid}: {exc}",
+                    detail=f"fid={r.target_fid}: {exc}",
                     failure_items=failure_items,
                     stats=stats,
                 )
                 logger.warning(
                     "Cloud115 rename verification failed movie_number={} fid={} detail={}",
-                    group.movie_number, target_fid, exc,
+                    group.movie_number, r.target_fid, exc,
                 )
                 return
 
         # 4) 在数据库事务外探测最终受管文件。有效媒体必须带完整技术元数据入库；
         # 已登记且已有 video_info 的清源重试直接复用，避免重复读取远端文件。
         probe_results: Dict[str, MediaMetadataProbeResult | None] = {}
-        for cloud_file, _target_fid, target_pickcode, _current_name, _target_name in resolved:
-            existing_valid = self._find_library_media(library, cloud_file.sha1, valid=True)
-            if cloud_file.censored or (
+        for r in resolved:
+            existing_valid = Cloud115MediaRegistrar.find_library_media(library, r.cloud_file.sha1, valid=True)
+            if r.cloud_file.censored or (
                 existing_valid is not None and existing_valid.video_info is not None
             ):
-                probe_results[cloud_file.sha1] = None
+                probe_results[r.cloud_file.sha1] = None
                 continue
             try:
-                probe_results[cloud_file.sha1] = await self._probe_cloud115_media(
+                probe_results[r.cloud_file.sha1] = await self._probe_cloud115_media(
                     client,
-                    pickcode=target_pickcode,
-                    file_size_bytes=cloud_file.size,
+                    pickcode=r.target_pickcode,
+                    file_size_bytes=r.cloud_file.size,
                 )
             except Exception as exc:
                 self._record_group_failure(
                     group,
                     reason=FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED,
-                    detail=f"{cloud_file.rel_path}: {exc}",
+                    detail=f"{r.cloud_file.rel_path}: {exc}",
                     failure_items=failure_items,
                     stats=stats,
                 )
                 logger.warning(
                     "Cloud115 metadata probe failed movie_number={} rel_path={} detail={}",
-                    group.movie_number, cloud_file.rel_path, exc,
+                    group.movie_number, r.cloud_file.rel_path, exc,
                 )
                 return
 
@@ -782,17 +789,17 @@ class Cloud115ImportService:
         registration_results: List[tuple[CloudSourceFile, bool]] = []
         try:
             with get_database().atomic():
-                for cloud_file, target_fid, target_pickcode, _current_name, target_name in resolved:
+                for r in resolved:
                     registered = self._register_media(
                         library=library,
                         movie=movie,
-                        cloud_file=cloud_file,
-                        target_fid=target_fid,
-                        target_pickcode=target_pickcode,
-                        encoded_name=target_name,
-                        metadata=probe_results[cloud_file.sha1],
+                        cloud_file=r.cloud_file,
+                        target_fid=r.target_fid,
+                        target_pickcode=r.target_pickcode,
+                        encoded_name=r.target_name,
+                        metadata=probe_results[r.cloud_file.sha1],
                     )
-                    registration_results.append((cloud_file, registered))
+                    registration_results.append((r.cloud_file, registered))
         except Exception as exc:
             self._record_group_failure(
                 group,
@@ -829,18 +836,18 @@ class Cloud115ImportService:
 
         # 6) 字幕全部处理完才允许 cleanup-source。清源模式下字幕失败作为可重导文件失败。
         subtitles_ready = True
-        for cloud_file, _target_fid, _target_pickcode, _current_name, target_name in resolved:
-            if cloud_file.subtitle is not None:
+        for r in resolved:
+            if r.cloud_file.subtitle is not None:
                 try:
                     await self._import_subtitle(
                         client,
                         movie=movie,
-                        cloud_file=cloud_file,
-                        encoded_name=target_name,
+                        cloud_file=r.cloud_file,
+                        encoded_name=r.target_name,
                     )
                 except Exception as exc:
                     item = make_failure_item(
-                        cloud_file.rel_path,
+                        r.cloud_file.rel_path,
                         FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED,
                         str(exc),
                     )
@@ -851,31 +858,30 @@ class Cloud115ImportService:
                     failure_items.append(item)
                     logger.warning(
                         "Cloud115 subtitle download failed movie_number={} rel_path={} detail={}",
-                        group.movie_number, cloud_file.rel_path, exc,
+                        group.movie_number, r.cloud_file.rel_path, exc,
                     )
 
         if transfer_mode != CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE or not subtitles_ready:
             return
 
         # 7) 清源严格放在复制、改名验证、探测、入库、字幕之后；逐文件删除便于失败后精确重试。
-        for cloud_file, _target_fid, _target_pickcode, _current_name, _encoded_name in resolved:
+        for r in resolved:
             try:
-                if cloud_file.subtitle is not None:
-                    await client.delete_files([cloud_file.subtitle.fid])
-                await client.delete_files([cloud_file.fid])
+                if r.cloud_file.subtitle is not None:
+                    await client.delete_files([r.cloud_file.subtitle.fid])
+                await client.delete_files([r.cloud_file.fid])
             except Exception as exc:
                 stats["failed"] += 1
                 item = make_failure_item(
-                    cloud_file.rel_path,
+                    r.cloud_file.rel_path,
                     FAILURE_REASON_SOURCE_DELETE_FAILED,
                     str(exc),
                 )
-                # cloud115 清源失败必须可以从原 source_cid 精确重试。
                 item["kind"] = "file"
                 failure_items.append(item)
                 logger.warning(
                     "Cloud115 source delete failed movie_number={} rel_path={} detail={}",
-                    group.movie_number, cloud_file.rel_path, exc,
+                    group.movie_number, r.cloud_file.rel_path, exc,
                 )
 
     async def _probe_cloud115_media(
@@ -936,17 +942,16 @@ class Cloud115ImportService:
         metadata: MediaMetadataProbeResult | None,
     ) -> bool:
         """按 sha1 指纹幂等登记一条 cloud115 Media；返回是否新登记（False = 已存在跳过）。"""
-        fingerprint = f"sha1:{cloud_file.sha1}"
-        # locator 键序固定（fid/pickcode/name/source_path），(library, locator) 唯一索引依赖此序。
-        locator = {
-            "fid": target_fid,
-            "pickcode": target_pickcode,
-            "name": encoded_name,
-            "source_path": cloud_file.rel_path,
-        }
+        locator = Cloud115MediaRegistrar.build_locator(
+            fid=target_fid,
+            pickcode=target_pickcode,
+            name=encoded_name,
+            source_path=cloud_file.rel_path,
+        )
+        fingerprint = Cloud115MediaRegistrar.build_fingerprint(cloud_file.sha1)
         valid = not cloud_file.censored
 
-        existing_valid = self._find_library_media(library, cloud_file.sha1, valid=True)
+        existing_valid = Cloud115MediaRegistrar.find_library_media(library, cloud_file.sha1, valid=True)
         effective_video_info = metadata.video_info if metadata is not None else None
         if existing_valid is not None and effective_video_info is None:
             effective_video_info = existing_valid.video_info
@@ -967,48 +972,47 @@ class Cloud115ImportService:
         )
 
         if existing_valid is not None:
-            # 目标可能由上次中断重跑生成，或用户删除旧目标后由本次重新复制；先把 locator
-            # 对账到实际条目，成功落库后 cleanup-source 才能安全删除来源。
             previous_locator = existing_valid.backend_locator or {}
             locator["source_path"] = previous_locator.get("source_path") or cloud_file.rel_path
-            existing_valid.backend_locator = locator
-            existing_valid.file_size_bytes = cloud_file.size
-            if resolution is not None:
-                existing_valid.resolution = resolution
-            if duration_seconds > 0:
-                existing_valid.duration_seconds = duration_seconds
-            if effective_video_info is not None:
-                existing_valid.video_info = effective_video_info
-            existing_valid.special_tags = special_tags
-            existing_valid.updated_at = utc_now_for_db()
+            Cloud115MediaRegistrar.apply_cloud115_fields(
+                existing_valid,
+                library=library,
+                locator=locator,
+                fingerprint=fingerprint,
+                file_size_bytes=cloud_file.size,
+                resolution=resolution,
+                duration_seconds=duration_seconds,
+                video_info=effective_video_info,
+                special_tags=special_tags,
+            )
             existing_valid.save()
             return False
-        invalid_media = self._find_library_media(library, cloud_file.sha1, valid=False)
+
+        invalid_media = Cloud115MediaRegistrar.find_library_media(library, cloud_file.sha1, valid=False)
         if invalid_media is not None:
-            # 复活：同内容曾登记过又失效（远端删除后重新出现），更新定位与归属。
             invalid_media.movie = movie
-            invalid_media.library = library
-            invalid_media.backend_locator = locator
-            invalid_media.file_size_bytes = cloud_file.size
-            if resolution is not None:
-                invalid_media.resolution = resolution
-            if duration_seconds > 0:
-                invalid_media.duration_seconds = duration_seconds
-            if effective_video_info is not None:
-                invalid_media.video_info = effective_video_info
-            invalid_media.special_tags = special_tags
-            invalid_media.valid = valid
-            invalid_media.updated_at = utc_now_for_db()
+            Cloud115MediaRegistrar.apply_cloud115_fields(
+                invalid_media,
+                library=library,
+                locator=locator,
+                fingerprint=fingerprint,
+                file_size_bytes=cloud_file.size,
+                resolution=resolution,
+                duration_seconds=duration_seconds,
+                video_info=effective_video_info,
+                special_tags=special_tags,
+                valid=valid,
+            )
             invalid_media.save()
             if valid:
-                self._reset_thumbnail_state(invalid_media.id)
+                Cloud115MediaRegistrar.reset_thumbnail_state(invalid_media.id)
             return True
 
-        media = Media.create(
+        media = Cloud115MediaRegistrar.create_cloud115_media(
             movie=movie,
             library=library,
-            backend_locator=locator,
-            content_fingerprint=fingerprint,
+            locator=locator,
+            fingerprint=fingerprint,
             file_size_bytes=cloud_file.size,
             resolution=resolution,
             duration_seconds=duration_seconds,
@@ -1017,30 +1021,12 @@ class Cloud115ImportService:
             valid=valid,
         )
         if valid:
-            self._reset_thumbnail_state(media.id)
+            Cloud115MediaRegistrar.reset_thumbnail_state(media.id)
         logger.info(
             "Cloud115 media registered movie_number={} media_id={} pickcode={} name={}",
             movie.movie_number, media.id, target_pickcode, encoded_name,
         )
         return True
-
-    @staticmethod
-    def _find_library_media(library: MediaLibrary, sha1: str, *, valid: bool) -> Media | None:
-        return (
-            Media.select()
-            .where(
-                Media.library == library,
-                Media.content_fingerprint == f"sha1:{sha1}",
-                Media.valid == valid,
-            )
-            .order_by(Media.id.desc())
-            .first()
-        )
-
-    @staticmethod
-    def _reset_thumbnail_state(media_id: int) -> None:
-        # 与本地导入一致：新登记/复活的媒体，缩略图任务回到全新待处理状态。
-        ResourceTaskStateService.reset_for_requeue(MediaThumbnailService.TASK_KEY, media_id)
 
     async def _import_subtitle(
         self,

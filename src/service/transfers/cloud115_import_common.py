@@ -138,6 +138,84 @@ async def ensure_cloud115_videos_target_dir(
     return entity_cid, version_cid
 
 
+async def _list_subdir_cids_by_name(
+    client: Cloud115Client, parent_cid: str
+) -> Dict[str, str]:
+    """列 parent_cid 下所有子目录，返回 ``{目录名: cid}``。
+
+    同名目录只保留首个命中，语义对齐 ``find_or_create_subdir``（命中即返回第一个）。
+    """
+    result: Dict[str, str] = {}
+    offset = 0
+    while True:
+        entries, total = await client.list_dir(parent_cid, offset=offset, limit=1150)
+        for entry in entries:
+            if entry.is_dir and entry.name not in result:
+                result[entry.name] = entry.entry_id
+        offset += len(entries)
+        if not entries or offset >= total:
+            break
+    return result
+
+
+class Cloud115TargetDirResolver:
+    """批次级目录缓存：把"每条 item 翻整个 jav//videos/ 找实体目录"降为"整批只翻一次"。
+
+    115 webapi 的 ``GET /files``（列目录）是批量秒传触发风控的主要请求来源：原本每条
+    item 都要列 root 找 jav、列整个 jav/ 找番号、再列番号目录防版本重名。本解析器：
+      - jav/videos 段目录 cid 解析一次即缓存；
+      - 首次访问某段时翻一次该段目录，建 ``{实体名: cid}`` 表，之后只查表；
+      - 批次内新建的实体目录写回缓存；
+      - 版本目录名是毫秒时间戳，天然唯一，直接 mkdir，不再预列表去重。
+    结果：每条 item 的 ``GET /files`` 从约 3 次降到 0 次（整批仅段解析 + 首次建表各一次）。
+
+    并发安全：调用方持库级写锁（``cloud115_import_mutex_key``），同一 115 库同时只有一个
+    写任务，故整批缓存有效；批次内新番号由本解析器自建并登记，不会漏。
+    """
+
+    def __init__(self, client: Cloud115Client, *, root_cid: str) -> None:
+        self._client = client
+        self._root_cid = root_cid
+        self._section_cid: Dict[str, str] = {}          # {"jav"/"videos": cid}
+        self._entities: Dict[str, Dict[str, str]] = {}  # {section: {实体名: cid}}
+
+    async def _section_cid_for(self, section: str) -> str:
+        cid = self._section_cid.get(section)
+        if cid is None:
+            cid = await find_or_create_subdir(
+                self._client, parent_cid=self._root_cid, name=section
+            )
+            self._section_cid[section] = cid
+        return cid
+
+    async def _entity_map_for(self, section: str) -> Dict[str, str]:
+        entities = self._entities.get(section)
+        if entities is None:
+            section_cid = await self._section_cid_for(section)
+            entities = await _list_subdir_cids_by_name(self._client, section_cid)
+            self._entities[section] = entities
+        return entities
+
+    async def _resolve_entity_cid(self, section: str, entity_name: str) -> str:
+        entities = await self._entity_map_for(section)
+        cid = entities.get(entity_name)
+        if cid is None:
+            section_cid = await self._section_cid_for(section)
+            cid = await self._client.mkdir(section_cid, entity_name)
+            entities[entity_name] = cid
+        return cid
+
+    async def prepare_jav_version_dir(self, *, movie_number: str, now_ms: int) -> str:
+        """建 ``jav/{番号}/{版本ms}/``，返回版本目录 cid。"""
+        entity_cid = await self._resolve_entity_cid(JAV_LIBRARY_SUBDIR, movie_number)
+        return await self._client.mkdir(entity_cid, str(now_ms))
+
+    async def prepare_videos_version_dir(self, *, video_id: int, now_ms: int) -> str:
+        """建 ``videos/{video_id}/{版本ms}/``，返回版本目录 cid。"""
+        entity_cid = await self._resolve_entity_cid(VIDEOS_LIBRARY_SUBDIR, str(video_id))
+        return await self._client.mkdir(entity_cid, str(now_ms))
+
+
 async def list_cloud115_entity_target_files(
     client: Cloud115Client, entity_cid: str
 ) -> Dict[str, List[DirEntry]]:

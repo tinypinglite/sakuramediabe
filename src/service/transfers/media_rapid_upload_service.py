@@ -11,7 +11,12 @@ from peewee import IntegrityError, fn
 from src.api.exception.errors import ApiError
 from src.common.database import ensure_database_ready
 from src.common.runtime_time import utc_now_for_db
-from src.lib.cloud115 import Cloud115NotFoundError, RapidUploadStatus
+from src.config.config import settings
+from src.lib.cloud115 import (
+    Cloud115NotFoundError,
+    Cloud115RiskControlError,
+    RapidUploadStatus,
+)
 from src.model import (
     Media,
     MediaLibrary,
@@ -32,12 +37,12 @@ from src.service.playback.cloud115_backend_service import (
 )
 from src.service.system import ActivityService
 from src.service.transfers.cloud115_import_common import (
+    Cloud115TargetDirResolver,
     cloud115_import_mutex_key,
-    ensure_cloud115_jav_target_dir,
-    ensure_cloud115_videos_target_dir,
     normalize_jav_media_filename,
     verify_cloud115_renamed_file,
 )
+from src.service.transfers.cloud115_media_registrar import Cloud115MediaRegistrar
 from src.service.transfers.import_runner import MediaRapidUploadRunner
 
 
@@ -65,10 +70,14 @@ FAILURE_REASON_FILE_CHANGED = "file_changed"
 FAILURE_REASON_REMOTE_ERROR = "remote_error"
 FAILURE_REASON_VERIFICATION_FAILED = "verification_failed"
 FAILURE_REASON_OTHER = "other"
+# 风控熔断：本批因 115 返回 405（WAF 风控）被主动中止，本条及后续未处理条目多半"本可
+# 秒传"，只是账号被临时冻结。归为可重试失败但单列一类，便于对外提示"等冷却后重试"。
+FAILURE_REASON_RISK_CONTROL = "risk_control"
 
 TASK_KEY = "media_rapid_upload"
 GENERIC_ITEM_ERROR = "秒传失败"
 GENERIC_CLEANUP_ERROR = "本地文件删除失败"
+GENERIC_RISK_CONTROL_ERROR = "触发 115 风控（HTTP 405），已中止本批以避免加深封禁，请稍后重试"
 
 # 对外暴露给 media 查询接口的紧凑值域；见 MediaRapidUploadService.get_latest_status_by_media。
 PUBLIC_STATUS_NOT_HIT = "not_hit"
@@ -566,7 +575,14 @@ class MediaRapidUploadService:
             .where(MediaRapidUploadItem.batch == batch)
             .order_by(MediaRapidUploadItem.id.asc())
         )
-        async with cloud115_client_for(target_library) as client:
+        counts = {"succeeded_count": 0, "failed_count": 0, "cleanup_failed_count": 0}
+        # 全局请求限速：把批内所有 115 请求匀速化，规避 webapi 前置 WAF 的风控阈值。
+        min_interval = settings.downloads.cloud115_rapid_upload_min_interval_seconds
+        async with cloud115_client_for(
+            target_library, min_request_interval=min_interval
+        ) as client:
+            # 批次级目录缓存：整批只翻一次 jav//videos/，杜绝每条 item 列目录的风控请求。
+            resolver = Cloud115TargetDirResolver(client, root_cid=config["root_cid"])
             for index, item in enumerate(items, start=1):
                 item.state = ITEM_STATE_RUNNING
                 item.started_at = utc_now_for_db()
@@ -592,11 +608,8 @@ class MediaRapidUploadService:
                         )
                     else:
                         media = cls._require_current_local_media(item)
-                        # 每个 media 独立建版本目录，跟本地 create_version_directory 对齐；
-                        # 同批次里两条 media 不共享版本目录。
                         target_cid, target_name = await cls._prepare_target_dir_and_name(
-                            client,
-                            root_cid=config["root_cid"],
+                            resolver,
                             media=media,
                             source_path=item.source_path,
                         )
@@ -608,6 +621,26 @@ class MediaRapidUploadService:
                             target_cid=target_cid,
                             target_name=target_name,
                         )
+                except Cloud115RiskControlError as exc:
+                    # 风控熔断：账号已被 WAF 冻结，继续发请求只会制造更多 405、加深封禁。
+                    # 立即把本条及后续未处理条目标为可重试的 risk_control 失败并停批。
+                    logger.warning(
+                        "Media rapid upload hit risk control, aborting batch_id={} at item_id={} detail={}",
+                        batch.id,
+                        item.id,
+                        exc,
+                    )
+                    aborted = cls._abort_remaining_for_risk_control(
+                        batch, detail=cls._format_error(exc, fallback=GENERIC_RISK_CONTROL_ERROR)
+                    )
+                    counts["failed_count"] += aborted
+                    reporter.emit(
+                        current=len(items),
+                        total=len(items),
+                        text=f"触发 115 风控，已中止本批（{aborted} 个待冷却后重试）",
+                        summary_patch=counts,
+                    )
+                    return
                 except Exception as exc:
                     logger.warning(
                         "Media rapid upload item failed batch_id={} item_id={} media_id={} detail={}",
@@ -616,8 +649,6 @@ class MediaRapidUploadService:
                         item.media_id,
                         exc,
                     )
-                    # _RapidUploadFailure 明确告知失败原因；未指明的按 REMOTE_ERROR 处理，
-                    # 语义上"可重试"，跟 NOT_HIT 区分开。
                     failure_reason = (
                         exc.failure_reason
                         if isinstance(exc, _RapidUploadFailure)
@@ -628,7 +659,12 @@ class MediaRapidUploadService:
                         cls._format_error(exc),
                         failure_reason=failure_reason,
                     )
-                counts = cls._item_counts(batch.id)
+                if item.state == ITEM_STATE_SUCCEEDED:
+                    counts["succeeded_count"] += 1
+                elif item.state == ITEM_STATE_FAILED:
+                    counts["failed_count"] += 1
+                elif item.state == ITEM_STATE_CLEANUP_FAILED:
+                    counts["cleanup_failed_count"] += 1
                 reporter.emit(
                     current=index,
                     total=len(items),
@@ -638,35 +674,29 @@ class MediaRapidUploadService:
 
     @staticmethod
     async def _prepare_target_dir_and_name(
-        client,
+        resolver: Cloud115TargetDirResolver,
         *,
-        root_cid: str,
         media: Media,
         source_path: str,
     ) -> tuple[str, str]:
         """按 media 类型建 <root>/jav/{番号}/{版本ms}/ 或 <root>/videos/{video_id}/{版本ms}/。
 
         返回 (版本目录 cid, 目标文件名)。JAV 命名规范化为 ``{番号}{ext}``；videos 保留
-        原文件名，跟本地 MediaImportWriter / VideoImportService 对齐。
+        原文件名，跟本地 MediaImportWriter / VideoImportService 对齐。目录查找走批次级
+        缓存（resolver），整批只翻一次 jav//videos/，避免每条 item 列目录触发风控。
         """
         now_ms = int(time.time() * 1000)
         source_name = Path(source_path).name
         if media.movie_number:
-            _entity_cid, version_cid = await ensure_cloud115_jav_target_dir(
-                client,
-                root_cid=root_cid,
-                movie_number=media.movie_number,
-                now_ms=now_ms,
+            version_cid = await resolver.prepare_jav_version_dir(
+                movie_number=media.movie_number, now_ms=now_ms
             )
             target_name = normalize_jav_media_filename(media.movie_number, source_name)
         else:
             if media.video_item_id is None:
                 raise RuntimeError("media is neither JAV nor videos, cannot pick target dir")
-            _entity_cid, version_cid = await ensure_cloud115_videos_target_dir(
-                client,
-                root_cid=root_cid,
-                video_id=media.video_item_id,
-                now_ms=now_ms,
+            version_cid = await resolver.prepare_videos_version_dir(
+                video_id=media.video_item_id, now_ms=now_ms
             )
             target_name = source_name
         return version_cid, target_name
@@ -876,12 +906,12 @@ class MediaRapidUploadService:
         target_library: MediaLibrary,
         file_size_bytes: int,
     ) -> None:
-        locator = {
-            "fid": item.target_fid,
-            "pickcode": item.target_pickcode,
-            "name": item.target_name,
-            "source_path": item.source_path,
-        }
+        locator = Cloud115MediaRegistrar.build_locator(
+            fid=item.target_fid,
+            pickcode=item.target_pickcode,
+            name=item.target_name,
+            source_path=item.source_path,
+        )
         with get_database().atomic():
             current_media = Media.get_by_id(media.id)
             if current_media.path != item.source_path:
@@ -889,13 +919,14 @@ class MediaRapidUploadService:
                     "media storage changed during rapid upload",
                     failure_reason=FAILURE_REASON_FILE_CHANGED,
                 )
-            current_media.library = target_library
-            current_media.path = None
-            current_media.backend_locator = locator
-            current_media.storage_mode = "rapid_upload"
-            current_media.content_fingerprint = f"sha1:{item.source_sha1.upper()}"
-            current_media.file_size_bytes = file_size_bytes
-            current_media.updated_at = utc_now_for_db()
+            Cloud115MediaRegistrar.apply_cloud115_fields(
+                current_media,
+                library=target_library,
+                locator=locator,
+                fingerprint=Cloud115MediaRegistrar.build_fingerprint(item.source_sha1),
+                file_size_bytes=file_size_bytes,
+                storage_mode="rapid_upload",
+            )
             current_media.save()
 
     @classmethod
@@ -1089,6 +1120,30 @@ class MediaRapidUploadService:
         item.updated_at = utc_now_for_db()
         item.save()
 
+    @classmethod
+    def _abort_remaining_for_risk_control(cls, batch, *, detail: str) -> int:
+        """风控熔断：把本批所有尚未终结的 item 标为 risk_control 失败，返回标记数量。
+
+        触发条件是某条 item 撞上 115 的 405（WAF 风控）。这些条目多半"本可秒传"，只是
+        账号被临时冻结，故归为可重试失败并附风控说明，等冷却后重试即可；已推进到
+        REMOTE_UPLOADED 的条目仍保留远端定位，重试会走 resume 而非重复秒传。
+        """
+        message = (detail or "").strip() or GENERIC_RISK_CONTROL_ERROR
+        if len(message) > cls._ERROR_MESSAGE_MAX_LEN:
+            message = message[: cls._ERROR_MESSAGE_MAX_LEN - 1] + "…"
+        aborted = 0
+        for item in MediaRapidUploadItem.select().where(
+            MediaRapidUploadItem.batch == batch,
+            MediaRapidUploadItem.state.in_(
+                (ITEM_STATE_PENDING, ITEM_STATE_RUNNING, ITEM_STATE_REMOTE_UPLOADED)
+            ),
+        ):
+            cls._mark_item_failed(
+                item, message, failure_reason=FAILURE_REASON_RISK_CONTROL
+            )
+            aborted += 1
+        return aborted
+
     @staticmethod
     def _mark_item_cleanup_failed(
         item: MediaRapidUploadItem,
@@ -1116,12 +1171,19 @@ class MediaRapidUploadService:
 
     @staticmethod
     def _item_counts(batch_id: int) -> dict[str, int]:
-        items = MediaRapidUploadItem.select().where(MediaRapidUploadItem.batch == batch_id)
-        states = [item.state for item in items]
+        rows = (
+            MediaRapidUploadItem.select(
+                MediaRapidUploadItem.state,
+                fn.COUNT(MediaRapidUploadItem.id).alias("cnt"),
+            )
+            .where(MediaRapidUploadItem.batch == batch_id)
+            .group_by(MediaRapidUploadItem.state)
+        )
+        by_state = {row.state: row.cnt for row in rows}
         return {
-            "succeeded_count": states.count(ITEM_STATE_SUCCEEDED),
-            "failed_count": states.count(ITEM_STATE_FAILED),
-            "cleanup_failed_count": states.count(ITEM_STATE_CLEANUP_FAILED),
+            "succeeded_count": by_state.get(ITEM_STATE_SUCCEEDED, 0),
+            "failed_count": by_state.get(ITEM_STATE_FAILED, 0),
+            "cleanup_failed_count": by_state.get(ITEM_STATE_CLEANUP_FAILED, 0),
         }
 
     @classmethod

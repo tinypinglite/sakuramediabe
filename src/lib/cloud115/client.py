@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import time
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qsl, urljoin, urlsplit
@@ -52,6 +53,7 @@ from src.lib.cloud115.exceptions import (
     Cloud115OfflineTaskExistsError,
     Cloud115RateLimitedError,
     Cloud115RequestError,
+    Cloud115RiskControlError,
     Cloud115VideoNotReadyError,
 )
 from src.lib.cloud115.types import (
@@ -155,6 +157,7 @@ class Cloud115Client:
         user_agent: str | None = None,
         timeout: float = 30.0,
         http_client: httpx.AsyncClient | None = None,
+        min_request_interval: float = 0.0,
     ) -> None:
         if not cookies or "UID=" not in cookies:
             # cookies 缺失或不含 UID：SDK 层直接判死，不做延迟报错
@@ -168,6 +171,12 @@ class Cloud115Client:
         self._upload_app_version: str | None = None
         self._upload_app_version_lock = asyncio.Lock()
         self._user_agent = user_agent or self._DEFAULT_UA
+        # 全局请求限速：相邻请求最小间隔（秒），0 表示不限速。对标 AList 115 驱动的
+        # limit_rate——把所有 API 请求匀速化，避免每条 item 的瞬时突发越过 webapi 前置
+        # 阿里云 WAF 的 ~1-2 r/s 风控阈值。批量秒传场景由上层传入（如 1.0 = 1 r/s）。
+        self._min_request_interval = max(0.0, min_request_interval)
+        self._rate_lock = asyncio.Lock()
+        self._next_request_at = 0.0  # monotonic 时钟下允许发起下次请求的最早时刻
         # 外部注入的 client 由调用方负责关闭（不做 owned/borrowed 引用计数简化状态）
         self._owns_client = http_client is None
         self._client = http_client or httpx.AsyncClient(
@@ -1331,6 +1340,22 @@ class Cloud115Client:
             "User-Agent": self._user_agent,
         }
 
+    async def _acquire_request_slot(self) -> None:
+        """全局请求限速闸门：保证相邻请求（含重试）间隔 >= _min_request_interval。
+
+        在锁内"预定"下一个发起时刻后立即释放锁再 sleep，避免持锁睡眠阻塞并发协程；
+        因此即使多个协程并发调用，也能得到严格匀速的发起节奏。
+        """
+        if self._min_request_interval <= 0:
+            return
+        async with self._rate_lock:
+            now = time.monotonic()
+            start_at = max(now, self._next_request_at)
+            self._next_request_at = start_at + self._min_request_interval
+            delay = start_at - now
+        if delay > 0:
+            await asyncio.sleep(delay)
+
     async def _request(
         self,
         method: str,
@@ -1367,6 +1392,8 @@ class Cloud115Client:
                     request_kwargs["content"] = data
                 else:
                     request_kwargs["data"] = data
+                # 限速闸门：紧贴真正的网络发起，重试也各自受限（避免退避后瞬时补偿式突发）
+                await self._acquire_request_slot()
                 response = await self._client.request(method, url, **request_kwargs)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
@@ -1395,6 +1422,14 @@ class Cloud115Client:
             if status in (401, 403):
                 raise Cloud115AuthError(
                     f"http {status} on {method} {url}", endpoint=url
+                )
+            if status == 405:
+                # 裸 HTTP 405 来自 webapi 前置的阿里云 WAF（不是 115 应用层 state=false+errno）：
+                # 账号/cookie 已被风控冻结。不重试、抛专用异常，让上层立即熔断停批。
+                raise Cloud115RiskControlError(
+                    f"http 405 (risk control / WAF) on {method} {url}",
+                    method=method,
+                    url=url,
                 )
             if 500 <= status < 600:
                 # 5xx：退避重试

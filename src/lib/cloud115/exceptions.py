@@ -95,6 +95,26 @@ class Cloud115RateLimitedError(Cloud115Error):
         super().__init__(message)
 
 
+class Cloud115RiskControlError(Cloud115Error):
+    """触发 115 风控：webapi 前置的阿里云 WAF 直接返回裸 HTTP 405（非 115 应用层 errno）。
+
+    与 RateLimitedError（429，退避几秒可恢复）严格区分：这是账号/cookie 被标记异常并
+    冻结一段时间（分钟到小时级），继续发请求只会不断制造新的 405、加深封禁、延长冻结。
+    上层应立即停止对该账号的后续请求（熔断），待冷却后再重试。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        method: str | None = None,
+        url: str | None = None,
+    ) -> None:
+        self.method = method
+        self.url = url
+        super().__init__(message, endpoint=url)
+
+
 class Cloud115OfflineQuotaExceededError(Cloud115Error):
     """离线下载本月配额用尽。
 
