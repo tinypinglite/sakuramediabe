@@ -1,9 +1,8 @@
 from typing import List
 
 from fastapi import APIRouter, Depends, Response, status
-from fastapi.responses import StreamingResponse
 
-from src.api.routers.catalog._sse import to_sse_event
+from src.api.routers._utils import sse_streaming_response, to_sse_event
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.catalog.actors import (
     ActorDetailResource,
@@ -51,15 +50,7 @@ def search_javdb_actor_stream(
         ):
             yield to_sse_event(event, event_payload)
 
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_streaming_response(stream())
 
 
 @router.get("/{actor_id}", response_model=ActorDetailResource, response_model_by_alias=False)

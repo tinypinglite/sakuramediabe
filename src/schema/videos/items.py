@@ -8,6 +8,12 @@ from src.schema.catalog.movies import MovieMediaResource
 from src.schema.common.base import SchemaModel
 
 
+class VideoCollectionRef(SchemaModel):
+    # 视频所属合集的精简引用，仅用于列表/详情返回，避免循环导入完整 VideoCollectionResource。
+    id: int
+    name: str
+
+
 class VideoItemListItemResource(SchemaModel):
     id: int
     title: str
@@ -23,6 +29,8 @@ class VideoItemListItemResource(SchemaModel):
     cover_height: int | None = None
     media_count: int = 0
     can_play: bool = False
+    # 该视频归属的全部合集（0..N），按合集名称升序。列表/详情共享同一字段。
+    collections: List[VideoCollectionRef] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 

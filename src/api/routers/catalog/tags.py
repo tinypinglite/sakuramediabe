@@ -2,7 +2,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
-from src.api.exception.errors import ApiError
+from src.api.routers._utils import parse_optional_exact_text
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.catalog.movies import (
     MovieCollectionType,
@@ -19,22 +19,6 @@ router = APIRouter(
     tags=["tags"],
     dependencies=[Depends(db_deps), Depends(get_current_user)],
 )
-
-
-def _parse_optional_exact_text(raw: str | None, field_name: str) -> str | None:
-    if raw is None:
-        return None
-
-    # 影片维度的精确筛选不接受空白值，避免客户端误以为空串会被忽略。
-    normalized = raw.strip()
-    if not normalized:
-        raise ApiError(
-            422,
-            "invalid_movie_filter",
-            "Invalid filter value",
-            {field_name: raw},
-        )
-    return normalized
 
 
 @router.get("", response_model=List[TagListItemResource], response_model_by_alias=False)
@@ -70,8 +54,12 @@ def list_tag_movies(
         collection_type=collection_type,
         special_tag=special_tag,
         sort=sort,
-        director_name=_parse_optional_exact_text(director_name, "director_name"),
-        maker_name=_parse_optional_exact_text(maker_name, "maker_name"),
+        director_name=parse_optional_exact_text(
+            director_name, "director_name", error_code="invalid_movie_filter"
+        ),
+        maker_name=parse_optional_exact_text(
+            maker_name, "maker_name", error_code="invalid_movie_filter"
+        ),
         page=page,
         page_size=page_size,
     )

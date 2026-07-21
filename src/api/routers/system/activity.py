@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
-from fastapi.responses import StreamingResponse
 
+from src.api.routers._utils import sse_streaming_response
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.common.pagination import PageResponse
 from src.schema.system.activity import (
@@ -151,12 +151,4 @@ def reset_failed_media_thumbnail_task_states(
 
 @router.get("/system/events/stream")
 def stream_system_events(after_event_id: int = Query(default=0)):
-    return StreamingResponse(
-        SystemEventService.stream(after_event_id=after_event_id),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_streaming_response(SystemEventService.stream(after_event_id=after_event_id))

@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
 
-from src.api.exception.errors import ApiError
+from src.api.routers._utils import require_existing_file, require_signed_params
 from src.common import resolve_subtitle_file_path, verify_subtitle_signature
 
 router = APIRouter(prefix="/files/subtitles", tags=["files"])
@@ -13,11 +13,9 @@ def get_subtitle_file(
     expires: int | None = None,
     signature: str | None = None,
 ):
-    if expires is None or not signature:
-        raise ApiError(403, "file_signature_invalid", "文件签名无效")
+    require_signed_params(expires, signature)
 
     verify_subtitle_signature(subtitle_id, expires, signature)
     absolute_path = resolve_subtitle_file_path(subtitle_id)
-    if not absolute_path.exists() or not absolute_path.is_file():
-        raise ApiError(404, "file_not_found", "文件不存在")
+    require_existing_file(absolute_path)
     return FileResponse(absolute_path, media_type="text/plain; charset=utf-8")

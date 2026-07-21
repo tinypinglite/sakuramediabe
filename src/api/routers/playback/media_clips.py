@@ -1,12 +1,13 @@
-import mimetypes
-
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from src.api.exception.errors import ApiError
+from src.api.routers._utils import (
+    require_existing_file,
+    require_signed_params,
+    stream_local_file_response,
+)
 from src.api.routers.deps import db_deps, get_current_user
 from src.common import resolve_media_clip_file_path, verify_clip_signature
-from src.common.range_streaming import range_requests_response
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.clips import (
     MediaClipCreateRequest,
@@ -101,17 +102,10 @@ def stream_media_clip(
     expires: int | None = None,
     signature: str | None = None,
 ):
-    if expires is None or not signature:
-        raise ApiError(403, "file_signature_invalid", "文件签名无效")
+    require_signed_params(expires, signature)
 
     verify_clip_signature(clip_id, expires, signature)
     absolute_path = resolve_media_clip_file_path(clip_id)
-    if not absolute_path.exists() or not absolute_path.is_file():
-        raise ApiError(404, "file_not_found", "文件不存在")
+    require_existing_file(absolute_path)
 
-    content_type, _ = mimetypes.guess_type(str(absolute_path))
-    return range_requests_response(
-        request,
-        file_path=str(absolute_path),
-        content_type=content_type or "video/mp4",
-    )
+    return stream_local_file_response(request, absolute_path, "video/mp4")

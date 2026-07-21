@@ -1,13 +1,17 @@
-import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from src.api.exception.errors import ApiError
+from src.api.routers._utils import (
+    parse_csv_positive_ints,
+    require_existing_file,
+    require_signed_params,
+    stream_local_file_response,
+)
 from src.api.routers.deps import db_deps, get_current_user
 from src.common import verify_media_signature
-from src.common.range_streaming import range_requests_response
 from src.model import Media
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
@@ -38,40 +42,6 @@ router = APIRouter(
 )
 
 
-def _parse_csv_positive_ints(raw: str | None, field_name: str) -> list[int] | None:
-    if raw is None:
-        return None
-
-    # 数组筛选参数必须显式传入正整数，避免把空串或脏值静默吞掉。
-    parts = [part.strip() for part in raw.split(",")]
-    if not parts or any(not part for part in parts):
-        raise ApiError(
-            422,
-            "invalid_media_filter",
-            "Invalid filter value",
-            {field_name: raw},
-        )
-
-    try:
-        values = [int(part) for part in parts]
-    except ValueError as exc:
-        raise ApiError(
-            422,
-            "invalid_media_filter",
-            "Invalid filter value",
-            {field_name: raw},
-        ) from exc
-
-    if any(value <= 0 for value in values):
-        raise ApiError(
-            422,
-            "invalid_media_filter",
-            "Invalid filter value",
-            {field_name: raw},
-        )
-    return values
-
-
 @router.get("", response_model=PageResponse[MediaListItemResource])
 def list_media(
     kind: MediaPointKind = Query(default=MediaPointKind.ALL),
@@ -86,7 +56,7 @@ def list_media(
     return MediaService.list_media(
         kind=kind,
         library_id=library_id,
-        actor_ids=_parse_csv_positive_ints(actor_ids, "actor_ids"),
+        actor_ids=parse_csv_positive_ints(actor_ids, "actor_ids", error_code="invalid_media_filter"),
         rapid_upload_status=rapid_upload_status,
         sort=sort,
         page=page,
@@ -200,8 +170,7 @@ async def stream_media_file(
     expires: int | None = None,
     signature: str | None = None,
 ):
-    if expires is None or not signature:
-        raise ApiError(403, "file_signature_invalid", "文件签名无效")
+    require_signed_params(expires, signature)
 
     verify_media_signature(media_id, expires, signature)
     media = Media.get_or_none(Media.id == media_id)
@@ -233,15 +202,9 @@ async def stream_media_file(
     if not media.path:
         raise ApiError(404, "file_not_found", "文件不存在")
     absolute_path = Path(media.path).expanduser().resolve()
-    if not absolute_path.exists() or not absolute_path.is_file():
-        raise ApiError(404, "file_not_found", "文件不存在")
+    require_existing_file(absolute_path)
 
-    content_type, _ = mimetypes.guess_type(str(absolute_path))
-    return range_requests_response(
-        request,
-        file_path=str(absolute_path),
-        content_type=content_type or "application/octet-stream",
-    )
+    return stream_local_file_response(request, absolute_path, "application/octet-stream")
 
 @router.put("/{media_id}/progress", response_model=MediaProgressResource)
 def update_media_progress(

@@ -2,10 +2,10 @@ from typing import List
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 
 from src.api.exception.errors import ApiError
-from src.api.routers.catalog._sse import to_sse_event
+from src.api.routers._utils import sse_streaming_response, to_sse_event
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
@@ -150,15 +150,7 @@ def stream_download_tasks(
         for event, payload in hub.iter_events(subscription):
             yield to_sse_event(event, payload)
 
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_streaming_response(stream())
 
 
 @router.post(

@@ -1,10 +1,13 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from fastapi.responses import StreamingResponse
 
-from src.api.exception.errors import ApiError
-from src.api.routers.catalog._sse import to_sse_event
+from src.api.routers._utils import (
+    parse_csv_positive_ints,
+    parse_optional_exact_text,
+    sse_streaming_response,
+    to_sse_event,
+)
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.catalog.movies import (
     MovieCollectionMarkRequest,
@@ -42,55 +45,6 @@ router = APIRouter(
 )
 
 
-def _parse_csv_positive_ints(raw: str | None, field_name: str) -> list[int] | None:
-    if raw is None:
-        return None
-
-    # 数组筛选参数必须显式传入正整数，避免把空串或脏值静默吞掉。
-    parts = [part.strip() for part in raw.split(",")]
-    if not parts or any(not part for part in parts):
-        raise ApiError(
-            422,
-            "invalid_movie_filter",
-            "Invalid filter value",
-            {field_name: raw},
-        )
-
-    try:
-        values = [int(part) for part in parts]
-    except ValueError as exc:
-        raise ApiError(
-            422,
-            "invalid_movie_filter",
-            "Invalid filter value",
-            {field_name: raw},
-        ) from exc
-
-    if any(value <= 0 for value in values):
-        raise ApiError(
-            422,
-            "invalid_movie_filter",
-            "Invalid filter value",
-            {field_name: raw},
-        )
-    return values
-
-
-def _parse_optional_exact_text(raw: str | None, field_name: str) -> str | None:
-    if raw is None:
-        return None
-
-    normalized = raw.strip()
-    if not normalized:
-        raise ApiError(
-            422,
-            "invalid_movie_filter",
-            "Invalid filter value",
-            {field_name: raw},
-        )
-    return normalized
-
-
 @router.get("", response_model=PageResponse[MovieListItemResource])
 def list_movies(
     actor_id: Optional[int] = None,
@@ -109,7 +63,7 @@ def list_movies(
 ):
     return MovieService.list_movies(
         actor_id=actor_id,
-        tag_ids=_parse_csv_positive_ints(tag_ids, "tag_ids"),
+        tag_ids=parse_csv_positive_ints(tag_ids, "tag_ids", error_code="invalid_movie_filter"),
         tag_match=tag_match,
         year=year,
         status=status,
@@ -117,8 +71,12 @@ def list_movies(
         special_tag=special_tag,
         number_source=number_source,
         sort=sort,
-        director_name=_parse_optional_exact_text(director_name, "director_name"),
-        maker_name=_parse_optional_exact_text(maker_name, "maker_name"),
+        director_name=parse_optional_exact_text(
+            director_name, "director_name", error_code="invalid_movie_filter"
+        ),
+        maker_name=parse_optional_exact_text(
+            maker_name, "maker_name", error_code="invalid_movie_filter"
+        ),
         page=page,
         page_size=page_size,
     )
@@ -145,15 +103,7 @@ def import_series_movies_from_javdb_stream(series_id: int):
         for event, event_payload in MovieMetadataRefreshService.stream_import_series_movies_from_javdb(series_id):
             yield to_sse_event(event, event_payload)
 
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_streaming_response(stream())
 
 
 @router.get("/subscribed-actors/latest", response_model=PageResponse[MovieListItemResource])
@@ -223,15 +173,7 @@ def search_javdb_movies_stream(payload: MovieJavdbSearchRequest):
         ):
             yield to_sse_event(event, event_payload)
 
-    return StreamingResponse(
-        stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return sse_streaming_response(stream())
 
 
 @router.post("/{movie_number}/metadata-refresh", response_model=MovieDetailResource)

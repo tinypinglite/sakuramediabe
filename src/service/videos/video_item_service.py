@@ -15,6 +15,8 @@ from src.model import (
     MediaPoint,
     MediaProgress,
     MediaThumbnail,
+    VideoCollection,
+    VideoCollectionItem,
     VideoItem,
     get_database,
 )
@@ -26,6 +28,7 @@ from src.schema.catalog.movies import (
 )
 from src.schema.common.pagination import PageResponse
 from src.schema.videos.items import (
+    VideoCollectionRef,
     VideoItemCreateRequest,
     VideoItemDetailResource,
     VideoItemListItemResource,
@@ -154,6 +157,31 @@ class VideoItemService:
             stats[row.video_item_id] = (row.media_count, bool(row.valid_count))
         return stats
 
+    @staticmethod
+    def _collections_map(video_ids: List[int]) -> Dict[int, List[VideoCollectionRef]]:
+        """批量拉每个视频归属的合集列表，按合集名称升序返回 {video_item_id: [Ref, ...]}。
+
+        用于列表/详情共用的合集引用填充，避免逐条懒加载导致 N+1。
+        """
+        if not video_ids:
+            return {}
+        rows = (
+            VideoCollectionItem.select(
+                VideoCollectionItem.video_item,
+                VideoCollection.id,
+                VideoCollection.name,
+            )
+            .join(VideoCollection, on=(VideoCollectionItem.collection == VideoCollection.id))
+            .where(VideoCollectionItem.video_item.in_(video_ids))
+            .order_by(VideoCollection.name.asc(), VideoCollection.id.asc())
+        )
+        result: Dict[int, List[VideoCollectionRef]] = {}
+        for row in rows:
+            result.setdefault(row.video_item_id, []).append(
+                VideoCollectionRef(id=row.collection.id, name=row.collection.name)
+            )
+        return result
+
     @classmethod
     def _to_list_item(
         cls,
@@ -165,6 +193,7 @@ class VideoItemService:
         file_size_bytes: int = 0,
         cover_width: int | None = None,
         cover_height: int | None = None,
+        collections: List[VideoCollectionRef] | None = None,
     ) -> VideoItemListItemResource:
         return VideoItemListItemResource(
             id=video.id,
@@ -180,6 +209,7 @@ class VideoItemService:
             cover_height=cover_height,
             media_count=media_count,
             can_play=can_play,
+            collections=collections or [],
             created_at=video.created_at,
             updated_at=video.updated_at,
         )
@@ -217,7 +247,9 @@ class VideoItemService:
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        stats = cls._media_stats([video.id for video in videos])
+        video_ids = [video.id for video in videos]
+        stats = cls._media_stats(video_ids)
+        collections_map = cls._collections_map(video_ids)
         items = []
         for video in videos:
             cover_width, cover_height = cls._parse_resolution(video.first_resolution)
@@ -229,6 +261,7 @@ class VideoItemService:
                     file_size_bytes=video.first_file_size_bytes,
                     cover_width=cover_width,
                     cover_height=cover_height,
+                    collections=collections_map.get(video.id, []),
                 )
             )
         return PageResponse[VideoItemListItemResource](
@@ -296,6 +329,7 @@ class VideoItemService:
         cover_width, cover_height = cls._parse_resolution(
             first_media.resolution if first_media else None
         )
+        collections = cls._collections_map([video.id]).get(video.id, [])
         return VideoItemDetailResource(
             id=video.id,
             title=video.title,
@@ -310,6 +344,7 @@ class VideoItemService:
             cover_height=cover_height,
             media_count=stats_media_count,
             can_play=can_play,
+            collections=collections,
             created_at=video.created_at,
             updated_at=video.updated_at,
             media_items=media_items,
