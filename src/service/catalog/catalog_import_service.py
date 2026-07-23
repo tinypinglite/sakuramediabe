@@ -216,7 +216,6 @@ class CatalogImportService:
                 if not bool(movie.is_collection_overridden):
                     movie.is_collection = MovieCollectionService.matches_configured_collection(
                         detail.movie_number,
-                        detail.duration_minutes,
                     )
                 movie.save()
                 logger.debug(

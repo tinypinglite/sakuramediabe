@@ -24,23 +24,9 @@ class MovieCollectionService:
         return False
 
     @classmethod
-    def _matches_collection_duration(cls, duration_minutes: int | None) -> bool:
-        normalized_duration = int(duration_minutes or 0)
-        if normalized_duration <= 0:
-            return False
-        return normalized_duration > settings.media.collection_duration_threshold_minutes
-
-    @classmethod
-    def matches_configured_collection(
-        cls,
-        movie_number: str,
-        duration_minutes: int | None = 0,
-    ) -> bool:
-        # 自动规则 = 番号特征 + 时长阈值，任一命中都视为合集影片。
-        return (
-            cls._matches_collection_prefix(movie_number)
-            or cls._matches_collection_duration(duration_minutes)
-        )
+    def matches_configured_collection(cls, movie_number: str) -> bool:
+        # 自动规则 = 番号特征前缀匹配（已去掉时长阈值判定）。
+        return cls._matches_collection_prefix(movie_number)
 
     @classmethod
     def sync_movie_collections(cls) -> dict[str, int]:
@@ -48,7 +34,6 @@ class MovieCollectionService:
             Movie.select(
                 Movie.id,
                 Movie.movie_number,
-                Movie.duration_minutes,
                 Movie.is_collection,
                 Movie.is_collection_overridden,
             ).order_by(Movie.id)
@@ -58,10 +43,7 @@ class MovieCollectionService:
         matched_count = 0
 
         for movie in movies:
-            target_is_collection = cls.matches_configured_collection(
-                movie.movie_number,
-                movie.duration_minutes,
-            )
+            target_is_collection = cls.matches_configured_collection(movie.movie_number)
             if target_is_collection:
                 matched_count += 1
             # 手动覆盖优先：被手动标记过的影片不再参与自动规则同步改写。

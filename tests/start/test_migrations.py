@@ -1161,6 +1161,51 @@ def test_run_pending_migrations_adds_media_rapid_upload_item_media_index(clean_d
     run_pending_migrations(clean_db)
 
 
+def test_run_pending_migrations_reverts_duration_based_collections(clean_db):
+    """20260723_01：合集判定去掉时长阈值后，仅因时长被判为合集的影片恢复为单体；
+    命中番号特征前缀的自动合集与手动覆盖的影片保持不变。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+
+    from src.model import Movie
+
+    # 前缀命中（默认特征含 OFJE）：自动合集，保持 True。
+    Movie.create(movie_number="OFJE-100", javdb_id="j-100", title="t1",
+                 is_collection=True, is_collection_overridden=False)
+    # 无前缀命中、未覆盖：当初只能靠时长判定，应恢复为 False。
+    Movie.create(movie_number="ABP-200", javdb_id="j-200", title="t2",
+                 is_collection=True, is_collection_overridden=False)
+    # 无前缀命中但手动覆盖：不受自动规则影响，保持 True。
+    Movie.create(movie_number="ABP-300", javdb_id="j-300", title="t3",
+                 is_collection=True, is_collection_overridden=True)
+    # 本就是单体：不触碰。
+    Movie.create(movie_number="ABP-400", javdb_id="j-400", title="t4",
+                 is_collection=False, is_collection_overridden=False)
+    # 规范化后命中前缀（小写 / PPV- 前缀）：保持 True，锁死与 service 判定一致的番号规范化。
+    Movie.create(movie_number="ofje-500", javdb_id="j-500", title="t5",
+                 is_collection=True, is_collection_overridden=False)
+    Movie.create(movie_number="PPV-OFJE-777", javdb_id="j-777", title="t6",
+                 is_collection=True, is_collection_overridden=False)
+
+    run_pending_migrations(clean_db)
+
+    rows = dict(
+        clean_db.execute_sql(
+            "SELECT movie_number, is_collection FROM movie ORDER BY movie_number"
+        ).fetchall()
+    )
+    assert rows["OFJE-100"] is True
+    assert rows["ABP-200"] is False
+    assert rows["ABP-300"] is True
+    assert rows["ABP-400"] is False
+    assert rows["ofje-500"] is True
+    assert rows["PPV-OFJE-777"] is True
+    assert (
+        "20260723_01_revert_duration_based_collections"
+        in _schema_migration_names(clean_db)
+    )
+
+
 def test_run_pending_migrations_moves_indexer_binding_to_junction_table(clean_db):
     """20260714_07：indexer 单 FK 迁到 indexer_download_client 中间表并删旧列。"""
     _create_legacy_download_tables(clean_db)

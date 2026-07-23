@@ -110,7 +110,6 @@ class Media(BaseModel):
     others_number_features: set[str] = Field(default_factory=lambda: {
         "OFJE", "CJOB", "DVAJ", "REBD"
     })
-    collection_duration_threshold_minutes: int = 300
     inner_sub_tags: set[str] = Field(
         default_factory=lambda: {"中字", "中文", "字幕组", "-UC", "-C"}
     )
