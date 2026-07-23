@@ -393,8 +393,9 @@ class MovieImageService:
         elif owner_type == "movie_plot":
             if plot_index is None:
                 raise ValueError("plot_index is required for movie plot images")
+            # 剧照与 cover/thin-cover 同层平铺，避免 30w 规模下多出 30w 个空 plots/ 中间目录。
             relative_path = (
-                Path("movies") / safe_owner_key / "plots" / f"{plot_index}{extension}"
+                Path("movies") / safe_owner_key / f"plot-{plot_index}{extension}"
             ).as_posix()
             image_type = "plot"
         else:

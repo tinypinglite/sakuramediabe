@@ -23,6 +23,7 @@ from src.scheduler.progress import TqdmProgressAdapter
 from src.scheduler.registry import JOB_REGISTRY
 from src.schema.playback.media_libraries import MediaLibraryCreateRequest
 from src.service.catalog import MovieThinCoverBackfillService
+from src.service.catalog.plot_layout_migration_service import PlotLayoutMigrationService
 from src.service.catalog.movie_desc_translation_client import (
     MovieDescTranslationClient,
     MovieDescTranslationClientError,
@@ -728,6 +729,35 @@ def migrate_jav_layout(library_id: int | None, dry_run: bool):
     logger.info("CLI migrate-jav-layout finished dry_run={} stats={}", dry_run, payload)
     click.echo(
         "jav layout migrate finished "
+        f"(dry_run={str(dry_run).lower()}): {payload}"
+    )
+
+
+@main.command(name="migrate-plot-layout")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="只统计不改任何东西，用于升级前预览规模。")
+def migrate_plot_layout(dry_run: bool):
+    """把影片剧照从 movies/<num>/plots/N.ext 平铺成 movies/<num>/plot-N.ext。
+
+    3 步流程 + image.origin 单条 UPDATE 原子提交点，Ctrl+C / crash 后重跑可自动收敛：
+    已达 F 的走 fast-path（LIKE 查询天然不命中新格式），中间态的会被恢复。
+    """
+    logger.info("CLI migrate-plot-layout start dry_run={}", dry_run)
+    _ensure_database_ready()
+
+    def _progress(current: int, total: int) -> None:
+        # 每 200 条打一次点，加上末尾一次；image 表规模比 media 大，节流粒度更粗。
+        if current % 200 == 0 or current == total:
+            click.echo(f"  {current}/{total}", err=True)
+
+    stats = PlotLayoutMigrationService.run(
+        dry_run=dry_run,
+        progress_callback=_progress,
+    )
+    payload = stats.to_dict()
+    logger.info("CLI migrate-plot-layout finished dry_run={} stats={}", dry_run, payload)
+    click.echo(
+        "plot layout migrate finished "
         f"(dry_run={str(dry_run).lower()}): {payload}"
     )
 
