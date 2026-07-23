@@ -110,11 +110,17 @@ class DownloadTaskService:
         qbittorrent_client_cls=QBittorrentClient,
     ) -> DownloadTaskActionResponse:
         task = require_task(task_id)
+        paused_state = "completed" if is_download_complete(task.download_state) else "paused"
         cls._operate_remote_task(
             task,
             action="pause",
             qbittorrent_client_cls=qbittorrent_client_cls,
         )
+        # Persist the result immediately instead of waiting for the periodic
+        # qBittorrent synchronization to replace a stale seeding state.
+        task.download_state = paused_state
+        task.updated_at = utc_now_for_db()
+        task.save()
         return DownloadTaskActionResponse(task_id=task.id, action="pause")
 
     @classmethod

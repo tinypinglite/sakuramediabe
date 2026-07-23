@@ -65,12 +65,13 @@ def map_download_state(raw_state: str) -> str:
     # *UP 状态，这才是文件写定的可靠信号（与 qbittorrent-api 的 is_complete 判定一致）。
     # 归一化拆分：真正在上传/做种的 *UP 落到 seeding，下游 is_download_complete 会把 seeding
     # 与 completed 视为等价"已完成"参与自动导入判定。前端因此可以单独把做种态用不同 badge 展示。
-    # 而 pausedUP / stoppedUP 是"下完之后被用户手动暂停"，语义上是暂停而不是做种，归到 paused；
-    # 暂停态本就不该走自动导入（未来用户恢复后再由同步流转到 seeding/completed 触发），所以
-    # is_download_complete 不覆盖 paused 是符合预期的。
+    # pausedUP / stoppedUP 的数据已经完整，只是停止做种，应归到 completed；否则一个已下载完
+    # 且停止上传的任务会一直显示“已暂停”，也无法进入后续自动导入流程。
     if normalized in {"uploading", "stalledUP", "queuedUP", "forcedUP"}:
         return "seeding"
-    if normalized in {"pausedDL", "pausedUP", "stoppedDL", "stoppedUP"}:
+    if normalized in {"pausedUP", "stoppedUP"}:
+        return "completed"
+    if normalized in {"pausedDL", "stoppedDL"}:
         return "paused"
     if normalized in {"error", "missingFiles"}:
         return "failed"
