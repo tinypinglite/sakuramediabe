@@ -83,9 +83,13 @@ class LocalThumbnailBackend:
                 return ThumbnailGenerationResult(first_error)
             for offset_seconds in range(0, duration_seconds + 1, cls.INTERVAL_SECONDS):
                 try:
-                    timestamp = int(offset_seconds / float(stream.time_base))
-                    container.seek(timestamp, stream=stream, backward=True, any_frame=False)
-                    frame = next(container.decode(stream))
+                    if offset_seconds == 0:
+                        # 容器打开后光标就在起点，无需 seek；避开首帧非关键帧的短 AVI 在 seek(0) 时的 pyav 虚警
+                        frame = next(container.decode(stream))
+                    else:
+                        timestamp = int(offset_seconds / float(stream.time_base))
+                        container.seek(timestamp, stream=stream, backward=True, any_frame=False)
+                        frame = next(container.decode(stream))
                     frame.to_image().save(
                         output_dir / f"{offset_seconds}.webp",
                         format="WEBP",

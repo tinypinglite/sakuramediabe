@@ -136,7 +136,7 @@ class Cloud115HlsThumbnailBackend:
     def prepare(cls, media: Media) -> PreparedThumbnailSource:
         try:
             targets, expected_count, source_label = asyncio.run(cls._resolve_targets(media))
-        except (cls.SYSTEM_FAILURES, ThumbnailDeferred) as exc:
+        except (*cls.SYSTEM_FAILURES, ThumbnailDeferred) as exc:
             raise ThumbnailDeferred(str(exc)) from exc
         except Exception as exc:
             raise RuntimeError(f"cloud115_hls_prepare_failed: {exc}") from exc
