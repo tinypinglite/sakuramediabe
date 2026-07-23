@@ -29,7 +29,7 @@ from src.lib.cloud115 import (
 )
 from src.model import DownloadClient, DownloadTask
 from src.common.media_import_status import IMPORT_STATUS_PENDING
-from src.service.playback.cloud115_backend_service import (
+from src.service.cloud115 import (
     CLOUD115_DOWNLOADS_ROOT_NAME,
     cloud115_client_for,
     ensure_download_root_cid,

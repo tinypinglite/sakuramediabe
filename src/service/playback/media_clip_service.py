@@ -193,7 +193,7 @@ class MediaClipService:
     ) -> None:
         """现取绑定 UA 的 115 直链，通过受控串行 RangeReader 做无转码 remux。"""
         from src.lib.cloud115 import Cloud115RangeReader
-        from src.service.playback.cloud115_backend_service import cloud115_client_for
+        from src.service.cloud115 import cloud115_client_for
 
         locator = media.backend_locator or {}
         pickcode = locator.get("pickcode")
@@ -400,7 +400,7 @@ class MediaClipService:
             if isinstance(exc, ApiError):
                 raise
             if isinstance(exc, Cloud115Error):
-                from src.service.playback.cloud115_backend_service import map_cloud115_error
+                from src.service.cloud115 import map_cloud115_error
 
                 raise map_cloud115_error(exc) from exc
             raise ApiError(

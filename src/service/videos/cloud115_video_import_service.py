@@ -30,7 +30,7 @@ from src.common.media_import_status import (
 from src.common.runtime_time import utc_now_for_db
 from src.lib.cloud115 import Cloud115Client, DirEntry
 from src.model import Media, MediaLibrary, VideoImportJob, VideoItem, get_database
-from src.service.playback.cloud115_backend_service import (
+from src.service.cloud115 import (
     assert_cid_outside_library_root,
     cloud115_client_for,
     require_cloud115_library,

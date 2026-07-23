@@ -21,6 +21,9 @@ from src.schema.discovery import (
     RankingSourceResource,
 )
 from src.service.catalog.catalog_import_service import CatalogImportService
+from src.service.discovery.ranking_notifications import (
+    create_ranking_account_error_notification,
+)
 
 
 @dataclass(frozen=True)
@@ -646,11 +649,8 @@ class RankingSyncService:
 
     @staticmethod
     def _notify_account_login_failed(task_run_id: int | None) -> None:
-        # 延迟导入，避免 discovery 与 system service 的循环依赖。
-        from src.service.system import ActivityService
-
         try:
-            ActivityService.create_ranking_account_error_notification(
+            create_ranking_account_error_notification(
                 related_task_run_id=task_run_id,
             )
         except Exception as exc:

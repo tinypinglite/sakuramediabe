@@ -57,7 +57,7 @@ class MediaFileScanService:
         import asyncio
 
         from src.lib.cloud115 import Cloud115Error, Cloud115NotFoundError
-        from src.service.playback.cloud115_backend_service import cloud115_client_for
+        from src.service.cloud115 import cloud115_client_for
 
         checked_at = utc_now_for_db()
         result = {

@@ -35,7 +35,7 @@ class Cloud115QrLoginService:
                 token = await qr.get_token()
                 image = await qr.get_qrcode_image(token.uid)
         except Cloud115Error as exc:
-            from src.service.playback.cloud115_backend_service import map_cloud115_error
+            from src.service.cloud115 import map_cloud115_error
 
             raise map_cloud115_error(exc) from exc
         return Cloud115QrTokenResource(
@@ -62,7 +62,7 @@ class Cloud115QrLoginService:
             async with Cloud115QrLogin() as qr:
                 status = await qr.get_qrcode_status(token)
         except Cloud115Error as exc:
-            from src.service.playback.cloud115_backend_service import map_cloud115_error
+            from src.service.cloud115 import map_cloud115_error
 
             raise map_cloud115_error(exc) from exc
         return Cloud115QrStatusResource(status=_STATUS_TO_STRING[status])

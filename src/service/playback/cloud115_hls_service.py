@@ -15,7 +15,7 @@ from src.lib.cloud115 import (
     VideoInfo,
 )
 from src.model import Media
-from src.service.playback.cloud115_backend_service import (
+from src.service.cloud115 import (
     cloud115_client_for,
     map_cloud115_error,
 )

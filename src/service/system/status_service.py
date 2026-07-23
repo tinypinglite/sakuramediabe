@@ -16,7 +16,7 @@ from src.service.discovery.joytag_embedder_client import (
     get_joytag_embedder_client,
 )
 from src.service.discovery.qdrant_thumbnail_store import get_qdrant_thumbnail_store
-from src.service.playback.cloud115_backend_service import Cloud115KeepaliveService
+from src.service.cloud115 import Cloud115KeepaliveService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.schema.system.status import (
     StatusActorSummary,

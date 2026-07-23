@@ -30,17 +30,20 @@ from src.common.media_import_status import (
     IMPORT_STATUS_PENDING,
     IMPORT_STATUS_RUNNING,
 )
+from src.common.process import is_process_alive
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115Error, OfflineTask
 from src.model import DownloadClient, DownloadTask, ImportJob, get_database
 from src.model.enums import DownloadClientKind
-from src.service.playback.cloud115_backend_service import cloud115_client_for
-from src.service.system import ActivityService
+from src.service.cloud115 import cloud115_client_for
 from src.service.transfers.cloud115_import_job_service import Cloud115ImportJobService
 from src.service.transfers.cloud115_offline_service import (
     canonicalize_btih,
     fetch_cloud115_offline_tasks_by_hash,
+)
+from src.service.transfers.cloud115_offline_notifications import (
+    create_cloud115_offline_abandoned_notification,
 )
 from src.service.transfers.import_runner import DownloadImportRunner
 
@@ -213,7 +216,7 @@ class Cloud115OfflineSyncService:
             task_run is not None
             and task_run.state in {"pending", "running"}
             and task_run.owner_pid != os.getpid()
-            and ActivityService._is_process_alive(task_run.owner_pid)
+            and is_process_alive(task_run.owner_pid)
         )
 
     @staticmethod
@@ -325,7 +328,7 @@ class Cloud115OfflineSyncService:
         )
         # 通知失败不影响对账主流程。
         try:
-            ActivityService.create_cloud115_offline_abandoned_notification(
+            create_cloud115_offline_abandoned_notification(
                 task_name=task.movie or task.name,
                 task_id=task.id,
             )

@@ -1,0 +1,359 @@
+from __future__ import annotations
+
+import os
+from datetime import datetime
+from typing import Any
+
+from src.api.exception.errors import ApiError
+from src.common.process import is_process_alive
+from src.common.runtime_time import utc_now_for_db
+from src.model import BackgroundTaskRun
+from src.model.base import get_database
+from src.schema.common.pagination import PageResponse
+from src.schema.system.activity import TaskRunResource
+from src.service.system.activity.events import SystemEventService
+from src.service.system.activity.filters import (
+    normalize_allowed_filter,
+    normalize_string_filter,
+    validate_page,
+)
+from src.service.system.activity.notifications import NotificationService
+from src.service.system.activity.task_catalog import TASK_NAME_REGISTRY
+
+ALLOWED_TASK_TRIGGER_TYPES = {"scheduled", "manual", "startup", "internal"}
+ALLOWED_TASK_STATES = {"pending", "running", "completed", "failed"}
+TASK_RUN_SORT_FIELDS = {
+    "started_at:desc": (BackgroundTaskRun.started_at.desc(), BackgroundTaskRun.id.desc()),
+    "started_at:asc": (BackgroundTaskRun.started_at.asc(), BackgroundTaskRun.id.asc()),
+    "created_at:desc": (BackgroundTaskRun.created_at.desc(), BackgroundTaskRun.id.desc()),
+    "created_at:asc": (BackgroundTaskRun.created_at.asc(), BackgroundTaskRun.id.asc()),
+    "updated_at:desc": (BackgroundTaskRun.updated_at.desc(), BackgroundTaskRun.id.desc()),
+    "updated_at:asc": (BackgroundTaskRun.updated_at.asc(), BackgroundTaskRun.id.asc()),
+}
+
+
+def now() -> datetime:
+    return utc_now_for_db()
+
+
+def merge_summary(base_summary: dict[str, Any], summary_patch: dict[str, Any] | None) -> dict[str, Any]:
+    if not summary_patch:
+        return dict(base_summary)
+    merged = dict(base_summary)
+    merged.update(summary_patch)
+    return merged
+
+
+def _format_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def format_result_text(summary: dict[str, Any] | None) -> str | None:
+    if not summary:
+        return None
+    fragments: list[str] = []
+    for key, value in summary.items():
+        if isinstance(value, (dict, list)) or value is None:
+            continue
+        fragments.append(f"{key}={_format_scalar(value)}")
+    return " ".join(fragments) if fragments else None
+
+
+class TaskRunService:
+    @staticmethod
+    def to_resource(task_run: BackgroundTaskRun) -> TaskRunResource:
+        return TaskRunResource.model_validate(task_run)
+
+    @staticmethod
+    def resolve_task_name(task_key: str, task_name: str | None = None) -> str:
+        return (task_name or "").strip() or TASK_NAME_REGISTRY.get(task_key, task_key)
+
+    @classmethod
+    def build_query(
+        cls,
+        *,
+        state: str | None = None,
+        task_key: str | None = None,
+        trigger_type: str | None = None,
+        sort: str | None = None,
+    ):
+        normalized_state = normalize_allowed_filter(
+            state, field_name="state", allowed_values=ALLOWED_TASK_STATES
+        )
+        normalized_trigger_type = normalize_allowed_filter(
+            trigger_type,
+            field_name="trigger_type",
+            allowed_values=ALLOWED_TASK_TRIGGER_TYPES,
+        )
+        normalized_task_key = normalize_string_filter(task_key)
+        order_by = TASK_RUN_SORT_FIELDS.get((sort or "started_at:desc").strip().lower())
+        if order_by is None:
+            raise ApiError(
+                422,
+                "invalid_task_run_sort",
+                "任务排序规则不合法",
+                {"sort": sort, "allowed_values": sorted(TASK_RUN_SORT_FIELDS)},
+            )
+
+        query = BackgroundTaskRun.select()
+        if normalized_state is not None:
+            query = query.where(BackgroundTaskRun.state == normalized_state)
+        if normalized_trigger_type is not None:
+            query = query.where(BackgroundTaskRun.trigger_type == normalized_trigger_type)
+        if normalized_task_key is not None:
+            query = query.where(BackgroundTaskRun.task_key == normalized_task_key)
+        return query.order_by(*order_by)
+
+    @classmethod
+    def page_query(cls, query, *, page: int, page_size: int) -> PageResponse[TaskRunResource]:
+        total = query.count()
+        start = (page - 1) * page_size
+        items = [cls.to_resource(item) for item in query.offset(start).limit(page_size)]
+        return PageResponse[TaskRunResource](
+            items=items, page=page, page_size=page_size, total=total
+        )
+
+    @classmethod
+    def create_task_run(
+        cls,
+        *,
+        task_key: str,
+        task_name: str | None = None,
+        trigger_type: str,
+        state: str = "pending",
+        owner_pid: int | None = None,
+        mutex_key: str | None = None,
+    ) -> BackgroundTaskRun:
+        normalized_trigger_type = normalize_allowed_filter(
+            trigger_type,
+            field_name="trigger_type",
+            allowed_values=ALLOWED_TASK_TRIGGER_TYPES,
+        )
+        normalized_state = normalize_allowed_filter(
+            state, field_name="state", allowed_values=ALLOWED_TASK_STATES
+        )
+        with get_database().atomic():
+            task_run = BackgroundTaskRun.create(
+                task_key=task_key,
+                task_name=cls.resolve_task_name(task_key, task_name),
+                trigger_type=normalized_trigger_type or "internal",
+                owner_pid=os.getpid() if owner_pid is None else owner_pid,
+                mutex_key=normalize_string_filter(mutex_key),
+                state=normalized_state or "pending",
+                started_at=now() if normalized_state == "running" else None,
+                result_summary={},
+            )
+            SystemEventService.publish(
+                event_type="task_run_created",
+                payload=cls.to_resource(task_run).model_dump(mode="json"),
+                resource_type="task_run",
+                resource_id=task_run.id,
+            )
+            return task_run
+
+    @classmethod
+    def mark_task_run_running(cls, task_run_id: int) -> BackgroundTaskRun:
+        with get_database().atomic():
+            task_run = BackgroundTaskRun.get_by_id(task_run_id)
+            task_run.state = "running"
+            if task_run.started_at is None:
+                task_run.started_at = now()
+            task_run.updated_at = now()
+            task_run.save()
+            SystemEventService.publish(
+                event_type="task_run_updated",
+                payload=cls.to_resource(task_run).model_dump(mode="json"),
+                resource_type="task_run",
+                resource_id=task_run.id,
+            )
+            return task_run
+
+    @classmethod
+    def update_task_run_progress(
+        cls,
+        task_run_id: int,
+        *,
+        current: int | None = None,
+        total: int | None = None,
+        text: str | None = None,
+        summary_patch: dict[str, Any] | None = None,
+    ) -> BackgroundTaskRun:
+        with get_database().atomic():
+            task_run = BackgroundTaskRun.get_by_id(task_run_id)
+            if current is not None:
+                task_run.progress_current = int(current)
+            if total is not None:
+                task_run.progress_total = int(total)
+            if text is not None:
+                task_run.progress_text = text
+            if summary_patch:
+                task_run.result_summary = merge_summary(task_run.result_summary or {}, summary_patch)
+            task_run.updated_at = now()
+            task_run.save()
+            SystemEventService.publish(
+                event_type="task_run_updated",
+                payload=cls.to_resource(task_run).model_dump(mode="json"),
+                resource_type="task_run",
+                resource_id=task_run.id,
+            )
+            return task_run
+
+    @classmethod
+    def complete_task_run(
+        cls,
+        task_run_id: int,
+        *,
+        result_summary: dict[str, Any] | None = None,
+        result_text: str | None = None,
+        notify_result: bool = True,
+    ) -> BackgroundTaskRun:
+        with get_database().atomic():
+            task_run = BackgroundTaskRun.get_by_id(task_run_id)
+            task_run.state = "completed"
+            task_run.finished_at = now()
+            task_run.mutex_key = None
+            task_run.result_summary = merge_summary(task_run.result_summary or {}, result_summary)
+            task_run.result_text = result_text or format_result_text(task_run.result_summary)
+            task_run.updated_at = now()
+            task_run.save()
+            SystemEventService.publish(
+                event_type="task_run_updated",
+                payload=cls.to_resource(task_run).model_dump(mode="json"),
+                resource_type="task_run",
+                resource_id=task_run.id,
+            )
+            if notify_result:
+                NotificationService.notify_task_result(task_run, failed=False)
+            return task_run
+
+    @classmethod
+    def fail_task_run(
+        cls,
+        task_run_id: int,
+        *,
+        error_message: str,
+        result_summary: dict[str, Any] | None = None,
+        notify_result: bool = True,
+    ) -> BackgroundTaskRun:
+        with get_database().atomic():
+            task_run = BackgroundTaskRun.get_by_id(task_run_id)
+            task_run.state = "failed"
+            task_run.finished_at = now()
+            task_run.mutex_key = None
+            task_run.error_message = error_message
+            task_run.result_summary = merge_summary(task_run.result_summary or {}, result_summary)
+            task_run.updated_at = now()
+            task_run.save()
+            SystemEventService.publish(
+                event_type="task_run_updated",
+                payload=cls.to_resource(task_run).model_dump(mode="json"),
+                resource_type="task_run",
+                resource_id=task_run.id,
+            )
+            if notify_result:
+                NotificationService.notify_task_result(task_run, failed=True)
+            return task_run
+
+    @classmethod
+    def recover_task_run(
+        cls,
+        task_run_id: int,
+        *,
+        error_message: str,
+        result_summary: dict[str, Any] | None = None,
+        allow_null_owner: bool = False,
+        force: bool = False,
+        notify_result: bool = True,
+    ) -> BackgroundTaskRun | None:
+        task_run = BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == task_run_id)
+        if task_run is None or task_run.state not in {"pending", "running"}:
+            return None
+        if not force:
+            if task_run.owner_pid is None and not allow_null_owner:
+                return None
+            if task_run.owner_pid is not None and is_process_alive(task_run.owner_pid):
+                return None
+        return cls.fail_task_run(
+            task_run_id,
+            error_message=error_message,
+            result_summary=result_summary,
+            notify_result=notify_result,
+        )
+
+    @classmethod
+    def recover_interrupted_task_runs(
+        cls,
+        *,
+        trigger_type: str | None = None,
+        task_key: str | None = None,
+        error_message: str,
+        allow_null_owner: bool = False,
+        force: bool = False,
+        suppress_notification_task_keys: set[str] | None = None,
+    ) -> list[BackgroundTaskRun]:
+        query = BackgroundTaskRun.select().where(
+            BackgroundTaskRun.state.in_(("pending", "running"))
+        )
+        if trigger_type is not None:
+            query = query.where(BackgroundTaskRun.trigger_type == trigger_type)
+        if task_key is not None:
+            query = query.where(BackgroundTaskRun.task_key == task_key)
+        suppressed_task_keys = suppress_notification_task_keys or set()
+        recovered_task_runs: list[BackgroundTaskRun] = []
+        for task_run in query.order_by(BackgroundTaskRun.id.asc()):
+            recovered = cls.recover_task_run(
+                task_run.id,
+                error_message=error_message,
+                allow_null_owner=allow_null_owner,
+                force=force,
+                notify_result=task_run.task_key not in suppressed_task_keys,
+            )
+            if recovered is not None:
+                recovered_task_runs.append(recovered)
+        return recovered_task_runs
+
+    @staticmethod
+    def find_task_run_by_mutex_key(mutex_key: str) -> BackgroundTaskRun | None:
+        normalized_mutex_key = normalize_string_filter(mutex_key)
+        if normalized_mutex_key is None:
+            return None
+        return (
+            BackgroundTaskRun.select()
+            .where(BackgroundTaskRun.mutex_key == normalized_mutex_key)
+            .order_by(BackgroundTaskRun.id.asc())
+            .first()
+        )
+
+    @classmethod
+    def list_task_runs(
+        cls,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        state: str | None = None,
+        task_key: str | None = None,
+        trigger_type: str | None = None,
+        sort: str | None = None,
+    ) -> PageResponse[TaskRunResource]:
+        validate_page(page, page_size)
+        return cls.page_query(
+            cls.build_query(
+                state=state,
+                task_key=task_key,
+                trigger_type=trigger_type,
+                sort=sort,
+            ),
+            page=page,
+            page_size=page_size,
+        )
+
+    @classmethod
+    def list_active_task_runs(cls) -> list[TaskRunResource]:
+        query = (
+            BackgroundTaskRun.select()
+            .where(BackgroundTaskRun.state.in_(("pending", "running")))
+            .order_by(BackgroundTaskRun.started_at.desc(), BackgroundTaskRun.id.desc())
+        )
+        return [cls.to_resource(item) for item in query]

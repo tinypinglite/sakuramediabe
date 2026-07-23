@@ -4,6 +4,7 @@ from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
+from src.common.process import is_process_alive
 from src.common.movie_numbers import parse_movie_number_from_text
 from src.model import DownloadClient, DownloadTask, ImportJob
 from src.model.enums import DownloadClientKind
@@ -37,7 +38,7 @@ class DownloadSyncService:
         task_run = job.task_run
         if task_run is None:
             return False
-        return ActivityService._is_process_alive(task_run.owner_pid)
+        return is_process_alive(task_run.owner_pid)
 
     def sync_client(self, client_id: int) -> DownloadClientSyncResponse:
         client = require_client(client_id)

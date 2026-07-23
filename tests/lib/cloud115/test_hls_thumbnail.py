@@ -16,7 +16,12 @@ from src.lib.cloud115 import (
     VideoSegment,
 )
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
-from src.service.playback import media_thumbnail_service as thumbnail_module
+from src.service.playback.thumbnails.backends import cloud115_hls as thumbnail_module
+from src.service.playback.thumbnails.backends.cloud115_hls import (
+    Cloud115HlsThumbnailBackend,
+)
+from src.service.playback.thumbnails.contracts import PreparedThumbnailSource
+from src.service.playback.thumbnails.task_service import MediaThumbnailTaskService
 
 
 def _segment(index: int, duration: float = 10.0) -> VideoSegment:
@@ -143,19 +148,22 @@ def test_hls_segment_generation_never_exceeds_three_workers(
         return len(offsets)
 
     monkeypatch.setattr(
-        MediaThumbnailService,
-        "_decode_hls_segment_to_webp",
+        Cloud115HlsThumbnailBackend,
+        "decode_segment",
         staticmethod(fake_decode),
     )
     targets = [(_segment(index), [index * 10]) for index in range(8)]
 
-    error = MediaThumbnailService._generate_cloud115_hls_webp(
-        targets,
+    result = Cloud115HlsThumbnailBackend.generate(
+        PreparedThumbnailSource(
+            source_label="test",
+            expected_count=len(targets),
+            payload=targets,
+        ),
         tmp_path,
-        source_label="test",
     )
 
-    assert error is None
+    assert result.first_error is None
     assert peak == 3
 
 
@@ -205,7 +213,7 @@ def test_hls_segment_decode_limits_network_and_ffmpeg_probe(
     monkeypatch.setattr(thumbnail_module, "Cloud115HlsSegmentReader", fake_reader)
     monkeypatch.setattr(thumbnail_module.av, "open", fake_open)
 
-    generated_count = MediaThumbnailService._decode_hls_segment_to_webp(
+    generated_count = Cloud115HlsThumbnailBackend.decode_segment(
         _segment(0),
         [0],
         tmp_path,
@@ -230,17 +238,17 @@ def test_local_media_are_parallel_while_cloud115_media_remain_serial(
     processed_cloud115: list[int] = []
     processed_local: list[int] = []
     monkeypatch.setattr(
-        MediaThumbnailService,
-        "_pending_media_ids",
+        MediaThumbnailTaskService,
+        "pending_media_ids",
         staticmethod(lambda: [1, 2, 3, 4]),
     )
     monkeypatch.setattr(
-        MediaThumbnailService,
-        "_cloud115_media_ids",
+        MediaThumbnailTaskService,
+        "cloud115_media_ids",
         staticmethod(lambda media_ids: {2, 4}),
     )
     monkeypatch.setattr(
-        "src.service.playback.media_thumbnail_service.settings.media.max_thumbnail_process_count",
+        "src.service.playback.thumbnails.task_service.settings.media.max_thumbnail_process_count",
         2,
     )
 
@@ -253,12 +261,12 @@ def test_local_media_are_parallel_while_cloud115_media_remain_serial(
         return {"successful_media": 1, "generated_thumbnails": 1}
 
     monkeypatch.setattr(
-        MediaThumbnailService,
-        "_process_media",
+        MediaThumbnailTaskService,
+        "process_media",
         staticmethod(process_media),
     )
 
-    stats = MediaThumbnailService.generate_pending_thumbnails()
+    stats = MediaThumbnailTaskService.generate_pending_thumbnails()
 
     assert processed_cloud115 == [2, 4]
     assert set(processed_local) == {1, 3}

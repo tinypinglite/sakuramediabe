@@ -53,7 +53,7 @@ from src.common.subtitle_paths import movie_subtitle_root_path
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115Client, DirEntry
 from src.model import ImportJob, Media, MediaLibrary, Movie, Subtitle, get_database
-from src.service.playback.cloud115_backend_service import (
+from src.service.cloud115 import (
     assert_cid_outside_library_root,
     cloud115_client_for,
     find_or_create_subdir,

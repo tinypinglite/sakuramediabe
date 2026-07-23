@@ -46,6 +46,9 @@ from src.service.collections import PlaylistService
 from src.service.discovery import get_qdrant_thumbnail_store
 from src.service.playback.media_file_scan_service import MediaFileScanService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
+from src.service.transfers.media_rapid_upload.query_service import (
+    MediaRapidUploadQueryService,
+)
 
 
 class MediaService:
@@ -126,7 +129,7 @@ class MediaService:
        
         """
         from src.lib.cloud115 import Cloud115Error
-        from src.service.playback.cloud115_backend_service import (
+        from src.service.cloud115 import (
             cloud115_client_for,
             map_cloud115_error,
         )
@@ -254,7 +257,7 @@ class MediaService:
         否则记录删了云端文件还在，库目录会积累孤儿文件。
         """
         from src.lib.cloud115 import Cloud115Error, Cloud115NotFoundError
-        from src.service.playback.cloud115_backend_service import (
+        from src.service.cloud115 import (
             cloud115_client_for,
             map_cloud115_error,
         )
@@ -434,23 +437,18 @@ class MediaService:
             )
             base_query = base_query.where(Media.movie.in_(movie_numbers))
         if rapid_upload_status is not None:
-            # 延迟 import 规避 transfers <-> playback 的循环依赖（同 delete_media / status 填充）。
-            from src.service.transfers.media_rapid_upload_service import (
-                MediaRapidUploadService,
-            )
-
             if rapid_upload_status == MediaRapidUploadFilterStatus.NONE:
                 # NONE 反选：排除"最新非 retried item 存在且非 succeeded"的 media，
                 # 剩下的就是"从未秒传过 or 最近一次已成功切云端"。
                 base_query = base_query.where(
                     Media.id.not_in(
-                        MediaRapidUploadService.active_media_id_subquery()
+                        MediaRapidUploadQueryService.active_media_id_subquery()
                     )
                 )
             else:
                 base_query = base_query.where(
                     Media.id.in_(
-                        MediaRapidUploadService.media_id_subquery_for_status(
+                        MediaRapidUploadQueryService.media_id_subquery_for_status(
                             rapid_upload_status.value
                         )
                     )
@@ -464,12 +462,7 @@ class MediaService:
             .limit(page_size)
         )
         # 一次子查询批量拿本页所有 media 的最新秒传状态，避免逐条 N+1。
-        # 延迟 import 规避 transfers <-> playback 的循环依赖（同 delete_media 的处理）。
-        from src.service.transfers.media_rapid_upload_service import (
-            MediaRapidUploadService,
-        )
-
-        rapid_upload_status = MediaRapidUploadService.get_latest_status_by_media(
+        rapid_upload_status = MediaRapidUploadQueryService.get_latest_status_by_media(
             [media.id for media in rows]
         )
         items = [
@@ -625,11 +618,7 @@ class MediaService:
     def delete_media(cls, media_id: int) -> None:
         media = cls._require_media(media_id)
         # 秒传运行期间源文件正在被哈希或清理，禁止并发删除同一媒体。
-        from src.service.transfers.media_rapid_upload_service import (
-            MediaRapidUploadService,
-        )
-
-        if MediaRapidUploadService.has_active_media(media.id):
+        if MediaRapidUploadQueryService.has_active_media(media.id):
             raise ApiError(
                 409,
                 "media_rapid_upload_in_progress",

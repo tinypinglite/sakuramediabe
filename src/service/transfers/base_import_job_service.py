@@ -33,6 +33,7 @@ from src.common.media_import_status import (
     classify_failed_file_kind,
     make_failure_item,
 )
+from src.common.process import is_process_alive
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import MediaLibrary
@@ -471,7 +472,7 @@ class BaseImportJobService:
         task_run = job.task_run
         if task_run is None or task_run.owner_pid is None:
             return False
-        return ActivityService._is_process_alive(task_run.owner_pid)
+        return is_process_alive(task_run.owner_pid)
 
     @staticmethod
     def _resolve_source_path(source_path: str) -> Path:

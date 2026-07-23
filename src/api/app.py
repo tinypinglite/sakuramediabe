@@ -27,6 +27,7 @@ from src.api.routers.playback.cloud115_libraries import router as cloud115_libra
 from src.api.routers.playback.media_libraries import router as media_libraries_router
 from src.api.routers.transfers.downloads import router as downloads_router
 from src.api.routers.transfers.media_import import router as media_import_router
+from src.api.routers.transfers.rapid_uploads import router as rapid_uploads_router
 from src.api.exception.errors import ApiError
 from src.api.routers.catalog.actors import router as actors_router
 from src.api.routers.catalog.movies import router as movies_router
@@ -102,6 +103,8 @@ def create_app() -> FastAPI:
     app.include_router(clip_collections_router)
     app.include_router(file_images_router)
     app.include_router(file_subtitles_router)
+    # 固定子路径必须先于 /media/{media_id} 动态路由注册。
+    app.include_router(rapid_uploads_router)
     app.include_router(media_router)
     app.include_router(media_clips_router)
     app.include_router(media_points_router)

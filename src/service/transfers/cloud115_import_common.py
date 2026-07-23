@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from src.lib.cloud115 import Cloud115Client, Cloud115RangeReader, DirEntry
-from src.service.playback.cloud115_backend_service import find_or_create_subdir
+from src.service.cloud115 import find_or_create_subdir
 from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeResult,
     MediaMetadataProbeService,

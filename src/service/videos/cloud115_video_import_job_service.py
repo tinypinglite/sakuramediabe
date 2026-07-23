@@ -24,7 +24,7 @@ from src.schema.videos.imports import (
     VideoImportJobResource,
     VideoImportTriggerResponse,
 )
-from src.service.playback.cloud115_backend_service import (
+from src.service.cloud115 import (
     assert_cid_outside_library_root,
     cloud115_client_for,
     map_cloud115_error,

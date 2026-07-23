@@ -25,7 +25,7 @@ from src.schema.playback.media_libraries import (
     MediaLibraryResource,
     MediaLibraryUpdateRequest,
 )
-from src.service.playback.cloud115_backend_service import (
+from src.service.cloud115 import (
     CLOUD115_DOWNLOADS_ROOT_NAME,
     CLOUD115_LIBRARY_ROOT_NAME,
     cloud115_client_for,
@@ -34,6 +34,9 @@ from src.service.playback.cloud115_backend_service import (
     require_cloud115_library,
 )
 from src.service.playback.cloud115_qrlogin_service import Cloud115QrLoginService
+from src.service.transfers.media_rapid_upload.query_service import (
+    MediaRapidUploadQueryService,
+)
 
 
 class MediaLibraryService:
@@ -402,16 +405,12 @@ class MediaLibraryService:
     @classmethod
     def delete_library(cls, library_id: int) -> None:
         library = cls._require_library(library_id)
-        from src.service.transfers.media_rapid_upload_service import (
-            MediaRapidUploadService,
-        )
-
         if (
             Media.select().where(Media.library == library.id).exists()
             or DownloadClient.select().where(DownloadClient.media_library == library.id).exists()
             or ImportJob.select().where(ImportJob.library == library.id).exists()
-            or MediaRapidUploadService.has_active_library(library.id)
-            or MediaRapidUploadService.has_library_history(library.id)
+            or MediaRapidUploadQueryService.has_active_library(library.id)
+            or MediaRapidUploadQueryService.has_library_history(library.id)
         ):
             raise ApiError(
                 409,

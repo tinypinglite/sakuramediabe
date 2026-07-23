@@ -16,8 +16,8 @@ try:
 except ImportError:  # pragma: no cover - 由运行环境决定，测试不依赖
     av = None
 
+from src.common.media_paths import media_image_root_path
 from src.model import Image, VideoItem, get_database
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
 
 
 class VideoCoverService:
@@ -27,7 +27,7 @@ class VideoCoverService:
     def _cover_path(cls, video_item_id: int) -> Path:
         # 与缩略图同根目录，按 videos/<id>/cover 归类，便于统一签名 URL 与清理。
         return (
-            MediaThumbnailService._image_root_path()
+            media_image_root_path()
             / "videos"
             / str(video_item_id)
             / "cover"
@@ -77,7 +77,7 @@ class VideoCoverService:
         # 封面落库同样是增益项：DB 写（建 Image 行、回写 cover_image）失败也只记日志返回 None，
         # 绝不外抛——否则已成功搬运入库的视频会被导入主流程误判为失败文件。
         try:
-            image_root = MediaThumbnailService._image_root_path()
+            image_root = media_image_root_path()
             relative_path = cover_path.relative_to(image_root).as_posix()
             with get_database().atomic():
                 image = Image.create(

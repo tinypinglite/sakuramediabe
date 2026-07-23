@@ -12,7 +12,7 @@ from peewee import IntegrityError
 
 from src.api.exception.errors import ApiError
 from src.lib.cloud115 import Cloud115CookieStatus
-from src.service.playback.cloud115_backend_service import Cloud115KeepaliveService
+from src.service.cloud115 import Cloud115KeepaliveService
 from src.common.runtime_time import utc_now_for_db
 from src.model import DownloadClient, DownloadTask, IndexerDownloadClient
 from src.schema.transfers.downloads import (

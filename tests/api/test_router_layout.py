@@ -21,6 +21,7 @@ from src.api.routers.system import movie_desc_translation_settings
 from src.api.routers.system import status
 from src.api.routers.transfers import downloads
 from src.api.routers.transfers import media_import
+from src.api.routers.transfers import rapid_uploads
 from src.api.routers.videos import collections as video_collections
 from src.api.routers.videos import imports as video_imports
 from src.api.routers.videos import items as video_items
@@ -72,6 +73,16 @@ def test_media_import_router_uses_auth_and_db_dependencies():
     dependency_targets = {
         dependency.dependency
         for dependency in media_import.router.dependencies
+    }
+
+    assert deps.db_deps in dependency_targets
+    assert deps.get_current_user in dependency_targets
+
+
+def test_rapid_uploads_router_uses_auth_and_db_dependencies():
+    dependency_targets = {
+        dependency.dependency
+        for dependency in rapid_uploads.router.dependencies
     }
 
     assert deps.db_deps in dependency_targets
@@ -474,6 +485,20 @@ def test_create_app_does_not_register_removed_api_endpoints():
     }
 
     assert route_methods.isdisjoint(removed_routes)
+
+
+def test_create_app_registers_rapid_uploads_routes():
+    app = create_app()
+    route_methods = {
+        (getattr(route, "path", None), method)
+        for route in app.routes
+        for method in getattr(route, "methods", set())
+    }
+
+    assert ("/media/rapid-uploads", "POST") in route_methods
+    assert ("/media/rapid-uploads", "GET") in route_methods
+    assert ("/media/rapid-uploads/{batch_id}", "GET") in route_methods
+    assert ("/media/rapid-uploads/{batch_id}/retry", "POST") in route_methods
 
 
 def test_create_app_registers_download_task_center_routes():

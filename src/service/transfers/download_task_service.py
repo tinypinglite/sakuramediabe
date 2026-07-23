@@ -39,6 +39,7 @@ from src.common.media_import_status import (
     make_failure_item,
 )
 from src.service.transfers.media_import_service import MediaImportService
+from src.service.transfers.import_notifications import create_new_media_reminder
 from src.service.transfers.qbittorrent_client import (
     QBittorrentClient,
     QBittorrentClientError,
@@ -193,7 +194,7 @@ class DownloadTaskService:
         import asyncio
 
         from src.lib.cloud115 import Cloud115Error
-        from src.service.playback.cloud115_backend_service import (
+        from src.service.cloud115 import (
             cloud115_client_for,
             map_cloud115_error,
         )
@@ -426,7 +427,7 @@ class DownloadTaskService:
             new_playable_movies = (task_run.result_summary or {}).get("new_playable_movies", [])
             if isinstance(new_playable_movies, list):
                 try:
-                    ActivityService.create_new_media_reminder(
+                    create_new_media_reminder(
                         movie_items=new_playable_movies,
                         related_task_run_id=task_run_id,
                     )

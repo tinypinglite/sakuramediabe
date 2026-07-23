@@ -26,14 +26,7 @@ from src.schema.playback.media import (
     MediaThumbnailResource,
     MediaValidityCheckResponse,
 )
-from src.schema.transfers.rapid_upload import (
-    MediaRapidUploadBatchListItemResource,
-    MediaRapidUploadBatchResource,
-    MediaRapidUploadCreateRequest,
-    MediaRapidUploadTriggerResponse,
-)
 from src.service.playback import MediaService
-from src.service.transfers import MediaRapidUploadService
 
 router = APIRouter(
     prefix="/media",
@@ -62,56 +55,6 @@ def list_media(
         page=page,
         page_size=page_size,
     )
-
-
-@router.post(
-    "/rapid-uploads",
-    response_model=MediaRapidUploadTriggerResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def create_media_rapid_upload(
-    payload: MediaRapidUploadCreateRequest,
-    current_user=Depends(get_current_user),
-):
-    return MediaRapidUploadService.trigger_batch(
-        media_ids=payload.media_ids,
-        target_library_id=payload.target_library_id,
-    )
-
-
-@router.get(
-    "/rapid-uploads",
-    response_model=PageResponse[MediaRapidUploadBatchListItemResource],
-)
-def list_media_rapid_uploads(
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
-    current_user=Depends(get_current_user),
-):
-    return MediaRapidUploadService.list_batches(page=page, page_size=page_size)
-
-
-@router.get(
-    "/rapid-uploads/{batch_id}",
-    response_model=MediaRapidUploadBatchResource,
-)
-def get_media_rapid_upload(
-    batch_id: int,
-    current_user=Depends(get_current_user),
-):
-    return MediaRapidUploadService.get_batch(batch_id)
-
-
-@router.post(
-    "/rapid-uploads/{batch_id}/retry",
-    response_model=MediaRapidUploadTriggerResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def retry_media_rapid_upload(
-    batch_id: int,
-    current_user=Depends(get_current_user),
-):
-    return MediaRapidUploadService.retry_batch(batch_id)
 
 
 @router.get("/invalid", response_model=PageResponse[InvalidMediaResource])
