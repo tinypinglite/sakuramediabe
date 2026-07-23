@@ -35,14 +35,19 @@ class Cloud115MediaRegistrar:
 
     # ---- 查询 ----
 
-    @staticmethod
+    @classmethod
     def find_library_media(
-        library: MediaLibrary, sha1: str, *, valid: bool | None = None
+        cls, library: MediaLibrary, sha1: str, *, valid: bool | None = None
     ) -> Media | None:
-        """按 sha1 指纹查找库内 Media；valid=None 不限有效性。"""
+        """按 sha1 指纹查找库内 Media；valid=None 不限有效性。
+
+        走 build_fingerprint 归一化查询串，与写入端保持 uppercase 一致；否则调用方
+        传入本地算出的小写 hexdigest 会漏命中已有大写指纹记录，导致重复登记或触发唯一
+        索引冲突。
+        """
         query = Media.select().where(
             Media.library == library,
-            Media.content_fingerprint == f"sha1:{sha1}",
+            Media.content_fingerprint == cls.build_fingerprint(sha1),
         )
         if valid is not None:
             query = query.where(Media.valid == valid)
