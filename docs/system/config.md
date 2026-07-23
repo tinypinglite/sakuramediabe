@@ -18,6 +18,7 @@
   - `auth.secret_key` / `auth.file_signature_secret` 由 `ensure_runtime_config()` 首启自举生成随机值，运行时修改会立即作废所有 access token 或已下发的签名 URL，不该经通用配置接口暴露/修改。
   - `auth.algorithm` / `access_token_expire_minutes` / `refresh_token_expire_minutes` 属边缘可配，需要时直接改 `/data/config/config.toml` 并重启 api。
 - **`enable_docs` 顶层字段**：字段仍在 `Settings` 里（默认 `False` = 关闭 Swagger/ReDoc），排障时可通过手动改 `/data/config/config.toml` 或环境变量打开并重启 api 进程生效，通过接口不暴露也不修改，避免把开发调试开关混入用户可改的配置集合。
+- **`plugins` 节**：包含可信插件启用清单、任务 cron 覆盖及插件私有配置。API 与 APS 都在 import 阶段加载插件，且私有配置可能含凭据，因此只能手工修改 `config.toml` 后重启整个 `sakuramedia` 服务；本接口既不返回也不修改该节。具体契约见 [插件机制](../development/plugins.md)。
 
 ## 生效方式（三档）
 
@@ -67,7 +68,7 @@
 }
 ```
 
-- `values` 覆盖除只读键（`auth` 节 / `enable_docs`）外的全部配置节（见上文「本 API 不接管的键」）。
+- `values` 覆盖除只读键（`auth` 节 / `enable_docs` / `plugins`）外的全部配置节（见上文「本 API 不接管的键」）。
 - `effects` 只列出可修改的节，前端可据此提示用户「改后是否需要重启」。
 
 ## `PATCH /config`
@@ -104,7 +105,7 @@
 | 错误码 | HTTP | 触发条件 |
 |---|---|---|
 | `empty_config_update` | 422 | 请求体为空对象 |
-| `readonly_config_key` | 422 | 修改了本接口不接管的顶层键（当前是 `auth` 节 / `enable_docs`），`details.field` 指出具体键名 |
+| `readonly_config_key` | 422 | 修改了本接口不接管的顶层键（当前是 `auth` 节 / `enable_docs` / `plugins`），`details.field` 指出具体键名 |
 | `unknown_config_field` | 422 | 顶层节或节内字段不存在（如拼错字段名），`details.field` 指出具体键 |
 | `invalid_config_value` | 422 | 类型不符、子节不是对象、cron 表达式非法、URL 格式非法等 |
 

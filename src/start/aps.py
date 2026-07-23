@@ -14,7 +14,8 @@ from src.common.database import ensure_database_ready
 from src.common.runtime_time import get_runtime_timezone, get_runtime_timezone_name
 from src.config.config import Scheduler, settings
 from src.model import BackgroundTaskRun
-from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY, JobDefinition
+from src.scheduler.contracts import JobDefinition
+from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.service.system import ActivityService
 from src.service.system.activity_service import TaskRunConflictError
 from src.start.recovery import recover_interrupted_tasks
@@ -22,12 +23,38 @@ from src.start.recovery import recover_interrupted_tasks
 INTERRUPTED_TASK_RUN_ERROR_MESSAGE = "任务执行中断，等待重试"
 
 
-def _resolve_scheduler_cron_expr(cron_setting: str) -> str:
-    cron_expr = getattr(settings.scheduler, cron_setting, None)
+def get_job_cron_setting(job_def: JobDefinition) -> str:
+    """返回对外展示的 cron 配置路径。"""
+    if job_def.plugin_id is not None:
+        return f"plugins.job_crons.{job_def.plugin_id}.{job_def.task_key}"
+    if job_def.cron_setting is None:
+        raise RuntimeError(f"内建任务缺少 cron_setting task_key={job_def.task_key}")
+    return job_def.cron_setting
+
+
+def resolve_job_cron_expr(job_def: JobDefinition) -> str:
+    """解析内建任务静态配置或插件任务显式覆盖后的 cron。"""
+    if job_def.plugin_id is not None:
+        cron_expr = (
+            settings.plugins.job_crons
+            .get(job_def.plugin_id, {})
+            .get(job_def.task_key)
+        )
+        if cron_expr is not None:
+            return cron_expr
+        if job_def.default_cron is not None:
+            return job_def.default_cron
+        raise RuntimeError(f"插件任务缺少 cron task_key={job_def.task_key}")
+
+    if job_def.cron_setting is None:
+        if job_def.default_cron is not None:
+            return job_def.default_cron
+        raise RuntimeError(f"内建任务缺少 cron task_key={job_def.task_key}")
+    cron_expr = getattr(settings.scheduler, job_def.cron_setting, None)
     if cron_expr is not None:
         return cron_expr
     # 兼容运行时 settings 对象尚未带上新增 cron 字段的场景，回退到默认配置。
-    return getattr(Scheduler(), cron_setting)
+    return getattr(Scheduler(), job_def.cron_setting)
 
 
 def _prepare_recovery(job_def: JobDefinition) -> tuple[Callable[..., Any], dict[str, int], int]:
@@ -268,7 +295,7 @@ def build_scheduler() -> BlockingScheduler:
         timezone=timezone,
     )
     for job_def in JOB_REGISTRY:
-        cron_expr = _resolve_scheduler_cron_expr(job_def.cron_setting)
+        cron_expr = resolve_job_cron_expr(job_def)
         scheduler.add_job(
             run_job,
             args=[job_def],
@@ -295,7 +322,8 @@ def aps():
     _bootstrap_first_playback_ranking(scheduler)
     _bootstrap_gfriends_filetree_refresh(scheduler)
     cron_info = " ".join(
-        f"{j.cron_setting}={_resolve_scheduler_cron_expr(j.cron_setting)}" for j in JOB_REGISTRY
+        f"{get_job_cron_setting(j)}={resolve_job_cron_expr(j)}"
+        for j in JOB_REGISTRY
     )
     logger.info("Starting scheduler runtime_timezone={} {}", get_runtime_timezone_name(), cron_info)
     scheduler.start()

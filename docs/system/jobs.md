@@ -14,6 +14,7 @@
 ```json
 {
   "task_key": "ranking_sync",
+  "plugin_id": null,
   "log_name": "ranking-sync",
   "cli_name": "sync-rankings",
   "cli_help": "执行一次排行榜同步",
@@ -43,10 +44,12 @@
 字段说明：
 
 - `task_key`：任务稳定标识，与 `GET /system/task-runs` 中的 `task_key` 保持一致
+- `plugin_id`：插件任务的来源 ID；内建任务为 `null`
 - `log_name`：任务文件日志名
 - `cli_name`：`python -m src.start.commands aps <cli_name>` 使用的命令名
 - `cli_help`：CLI 帮助文案，也可作为前端说明文案
-- `cron_setting`：对应 `Scheduler` 配置字段名
+- `cron_setting`：内建任务为 `Scheduler` 字段名；插件任务为
+  `plugins.job_crons.<plugin_id>.<task_key>` 配置路径
 - `cron_expr`：当前运行配置解析出的 cron 表达式；缺失新增配置时回退默认值
 - `manual_trigger_allowed`：是否允许通过 HTTP 手动触发
 - `last_task_run`：该任务最新一条运行记录；从未运行过时为 `null`
@@ -88,6 +91,7 @@
 行为说明：
 
 - 只返回 `src.scheduler.registry.JOB_REGISTRY` 中注册的任务
+- 只有在 `config.toml` 的 `plugins.enabled` 中显式启用且成功加载的插件任务才会进入注册表
 - `last_task_run` 使用每个 `task_key` 最新一条 `BackgroundTaskRun` 记录
 - 任务元数据来自后端注册表，不允许通过接口修改
 

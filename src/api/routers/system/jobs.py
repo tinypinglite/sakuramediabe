@@ -4,11 +4,12 @@ from fastapi import APIRouter, Depends
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
 from src.model import BackgroundTaskRun
-from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY, JobDefinition
+from src.scheduler.contracts import JobDefinition
+from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.schema.system.activity import TaskRunResource
 from src.schema.system.jobs import JobMetadataResource, ManualJobTriggerResponse
 from src.service.system.activity_service import TaskRunConflictError
-from src.start.aps import _resolve_scheduler_cron_expr, submit_manual_job
+from src.start.aps import get_job_cron_setting, resolve_job_cron_expr, submit_manual_job
 
 router = APIRouter(
     tags=["jobs"],
@@ -36,8 +37,9 @@ def _build_job_metadata(job_def: JobDefinition, last_run: BackgroundTaskRun | No
         log_name=job_def.log_name,
         cli_name=job_def.cli_name,
         cli_help=job_def.cli_help,
-        cron_setting=job_def.cron_setting,
-        cron_expr=_resolve_scheduler_cron_expr(job_def.cron_setting),
+        plugin_id=job_def.plugin_id,
+        cron_setting=get_job_cron_setting(job_def),
+        cron_expr=resolve_job_cron_expr(job_def),
         manual_trigger_allowed=job_def.manual_trigger_allowed,
         last_task_run=TaskRunResource.model_validate(last_run) if last_run else None,
     )

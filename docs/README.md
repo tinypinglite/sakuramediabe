@@ -22,6 +22,10 @@
 - [system/jobs.md](./system/jobs.md): 系统任务元数据与手动触发接口
 - [system/task-runs.md](./system/task-runs.md): 任务中心与事件流接口
 
+### Development
+
+- [development/plugins.md](./development/plugins.md): 仓库内插件契约、显式启用与任务扩展
+
 ### Catalog
 
 - [catalog/images.md](./catalog/images.md): 通用图片资源与文件访问规则

@@ -5,6 +5,7 @@ import json
 import math
 import os
 import pathlib
+import re
 import secrets
 from enum import Enum
 from pathlib import Path
@@ -245,6 +246,43 @@ class Metadata(BaseModel):
         return self.normalized_proxy
 
 
+_PLUGIN_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+class Plugins(BaseModel):
+    """仓库内可信插件配置；插件必须出现在 enabled 中才会被导入。"""
+
+    enabled: list[str] = Field(default_factory=list)
+    job_crons: dict[str, dict[str, str]] = Field(default_factory=dict)
+    settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @field_validator("enabled")
+    @classmethod
+    def _validate_enabled_plugin_ids(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("plugins.enabled 不允许包含重复插件 ID")
+        for plugin_id in value:
+            if not _PLUGIN_ID_PATTERN.fullmatch(plugin_id):
+                raise ValueError(
+                    f"插件 ID 只能包含小写字母、数字、下划线且必须以字母开头: {plugin_id}"
+                )
+        return value
+
+    @model_validator(mode="after")
+    def _validate_plugin_config_namespaces(self):
+        # 未启用插件允许保留配置，但配置命名空间本身仍必须是合法插件 ID。
+        for section_name, section in (
+            ("job_crons", self.job_crons),
+            ("settings", self.settings),
+        ):
+            for plugin_id in section:
+                if not _PLUGIN_ID_PATTERN.fullmatch(plugin_id):
+                    raise ValueError(
+                        f"plugins.{section_name} 包含非法插件 ID: {plugin_id}"
+                    )
+        return self
+
+
 class Scheduler(BaseModel):
     enabled: bool = True
     log_dir: str = "/data/logs"
@@ -397,6 +435,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("movie_info_translation", "movie_desc_translation"),
     )
     metadata: Metadata = Field(default_factory=Metadata)
+    plugins: Plugins = Field(default_factory=Plugins)
     scheduler: Scheduler = Field(default_factory=Scheduler)
     downloads: Downloads = Field(default_factory=Downloads)
     media_import: MediaImport = Field(default_factory=MediaImport)

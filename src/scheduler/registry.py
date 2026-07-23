@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from pydantic import BaseModel, ConfigDict
-
+from src.config.config import settings
 from src.metadata.factory import refresh_gfriends_filetree
+from src.plugins.contracts import PluginRegistration
+from src.plugins.loader import load_enabled_plugins
+from src.scheduler.contracts import JobDefinition
 from src.service.catalog import (
     MovieCollectionService,
     MovieDescTranslationService,
@@ -35,22 +37,6 @@ from src.service.transfers import (
     DownloadSyncService,
     SubscribedMovieAutoDownloadService,
 )
-
-
-class JobDefinition(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    task_key: str
-    log_name: str
-    cli_name: str
-    cli_help: str
-    cron_setting: str
-    service_factory: Callable[..., Any]
-    # 业务回收仅处理每条记录的 running 状态，不再承担 task_run / mutex 回收。
-    business_recovery: Callable[[], dict[str, int]] | None = None
-    format_stats: Callable[[dict[str, Any]], str] | None = None
-    # 是否允许通过 HTTP 接口手动触发；False 时仅保留 cron / CLI 两条路径。
-    manual_trigger_allowed: bool = True
 
 
 def _resolve_stat_value(
@@ -85,7 +71,7 @@ def _build_stats_formatter(
 # 任务注册表
 # ---------------------------------------------------------------------------
 
-JOB_REGISTRY: list[JobDefinition] = [
+BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
     JobDefinition(
         task_key="actor_subscription_sync",
         log_name="actor-subscription-sync",
@@ -498,4 +484,35 @@ JOB_REGISTRY: list[JobDefinition] = [
     ),
 ]
 
-JOB_REGISTRY_BY_KEY: dict[str, JobDefinition] = {j.task_key: j for j in JOB_REGISTRY}
+
+def _build_job_registry(
+    builtin_jobs: list[JobDefinition],
+    plugins: tuple[PluginRegistration, ...],
+) -> list[JobDefinition]:
+    """先校验全部唯一标识，再一次性发布完整注册表。"""
+    jobs = [*builtin_jobs]
+    for plugin in plugins:
+        jobs.extend(plugin.jobs)
+
+    for field_name in ("task_key", "cli_name", "log_name"):
+        owners: dict[str, str] = {}
+        for job in jobs:
+            value = getattr(job, field_name)
+            owner = job.plugin_id or "core"
+            previous_owner = owners.get(value)
+            if previous_owner is not None:
+                raise RuntimeError(
+                    f"任务注册冲突 field={field_name} value={value} "
+                    f"owners={previous_owner},{owner}"
+                )
+            owners[value] = owner
+    return jobs
+
+
+# 显式启用插件在 import 阶段完整加载；任一插件失败时不发布半成品注册表。
+LOADED_PLUGINS: tuple[PluginRegistration, ...] = load_enabled_plugins(settings.plugins)
+JOB_REGISTRY: list[JobDefinition] = _build_job_registry(
+    BUILTIN_JOB_REGISTRY,
+    LOADED_PLUGINS,
+)
+JOB_REGISTRY_BY_KEY: dict[str, JobDefinition] = {job.task_key: job for job in JOB_REGISTRY}

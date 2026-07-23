@@ -4,6 +4,7 @@ from src.schema.system.activity import TaskRunResource
 
 class JobMetadataResource(SchemaModel):
     task_key: str
+    plugin_id: str | None = None
     log_name: str
     cli_name: str
     cli_help: str

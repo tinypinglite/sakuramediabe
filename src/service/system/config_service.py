@@ -25,7 +25,9 @@ from src.schema.system.config import (
 #   - auth.algorithm / *_expire_minutes 边缘价值低，需要时手动改 toml + 重启
 # - "enable_docs" 顶层字段仍保留在 Settings（默认 False = 关闭 Swagger/ReDoc），
 #   开发/排障时可通过 toml 或环境变量手动打开并重启，不通过接口暴露/修改。
-READONLY_KEYS: frozenset[str] = frozenset({"auth", "enable_docs"})
+# - "plugins" 节包含可信代码启用清单及插件私有配置：
+#   API / APS 都在 import 阶段读取，且可能包含凭据，只允许手工改 toml 后重启整个服务。
+READONLY_KEYS: frozenset[str] = frozenset({"auth", "enable_docs", "plugins"})
 
 # 节级默认生效方式。依据双进程部署（api / aps 各持一份 settings 快照）与各配置的读取时机：
 # refresh_runtime_settings 只刷新 api 进程内存，故被定时任务消费或启动期读取一次的配置无法即时生效。
@@ -72,7 +74,7 @@ class ConfigService:
 
     @classmethod
     def _public_values(cls) -> dict[str, Any]:
-        # 返回给前端的明文快照剔除 READONLY_KEYS，避免 auth 密钥外流 / enable_docs 混入前端可改集合。
+        # 剔除只读节，避免 auth/plugin 私密配置外流或启动期开关混入前端可改集合。
         values = cls._json_safe_values()
         for key in READONLY_KEYS:
             values.pop(key, None)
@@ -100,7 +102,7 @@ class ConfigService:
         cls._reject_unknown_fields(patch)
 
         # 以当前完整配置为基准做深合并：子节浅合并字段、顶层标量直接覆盖。
-        # 注意合并基准使用完整快照（含 auth / enable_docs），保证 model_validate 得到的 Settings 与磁盘现状一致，
+        # 注意合并基准使用完整快照（含只读节），保证 model_validate 得到的 Settings 与磁盘现状一致，
         # patch 已在 _reject_unknown_fields 拦住只读键，不会污染这些字段。
         merged = cls._json_safe_values()
         for key, value in patch.items():
@@ -157,7 +159,7 @@ class ConfigService:
         # 显式白名单校验，拼错/不存在的配置 key 直接 422，而非静默丢弃（配置场景更安全）。
         section_fields = Settings.model_fields
         for key, value in patch.items():
-            # 只读键（auth 节 / enable_docs 等顶层字段）显式拒绝并指向替代路径，
+            # 只读键显式拒绝并指向替代路径，
             # 避免与 unknown_config_field 语义混淆。
             if key in READONLY_KEYS:
                 raise ApiError(
