@@ -64,6 +64,8 @@ def test_batch_reset_requeues_failed_media_thumbnail_tasks(client, account_user)
         "state": "pending",
         "reset_count": 2,
         "resource_ids": [first_media.id, second_media.id],
+        "skipped_count": 0,
+        "skipped": [],
     }
     for media in (first_media, second_media):
         record = ResourceTaskState.get(
@@ -78,24 +80,78 @@ def test_batch_reset_requeues_failed_media_thumbnail_tasks(client, account_user)
         assert record.extra == {"source": "test"}
 
 
-def test_batch_reset_is_atomic_when_one_media_is_not_failed(client, account_user):
+def test_batch_reset_skips_unqualified_media_and_requeues_the_rest(client, account_user):
     token = _login(client, account_user.username)
     failed_media = _create_media("ABC-003")
     pending_media = _create_media("ABC-004")
+    invalid_media = _create_media("ABC-005", valid=False)
+    deleted_media = _create_media("ABC-006")
     _create_task_state(failed_media)
     _create_task_state(pending_media, state="pending", terminal=False)
+    _create_task_state(invalid_media)
+    _create_task_state(deleted_media)
+    # 只删媒体、留下任务记录，复现巡检/外部删除后残留的孤儿记录。
+    deleted_media_id = deleted_media.id
+    Media.delete().where(Media.id == deleted_media_id).execute()
+    missing_state_resource_id = deleted_media_id + 10_000
 
     response = client.post(
         RESET_PATH,
         headers={"Authorization": f"Bearer {token}"},
-        json={"resource_ids": [failed_media.id, pending_media.id]},
+        json={
+            "resource_ids": [
+                failed_media.id,
+                pending_media.id,
+                invalid_media.id,
+                deleted_media_id,
+                missing_state_resource_id,
+            ]
+        },
     )
 
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "media_thumbnail_task_reset_forbidden"
-    failed_record = ResourceTaskState.get(
+    assert response.status_code == 200
+    assert response.json() == {
+        "task_key": TASK_KEY,
+        "state": "pending",
+        "reset_count": 1,
+        "resource_ids": [failed_media.id],
+        "skipped_count": 4,
+        "skipped": [
+            {"resource_id": pending_media.id, "reason": "not_failed"},
+            {"resource_id": invalid_media.id, "reason": "media_invalid"},
+            {"resource_id": deleted_media_id, "reason": "media_not_found"},
+            {"resource_id": missing_state_resource_id, "reason": "task_state_not_found"},
+        ],
+    }
+
+    reset_record = ResourceTaskState.get(
         ResourceTaskState.task_key == TASK_KEY,
         ResourceTaskState.resource_id == failed_media.id,
     )
-    assert failed_record.state == "failed"
-    assert failed_record.attempt_count == 2
+    assert reset_record.state == "pending"
+    assert reset_record.attempt_count == 0
+    for skipped_media in (invalid_media, deleted_media):
+        untouched = ResourceTaskState.get(
+            ResourceTaskState.task_key == TASK_KEY,
+            ResourceTaskState.resource_id == skipped_media.id,
+        )
+        assert untouched.state == "failed"
+        assert untouched.attempt_count == 2
+
+
+def test_batch_reset_returns_all_skipped_when_nothing_is_eligible(client, account_user):
+    token = _login(client, account_user.username)
+    invalid_media = _create_media("ABC-007", valid=False)
+    _create_task_state(invalid_media)
+
+    response = client.post(
+        RESET_PATH,
+        headers={"Authorization": f"Bearer {token}"},
+        json={"resource_ids": [invalid_media.id]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reset_count"] == 0
+    assert body["resource_ids"] == []
+    assert body["skipped"] == [{"resource_id": invalid_media.id, "reason": "media_invalid"}]

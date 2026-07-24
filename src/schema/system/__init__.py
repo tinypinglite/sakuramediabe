@@ -12,6 +12,7 @@ from .movie_desc_translation_settings import (
 from .resource_task_state import (
     MediaThumbnailTaskBatchResetRequest,
     MediaThumbnailTaskBatchResetResponse,
+    MediaThumbnailTaskResetSkippedItem,
     ResourceTaskDefinitionResource,
     ResourceTaskRecordResource,
     TaskRecordResourceSummary,
@@ -28,6 +29,7 @@ __all__ = [
     "MovieDescTranslationSettingsTestResource",
     "MediaThumbnailTaskBatchResetRequest",
     "MediaThumbnailTaskBatchResetResponse",
+    "MediaThumbnailTaskResetSkippedItem",
     "ResourceTaskDefinitionResource",
     "ResourceTaskRecordResource",
     "SystemEventEnvelope",

@@ -176,7 +176,7 @@
 GET /system/resource-task-states?task_key=media_thumbnail_generation&state=failed
 ```
 
-列表选择主键使用 `resource_id`。当 `resource.valid = false` 时应禁用重置操作，后端也会拒绝失效媒体。
+列表选择主键使用 `resource_id`。当 `resource.valid = false` 或 `resource` 为 `null`（媒体已被删除）时应禁用重置操作，后端也会把这类 ID 计入跳过。
 
 ### `POST /system/resource-task-states/media_thumbnail_generation/reset`
 
@@ -192,8 +192,10 @@ GET /system/resource-task-states?task_key=media_thumbnail_generation&state=faile
 
 - 仅在 `media_thumbnail_generation` 的失败列表显示批量重置操作
 - 一次最多提交 `200` 个互不重复的媒体 ID
-- 接口成功后重新加载当前失败列表和任务定义计数
-- 接口采用整批原子语义；失败响应的 `details.resource_ids` 可用于标记不符合条件的选择项
+- 接口返回后重新加载当前失败列表和任务定义计数
+- 接口采用部分成功语义：合格记录直接重置，不合格记录只出现在响应的 `skipped` 里，不影响其余记录
+- 用 `reset_count` / `skipped_count` 组织提示文案，用 `skipped[].resource_id` 标记仍留在列表里的选择项，`skipped[].reason` 见[任务中心文档](./task-runs.md)
+- 全部选择项都不合格时也返回 `200`，前端需要按 `reset_count = 0` 提示，而不是按请求失败处理
 - 重置只将记录放回 `pending`，实际生成进度继续由任务中心和 `/system/events/stream` 展示
 
 ### 1. 资源任务入口页

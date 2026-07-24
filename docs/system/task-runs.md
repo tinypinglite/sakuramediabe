@@ -167,9 +167,16 @@ GET /system/resource-task-states?task_key=media_thumbnail_generation&state=faile
 约束：
 
 - 一次接受 `1` 到 `200` 个唯一正整数 ID
-- 每个 ID 都必须存在 `media_thumbnail_generation` 任务记录，且当前状态必须为 `failed`
-- 对应媒体必须仍然存在且 `valid = true`
-- 整批采用原子语义；任一 ID 不满足条件时，所有记录均不重置
+- 采用部分成功语义：合格 ID 照常重置，不合格 ID 只记入 `skipped`，不再整批失败
+- 可被重置的条件是存在 `media_thumbnail_generation` 任务记录、状态为 `failed`、对应媒体仍存在且 `valid = true`
+- 全部 ID 都不合格时仍返回 `200`，此时 `reset_count = 0`
+
+`skipped[].reason` 取值（一个 ID 只回报一个最主要的原因）：
+
+- `task_state_not_found`：该 ID 没有 `media_thumbnail_generation` 任务记录
+- `media_not_found`：任务记录存在但媒体已被删除
+- `media_invalid`：媒体存在但 `valid = false`
+- `not_failed`：媒体正常，但任务记录当前状态不是 `failed`
 
 重置后：
 
@@ -186,10 +193,19 @@ GET /system/resource-task-states?task_key=media_thumbnail_generation&state=faile
 {
   "task_key": "media_thumbnail_generation",
   "state": "pending",
-  "reset_count": 3,
-  "resource_ids": [101, 102, 103]
+  "reset_count": 2,
+  "resource_ids": [101, 102],
+  "skipped_count": 1,
+  "skipped": [
+    {
+      "resource_id": 103,
+      "reason": "media_invalid"
+    }
+  ]
 }
 ```
+
+`resource_ids` 只包含本次真正被重置的 ID，`skipped` 按请求顺序给出未被重置的 ID 及原因。
 
 本接口只负责重新入队，不会同步生成缩略图，也不会触发全量任务。
 

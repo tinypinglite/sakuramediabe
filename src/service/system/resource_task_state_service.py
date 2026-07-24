@@ -13,6 +13,7 @@ from src.model import Media, ResourceTaskState
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
 from src.schema.system.resource_task_state import (
+    MediaThumbnailTaskResetSkippedItem,
     ResourceTaskDefinitionResource,
     ResourceTaskRecordResource,
     TaskRecordStateCountsResource,
@@ -55,6 +56,11 @@ class ResourceTaskStateService:
     STATE_RUNNING = "running"
     STATE_SUCCEEDED = "succeeded"
     STATE_FAILED = "failed"
+    # 批量重置的跳过原因，前端按 resource_id 标注本次未能重置的选择项。
+    SKIP_REASON_TASK_STATE_NOT_FOUND = "task_state_not_found"
+    SKIP_REASON_MEDIA_NOT_FOUND = "media_not_found"
+    SKIP_REASON_MEDIA_INVALID = "media_invalid"
+    SKIP_REASON_NOT_FAILED = "not_failed"
     TERMINAL_TRUE_MARKERS = ('"terminal": true', '"terminal":true')
     TASK_STATE_SORT_FIELDS = {
         "last_attempted_at:desc": (ResourceTaskState.last_attempted_at.desc(), ResourceTaskState.id.desc()),
@@ -418,14 +424,19 @@ class ResourceTaskStateService:
         return record
 
     @classmethod
-    def reset_failed_media_thumbnail_states(cls, resource_ids: list[int]) -> list[int]:
+    def reset_failed_media_thumbnail_states(
+        cls, resource_ids: list[int]
+    ) -> tuple[list[int], list[MediaThumbnailTaskResetSkippedItem]]:
         task_key = "media_thumbnail_generation"
         task_definition = cls._require_task_definition(task_key)
         normalized_resource_ids = [int(resource_id) for resource_id in resource_ids]
 
+        skipped: list[MediaThumbnailTaskResetSkippedItem] = []
+        reset_resource_ids: list[int] = []
+
         database = get_database()
         with database.atomic():
-            # 锁住所选记录并整批校验，避免只重置部分媒体造成前端状态不一致。
+            # 锁住所选记录逐条判定：不合格项只记跳过原因，合格项照常重置。
             records = list(
                 ResourceTaskState.select()
                 .where(
@@ -436,66 +447,30 @@ class ResourceTaskStateService:
                 .for_update()
             )
             records_by_resource_id = {record.resource_id: record for record in records}
-            missing_resource_ids = [
-                resource_id
-                for resource_id in normalized_resource_ids
-                if resource_id not in records_by_resource_id
-            ]
-            if missing_resource_ids:
-                raise ApiError(
-                    404,
-                    "media_thumbnail_task_state_not_found",
-                    "部分媒体没有缩略图任务记录",
-                    {"resource_ids": missing_resource_ids},
-                )
-
-            not_failed_resource_ids = [
-                resource_id
-                for resource_id in normalized_resource_ids
-                if records_by_resource_id[resource_id].state != cls.STATE_FAILED
-            ]
-            if not_failed_resource_ids:
-                raise ApiError(
-                    422,
-                    "media_thumbnail_task_reset_forbidden",
-                    "仅允许重置失败的媒体缩略图任务",
-                    {"resource_ids": not_failed_resource_ids},
-                )
-
             media_by_id = {
                 media.id: media
                 for media in Media.select(Media.id, Media.valid).where(
-                    Media.id.in_(normalized_resource_ids)
+                    Media.id.in_(tuple(records_by_resource_id.keys()) or (0,))
                 )
             }
-            missing_media_ids = [
-                resource_id
-                for resource_id in normalized_resource_ids
-                if resource_id not in media_by_id
-            ]
-            if missing_media_ids:
-                raise ApiError(
-                    404,
-                    "media_not_found",
-                    "部分媒体不存在",
-                    {"resource_ids": missing_media_ids},
-                )
 
-            invalid_media_ids = [
-                resource_id
-                for resource_id in normalized_resource_ids
-                if not media_by_id[resource_id].valid
-            ]
-            if invalid_media_ids:
-                raise ApiError(
-                    422,
-                    "media_thumbnail_task_media_invalid",
-                    "失效媒体不能重新生成缩略图",
-                    {"resource_ids": invalid_media_ids},
+            for resource_id in normalized_resource_ids:
+                reason = cls._resolve_media_thumbnail_reset_skip_reason(
+                    records_by_resource_id.get(resource_id),
+                    media_by_id.get(resource_id),
                 )
+                if reason is not None:
+                    skipped.append(
+                        MediaThumbnailTaskResetSkippedItem(
+                            resource_id=resource_id,
+                            reason=reason,
+                        )
+                    )
+                    continue
+                reset_resource_ids.append(resource_id)
 
             now = utc_now_for_db()
-            for resource_id in normalized_resource_ids:
+            for resource_id in reset_resource_ids:
                 record = records_by_resource_id[resource_id]
                 if isinstance(record.extra, dict):
                     extra: dict | list | None = dict(record.extra)
@@ -527,7 +502,24 @@ class ResourceTaskStateService:
                     ]
                 )
 
-        return normalized_resource_ids
+        return reset_resource_ids, skipped
+
+    @classmethod
+    def _resolve_media_thumbnail_reset_skip_reason(
+        cls,
+        record: ResourceTaskState | None,
+        media: Media | None,
+    ) -> str | None:
+        # 判定顺序按“问题的根本程度”排列，一个 resource_id 只回报一个最主要的原因。
+        if record is None:
+            return cls.SKIP_REASON_TASK_STATE_NOT_FOUND
+        if media is None:
+            return cls.SKIP_REASON_MEDIA_NOT_FOUND
+        if not media.valid:
+            return cls.SKIP_REASON_MEDIA_INVALID
+        if record.state != cls.STATE_FAILED:
+            return cls.SKIP_REASON_NOT_FAILED
+        return None
 
     @classmethod
     def list_definition_resources(cls) -> list[ResourceTaskDefinitionResource]:

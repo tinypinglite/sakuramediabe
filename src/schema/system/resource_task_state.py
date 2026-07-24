@@ -59,8 +59,15 @@ class MediaThumbnailTaskBatchResetRequest(SchemaModel):
         return value
 
 
+class MediaThumbnailTaskResetSkippedItem(SchemaModel):
+    resource_id: int
+    reason: str
+
+
 class MediaThumbnailTaskBatchResetResponse(SchemaModel):
     task_key: str
     state: str
     reset_count: int
     resource_ids: list[int]
+    skipped_count: int = 0
+    skipped: list[MediaThumbnailTaskResetSkippedItem] = Field(default_factory=list)

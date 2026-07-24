@@ -138,7 +138,7 @@ def list_resource_task_states(
 def reset_failed_media_thumbnail_task_states(
     payload: MediaThumbnailTaskBatchResetRequest,
 ):
-    resource_ids = ResourceTaskStateService.reset_failed_media_thumbnail_states(
+    resource_ids, skipped = ResourceTaskStateService.reset_failed_media_thumbnail_states(
         payload.resource_ids
     )
     return MediaThumbnailTaskBatchResetResponse(
@@ -146,6 +146,8 @@ def reset_failed_media_thumbnail_task_states(
         state=ResourceTaskStateService.STATE_PENDING,
         reset_count=len(resource_ids),
         resource_ids=resource_ids,
+        skipped_count=len(skipped),
+        skipped=skipped,
     )
 
 
