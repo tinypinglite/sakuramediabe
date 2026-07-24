@@ -17,7 +17,7 @@ from src.common.media_import_status import (
     FAILURE_REASON_MERGE_SUBTITLE_SKIPPED_MULTIPLE_SIDECARS,
     make_failure_item,
 )
-from src.common.media_paths import movie_subtitle_dir
+from src.common.media_paths import allocate_next_movie_subtitle_path, movie_subtitle_dir
 from src.common.runtime_time import utc_now_for_db
 from src.model import Media, MediaLibrary, Movie
 from src.service.catalog.movie_subtitle_service import MovieSubtitleService
@@ -39,9 +39,6 @@ from src.service.transfers.media_source_scanner import (
     find_media_by_content_fingerprint,
 )
 from src.service.transfers.tag_rules import build_media_special_tags
-
-
-IMPORTED_SIDECAR_SUBTITLE_EXTENSION = ".srt"
 
 
 def import_single_scanned_file(
@@ -293,15 +290,17 @@ def _import_single_media_file(
 
 
 def prepare_movie_subtitle_target_path(movie_number: str, target_video_path: Path) -> Path:
-    """字幕统一落 ``movies/<shard>/<番号>/subtitles/<版本目录名>.srt``。
+    """字幕统一落 ``movies/<shard>/<番号>/subtitles/<番号>-<N>.srt``。
 
-    文件名取媒体库版本目录名（导入时间戳，同番号内唯一），保证同一部影片多次导入的
-    字幕不会互相覆盖，也不依赖媒体文件本身是否还在。
+    N 由 ``allocate_next_movie_subtitle_path`` 从当前目录已有序号 max + 1 起分配，同一部影片下
+    多份字幕（不同版本目录里同名，或同版本目录里 whisperjav 生成的 chinese/plain 两份）都能拿到
+    不同序号，避免互相覆盖；也不依赖媒体文件本身是否还在。``target_video_path`` 参数保留是为了
+    与上层调用一致，实际不参与命名。
     """
+    del target_video_path  # 保留形参一致，实际命名不再依赖版本目录名。
     subtitle_directory = movie_subtitle_dir(movie_number)
     subtitle_directory.mkdir(parents=True, exist_ok=True)
-    version_name = target_video_path.parent.name
-    return subtitle_directory / f"{version_name}{IMPORTED_SIDECAR_SUBTITLE_EXTENSION}"
+    return allocate_next_movie_subtitle_path(movie_number)
 
 
 def _import_sidecar_subtitle(

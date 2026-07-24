@@ -62,7 +62,7 @@
 - 影片竖封面：`movies/{shard}/{movie_number}/thin-cover.jpg`
 - 影片剧照：`movies/{shard}/{movie_number}/plot-{index}.jpg`
 - 媒体缩略图：`movies/{shard}/{movie_number}/media/{content_fingerprint}/thumbnails/{offset}.webp`
-- 影片字幕：`movies/{shard}/{movie_number}/subtitles/{name}.srt`
+- 影片字幕：`movies/{shard}/{movie_number}/subtitles/{movie_number}-{N}.srt`（N 递增分配）
 
 分片计算集中在 `src/common/media_paths.py` 的 `movie_asset_shard()` / `movie_asset_relative_dir()`，
 番号先经 `normalize_asset_dir_name()` 归一化再参与哈希；写入侧与迁移侧共用同一套函数。
@@ -89,7 +89,8 @@ storage/import-images/
             thumbnails/
               10.webp
         subtitles/
-          1758000000000.srt
+          SONE-210-1.srt
+          SONE-210-2.srt
 ```
 
 ### 存量迁移

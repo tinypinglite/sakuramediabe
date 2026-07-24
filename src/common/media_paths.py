@@ -61,3 +61,62 @@ def movie_subtitle_dir(movie_number: str) -> Path:
     本地媒体与 115 云盘媒体的字幕都落这里；媒体库内不再存放 .srt。
     """
     return movie_asset_dir(movie_number) / MOVIE_SUBTITLES_SUBDIR
+
+
+# 统一字幕命名：``<番号>-<N>.srt``，N 从 1 递增；同一部影片内连续但不严格无洞。
+MOVIE_SUBTITLE_EXTENSION = ".srt"
+
+
+def is_movie_subtitle_target_name(movie_number: str, file_name: str) -> bool:
+    """判断文件名是否已经符合 ``<番号>-<N>.srt`` 命名格式。
+
+    迁移与写入侧共用这一判定：已符合格式的字幕视为终态，重跑走 fast-path skip。
+    """
+    prefix = f"{movie_number}-"
+    if not file_name.endswith(MOVIE_SUBTITLE_EXTENSION):
+        return False
+    stem = file_name[: -len(MOVIE_SUBTITLE_EXTENSION)]
+    if not stem.startswith(prefix):
+        return False
+    tail = stem[len(prefix):]
+    return tail.isdigit() and tail == str(int(tail))  # 拒绝 "01" 这类前导零
+
+
+def _current_max_subtitle_sequence(subtitle_dir: Path, movie_number: str) -> int:
+    """扫 ``subtitles/`` 目录里已有的 ``<番号>-<N>.srt`` 找最大 N；目录不存在返回 0。"""
+    if not subtitle_dir.is_dir():
+        return 0
+    max_seq = 0
+    for entry in subtitle_dir.iterdir():
+        if not entry.is_file():
+            continue
+        if not is_movie_subtitle_target_name(movie_number, entry.name):
+            continue
+        seq = int(entry.stem[len(f"{movie_number}-"):])
+        if seq > max_seq:
+            max_seq = seq
+    return max_seq
+
+
+def allocate_next_movie_subtitle_path(
+    movie_number: str,
+    *,
+    reserved_names: set[str] | None = None,
+) -> Path:
+    """分配下一个 ``<subtitles>/<番号>-<N>.srt`` 目标路径。
+
+    N 从 ``max(现有落盘 seq, reserved 里已占用的 seq) + 1`` 起。同一批处理里传
+    ``reserved_names``（本批已分配还没落盘的文件名集合）可避免连续分配撞车。
+
+    幂等策略：调用侧写文件前可以先判断"字幕文件已经在正确目录 & 符合命名"，是的话不必再分配。
+    """
+    subtitle_dir = movie_subtitle_dir(movie_number)
+    max_seq = _current_max_subtitle_sequence(subtitle_dir, movie_number)
+    if reserved_names:
+        for name in reserved_names:
+            if not is_movie_subtitle_target_name(movie_number, name):
+                continue
+            seq = int(Path(name).stem[len(f"{movie_number}-"):])
+            if seq > max_seq:
+                max_seq = seq
+    return subtitle_dir / f"{movie_number}-{max_seq + 1}{MOVIE_SUBTITLE_EXTENSION}"

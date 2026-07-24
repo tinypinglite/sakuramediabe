@@ -1024,8 +1024,10 @@ Authorization: Bearer <token>
 与 `MovieSubtitleService._discover_subtitle_paths()` 收口，二者都覆盖上述三处根。迁移只是把存量整理到新布局
 的可选操作，不是硬性前置。
 
-文件命名：本地导入取媒体库版本目录名（导入时间戳，同番号内唯一），避免同一部影片多次导入的字幕互相
-覆盖；115 导入沿用已带 fid 去重的编码文件名。
+文件命名：统一为 `<番号>-<N>.srt`（N 从当前 `subtitles/` 目录已有序号 max + 1 起），本地导入 / 115 导入 /
+存量迁移共用 `src/common/media_paths.py` 的 `allocate_next_movie_subtitle_path()` 分配。同一部影片下多份
+字幕（同版本目录里 whisperjav 生成的 chinese/plain 两份、跨版本目录同名 srt、115 云盘多个字幕）都拿到
+不同 N，天然不撞车。
 
 导入配对：字幕与视频的配对走**纯番号匹配**——在视频同目录内从字幕文件名解析番号，解析出且与影片番号
 一致才配对（不再要求与视频同名），`ABP-123.chs.srt` 等带修饰后缀的字幕也能配上；文件名解析不出番号的

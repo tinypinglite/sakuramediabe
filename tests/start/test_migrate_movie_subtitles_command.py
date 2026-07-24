@@ -56,13 +56,12 @@ def test_default_run_passes_dry_run_false(monkeypatch):
 
 
 def test_exit_code_zero_even_when_some_subtitles_failed(monkeypatch):
-    """failed / data_lost / conflict_skipped 都不让 CLI 挂掉。"""
+    """failed / data_lost 都不让 CLI 挂掉。"""
     def fake_run(*, dry_run, progress_callback):
         stats = MigrationStats()
         stats.subtitles_scanned = 50
         stats.subtitles_failed = 2
         stats.subtitles_data_lost = 1
-        stats.subtitles_conflict_skipped = 3
         stats.failed_paths = ["/lib/jav/AAA-1/1/AAA-1.srt"]
         return stats
 
@@ -77,4 +76,3 @@ def test_exit_code_zero_even_when_some_subtitles_failed(monkeypatch):
     assert result.exit_code == 0
     assert "'subtitles_failed': 2" in result.output
     assert "'subtitles_data_lost': 1" in result.output
-    assert "'subtitles_conflict_skipped': 3" in result.output
