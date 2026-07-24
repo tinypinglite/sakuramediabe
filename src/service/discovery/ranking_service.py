@@ -91,6 +91,12 @@ def _is_top250_historical_year(period: str) -> bool:
     return period.isdigit() and int(period) < _current_year()
 
 
+def top250_historical_year_periods() -> list[str]:
+    # 静态历史年份 period 列表（不含当前年），供跨模块判定"这条 RankingItem 已经不会再变"。
+    # 与 _is_top250_historical_year 判定共用同一批年份，避免各处重复展开区间。
+    return [str(year) for year in range(TOP250_START_YEAR, _current_year())]
+
+
 JAVDB_SOURCE = RankingSourceDefinition(
     key="javdb",
     name="JavDB",

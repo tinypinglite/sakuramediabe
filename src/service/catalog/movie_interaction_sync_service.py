@@ -18,11 +18,21 @@ class MovieInteractionSyncService:
     SYNC_STATUS_SUCCEEDED = ResourceTaskStateService.STATE_SUCCEEDED
     SYNC_STATUS_FAILED = ResourceTaskStateService.STATE_FAILED
     INTERRUPTED_SYNC_ERROR_MESSAGE = "影片互动数同步任务中断，等待重试"
-    RANKING_REFRESH_INTERVAL = timedelta(hours=1)
-    SUBSCRIBED_REFRESH_INTERVAL = timedelta(days=1)
-    RECENT_REFRESH_INTERVAL = timedelta(days=1)
-    MIDDLE_REFRESH_INTERVAL = timedelta(days=3)
-    DEFAULT_REFRESH_INTERVAL = timedelta(days=7)
+    # 分层策略：
+    #   1. 从未同步过的影片：seed 一次，之后按下面分层决定是否再刷。
+    #   2. 活榜在榜（RankingItem 里有一条非"静态历史榜"记录）：1 天间隔。
+    #      配合 sync-movie-interactions 每天一次的调度，等于每次都刷。
+    #      静态历史榜（当前仅 javdb+top250+过去年份）从 ranked 集合里剔除，
+    #      榜单本身不会再变，跟着每天刷纯粹浪费。
+    #   3. 最近 60 天新片：2 天。
+    #   4. 60~180 天中间档：7 天。
+    #   5. 其它（含 180 天前 / 无 release_date / 只落在静态历史榜里）：不再周期刷。
+    #   6. 订阅补刷：subscribed_at > last_succeeded_at 触发一次性再同步，覆盖首次订阅
+    #      与重新订阅两种场景。走定时任务而不是订阅 API 内联，是为了避免把 PUT 订阅接口
+    #      拖成 1-3s（ActivityService.run_task 目前是同步执行）。
+    RANKING_REFRESH_INTERVAL = timedelta(days=1)
+    RECENT_REFRESH_INTERVAL = timedelta(days=2)
+    MIDDLE_REFRESH_INTERVAL = timedelta(days=7)
 
     def __init__(self, provider: JavdbProvider | None = None):
         self.provider = provider or self._build_javdb_provider()
@@ -77,23 +87,23 @@ class MovieInteractionSyncService:
         *,
         now: datetime,
         ranked_movie_ids: set[int],
-    ) -> timedelta:
-        # 排行榜影片优先按小时刷新，保证榜单上的互动数据更快回刷。
+    ) -> timedelta | None:
+        # 活榜在榜每天刷；ranked_movie_ids 已在 _load_ranked_movie_ids 里剔除静态历史榜。
         if movie.id in ranked_movie_ids:
             return cls.RANKING_REFRESH_INTERVAL
-        if bool(movie.is_subscribed):
-            return cls.SUBSCRIBED_REFRESH_INTERVAL
 
         release_date = cls._normalize_release_date(movie.release_date)
         if release_date is None:
-            return cls.DEFAULT_REFRESH_INTERVAL
+            # 无发布日期无法归档，不落任何周期分层。
+            return None
 
         # 发布时间分层按当前时点滚动判断，未来日期默认归入最近 60 天档。
         if release_date >= now - timedelta(days=60):
             return cls.RECENT_REFRESH_INTERVAL
         if release_date >= now - timedelta(days=180):
             return cls.MIDDLE_REFRESH_INTERVAL
-        return cls.DEFAULT_REFRESH_INTERVAL
+        # 180 天以上且未在活榜的老片不再周期刷，只靠 seed / 订阅补刷 / 手动接口触发。
+        return None
 
     @classmethod
     def _load_last_succeeded_at_by_movie_ids(cls, movie_ids: list[int]) -> dict[int, datetime]:
@@ -120,12 +130,24 @@ class MovieInteractionSyncService:
     def _load_ranked_movie_ids(cls, movie_ids: list[int]) -> set[int]:
         if not movie_ids:
             return set()
-        query = (
-            RankingItem.select(RankingItem.movie)
-            .where(RankingItem.movie.in_(movie_ids))
-            .distinct()
+        # 排除静态历史榜（当前仅 javdb + top250 + 过去年份 period）。这些榜单一旦抓过就永不
+        # 更新，影片留在 RankingItem 里只是归档，不应触发每日互动数刷新。年份集合复用
+        # ranking_service.top250_historical_year_periods()，与该模块历史年份判定同源。
+        from src.service.discovery.ranking_service import top250_historical_year_periods
+
+        historical_periods = top250_historical_year_periods()
+        query = RankingItem.select(RankingItem.movie).where(
+            RankingItem.movie.in_(movie_ids)
         )
-        return {int(movie_id) for (movie_id,) in query.tuples()}
+        if historical_periods:
+            query = query.where(
+                ~(
+                    (RankingItem.source_key == "javdb")
+                    & (RankingItem.board_key == "top250")
+                    & (RankingItem.period.in_(historical_periods))
+                )
+            )
+        return {int(movie_id) for (movie_id,) in query.distinct().tuples()}
 
     @classmethod
     def _is_due_for_sync(
@@ -136,7 +158,17 @@ class MovieInteractionSyncService:
         last_succeeded_at: datetime | None,
         ranked_movie_ids: set[int],
     ) -> bool:
+        # Seed 首次：任何影片首次都刷一次，之后按下面分层决定是否再刷。
         if last_succeeded_at is None:
+            return True
+
+        # 订阅补刷：上次成功之后又发生了订阅动作（首次订阅或重新订阅），补一次。
+        subscribed_at = movie.subscribed_at
+        if (
+            bool(movie.is_subscribed)
+            and subscribed_at is not None
+            and subscribed_at > last_succeeded_at
+        ):
             return True
 
         refresh_interval = cls._resolve_refresh_interval(
@@ -144,11 +176,15 @@ class MovieInteractionSyncService:
             now=now,
             ranked_movie_ids=ranked_movie_ids,
         )
+        # 不在任何分层、也没有待补订阅：seed 后不再自动周期刷。
+        if refresh_interval is None:
+            return False
         return last_succeeded_at + refresh_interval <= now
 
     @classmethod
     def _candidate_query(cls):
-        return Movie.select().order_by(Movie.is_subscribed.desc(), Movie.id.asc())
+        # 分层策略里订阅只在"补刷一次"时进入 candidate，不再是独立分层，无需按订阅优先排序。
+        return Movie.select().order_by(Movie.id.asc())
 
     def _collect_candidates(self, *, now: datetime) -> list[Movie]:
         movies = list(self._candidate_query())
