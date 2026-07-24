@@ -33,13 +33,13 @@ class ActivityBootstrapService:
                 SystemEvent.select(fn.COALESCE(fn.MAX(SystemEvent.id), 0)).scalar()
                 or 0
             )
-            notifications = NotificationService.page_query(
-                NotificationService.build_query(category=notification_category),
+            notifications = NotificationService.page_notifications(
+                NotificationService.build_notification_query(category=notification_category),
                 page=1,
                 page_size=ACTIVITY_BOOTSTRAP_PAGE_SIZE,
             )
-            task_runs = TaskRunService.page_query(
-                TaskRunService.build_query(
+            task_runs = TaskRunService.page_task_runs(
+                TaskRunService.build_task_run_query(
                     state=task_state,
                     task_key=task_key,
                     trigger_type=task_trigger_type,

@@ -32,6 +32,12 @@ TASK_RUN_SORT_FIELDS = {
 }
 
 
+# 序列化/查询入口带 task_run 前缀是刻意的：ActivityService 门面把本类与
+# NotificationService 多继承在一起，base 之间一旦出现同名方法，cls.xxx 就会被 MRO
+# 静默解析到另一侧。名字不撞则 cls. 自引用天然安全，护栏见
+# tests/test_architecture_boundaries.py。
+
+
 def now() -> datetime:
     return utc_now_for_db()
 
@@ -63,7 +69,7 @@ def format_result_text(summary: dict[str, Any] | None) -> str | None:
 
 class TaskRunService:
     @staticmethod
-    def to_resource(task_run: BackgroundTaskRun) -> TaskRunResource:
+    def to_task_run_resource(task_run: BackgroundTaskRun) -> TaskRunResource:
         return TaskRunResource.model_validate(task_run)
 
     @staticmethod
@@ -71,7 +77,7 @@ class TaskRunService:
         return (task_name or "").strip() or TASK_NAME_REGISTRY.get(task_key, task_key)
 
     @classmethod
-    def build_query(
+    def build_task_run_query(
         cls,
         *,
         state: str | None = None,
@@ -107,10 +113,10 @@ class TaskRunService:
         return query.order_by(*order_by)
 
     @classmethod
-    def page_query(cls, query, *, page: int, page_size: int) -> PageResponse[TaskRunResource]:
+    def page_task_runs(cls, query, *, page: int, page_size: int) -> PageResponse[TaskRunResource]:
         total = query.count()
         start = (page - 1) * page_size
-        items = [cls.to_resource(item) for item in query.offset(start).limit(page_size)]
+        items = [cls.to_task_run_resource(item) for item in query.offset(start).limit(page_size)]
         return PageResponse[TaskRunResource](
             items=items, page=page, page_size=page_size, total=total
         )
@@ -147,7 +153,7 @@ class TaskRunService:
             )
             SystemEventService.publish(
                 event_type="task_run_created",
-                payload=cls.to_resource(task_run).model_dump(mode="json"),
+                payload=cls.to_task_run_resource(task_run).model_dump(mode="json"),
                 resource_type="task_run",
                 resource_id=task_run.id,
             )
@@ -164,7 +170,7 @@ class TaskRunService:
             task_run.save()
             SystemEventService.publish(
                 event_type="task_run_updated",
-                payload=cls.to_resource(task_run).model_dump(mode="json"),
+                payload=cls.to_task_run_resource(task_run).model_dump(mode="json"),
                 resource_type="task_run",
                 resource_id=task_run.id,
             )
@@ -194,7 +200,7 @@ class TaskRunService:
             task_run.save()
             SystemEventService.publish(
                 event_type="task_run_updated",
-                payload=cls.to_resource(task_run).model_dump(mode="json"),
+                payload=cls.to_task_run_resource(task_run).model_dump(mode="json"),
                 resource_type="task_run",
                 resource_id=task_run.id,
             )
@@ -220,7 +226,7 @@ class TaskRunService:
             task_run.save()
             SystemEventService.publish(
                 event_type="task_run_updated",
-                payload=cls.to_resource(task_run).model_dump(mode="json"),
+                payload=cls.to_task_run_resource(task_run).model_dump(mode="json"),
                 resource_type="task_run",
                 resource_id=task_run.id,
             )
@@ -248,7 +254,7 @@ class TaskRunService:
             task_run.save()
             SystemEventService.publish(
                 event_type="task_run_updated",
-                payload=cls.to_resource(task_run).model_dump(mode="json"),
+                payload=cls.to_task_run_resource(task_run).model_dump(mode="json"),
                 resource_type="task_run",
                 resource_id=task_run.id,
             )
@@ -338,8 +344,8 @@ class TaskRunService:
         sort: str | None = None,
     ) -> PageResponse[TaskRunResource]:
         validate_page(page, page_size)
-        return cls.page_query(
-            cls.build_query(
+        return cls.page_task_runs(
+            cls.build_task_run_query(
                 state=state,
                 task_key=task_key,
                 trigger_type=trigger_type,
@@ -356,4 +362,4 @@ class TaskRunService:
             .where(BackgroundTaskRun.state.in_(("pending", "running")))
             .order_by(BackgroundTaskRun.started_at.desc(), BackgroundTaskRun.id.desc())
         )
-        return [cls.to_resource(item) for item in query]
+        return [cls.to_task_run_resource(item) for item in query]

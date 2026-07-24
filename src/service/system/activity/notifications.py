@@ -20,6 +20,11 @@ from src.service.system.activity.filters import (
 
 ALLOWED_NOTIFICATION_CATEGORIES = {"reminder", "info", "warning", "error"}
 
+# 序列化/查询入口带 notification 前缀是刻意的：ActivityService 门面把本类与
+# TaskRunService 多继承在一起，base 之间一旦出现同名方法，cls.xxx 就会被 MRO
+# 静默解析到另一侧。名字不撞则 cls. 自引用天然安全，护栏见
+# tests/test_architecture_boundaries.py。
+
 
 @dataclass(frozen=True)
 class NotificationDraft:
@@ -46,7 +51,7 @@ def _detect_failed_summary(summary: dict | None) -> bool:
 
 class NotificationService:
     @staticmethod
-    def to_resource(notification: SystemNotification) -> NotificationResource:
+    def to_notification_resource(notification: SystemNotification) -> NotificationResource:
         return NotificationResource.model_validate(
             {
                 "id": notification.id,
@@ -80,11 +85,13 @@ class NotificationService:
             )
             SystemEventService.publish(
                 event_type="notification_created",
-                payload=cls.to_resource(notification).model_dump(mode="json"),
+                payload=cls.to_notification_resource(notification).model_dump(
+                    mode="json"
+                ),
                 resource_type="notification",
                 resource_id=notification.id,
             )
-            return cls.to_resource(notification)
+            return cls.to_notification_resource(notification)
 
     @classmethod
     def notify_task_result(cls, task_run: BackgroundTaskRun, *, failed: bool) -> None:
@@ -111,7 +118,7 @@ class NotificationService:
         )
 
     @classmethod
-    def build_query(cls, *, category: str | None = None, is_read: bool | None = None):
+    def build_notification_query(cls, *, category: str | None = None, is_read: bool | None = None):
         normalized_category = normalize_allowed_filter(
             category,
             field_name="category",
@@ -127,10 +134,13 @@ class NotificationService:
         return query
 
     @classmethod
-    def page_query(cls, query, *, page: int, page_size: int) -> PageResponse[NotificationResource]:
+    def page_notifications(cls, query, *, page: int, page_size: int) -> PageResponse[NotificationResource]:
         total = query.count()
         start = (page - 1) * page_size
-        items = [cls.to_resource(item) for item in query.offset(start).limit(page_size)]
+        items = [
+            cls.to_notification_resource(item)
+            for item in query.offset(start).limit(page_size)
+        ]
         return PageResponse[NotificationResource](
             items=items, page=page, page_size=page_size, total=total
         )
@@ -145,8 +155,8 @@ class NotificationService:
         is_read: bool | None = None,
     ) -> PageResponse[NotificationResource]:
         validate_page(page, page_size)
-        return cls.page_query(
-            cls.build_query(category=category, is_read=is_read),
+        return cls.page_notifications(
+            cls.build_notification_query(category=category, is_read=is_read),
             page=page,
             page_size=page_size,
         )
@@ -179,7 +189,9 @@ class NotificationService:
                 notification.save()
                 SystemEventService.publish(
                     event_type="notification_updated",
-                    payload=cls.to_resource(notification).model_dump(mode="json"),
+                    payload=cls.to_notification_resource(notification).model_dump(
+                        mode="json"
+                    ),
                     resource_type="notification",
                     resource_id=notification.id,
                 )
