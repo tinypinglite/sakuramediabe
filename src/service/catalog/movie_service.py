@@ -57,6 +57,8 @@ from src.schema.catalog.movies import (
     TagMatchMode,
     MovieNumberParseResponse,
     MovieReviewSort,
+    MovieSubscriptionBatchResponse,
+    MovieSubscriptionSkippedItem,
     TagResource,
 )
 from src.schema.common.pagination import PageResponse
@@ -66,6 +68,10 @@ from src.service.collections import PlaylistService
 
 class MovieService:
     """聚合 Movie 相关查询、详情拼装和本地状态流转。"""
+
+    # 批量订阅/取消订阅的跳过原因，前端按 movie_number 标注本次未处理的选择项。
+    SUBSCRIPTION_SKIP_MOVIE_NOT_FOUND = "movie_not_found"
+    SUBSCRIPTION_SKIP_HAS_MEDIA = "has_media"
 
     MOVIE_LIST_NULLABLE_SORT_FIELDS = {"release_date", "subscribed_at"}
     MOVIE_LIST_SORT_FIELD_MAP = {
@@ -760,3 +766,126 @@ class MovieService:
         movie.is_subscribed = False
         movie.subscribed_at = None
         movie.save()
+
+    @staticmethod
+    def _dedup_normalized_movie_numbers(
+        movie_numbers: List[str],
+    ) -> tuple[list[str], dict[str, str]]:
+        """把批量入参归一化去重，返回有序归一化编号列表和 归一化编号->原始展示编号 的映射。"""
+        ordered_numbers: list[str] = []
+        display_by_normalized: dict[str, str] = {}
+        for movie_number in movie_numbers:
+            normalized = normalize_movie_number(movie_number)
+            if not normalized or normalized in display_by_normalized:
+                continue
+            display_by_normalized[normalized] = movie_number
+            ordered_numbers.append(normalized)
+        return ordered_numbers, display_by_normalized
+
+    @classmethod
+    def batch_set_subscription(
+        cls, movie_numbers: List[str]
+    ) -> MovieSubscriptionBatchResponse:
+        # 批量订阅：逐条判定、部分成功，未命中番号进 skipped，不整批回滚。
+        requested_count = len(movie_numbers)
+        ordered_numbers, display_by_normalized = cls._dedup_normalized_movie_numbers(
+            movie_numbers
+        )
+        if not ordered_numbers:
+            return MovieSubscriptionBatchResponse(
+                requested_count=requested_count, updated_count=0
+            )
+
+        matched_movies = list(
+            Movie.select().where(
+                cls._normalized_movie_number_expression().in_(ordered_numbers)
+            )
+        )
+        matched_normalized = {
+            normalize_movie_number(movie.movie_number) for movie in matched_movies
+        }
+        skipped = [
+            MovieSubscriptionSkippedItem(
+                movie_number=display_by_normalized[normalized],
+                reason=cls.SUBSCRIPTION_SKIP_MOVIE_NOT_FOUND,
+            )
+            for normalized in ordered_numbers
+            if normalized not in matched_normalized
+        ]
+
+        for movie in matched_movies:
+            # 与单条 set_subscription(True) 一致：仅在原本未订阅或订阅时间为空时写入当前时间。
+            was_subscribed = bool(movie.is_subscribed)
+            movie.is_subscribed = True
+            if not was_subscribed or movie.subscribed_at is None:
+                movie.subscribed_at = utc_now_for_db()
+            movie.save()
+
+        return MovieSubscriptionBatchResponse(
+            requested_count=requested_count,
+            updated_count=len(matched_movies),
+            skipped_count=len(skipped),
+            skipped=skipped,
+        )
+
+    @classmethod
+    def batch_unsubscribe_movies(
+        cls, movie_numbers: List[str]
+    ) -> MovieSubscriptionBatchResponse:
+        # 批量取消订阅：存在本地媒体的影片按部分成功语义跳过（has_media），不报错也不回滚。
+        requested_count = len(movie_numbers)
+        ordered_numbers, display_by_normalized = cls._dedup_normalized_movie_numbers(
+            movie_numbers
+        )
+        if not ordered_numbers:
+            return MovieSubscriptionBatchResponse(
+                requested_count=requested_count, updated_count=0
+            )
+
+        matched_movies = list(
+            Movie.select().where(
+                cls._normalized_movie_number_expression().in_(ordered_numbers)
+            )
+        )
+        matched_normalized = {
+            normalize_movie_number(movie.movie_number) for movie in matched_movies
+        }
+        skipped = [
+            MovieSubscriptionSkippedItem(
+                movie_number=display_by_normalized[normalized],
+                reason=cls.SUBSCRIPTION_SKIP_MOVIE_NOT_FOUND,
+            )
+            for normalized in ordered_numbers
+            if normalized not in matched_normalized
+        ]
+
+        # 一次聚合查询拿到"有本地媒体"的影片 id 集合，避免逐条 _list_movie_media 的 N+1。
+        matched_ids = [movie.id for movie in matched_movies]
+        movies_with_media = {
+            media.movie_id
+            for media in Media.select(Media.movie)
+            .where(Media.movie.in_(matched_ids))
+            .distinct()
+        }
+
+        updated_count = 0
+        for movie in matched_movies:
+            if movie.id in movies_with_media:
+                skipped.append(
+                    MovieSubscriptionSkippedItem(
+                        movie_number=movie.movie_number,
+                        reason=cls.SUBSCRIPTION_SKIP_HAS_MEDIA,
+                    )
+                )
+                continue
+            movie.is_subscribed = False
+            movie.subscribed_at = None
+            movie.save()
+            updated_count += 1
+
+        return MovieSubscriptionBatchResponse(
+            requested_count=requested_count,
+            updated_count=updated_count,
+            skipped_count=len(skipped),
+            skipped=skipped,
+        )

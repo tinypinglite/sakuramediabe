@@ -186,6 +186,8 @@
 | `POST` | `/movies/by-series` | 按本地系列 ID 分页查询影片 |
 | `PUT` | `/movies/{movie_number}/subscription` | 订阅影片（单条） |
 | `DELETE` | `/movies/{movie_number}/subscription` | 取消订阅影片 |
+| `POST` | `/movies/subscriptions` | 批量订阅影片（部分成功） |
+| `POST` | `/movies/unsubscriptions` | 批量取消订阅影片（部分成功） |
 | `GET` | `/movies/{movie_number}` | 查询影片详情 |
 
 ## 详细接口定义
@@ -1086,6 +1088,64 @@ Authorization: Bearer <token>
 
 - `404 movie_not_found`：影片不存在
 - `409 movie_subscription_has_media`：影片存在媒体文件，无法取消订阅
+
+### `POST /movies/subscriptions`
+
+- 鉴权：需要 Bearer Token
+- 请求体：
+  - `movie_numbers`：番号数组（至少 1 项，逐项去空白，禁止空串）
+- 行为：
+  - 番号归一化后去重，逐条判定，采用**部分成功**语义，整体返回 `200`，不因个别条目失败而整批回滚
+  - 命中的影片按与单条订阅一致的逻辑置为已订阅：仅在原本未订阅或 `subscribed_at` 为空时写入当前订阅时间，否则保留原值
+  - 未在库内命中的番号进入 `skipped`，`reason=movie_not_found`
+- 成功响应：`200 OK`
+
+```json
+{
+  "requested_count": 2,
+  "updated_count": 1,
+  "skipped_count": 1,
+  "skipped": [
+    { "movie_number": "NOT-EXIST-999", "reason": "movie_not_found" }
+  ]
+}
+```
+
+字段说明：
+
+- `requested_count`：入参番号总数（去重前）
+- `updated_count`：实际置为已订阅的影片条数
+- `skipped_count` / `skipped`：本次未处理的条目及原因，`reason` 取值 `movie_not_found`
+
+### `POST /movies/unsubscriptions`
+
+- 鉴权：需要 Bearer Token
+- 请求体：
+  - `movie_numbers`：番号数组（至少 1 项，逐项去空白，禁止空串）
+- 行为：
+  - 番号归一化后去重，逐条判定，采用**部分成功**语义，整体返回 `200`，不因个别条目失败而整批回滚
+  - 命中且没有任何关联 `media` 记录的影片直接取消订阅（`is_subscribed=false`、`subscribed_at=null`）
+  - 命中但存在关联 `media` 记录的影片被**跳过**（进入 `skipped`，`reason=has_media`），不报错也不修改，与单条端点"存在媒体文件拒绝取消"语义一致
+  - 未在库内命中的番号进入 `skipped`，`reason=movie_not_found`
+- 成功响应：`200 OK`
+
+```json
+{
+  "requested_count": 3,
+  "updated_count": 1,
+  "skipped_count": 2,
+  "skipped": [
+    { "movie_number": "ABP-124", "reason": "has_media" },
+    { "movie_number": "NOT-EXIST-999", "reason": "movie_not_found" }
+  ]
+}
+```
+
+字段说明：
+
+- `requested_count`：入参番号总数（去重前）
+- `updated_count`：实际取消订阅的影片条数
+- `skipped_count` / `skipped`：本次未处理的条目及原因，`reason` 取值 `movie_not_found` | `has_media`
 
 ### `GET /movies/{movie_number}`
 

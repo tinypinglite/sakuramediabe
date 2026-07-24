@@ -24,6 +24,8 @@ from src.schema.catalog.movies import (
     MovieReviewSort,
     MovieSeriesListRequest,
     MovieSpecialTagFilter,
+    MovieSubscriptionBatchRequest,
+    MovieSubscriptionBatchResponse,
     SimilarMovieListItemResource,
     TagMatchMode,
 )
@@ -132,6 +134,16 @@ def mark_movie_collection_type(payload: MovieCollectionMarkRequest):
         movie_numbers=payload.movie_numbers,
         collection_type=payload.collection_type,
     )
+
+
+@router.post("/subscriptions", response_model=MovieSubscriptionBatchResponse)
+def batch_subscribe_movies(payload: MovieSubscriptionBatchRequest):
+    return MovieService.batch_set_subscription(payload.movie_numbers)
+
+
+@router.post("/unsubscriptions", response_model=MovieSubscriptionBatchResponse)
+def batch_unsubscribe_movies(payload: MovieSubscriptionBatchRequest):
+    return MovieService.batch_unsubscribe_movies(payload.movie_numbers)
 
 
 @router.get("/{movie_number}/reviews", response_model=List[JavdbMovieReviewResource])

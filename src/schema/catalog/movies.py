@@ -249,3 +249,30 @@ class MovieCollectionMarkResponse(SchemaModel):
 class MovieCollectionStatusResource(SchemaModel):
     movie_number: str
     is_collection: bool
+
+
+class MovieSubscriptionBatchRequest(SchemaModel):
+    movie_numbers: list[str] = Field(min_length=1)
+
+    @field_validator("movie_numbers")
+    @classmethod
+    def validate_movie_numbers(cls, value: list[str]) -> list[str]:
+        validated_numbers: list[str] = []
+        for movie_number in value:
+            normalized = (movie_number or "").strip()
+            if not normalized:
+                raise ValueError("movie_numbers item cannot be blank")
+            validated_numbers.append(normalized)
+        return validated_numbers
+
+
+class MovieSubscriptionSkippedItem(SchemaModel):
+    movie_number: str
+    reason: str
+
+
+class MovieSubscriptionBatchResponse(SchemaModel):
+    requested_count: int
+    updated_count: int
+    skipped_count: int = 0
+    skipped: list[MovieSubscriptionSkippedItem] = Field(default_factory=list)
