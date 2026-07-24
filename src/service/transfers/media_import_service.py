@@ -36,6 +36,7 @@ from src.common.media_import_status import (
     FAILURE_REASON_METADATA_FETCH_FAILED,
     FAILURE_REASON_METADATA_UPSERT_FAILED,
     FAILURE_REASON_MULTI_PART_MERGE_FAILED,
+    FAILURE_REASON_NO_MEDIA_FILES_FOUND,
     FAILURE_REASON_RETRY_SOURCES_MISSING,
     IMPORT_JOB_STATE_COMPLETED,
     IMPORT_JOB_STATE_FAILED,
@@ -329,16 +330,27 @@ class MediaImportService:
                 grouped_skipped_count,
                 grouped_failed_count,
             )
-            # 子集重导若选中的源文件全部缺失（如已被清理/移动），不应静默判 completed，记任务级失败。
+            # 子集重导源文件全部缺失，或下载任务目录完全没有媒体候选时，
+            # 都不能静默判 completed，否则下载页会显示“已导入”但媒体库没有任何记录。
             if (
-                only_file_set is not None
+                (only_file_set is not None or download_task is not None)
                 and not grouped_files
                 and grouped_skipped_count == 0
                 and grouped_failed_count == 0
             ):
                 failed_count += 1
+                failure_reason = (
+                    FAILURE_REASON_RETRY_SOURCES_MISSING
+                    if only_file_set is not None
+                    else FAILURE_REASON_NO_MEDIA_FILES_FOUND
+                )
+                failure_detail = (
+                    "待重导的源文件均已不存在"
+                    if only_file_set is not None
+                    else "下载目录中没有扫描到可导入的视频"
+                )
                 failure_items.append(
-                    make_failure_item(source_entry, FAILURE_REASON_RETRY_SOURCES_MISSING, "待重导的源文件均已不存在")
+                    make_failure_item(source_entry, failure_reason, failure_detail)
                 )
             total_movie_numbers = len(grouped_files)
             completed_movie_numbers = 0
