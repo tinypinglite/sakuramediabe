@@ -44,13 +44,27 @@
 - 仅处理 `is_subscribed = true` 的影片
 - 仅处理不存在有效 `Media` 且不存在任何 `DownloadTask` 记录的影片
 - 使用 Jackett 搜索 PT 与 BT 候选资源
-- 默认采用 `4K > PT > 中字 > seeders > size_bytes` 的优先级选种
+- 选种优先级随 `downloads.preferred_client_kinds` 的**首项**切换两套策略（见下）
 - 复用 `POST /download-requests` 对应的 service 提交下载，不新增 API
+
+选种策略：
+
+| 首选下载器 | 候选池 | 池内优先级 | 做种人数门槛 |
+|---|---|---|---|
+| `qbittorrent`（默认） | 全部可用候选 | `4K > PT > 中字 > seeders > size_bytes` | 全部候选要求 `seeders >= 3` |
+| `cloud115` | 先取 BT 候选池，**池为空才回落**到含 PT 的全池 | `4K > 中字 > seeders > size_bytes` | BT 候选不校验；PT 候选仍要求 `seeders >= 3` |
+
+115 优先时 PT 降为兜底的原因：PT 索引器在 `/indexer-settings` 写入侧就被禁止绑定 115 下载入口
+（`pt_indexer_cloud115_binding_unsupported`），因此 PT 候选必然落到本地 qBittorrent，与「内容进网盘」的意图相悖。
+BT 候选免除做种门槛则是因为 115 离线属云端拉取，本地做种数无参考意义，且部分 Jackett 索引器根本不返回 `seeders`（恒为 0）。
+
+BT/PT 分层在 4K 分层**之外**：115 优先且「PT 有 4K、BT 只有普通版」时仍然选 BT。
 
 说明：
 
 - 这里的下载候选 `4K` 标签仍然来自远端标题或索引器返回信息
 - 它和本地 `media.special_tags` 的 `4K` 不是同一套规则；本地媒体侧的 `4K` 来自真实视频流解析
+- `downloads` 配置节的生效档位是 `restart_scheduler`，改完 `preferred_client_kinds` 需重启 aps 进程才对本任务生效
 
 依赖前提：
 
