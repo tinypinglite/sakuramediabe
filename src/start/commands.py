@@ -23,6 +23,12 @@ from src.scheduler.progress import TqdmProgressAdapter
 from src.scheduler.registry import JOB_REGISTRY
 from src.schema.playback.media_libraries import MediaLibraryCreateRequest
 from src.service.catalog import MovieThinCoverBackfillService
+from src.service.catalog.movie_asset_shard_migration_service import (
+    MovieAssetShardMigrationService,
+)
+from src.service.catalog.movie_subtitle_unify_migration_service import (
+    MovieSubtitleUnifyMigrationService,
+)
 from src.service.catalog.plot_layout_migration_service import PlotLayoutMigrationService
 from src.service.catalog.movie_desc_translation_client import (
     MovieDescTranslationClient,
@@ -758,6 +764,65 @@ def migrate_plot_layout(dry_run: bool):
     logger.info("CLI migrate-plot-layout finished dry_run={} stats={}", dry_run, payload)
     click.echo(
         "plot layout migrate finished "
+        f"(dry_run={str(dry_run).lower()}): {payload}"
+    )
+
+
+@main.command(name="migrate-movie-asset-shard")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="只统计不改任何东西，用于升级前预览规模。")
+def migrate_movie_asset_shard(dry_run: bool):
+    """把影片资产从 movies/<番号>/ 分片成 movies/<sha1(番号)[:2]>/<番号>/。
+
+    两阶段（整目录 rename 归片 + image.origin 前缀批量重写），Ctrl+C / crash 后重跑可自动收敛：
+    已归片的目录不再出现在 movies/ 顶层天然跳过，DB 侧只重写老布局行。
+    """
+    logger.info("CLI migrate-movie-asset-shard start dry_run={}", dry_run)
+    _ensure_database_ready()
+
+    def _progress(phase: str, current: int, total: int) -> None:
+        # 目录阶段 total 未知（-1，边扫边搬），image 阶段有确切总量；两阶段都节流打点。
+        step = 50
+        if current % step == 0:
+            click.echo(f"  {phase} {current}/{total}", err=True)
+
+    stats = MovieAssetShardMigrationService.run(
+        dry_run=dry_run,
+        progress_callback=_progress,
+    )
+    payload = stats.to_dict()
+    logger.info("CLI migrate-movie-asset-shard finished dry_run={} stats={}", dry_run, payload)
+    click.echo(
+        "movie asset shard migrate finished "
+        f"(dry_run={str(dry_run).lower()}): {payload}"
+    )
+
+
+@main.command(name="migrate-movie-subtitles")
+@click.option("--dry-run", is_flag=True, default=False,
+              help="只统计不改任何东西，用于升级前预览规模。")
+def migrate_movie_subtitles(dry_run: bool):
+    """把字幕从媒体库 sidecar 与旧字幕根统一收敛到 movies/<shard>/<番号>/subtitles/。
+
+    单文件 3 步（link/copy -> UPDATE file_path -> unlink old），subtitle.file_path 单条 UPDATE
+    是原子提交点，Ctrl+C / crash 后重跑可自动收敛。建议在 migrate-movie-asset-shard 之后运行。
+    """
+    logger.info("CLI migrate-movie-subtitles start dry_run={}", dry_run)
+    _ensure_database_ready()
+
+    def _progress(current: int, total: int) -> None:
+        # 字幕表规模远小于 image，节流粒度更细。
+        if current % 50 == 0 or current == total:
+            click.echo(f"  {current}/{total}", err=True)
+
+    stats = MovieSubtitleUnifyMigrationService.run(
+        dry_run=dry_run,
+        progress_callback=_progress,
+    )
+    payload = stats.to_dict()
+    logger.info("CLI migrate-movie-subtitles finished dry_run={} stats={}", dry_run, payload)
+    click.echo(
+        "movie subtitle unify migrate finished "
         f"(dry_run={str(dry_run).lower()}): {payload}"
     )
 

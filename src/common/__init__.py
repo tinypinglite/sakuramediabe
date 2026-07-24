@@ -19,6 +19,7 @@ from .movie_numbers import (
     parse_movie_number_from_path,
     parse_movie_number_from_text,
     remove_disturb,
+    subtitle_matches_movie_number,
 )
 from .runtime_time import (
     get_runtime_timezone,
@@ -45,6 +46,7 @@ __all__ = [
     "parse_external_datetime",
     "parse_movie_number_from_path",
     "parse_movie_number_from_text",
+    "subtitle_matches_movie_number",
     "resolve_image_file_path",
     "resolve_media_clip_file_path",
     "resolve_media_file_path",

@@ -3,7 +3,12 @@ from pathlib import Path
 from loguru import logger
 from PIL import Image as PILImage
 
-from src.common.media_paths import media_image_root_path
+from src.common.media_paths import (
+    MOVIE_MEDIA_SUBDIR,
+    media_image_root_path,
+    movie_asset_relative_dir,
+    normalize_asset_dir_name,
+)
 from src.model import Image, Media, MediaThumbnail, get_database
 from src.schema.catalog.actors import ImageResource
 from src.schema.playback.media import MediaThumbnailResource
@@ -12,15 +17,16 @@ from src.schema.playback.media import MediaThumbnailResource
 class ThumbnailArtifactService:
     @staticmethod
     def thumbnail_directory(media: Media) -> Path:
+        # JAV 走分片番号目录，videos 域仍按自增 id 平铺（量级远低于番号，不需要分片）。
         namespace = (
-            Path("movies") / media.movie_number
+            Path(movie_asset_relative_dir(normalize_asset_dir_name(media.movie_number)))
             if media.movie_number
             else Path("videos") / str(media.video_item_id)
         )
         return (
             media_image_root_path()
             / namespace
-            / "media"
+            / MOVIE_MEDIA_SUBDIR
             / media.content_fingerprint
             / "thumbnails"
         )

@@ -4,9 +4,10 @@ from pathlib import Path
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_subtitle_url
-from src.common.subtitle_paths import ensure_movie_subtitle_path
+from src.common.media_paths import movie_subtitle_dir
+from src.common.subtitle_paths import ensure_movie_subtitle_path, iter_movie_sidecar_roots
 from src.common.service_helpers import require_record
-from src.model import Media, Movie, Subtitle
+from src.model import Movie, Subtitle
 from src.schema.catalog.subtitles import MovieSubtitleItemResource, MovieSubtitleListResource
 
 
@@ -29,7 +30,7 @@ class MovieSubtitleService:
 
     @classmethod
     def sync_movie_subtitles(cls, movie: Movie) -> dict[str, int]:
-        discovered_paths = cls._discover_sidecar_subtitle_paths(movie)
+        discovered_paths = cls._discover_subtitle_paths(movie)
         existing_items = list(cls._subtitle_query(movie))
         existing_by_path: dict[str, Subtitle] = {}
         deleted_count = 0
@@ -91,24 +92,24 @@ class MovieSubtitleService:
         return items
 
     @classmethod
-    def _discover_sidecar_subtitle_paths(cls, movie: Movie) -> list[Path]:
+    def _discover_subtitle_paths(cls, movie: Movie) -> list[Path]:
+        """扫描该影片所有合法字幕位置，兼容新老布局（迁移可选，不迁移也能读到）。
+
+        - 新布局：统一目录 ``movies/<shard>/<番号>/subtitles/``（新导入与迁移后的落点），
+          字幕不跟随具体 Media 文件，媒体文件失效也不影响这里的字幕。
+        - 老布局：媒体库里视频所在的版本目录 sidecar（老用户未迁移时字幕仍在这里）。
+        115 旧字幕根下的字幕在导入时已登记为 Subtitle 行、由 ensure_movie_subtitle_path 放行，
+        无需在这里重复扫盘。
+        """
+        scan_roots: list[Path] = [movie_subtitle_dir(movie.movie_number)]
+        scan_roots.extend(iter_movie_sidecar_roots(movie))
+
         discovered_paths: list[Path] = []
         seen_paths: set[str] = set()
-        # cloud115 等云盘 Media 的 path 为 NULL（其字幕直接落 subtitle_root 并由导入侧登记），
-        # sidecar 扫描只对有本地路径的行有意义。
-        media_items = (
-            Media.select(Media)
-            .where(Media.movie == movie, Media.path.is_null(False))
-            .order_by(Media.id.asc())
-        )
-        for media in media_items:
-            media_path = Path(media.path).expanduser().resolve()
-            if not media_path.exists() or not media_path.is_file():
+        for scan_root in scan_roots:
+            if not scan_root.is_dir():
                 continue
-            media_directory = media_path.parent
-            if not media_directory.exists() or not media_directory.is_dir():
-                continue
-            for subtitle_path in sorted(media_directory.iterdir(), key=lambda item: item.name.lower()):
+            for subtitle_path in sorted(scan_root.iterdir(), key=lambda item: item.name.lower()):
                 if not subtitle_path.is_file() or subtitle_path.suffix.lower() != ".srt":
                     continue
                 try:

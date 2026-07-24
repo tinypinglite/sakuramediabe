@@ -44,6 +44,8 @@ chown_if_mismatch() {
 }
 
 bootstrap_data_dirs() {
+    # cache/subtitles 是 legacy 目录：字幕已统一到 cache/assets/movies/<shard>/<番号>/subtitles/。
+    # 这里仍然建目录并归属，是因为 migrate-movie-subtitles CLI 迁移后要 unlink 旧目录里已搬走的字幕文件，需要写权限。
     mkdir -p \
         "${DATA_ROOT}/config" \
         "${DATA_ROOT}/cache/assets" \

@@ -14,7 +14,7 @@ from typing import Dict, List, Literal, Tuple
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
-from src.common import parse_movie_number_from_path
+from src.common import parse_movie_number_from_path, subtitle_matches_movie_number
 from src.common.content_fingerprint import compute_content_fingerprint
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 # 导入状态/失败原因的取值统一收口到 media_import_status 模块。
@@ -161,16 +161,21 @@ def iter_source_paths(source_entry: Path, *, excluded_library_roots: List[Path])
     return candidate_paths
 
 
-def find_sidecar_subtitle(source_video_path: Path) -> Path | None:
-    """查找与视频同名的 .srt 字幕 sidecar 文件。"""
+def find_sidecar_subtitle(source_video_path: Path, movie_number: str) -> Path | None:
+    """在视频所在目录里找一份属于该番号的 .srt 字幕。
+
+    配对规则改为纯番号匹配：从字幕文件名解析番号，解析出且与影片番号一致才算配对，
+    不再依赖与视频同名（``ABP-123.chs.srt`` 这类带修饰的字幕也能配上）。
+    目录内按文件名小写排序取第一个命中的字幕，保证结果确定。
+    """
     source_directory = source_video_path.parent
-    source_stem = source_video_path.stem
     for path in sorted(source_directory.iterdir(), key=lambda item: item.name.lower()):
         if not path.is_file():
             continue
-        if path.stem != source_stem or path.suffix.lower() != ".srt":
+        if path.suffix.lower() != ".srt":
             continue
-        return path
+        if subtitle_matches_movie_number(path.name, movie_number):
+            return path
     return None
 
 
@@ -274,7 +279,7 @@ def scan_source_files(
                 failed_count += on_duplicate_source_paths([path])
             continue
 
-        subtitle_path = find_sidecar_subtitle(path)
+        subtitle_path = find_sidecar_subtitle(path, movie_number)
         if movie_number not in grouped_candidates:
             grouped_candidates[movie_number] = []
         grouped_candidates[movie_number].append(

@@ -17,6 +17,7 @@ from src.common.media_import_status import (
     FAILURE_REASON_MERGE_SUBTITLE_SKIPPED_MULTIPLE_SIDECARS,
     make_failure_item,
 )
+from src.common.media_paths import movie_subtitle_dir
 from src.common.runtime_time import utc_now_for_db
 from src.model import Media, MediaLibrary, Movie
 from src.service.catalog.movie_subtitle_service import MovieSubtitleService
@@ -36,7 +37,6 @@ from src.service.transfers.media_source_scanner import (
     build_group_content_fingerprint,
     existing_media_file_exists,
     find_media_by_content_fingerprint,
-    find_sidecar_subtitle,
 )
 from src.service.transfers.tag_rules import build_media_special_tags
 
@@ -81,7 +81,12 @@ def import_single_scanned_file(
         transfer_mode=transfer_mode,
         now_ms=now_ms,
     )
-    _import_sidecar_subtitle(file_entry.path, target_path, transfer_mode=transfer_mode)
+    _import_sidecar_subtitle(
+        file_entry.subtitle_path,
+        target_path,
+        movie_number=movie.movie_number,
+        transfer_mode=transfer_mode,
+    )
     file_size = file_entry.path.stat().st_size
     upsert_media(
         movie=movie,
@@ -153,7 +158,7 @@ def import_vr_media_group(
     if subtitle_path is not None:
         transfer_file(
             subtitle_path,
-            target_path.with_suffix(IMPORTED_SIDECAR_SUBTITLE_EXTENSION),
+            prepare_movie_subtitle_target_path(movie.movie_number, target_path),
             transfer_mode=transfer_mode,
         )
     elif multiple_subtitles:
@@ -287,17 +292,31 @@ def _import_single_media_file(
     return storage_mode, target_path
 
 
+def prepare_movie_subtitle_target_path(movie_number: str, target_video_path: Path) -> Path:
+    """字幕统一落 ``movies/<shard>/<番号>/subtitles/<版本目录名>.srt``。
+
+    文件名取媒体库版本目录名（导入时间戳，同番号内唯一），保证同一部影片多次导入的
+    字幕不会互相覆盖，也不依赖媒体文件本身是否还在。
+    """
+    subtitle_directory = movie_subtitle_dir(movie_number)
+    subtitle_directory.mkdir(parents=True, exist_ok=True)
+    version_name = target_video_path.parent.name
+    return subtitle_directory / f"{version_name}{IMPORTED_SIDECAR_SUBTITLE_EXTENSION}"
+
+
 def _import_sidecar_subtitle(
-    source_video_path: Path,
+    subtitle_source_path: Path | None,
     target_video_path: Path,
     *,
+    movie_number: str,
     transfer_mode: ImportTransferMode,
 ) -> None:
-    subtitle_path = find_sidecar_subtitle(source_video_path)
-    if subtitle_path is None:
+    # 扫描阶段已按番号匹配好该文件的字幕并缓存到 ScannedSourceFile.subtitle_path，
+    # 这里直接复用，不再重复扫盘（避免与 scanner 口径不一致）。
+    if subtitle_source_path is None:
         return
-    target_subtitle_path = target_video_path.with_suffix(IMPORTED_SIDECAR_SUBTITLE_EXTENSION)
-    transfer_file(subtitle_path, target_subtitle_path, transfer_mode=transfer_mode)
+    target_subtitle_path = prepare_movie_subtitle_target_path(movie_number, target_video_path)
+    transfer_file(subtitle_source_path, target_subtitle_path, transfer_mode=transfer_mode)
 
 
 def select_group_subtitle(group: ImportGroup) -> Tuple[Path | None, bool]:

@@ -1015,6 +1015,23 @@ Authorization: Bearer <token>
   - 字幕下载地址使用 `subtitle_id` 签名协议，不再使用 `media_id + file_name`
   - 只读已存在的字幕记录，不再暴露后台抓取状态
 
+存储位置：**新导入**的字幕统一落在 `<图片根>/movies/{shard}/{番号}/subtitles/`，本地导入与 115 导入共用
+同一目录。新布局下字幕**跟番号走**而不跟具体 Media 文件走：媒体文件被删除或失效不会连带清掉字幕。
+
+**向后兼容（迁移可选）**：老用户即使不跑 `migrate-movie-subtitles`，存量字幕也照常可读——运行时同时放行
+新布局与两处老位置：115 旧字幕根 `<旧字幕根>/{番号}/`、以及媒体库里视频所在版本目录的 sidecar `.srt`。
+合法路径边界与扫盘发现分别由 `src/common/subtitle_paths.py` 的 `ensure_movie_subtitle_path()`
+与 `MovieSubtitleService._discover_subtitle_paths()` 收口，二者都覆盖上述三处根。迁移只是把存量整理到新布局
+的可选操作，不是硬性前置。
+
+文件命名：本地导入取媒体库版本目录名（导入时间戳，同番号内唯一），避免同一部影片多次导入的字幕互相
+覆盖；115 导入沿用已带 fid 去重的编码文件名。
+
+导入配对：字幕与视频的配对走**纯番号匹配**——在视频同目录内从字幕文件名解析番号，解析出且与影片番号
+一致才配对（不再要求与视频同名），`ABP-123.chs.srt` 等带修饰后缀的字幕也能配上；文件名解析不出番号的
+字幕（如 `01.srt`）不纳管。判定收口在 `src/common/movie_numbers.py` 的 `subtitle_matches_movie_number()`，
+本地与 115 两条导入路共用。
+
 示例请求：
 
 ```http

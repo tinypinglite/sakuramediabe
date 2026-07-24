@@ -2,8 +2,8 @@
 
 与本地 ``MediaImportService.import_from_source`` 对称的云端版本：用户指定 115 源目录
 （cid），管线把其中的 JAV 视频复制进库管理目录 ``sakuramedia/jav/``（copy 或
-cleanup-source），字幕 ``.srt`` 下载到本地 ``subtitle_root/{番号}/``，最后登记 Media（path 为空、
-backend_locator 定位）。
+cleanup-source），字幕 ``.srt`` 下载到本地 ``movies/<shard>/{番号}/subtitles/``，最后登记 Media
+（path 为空、backend_locator 定位）。
 
 与本地管线的关键差异（依据 docs/development/cloud115-integration-notes.md）：
 - 云端结构扁平：文件直接落 ``jav/``，不建番号目录/版本目录；Media 定位靠 pickcode，
@@ -28,7 +28,7 @@ from typing import Callable, Dict, List, NamedTuple
 
 from loguru import logger
 
-from src.common import parse_movie_number_from_path
+from src.common import parse_movie_number_from_path, subtitle_matches_movie_number
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.common.media_import_status import (
     FAILURE_REASON_CLOUD115_FILE_CENSORED,
@@ -49,7 +49,7 @@ from src.common.media_import_status import (
     make_failure_item,
 )
 from src.common.runtime_time import utc_now_for_db
-from src.common.subtitle_paths import movie_subtitle_root_path
+from src.common.media_paths import movie_subtitle_dir
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115Client, DirEntry
 from src.model import ImportJob, Media, MediaLibrary, Movie, Subtitle, get_database
@@ -116,6 +116,8 @@ class CloudSourceFile:
     rel_dir_parts: tuple[str, ...]
     # 所在父目录 cid：字幕 sidecar 配对按同目录匹配。
     parent_cid: str = ""
+    # 番号识别结果：配对与分组共用，避免重复解析（videos 域复用本 dataclass 时保持空串）。
+    movie_number: str = ""
     subtitle: CloudSubtitleFile | None = None
 
     @property
@@ -519,21 +521,34 @@ class Cloud115ImportService:
                 )
             )
 
-        # 字幕 sidecar 配对：同目录 + stem 相同或 "stem." 前缀（与本地扫描规则一致）。
+        # 番号识别前置：配对与分组共用识别结果，避免重复解析。
+        # 喂「源目录名/相对路径」，识别函数取最后两级（覆盖番号在目录名的情形）。
         for video in videos:
-            video_stem = video.name.rsplit(".", 1)[0].lower()
-            for candidate in subtitles_by_dir.get(video.parent_cid, []):
-                candidate_stem = candidate.name.rsplit(".", 1)[0].lower()
-                if candidate_stem == video_stem or candidate_stem.startswith(f"{video_stem}."):
+            video.movie_number = parse_movie_number_from_path(
+                "/".join([source_name, video.rel_path])
+            )
+
+        # 字幕 sidecar 配对：同父目录 + 字幕文件名解析番号与视频番号一致才算配对。
+        # 与本地扫描统一到纯番号匹配；番号识别不出的视频无从比对，跳过配对。
+        # 同目录多份字幕命中同一番号（如 .chs/.cht）时，按文件名小写排序取第一份，
+        # 与本地 find_sidecar_subtitle 保持一致的确定性，不依赖 115 列目录顺序。
+        for video in videos:
+            if not video.movie_number:
+                continue
+            candidates = sorted(
+                subtitles_by_dir.get(video.parent_cid, []),
+                key=lambda item: item.name.lower(),
+            )
+            for candidate in candidates:
+                if subtitle_matches_movie_number(candidate.name, video.movie_number):
                     video.subtitle = candidate
                     break
 
-        # 番号识别：喂「源目录名/相对路径」，识别函数取最后两级（覆盖番号在目录名的情形）。
+        # 分组：复用上面识别好的番号，番号解析不出的计入失败清单。
         grouped: Dict[str, CloudImportGroup] = {}
         seen_sha1: set[str] = set()
         for video in videos:
-            recognition_input = "/".join([source_name, video.rel_path])
-            movie_number = parse_movie_number_from_path(recognition_input)
+            movie_number = video.movie_number
             if not movie_number:
                 failed_count += 1
                 failure_items.append(
@@ -1036,13 +1051,13 @@ class Cloud115ImportService:
         cloud_file: CloudSourceFile,
         encoded_name: str,
     ) -> None:
-        """把配对的 .srt 下载到 subtitle_root/{番号}/ 并登记 Subtitle。
+        """把配对的 .srt 下载到 movies/<shard>/{番号}/subtitles/ 并登记 Subtitle。
 
         字幕不复制到 115（库子树只存影片文件）；删除源字幕由整组成功后的清源阶段统一处理。
         """
         subtitle = cloud_file.subtitle
         assert subtitle is not None
-        subtitle_dir = movie_subtitle_root_path(movie.movie_number)
+        subtitle_dir = movie_subtitle_dir(movie.movie_number)
         subtitle_dir.mkdir(parents=True, exist_ok=True)
         # 文件名跟随编码后的视频名，保证同番号多版本字幕可区分；重名冲突加 fid 后缀。
         encoded_stem = encoded_name.rsplit(".", 1)[0]

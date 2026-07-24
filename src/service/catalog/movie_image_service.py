@@ -11,7 +11,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 import os
-import re
 import shutil
 import tempfile
 import time
@@ -24,8 +23,12 @@ from loguru import logger
 from peewee import EXCLUDED
 from PIL import Image as PillowImage, UnidentifiedImageError
 
+from src.common.media_paths import (
+    media_image_root_path,
+    movie_asset_relative_dir,
+    normalize_asset_dir_name,
+)
 from src.common.runtime_time import utc_now_for_db
-from src.config.config import settings
 from src.model import Image, Movie, MoviePlotImage
 from src.metadata._providers.models import JavdbMovieActorResource
 from src.service.catalog.image_cleanup_service import ImageCleanupService
@@ -74,10 +77,6 @@ class MovieImageService:
             trust_env=False,
         )
         self.image_downloader = image_downloader or self._download_image
-
-    @staticmethod
-    def _normalize_owner_key(owner_key: str) -> str:
-        return re.sub(r"[^0-9A-Za-z._-]", "_", owner_key).strip("._-") or "unknown"
 
     @staticmethod
     def _normalize_image_extension(raw_extension: str | None) -> str:
@@ -174,10 +173,12 @@ class MovieImageService:
             return False
 
     def _build_generated_thin_cover_task(self, movie_number: str, extension: str) -> ImagePersistTask:
-        safe_owner_key = self._normalize_owner_key(movie_number)
+        safe_owner_key = normalize_asset_dir_name(movie_number)
         normalized_extension = self._normalize_image_extension(extension)
-        relative_path = (Path("movies") / safe_owner_key / f"thin-cover{normalized_extension}").as_posix()
-        absolute_path = self._image_root_path() / relative_path
+        relative_path = (
+            movie_asset_relative_dir(safe_owner_key) / f"thin-cover{normalized_extension}"
+        ).as_posix()
+        absolute_path = media_image_root_path() / relative_path
         return ImagePersistTask(
             image_type="thin_cover",
             image_url="",
@@ -290,7 +291,7 @@ class MovieImageService:
     ) -> ThinCoverResolution:
         cover_image = movie.cover_image
         if cover_image is not None:
-            cover_path = self._image_root_path() / cover_image.origin
+            cover_path = media_image_root_path() / cover_image.origin
             thin_cover_task = self._generate_thin_cover_task_from_cover(
                 movie.movie_number,
                 cover_path,
@@ -300,7 +301,7 @@ class MovieImageService:
                 return ThinCoverResolution(generated_task=thin_cover_task)
         selected_plot_index = self._select_portrait_plot_index(
             [
-                (plot_index, self._image_root_path() / plot_link.image.origin)
+                (plot_index, media_image_root_path() / plot_link.image.origin)
                 for plot_index, plot_link in enumerate(plot_links)
             ]
         )
@@ -383,27 +384,29 @@ class MovieImageService:
             )
             return None
 
-        safe_owner_key = self._normalize_owner_key(owner_key)
+        safe_owner_key = normalize_asset_dir_name(owner_key)
         extension = self._normalize_image_extension(Path(urlparse(image_url).path).suffix)
 
         if owner_type == "actor":
             relative_path = (Path("actors") / f"{safe_owner_key}{extension}").as_posix()
             image_type = "actor"
         elif owner_type == "movie_cover":
-            relative_path = (Path("movies") / safe_owner_key / f"cover{extension}").as_posix()
+            relative_path = (
+                movie_asset_relative_dir(safe_owner_key) / f"cover{extension}"
+            ).as_posix()
             image_type = "cover"
         elif owner_type == "movie_plot":
             if plot_index is None:
                 raise ValueError("plot_index is required for movie plot images")
             # 剧照与 cover/thin-cover 同层平铺，避免 30w 规模下多出 30w 个空 plots/ 中间目录。
             relative_path = (
-                Path("movies") / safe_owner_key / f"plot-{plot_index}{extension}"
+                movie_asset_relative_dir(safe_owner_key) / f"plot-{plot_index}{extension}"
             ).as_posix()
             image_type = "plot"
         else:
             raise ValueError(f"unsupported owner_type: {owner_type}")
 
-        absolute_path = self._image_root_path() / relative_path
+        absolute_path = media_image_root_path() / relative_path
         return ImagePersistTask(
             image_type=image_type,
             image_url=image_url,
@@ -493,7 +496,7 @@ class MovieImageService:
         if not image_tasks:
             return []
 
-        image_root = self._image_root_path()
+        image_root = media_image_root_path()
         image_root.mkdir(parents=True, exist_ok=True)
         temp_root = Path(tempfile.mkdtemp(prefix="catalog-refresh-", dir=str(image_root)))
         prepared_files = [
@@ -675,14 +678,6 @@ class MovieImageService:
     @classmethod
     def delete_obsolete_image_files(cls, relative_paths: set[str]) -> None:
         ImageCleanupService.delete_obsolete_image_files(relative_paths)
-
-    @staticmethod
-    def _image_root_path() -> Path:
-        """导入图片根目录支持相对路径配置，统一在这里解析成绝对路径。"""
-        image_root_path = Path(settings.media.import_image_root_path).expanduser()
-        if not image_root_path.is_absolute():
-            image_root_path = (Path.cwd() / image_root_path).resolve()
-        return image_root_path
 
     def _download_image(self, image_url: str, target_path: Path) -> None:
         """下载单张图片并带有限次重试；失败时抛 ImageDownloadError。"""

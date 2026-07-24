@@ -70,7 +70,8 @@
 - 导入管线：递归枚举源目录 → 按「父目录名/文件名」识别番号 → 按 115 全量 sha1 对账 → 云端复制到 `sakuramedia/jav/` → 逐文件改名并按 fid 查询确认 → 通过受控 RangeReader + PyAV 探测技术元数据 → 事务登记 Media → 下载并登记字幕 → `cleanup-source` 逐项删除源字幕和源视频。有效文件探测失败时整组不入库、不清源；重试按 SHA1 复用已经复制或改名的目标文件。
 - 技术元数据探测按累计 Range 响应设置 `64 MiB` 读取预算，与影片总大小无关；CDN 若忽略 Range 返回超预算整文件，会在读取响应体前拒绝。
 - 多分部（VR/FC2）**不做合并**：每个文件一条 Media 挂同一影片（云端无拼接能力）。
-- 配对的 `.srt` 字幕**不复制到 115**：下载到本地 `subtitle_root/{番号}/` 并登记 `Subtitle`；`cleanup-source` 仅在字幕成功后清掉源 srt 和视频，字幕失败时两者均保留。
+- 配对的 `.srt` 字幕**不复制到 115**：下载到本地 `movies/{shard}/{番号}/subtitles/` 并登记 `Subtitle`；`cleanup-source` 仅在字幕成功后清掉源 srt 和视频，字幕失败时两者均保留。
+- **字幕配对规则**（本地与 115 统一）：在视频同目录内，从**字幕文件名解析番号**，解析出且与影片番号一致才算配对（纯番号匹配，不再要求与视频同名）。因此 `ABP-123.chs.srt` 这类带语种/修饰后缀的字幕也能配上；而文件名里解析不出番号的字幕（如 `01.srt`、随意命名的 `sub.srt`）不会被配对。判定收口在 `src/common/movie_numbers.py` 的 `subtitle_matches_movie_number()`。
 - 115 标记违规的文件（`ic=1`）按 `valid=false` 登记并记 `cloud115_file_censored` 告警（拿不到直链也播不了）。
 - **幂等**：中断重跑以「目标目录 sha1 对账」收敛——已搬的跳过搬运、没改名的补改名、没登记的补登记；`copy` 产生新 fid/pickcode，登记一律以复制后 re-list 目标目录的条目为准。
 - cookies 失效返回 `422 cloud115_cookies_invalid`（引导重新扫码）；115 限流返回 `429 cloud115_rate_limited`；其它上游错误 `502 cloud115_upstream_error`。

@@ -55,3 +55,15 @@ def normalize_movie_number(value: str) -> str:
     normalized = normalized.replace("_", "-")
     normalized = normalized.replace("PPV-", "")
     return normalized
+
+
+def subtitle_matches_movie_number(subtitle_name: str, movie_number: str) -> bool:
+    """字幕文件名解析出的番号与影片番号一致才算配对（纯番号匹配，无同名兜底）。
+
+    本地 sidecar 与 115 云盘导入共用同一判定：从字幕文件名解析番号，解析不出直接判否；
+    解析出的番号与影片番号经 normalize_movie_number 归一后相等才视为同一部影片的字幕。
+    """
+    parsed = parse_movie_number_from_text(subtitle_name)
+    if not parsed:
+        return False
+    return normalize_movie_number(parsed) == normalize_movie_number(movie_number)

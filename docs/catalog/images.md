@@ -23,10 +23,10 @@
 ```json
 {
   "id": 10,
-  "origin": "/files/images/movies/SONE-210/cover.jpg?expires=1700000900&signature=<signature>",
-  "small": "/files/images/movies/SONE-210/cover.jpg?expires=1700000900&signature=<signature>",
-  "medium": "/files/images/movies/SONE-210/cover.jpg?expires=1700000900&signature=<signature>",
-  "large": "/files/images/movies/SONE-210/cover.jpg?expires=1700000900&signature=<signature>"
+  "origin": "/files/images/movies/24/SONE-210/cover.jpg?expires=1700000900&signature=<signature>",
+  "small": "/files/images/movies/24/SONE-210/cover.jpg?expires=1700000900&signature=<signature>",
+  "medium": "/files/images/movies/24/SONE-210/cover.jpg?expires=1700000900&signature=<signature>",
+  "large": "/files/images/movies/24/SONE-210/cover.jpg?expires=1700000900&signature=<signature>"
 }
 ```
 
@@ -50,30 +50,58 @@
 
 ### 当前存储路径规范
 
-数据库里保存的原始相对路径与磁盘真实相对路径保持一致，当前规则为：
+数据库里保存的原始相对路径与磁盘真实相对路径保持一致。影片资产按**番号目录分片**存放：
+分片名取 `sha1(番号)` 十六进制前 2 位，固定 256 片。
 
-- 演员头像：`actors/{javdb_id}.jpg`
-- 影片封面：`movies/{movie_number}/cover.jpg`
-- 影片竖封面：`movies/{movie_number}/thin-cover.jpg`
-- 影片剧照：`movies/{movie_number}/plots/{index}.jpg`
+分片的原因：`movies/` 原本是单层平铺目录，一部影片一个子目录。番号规模到 30w 时，htree
+查单条尚可，但 `readdir` 是 O(n)，`ls` / `du` / `rsync` / `tar` 备份 / docker 卷迁移全部退化。
+分片后顶层条目数恒为 256。
+
+- 演员头像：`actors/{javdb_id}.jpg`（数量级远低于番号，不分片）
+- 影片封面：`movies/{shard}/{movie_number}/cover.jpg`
+- 影片竖封面：`movies/{shard}/{movie_number}/thin-cover.jpg`
+- 影片剧照：`movies/{shard}/{movie_number}/plot-{index}.jpg`
+- 媒体缩略图：`movies/{shard}/{movie_number}/media/{content_fingerprint}/thumbnails/{offset}.webp`
+- 影片字幕：`movies/{shard}/{movie_number}/subtitles/{name}.srt`
+
+分片计算集中在 `src/common/media_paths.py` 的 `movie_asset_shard()` / `movie_asset_relative_dir()`，
+番号先经 `normalize_asset_dir_name()` 归一化再参与哈希；写入侧与迁移侧共用同一套函数。
 
 磁盘根目录来自：
 
 - `settings.media.import_image_root_path`
 
-例如：
+例如（`sha1("SONE-210")[:2]` 为 `24`）：
 
 ```text
 storage/import-images/
   actors/
     EM44.jpg
   movies/
-    SONE-210/
-      cover.jpg
-      plots/
-        0.jpg
-        1.jpg
+    24/
+      SONE-210/
+        cover.jpg
+        thin-cover.jpg
+        plot-0.jpg
+        plot-1.jpg
+        media/
+          <content_fingerprint>/
+            thumbnails/
+              10.webp
+        subtitles/
+          1758000000000.srt
 ```
+
+### 存量迁移
+
+老布局到当前布局的两步迁移都是**手动可选的独立 CLI**（不进 lifespan、不随 `migrate` 自动跑），
+与 `migrate-jav-layout` / `migrate-plot-layout` 同一模式，都带 `--dry-run` 预览规模：
+
+- `python -m src.start.commands migrate-movie-asset-shard`：番号目录整体 `rename` 进分片 + 批量重写 `image.origin`
+- `python -m src.start.commands migrate-movie-subtitles`：字幕从媒体库 sidecar 与旧字幕根收敛到 `subtitles/`（建议在分片之后运行）
+
+两者都幂等、崩溃安全：文件先落位、DB 后重写，已完成的部分重跑天然跳过，Ctrl+C / 掉电后重跑即收敛。
+新装或不打算迁移存量时无需运行；新入库直接落分片布局。
 
 ## 文件访问接口
 
@@ -89,7 +117,7 @@ storage/import-images/
 示例请求：
 
 ```http
-GET /files/images/movies/SONE-210/cover.jpg?expires=1700000900&signature=<signature>
+GET /files/images/movies/24/SONE-210/cover.jpg?expires=1700000900&signature=<signature>
 ```
 
 可能的错误码：
