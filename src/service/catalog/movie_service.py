@@ -859,18 +859,22 @@ class MovieService:
             if normalized not in matched_normalized
         ]
 
-        # 一次聚合查询拿到"有本地媒体"的影片 id 集合，避免逐条 _list_movie_media 的 N+1。
-        matched_ids = [movie.id for movie in matched_movies]
-        movies_with_media = {
-            media.movie_id
-            for media in Media.select(Media.movie)
-            .where(Media.movie.in_(matched_ids))
+        # 一次聚合查询拿到"有本地媒体"的影片番号集合，避免逐条 _list_movie_media 的 N+1。
+        # 关键：Media.movie 外键 field=Movie.movie_number（列即 media.movie_number），
+        # in_ 参数必须传番号字符串列表，不能传 movie.id 整数——曾在此把 movie.id 传入导致
+        # 生成 WHERE movie_number IN (1,2,3) 恒不命中，has_media 判定完全失效。
+        matched_numbers = [movie.movie_number for movie in matched_movies]
+        numbers_with_media = {
+            row[0]
+            for row in Media.select(Media.movie)
+            .where(Media.movie.in_(matched_numbers))
             .distinct()
+            .tuples()
         }
 
         updated_count = 0
         for movie in matched_movies:
-            if movie.id in movies_with_media:
+            if movie.movie_number in numbers_with_media:
                 skipped.append(
                     MovieSubscriptionSkippedItem(
                         movie_number=movie.movie_number,
