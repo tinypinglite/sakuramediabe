@@ -16,13 +16,15 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
+from peewee import EXCLUDED
 from PIL import Image as PillowImage, UnidentifiedImageError
 
+from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import Image, Movie, MoviePlotImage
 from src.metadata._providers.models import JavdbMovieActorResource
@@ -574,33 +576,98 @@ class MovieImageService:
             return None
         return self._upsert_image_record(image_task.relative_path)
 
+    def persist_prepared_images(
+        self,
+        image_tasks: Iterable[Optional[ImagePersistTask]],
+    ) -> Dict[str, Image]:
+        """``persist_prepared_image`` 的批量版：一次 upsert 落库整批已下载图片。
+
+        返回 ``relative_path -> Image``；本地文件缺失的任务与单张版一样跳过并告警，
+        因此调用方需按 ``relative_path`` 取值并处理 None。
+        """
+        persistable_paths: List[str] = []
+        for image_task in image_tasks:
+            if image_task is None:
+                continue
+            if not image_task.absolute_path.exists():
+                logger.warning(
+                    "Persist image skipped because local file is missing image_type={} url={} target={}",
+                    image_task.image_type,
+                    image_task.image_url,
+                    str(image_task.absolute_path),
+                )
+                continue
+            persistable_paths.append(image_task.relative_path)
+        return self._upsert_image_records(persistable_paths)
+
     def persist_refreshed_image_record(self, image_task: Optional[ImagePersistTask]) -> Image | None:
         if image_task is None:
             return None
         # 严格刷新场景的新图片还在临时目录中，事务内只需要先切换到目标相对路径。
         return self._upsert_image_record(image_task.relative_path)
 
+    def persist_refreshed_image_records(
+        self,
+        image_tasks: Iterable[Optional[ImagePersistTask]],
+    ) -> Dict[str, Image]:
+        """``persist_refreshed_image_record`` 的批量版，返回 ``relative_path -> Image``。
+
+        严格刷新场景文件还在临时目录，不做落地校验，直接整批切换到目标相对路径。
+        """
+        return self._upsert_image_records(
+            [image_task.relative_path for image_task in image_tasks if image_task is not None]
+        )
+
     def _upsert_image_record(self, relative_path: str) -> Image:
         """确保同一路径只存在一条 Image 记录，并把 small/medium/large 统一到该路径。"""
-        image = Image.get_or_none(Image.origin == relative_path)
-        if image is None:
-            logger.debug("Persist image creating record relative_path={}", relative_path)
-            return Image.create(
-                origin=relative_path,
-                small=relative_path,
-                medium=relative_path,
-                large=relative_path,
-            )
+        return self._upsert_image_records([relative_path])[relative_path]
 
-        if image.small != relative_path or image.medium != relative_path or image.large != relative_path:
-            image.small = relative_path
-            image.medium = relative_path
-            image.large = relative_path
-            image.save()
-            logger.debug("Persist image normalized variants image_id={} relative_path={}", image.id, relative_path)
-        else:
-            logger.debug("Persist image record exists image_id={} relative_path={}", image.id, relative_path)
-        return image
+    @staticmethod
+    def _upsert_image_records(relative_paths: Sequence[str]) -> Dict[str, Image]:
+        """批量 upsert 图片记录，返回 ``relative_path -> Image`` 映射。
+
+        单条 ``INSERT ... ON CONFLICT (origin) DO UPDATE ... RETURNING`` 覆盖全部路径：
+        - 相比逐行 ``get_or_none`` + ``create``，往返次数从 2N 降到 1；
+        - ``DO UPDATE`` 而非 ``DO NOTHING``，既保证冲突行也出现在 RETURNING 结果里，
+          又顺带把 small/medium/large 归一到 origin，与原逐行实现语义一致；
+        - 单语句天然规避原实现 get_or_none 与 create 之间的并发窗口（唯一约束冲突）。
+        """
+        unique_paths = list(dict.fromkeys(path for path in relative_paths if path))
+        if not unique_paths:
+            return {}
+
+        now = utc_now_for_db()
+        rows = [
+            {
+                Image.origin: path,
+                Image.small: path,
+                Image.medium: path,
+                Image.large: path,
+                Image.created_at: now,
+                Image.updated_at: now,
+            }
+            for path in unique_paths
+        ]
+        query = (
+            Image.insert_many(rows)
+            .on_conflict(
+                conflict_target=[Image.origin],
+                update={
+                    Image.small: EXCLUDED.small,
+                    Image.medium: EXCLUDED.medium,
+                    Image.large: EXCLUDED.large,
+                    Image.updated_at: EXCLUDED.updated_at,
+                },
+            )
+            .returning(Image)
+        )
+        images_by_path = {image.origin: image for image in query.execute()}
+        logger.debug(
+            "Persist image upserted batch requested={} returned={}",
+            len(unique_paths),
+            len(images_by_path),
+        )
+        return images_by_path
 
     def delete_image_record_if_unused(self, image: Image) -> set[str]:
         return ImageCleanupService.delete_image_record_if_unused(image)

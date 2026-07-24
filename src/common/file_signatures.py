@@ -13,10 +13,24 @@ MEDIA_STREAM_ROUTE_PREFIX = "/media"
 MEDIA_CLIP_STREAM_ROUTE_PREFIX = "/media-clips"
 SUBTITLE_FILE_ROUTE_PREFIX = "/files/subtitles"
 FILE_SIGNATURE_EXPIRE_SECONDS = 12 * 60 * 60
+# 签名过期时间戳向上对齐到该窗口边界，使同一窗口内签出的 URL 完全一致，
+# 让浏览器/CDN 能真正命中缓存；向上取整保证实际有效期不低于 FILE_SIGNATURE_EXPIRE_SECONDS。
+FILE_SIGNATURE_ALIGN_WINDOW_SECONDS = 6 * 60 * 60
 
 
 def _now_timestamp() -> int:
     return int(time.time())
+
+
+def build_signature_expires() -> int:
+    """生成窗口对齐的签名过期时间戳。
+
+    实际有效期落在 [FILE_SIGNATURE_EXPIRE_SECONDS, FILE_SIGNATURE_EXPIRE_SECONDS + 窗口)
+    区间内，永远不会短于固定有效期，因此不存在签出即过期的边界问题。
+    """
+    target = _now_timestamp() + FILE_SIGNATURE_EXPIRE_SECONDS
+    window = FILE_SIGNATURE_ALIGN_WINDOW_SECONDS
+    return -(-target // window) * window
 
 
 def _image_root_path() -> Path:
@@ -59,8 +73,8 @@ def _build_image_signature(relative_path: str, expires: int) -> str:
 
 def build_signed_image_url(relative_path: str) -> str:
     normalized_path = _normalize_relative_path(relative_path)
-    # 资源签名有效期固定为 12 小时，不通过配置暴露。
-    expires = _now_timestamp() + FILE_SIGNATURE_EXPIRE_SECONDS
+    # 资源签名有效期固定为 12 小时，不通过配置暴露；过期时间戳按窗口对齐以便前端缓存。
+    expires = build_signature_expires()
     signature = _build_image_signature(normalized_path, expires)
     return (
         f"{IMAGE_FILE_ROUTE_PREFIX}/{quote(normalized_path, safe='/')}"
@@ -102,8 +116,8 @@ def _build_media_signature(media_id: int, expires: int) -> str:
 
 
 def build_signed_media_url(media_id: int) -> str:
-    # 媒体播放签名与图片、字幕共用固定有效期。
-    expires = _now_timestamp() + FILE_SIGNATURE_EXPIRE_SECONDS
+    # 媒体播放签名与图片、字幕共用固定有效期与窗口对齐策略。
+    expires = build_signature_expires()
     signature = _build_media_signature(media_id, expires)
     return f"{MEDIA_STREAM_ROUTE_PREFIX}/{media_id}/stream?expires={expires}&signature={signature}"
 
@@ -136,8 +150,8 @@ def _build_clip_signature(clip_id: int, expires: int) -> str:
 
 
 def build_signed_clip_url(clip_id: int) -> str:
-    # 片段串流签名与其它资源共用固定有效期。
-    expires = _now_timestamp() + FILE_SIGNATURE_EXPIRE_SECONDS
+    # 片段串流签名与其它资源共用固定有效期与窗口对齐策略。
+    expires = build_signature_expires()
     signature = _build_clip_signature(clip_id, expires)
     return f"{MEDIA_CLIP_STREAM_ROUTE_PREFIX}/{clip_id}/stream?expires={expires}&signature={signature}"
 
@@ -179,8 +193,8 @@ def _build_subtitle_signature(subtitle_id: int, expires: int) -> str:
 
 
 def build_signed_subtitle_url(subtitle_id: int) -> str:
-    # 字幕下载签名与其它资源保持一致的固定有效期。
-    expires = _now_timestamp() + FILE_SIGNATURE_EXPIRE_SECONDS
+    # 字幕下载签名与其它资源保持一致的固定有效期与窗口对齐策略。
+    expires = build_signature_expires()
     signature = _build_subtitle_signature(subtitle_id, expires)
     return f"{SUBTITLE_FILE_ROUTE_PREFIX}/{subtitle_id}?expires={expires}&signature={signature}"
 

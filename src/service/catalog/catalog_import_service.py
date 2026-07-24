@@ -245,8 +245,10 @@ class CatalogImportService:
                     logger.debug("Catalog upsert tag linked movie_id={} tag_id={} tag_name={}", movie.id, tag.id, tag.name)
 
                 plot_images_by_index: Dict[int, Image] = {}
+                # 剧照整批一次 upsert，避免逐张 get_or_none + create 的 2N 次往返。
+                plot_images_by_path = self.image_service.persist_prepared_images(plot_tasks)
                 for plot_task in plot_tasks:
-                    plot_image = self.image_service.persist_prepared_image(plot_task)
+                    plot_image = plot_images_by_path.get(plot_task.relative_path)
                     if plot_image is not None:
                         if plot_task.plot_index is not None:
                             plot_images_by_index[int(plot_task.plot_index)] = plot_image
@@ -485,8 +487,10 @@ class CatalogImportService:
             MovieTag.get_or_create(movie=movie, tag=tag)
 
         plot_images_by_index: Dict[int, Image] = {}
+        # 剧照整批一次 upsert，避免逐张 get_or_none + create 的 2N 次往返。
+        plot_images_by_path = self.image_service.persist_refreshed_image_records(plot_tasks)
         for plot_task in plot_tasks:
-            plot_image = self.image_service.persist_refreshed_image_record(plot_task)
+            plot_image = plot_images_by_path.get(plot_task.relative_path)
             if plot_image is None:
                 continue
             if plot_task.plot_index is not None:

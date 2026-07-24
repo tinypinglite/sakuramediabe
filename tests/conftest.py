@@ -18,6 +18,10 @@ if JOYTAG_INFER_APP_PATH.exists():
     sys.path.insert(0, str(JOYTAG_INFER_APP_PATH))
 
 from src.common import runtime_time
+from src.common.file_signatures import (
+    FILE_SIGNATURE_ALIGN_WINDOW_SECONDS,
+    FILE_SIGNATURE_EXPIRE_SECONDS,
+)
 from src.config.config import Database, settings
 from src.metadata.provider import MetadataNotFoundError
 from src.model import (
@@ -70,7 +74,11 @@ from src.model.base import create_database, database_proxy, init_database
 PASSWORD_CONTEXT = CryptContext(schemes=["bcrypt"], deprecated="auto")
 TEST_FILE_SIGNATURE_SECRET = "test-file-secret"
 TEST_FILE_SIGNATURE_NOW = 1700000000
-TEST_FILE_SIGNATURE_EXPIRES = TEST_FILE_SIGNATURE_NOW + 12 * 60 * 60
+# 与 build_signature_expires() 保持同一套窗口对齐算法，避免生产改窗口后测试固定值漂移。
+TEST_FILE_SIGNATURE_EXPIRES = -(
+    -(TEST_FILE_SIGNATURE_NOW + FILE_SIGNATURE_EXPIRE_SECONDS)
+    // FILE_SIGNATURE_ALIGN_WINDOW_SECONDS
+) * FILE_SIGNATURE_ALIGN_WINDOW_SECONDS
 
 TEST_MODELS = [
     User,
