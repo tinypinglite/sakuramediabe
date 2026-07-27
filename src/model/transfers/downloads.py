@@ -122,7 +122,8 @@ class ImportJob(TimestampedMixin, BaseModel):
         column_name="task_run_id",
     )
     state = peewee.CharField(max_length=32, default="pending", index=True)
-    # 导入模式：auto（硬链接优先）/ cleanup-source（复制后删源）；失败文件重导时据此沿用原作业语义。
+    # 导入模式：auto（本地硬链接优先）/ copy / cleanup-source（本地复制后删源、cloud115
+    # 直接移动）；失败文件重导时据此沿用原作业语义。
     transfer_mode = peewee.CharField(max_length=32, default="auto")
     imported_count = peewee.IntegerField(default=0)
     skipped_count = peewee.IntegerField(default=0)

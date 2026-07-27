@@ -66,10 +66,14 @@
 115 导入语义：
 
 - 递归枚举目录或读取单个 FID，只接受现有视频扩展名；按源内相对路径排序后逐文件创建独立的 `VideoItem + Media`，并按相同顺序追加到可选合集。标题取原文件名 stem，不根据目录自动创建合集，也不处理外挂字幕。
-- 目标采用与本地视频库一致的分层布局：`sakuramedia/videos/<video_item_id>/<timestamp>/<filename>`。有效视频先完成源文件探测并创建 `VideoItem` 取得 ID，再创建实体目录与独立版本目录；复制后重新枚举版本目录，按 SHA1/FID/pickcode 对账并确认文件名。复制、改名或落库失败时会尽力回收本次创建的云端文件、目录与 `VideoItem`。
-- 有效视频在复制前通过源文件 pickcode 获取直链，由 `Cloud115RangeReader` 在累计 **64 MiB** Range 响应预算内调用 `MediaMetadataProbeService.probe_source`。只有返回非空 `video_info` 才会创建 `VideoItem` 并进入复制、落库流程；直链、预算或探测失败记 `cloud115_metadata_probe_failed`，不创建 `VideoItem/Media`、不复制文件、不清源，目录内其它文件继续处理。
+- 目标采用与本地视频库一致的分层布局：`sakuramedia/videos/<video_item_id>/<timestamp>/<filename>`。有效视频先完成源文件探测并创建 `VideoItem` 取得 ID，再创建实体目录与独立版本目录——`video_item_id` 来自数据库自增序列、删除也不复用，所以实体目录必然是新的，直接两次 `mkdir`，不枚举 `videos/` 下的既有目录（该开销随库内视频数线性增长）。`videos/` 段目录 cid 每个作业只解析一次。
+- 搬运顺序按模式分岔：
+  - `copy`：复制 → 重新枚举版本目录，按 SHA1/FID/pickcode 对账并确认文件名 → 登记 Media。复制、改名或落库失败时尽力回收本次创建的云端文件、目录与 `VideoItem`。
+  - `cleanup-source`：**先登记 Media**（locator 直接用源 fid/pickcode，`files/move` 不改这两个值，Media 也只靠 pickcode 定位）→ `move` 搬进版本目录。落库失败时远端只有空目录，可整体回滚；移动失败时 Media 仍可播、源也还在原处，失败项可重导，下一轮按 `locator.fid` 认出来补搬运即收敛。移动保持文件名不变，videos 又沿用原名，因此这条路径不需要改名。
+- 有效视频在搬运前通过源文件 pickcode 获取直链，由 `Cloud115RangeReader` 在累计 **64 MiB** Range 响应预算内调用 `MediaMetadataProbeService.probe_source`。只有返回非空 `video_info` 才会创建 `VideoItem` 并进入搬运、落库流程；直链、预算或探测失败记 `cloud115_metadata_probe_failed`，不创建 `VideoItem/Media`、不搬运文件，目录内其它文件继续处理。
 - 探测结果写入 `resolution`、`duration_seconds`、`video_info` 和由真实视频流信息计算的标签；容器 `creation_time` 写入 `VideoItem.release_date`。仅当探测时长为 0 时回退 115 `play_long`，发布时间不回退 115 mtime。
 - 115 标记违规的文件不取直链、不探测、不生成封面，仍创建 `valid=false` 的 Media 并记 `cloud115_file_censored` 告警。
-- 首帧封面同样通过受预算的 RangeReader 读取目标文件；封面失败只记日志。Media 事务成功后重置缩略图任务。
-- `copy` 保留源文件；`cleanup-source` 仅在探测、Media/VideoItem 事务及合集关联全部成功后删除源文件。库内或同批 SHA1 重复项只记 `duplicate_fingerprint`，即使是 `cleanup-source` 也保留源文件。
-- 115 videos 与 115 JAV 都不设置库级互斥键；每个作业内仍按自身文件顺序执行云端复制、改名和清理。
+- 首帧封面同样通过受预算的 RangeReader 读取；`cleanup-source` 下封面排在移动之前（pickcode 与所在目录无关，移动前后都能读），补搬运重试时不必再生成一次。封面失败只记日志。Media 事务成功后重置缩略图任务。
+- `copy` 保留源文件；`cleanup-source` 直接把源移动进库，不产生副本、也没有"复制完再删源"这一步。
+- 重复项：同批 SHA1 重复只记 `duplicate_fingerprint` 并保留源文件。库内已存在同 SHA1 时按 `locator.fid` 分派——与源 fid **相同**说明是上轮登记成功但没搬走的同一个文件，补完搬运即可；**不同**才是真正多余的副本，`copy` 下保留源、`cleanup-source` 下删源释放 115 配额。这条 fid 判断是移动语义下的安全底线：缺了它会把唯一的一份文件当成重复副本删掉。
+- 115 videos 与 115 JAV 都不设置库级互斥键；每个作业内仍按自身文件顺序执行云端搬运、改名和清理。

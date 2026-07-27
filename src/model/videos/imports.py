@@ -35,7 +35,8 @@ class VideoImportJob(TimestampedMixin, BaseModel):
         column_name="collection_id",
     )
     state = peewee.CharField(max_length=32, default="pending", index=True)
-    # 导入模式：auto（硬链接优先，失败回退复制）/ cleanup-source（复制后删除源文件）。
+    # 导入模式：auto（本地硬链接优先，失败回退复制）/ copy / cleanup-source
+    # （本地复制后删除源文件、cloud115 直接移动）。
     transfer_mode = peewee.CharField(max_length=32, default="auto")
     imported_count = peewee.IntegerField(default=0)
     skipped_count = peewee.IntegerField(default=0)

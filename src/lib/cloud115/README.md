@@ -334,7 +334,7 @@ print(du.user_agent)   # 回传给你，用于后续 Range GET
 
 ### `move_files(fids, *, pid) -> None`
 
-批量移动，与 copy 协议同型。**fid / pickcode 保持不变**。SDK 保留该底层能力，但媒体导入不再使用：`cleanup-source` 会先复制并确认入库，再删除源文件。
+批量移动，与 copy 协议同型。**fid / pickcode 保持不变**，因此登记可以先于搬运完成。媒体导入的 `cleanup-source` 就是走这个接口：直接把源搬进库子树，不复制、不占双倍空间、也没有"复制完再删源"这一步。
 
 ### `batch_rename(renames: dict[fid, 新名]) -> None`
 

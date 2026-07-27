@@ -311,7 +311,7 @@ class DownloadTaskService:
             )
 
         if task.client.kind == DownloadClientKind.CLOUD115.value:
-            # cloud115 任务的导入是云端 copy（cleanup-source），走 cloud115 导入作业链路。
+            # cloud115 任务的导入是云端搬运（cleanup-source = move），走 cloud115 导入作业链路。
             from src.service.transfers.cloud115_offline_sync_service import (
                 Cloud115OfflineSyncService,
             )

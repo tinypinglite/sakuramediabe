@@ -10,7 +10,7 @@
 - 本地导入复用 `MediaImportService.import_from_source`；cloud115 导入走 `Cloud115ImportService`（云端复制，仅技术元数据探测按预算 Range 读取，不完整下载落地），两者共享 `ImportJob` 模型、任务中心进度与失败清单结构。
 - 导入在后端**后台线程**（`DownloadImportRunner` 线程池）运行，客户端关闭不影响其运行；重连后通过任务中心查询进度。
 - 失败文件清单复用 `ImportJob.failed_files`；模型层含 `ImportJob.transfer_mode`（迁移 `20260607_01`）与 `ImportJob.source_cid`（迁移 `20260714_02`，cloud115 作业专用，本地作业为 NULL——前端可据此区分作业类型）。
-- `transfer_mode` 按库类型取值：本地 `auto`（默认，硬链接优先）/ `cleanup-source`（复制后删源）；cloud115 `cleanup-source`（默认，复制并确认入库后删源）/ `copy`（保留源文件）。旧 `move` 仅作为兼容输入，创建作业时统一保存为 `cleanup-source`。
+- `transfer_mode` 按库类型取值：本地 `auto`（默认，硬链接优先）/ `cleanup-source`（复制后删源）；cloud115 `cleanup-source`（默认，云端直接移动进库）/ `copy`（云端复制，保留源文件）。旧 `move` 仅作为兼容输入，创建作业时统一保存为 `cleanup-source`。
 
 ## 接口
 
@@ -67,13 +67,17 @@
 - `transfer_mode` 只接受 `cleanup-source`（默认）/ `copy`；旧 `move` 兼容为 `cleanup-source`，其它值返回 `422 invalid_transfer_mode`。
 - **服务端防御校验**（前端目录选择器已按浏览端点返回的 `root_cid` 禁选，这里兜底）：源目录不能是库管理目录、不能在其内部（`422 cloud115_source_inside_library`）、也不能包含它——含选中网盘根目录的情形（`422 cloud115_source_contains_library`）。
 - 115 导入不设置库级 `mutex_key`；每个作业各自创建 Activity 并进入后台线程池，同一媒体库允许多个导入或秒传作业并行入队。
-- 导入管线：递归枚举源目录 → 按「父目录名/文件名」识别番号 → 按 115 全量 sha1 对账 → 云端复制到 `sakuramedia/jav/` → 逐文件改名并按 fid 查询确认 → 通过受控 RangeReader + PyAV 探测技术元数据 → 事务登记 Media → 下载并登记字幕 → `cleanup-source` 逐项删除源字幕和源视频。有效文件探测失败时整组不入库、不清源；重试按 SHA1 复用已经复制或改名的目标文件。
+- 导入管线前半段两模式共用：递归枚举源目录 → 按「父目录名/文件名」识别番号 → 按 115 全量 sha1 对账。之后按模式分岔：
+  - `copy`：云端复制到 `sakuramedia/jav/` → re-list 目标目录拿新 fid/pickcode → 逐文件改名并按 fid 查询确认 → 探测技术元数据 → 事务登记 Media → 下载并登记字幕。源文件始终保留；有效文件探测失败时整组不入库，重试按 SHA1 复用已经复制或改名的目标文件。
+  - `cleanup-source`：用**源 pickcode** 探测技术元数据 → 下载并登记字幕 → 建版本目录 → 事务登记 Media（locator 直接用源 fid/pickcode）→ `files/move` 移动进库 → 逐文件改名并按 fid 确认 → 删除远端源字幕。依赖源文件的步骤全部前置，探测或字幕失败时源原地未动、整组可完整重导。
 - 技术元数据探测按累计 Range 响应设置 `64 MiB` 读取预算，与影片总大小无关；CDN 若忽略 Range 返回超预算整文件，会在读取响应体前拒绝。
 - 多分部（VR/FC2）**不做合并**：每个文件一条 Media 挂同一影片；与本地 JAV 导入语义一致，均不做 ffmpeg 拼接。
-- 配对的 `.srt` 字幕**不复制到 115**：下载到本地 `movies/{shard}/{番号}/subtitles/` 并登记 `Subtitle`；`cleanup-source` 仅在字幕成功后清掉源 srt 和视频，字幕失败时两者均保留。
+- 配对的 `.srt` 字幕**不复制到 115**：下载到本地 `movies/{shard}/{番号}/subtitles/` 并登记 `Subtitle`。`cleanup-source` 把字幕下载排在搬运之前，失败即整组终止、源完好可重导；搬运完成后才删掉远端源 srt（视频本身已经移走，不需要删）。`copy` 下字幕失败仅告警。
 - **字幕配对规则**（本地与 115 统一）：在视频同目录内，从**字幕文件名解析番号**，解析出且与影片番号一致才算配对（纯番号匹配，不再要求与视频同名）。因此 `ABP-123.chs.srt` 这类带语种/修饰后缀的字幕也能配上；而文件名里解析不出番号的字幕（如 `01.srt`、随意命名的 `sub.srt`）不会被配对。判定收口在 `src/common/movie_numbers.py` 的 `subtitle_matches_movie_number()`。
 - 115 标记违规的文件（`ic=1`）按 `valid=false` 登记并记 `cloud115_file_censored` 告警（拿不到直链也播不了）。
-- **幂等**：中断重跑以「目标目录 sha1 对账」收敛——已搬的跳过搬运、没改名的补改名、没登记的补登记；`copy` 产生新 fid/pickcode，登记一律以复制后 re-list 目标目录的条目为准。
+- **幂等**：
+  - `copy` 中断重跑以「目标目录 sha1 对账」收敛——已搬的跳过搬运、没改名的补改名、没登记的补登记；复制产生新 fid/pickcode，登记一律以复制后 re-list 目标目录的条目为准。
+  - `cleanup-source` 不读目标目录：移动保持 fid/pickcode 不变，已搬走的文件下一轮扫不到，"已登记但没搬走"的源会被扫到并按 `locator.fid == 源 fid` 认出来，补完搬运即收敛。库内已有同 sha1 且 `locator.fid` 不同才判定为多余副本，只删源、不再搬运。
 - cookies 失效返回 `422 cloud115_cookies_invalid`（引导重新扫码）；115 限流返回 `429 cloud115_rate_limited`；其它上游错误 `502 cloud115_upstream_error`。
 
 ### 查询导入作业
@@ -132,7 +136,7 @@
 
 > **cloud115 作业不支持删除/重命名失败源文件**（那是对用户 115 目录的写操作），两端点对 cloud115 作业一律返回 `422 cloud115_failed_file_not_actionable`；请在 115 App 内处理后用重导。
 
-以上限制只针对 JAV 的 `/import-jobs`。非 JAV 普通视频使用 `/video-imports`，支持 `source_cid` 目录和 `source_fid` 单文件来源，也完整支持 115 失败文件的重导、删除和重命名。其有效文件在入库前必须通过复制后目标 pickcode 完成 64 MiB 预算内的技术元数据探测并得到非空 `video_info`；探测失败不创建条目、不执行 `cleanup-source`。详见 [Videos 域导入说明](../videos/README.md#导入-video-imports)。
+以上限制只针对 JAV 的 `/import-jobs`。非 JAV 普通视频使用 `/video-imports`，支持 `source_cid` 目录和 `source_fid` 单文件来源，也完整支持 115 失败文件的重导、删除和重命名。其有效文件在入库前必须通过**源 pickcode** 完成 64 MiB 预算内的技术元数据探测并得到非空 `video_info`；探测失败不创建条目、不搬运。详见 [Videos 域导入说明](../videos/README.md#导入-video-imports)。
 
 ## 状态枚举与中文说明
 

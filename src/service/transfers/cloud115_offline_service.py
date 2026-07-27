@@ -2,8 +2,8 @@
 
 设计要点：
 - 所有 115 下载统一走磁力：candidate 只有 torrent_url 时先拉种子字节、解 info_hash、拼标准磁力，
-  不走 BT 选文件三步（上传种子/解析/选文件）——广告文件由导入管线的扩展名白名单 + cleanup-source
-  兜住，不做下载前过滤。
+  不走 BT 选文件三步（上传种子/解析/选文件）——广告文件由导入管线的扩展名白名单挡住
+  （只有命中白名单的视频会被搬进库），不做下载前过滤。
 - 落地目录：``sakuramedia_downloads/<完整 canonical info_hash>/``（库外缓冲区，与库管理目录
   平级），cid 落进 ``DownloadTask.target_ref``；完成后由对账任务触发 cleanup-source 导入。
 - 选中 cloud115 即执行到底：配额耗尽、cookies 失效等直接报错，不自动降级到其它下载器。

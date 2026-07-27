@@ -54,8 +54,8 @@ class FailedFileResource(SchemaModel):
 class ImportJobCreateRequest(SchemaModel):
     """导入作业创建请求：本地库传 source_path，cloud115 库传 source_cid，恰好其一。
 
-    transfer_mode 取值按库类型分别校验：本地 auto/cleanup-source；cloud115
-    copy/cleanup-source（后者默认）；旧 move 仅作为兼容输入。
+    transfer_mode 取值按库类型分别校验：本地 auto/cleanup-source（复制后删源）；
+    cloud115 copy/cleanup-source（后者默认，云端直接移动）；旧 move 仅作为兼容输入。
     """
 
     library_id: int

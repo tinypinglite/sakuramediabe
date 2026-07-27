@@ -221,8 +221,9 @@ class FilesCapability(Cloud115Capability):
     async def move_files(self, fids: list[str], *, pid: str) -> None:
         """批量移动文件/目录到 pid 目录。
 
-        - 与 copy 协议同型；**移动保持 fid / pickcode 不变** → 登记可直接用源条目。
-        - 不占双倍空间；SDK 保留该底层能力，媒体导入的 cleanup-source 不再使用移动。
+        - 与 copy 协议同型；**移动保持 fid / pickcode 不变** → 登记可直接用源条目，
+          且可以在移动之前就完成（Media 靠 pickcode 定位，与所在目录无关）。
+        - 不占双倍空间；媒体导入的 cleanup-source 走的就是本方法。
         - 端点：POST webapi.115.com/files/move，body {pid, fid[0..n]}。
         """
         if not fids:

@@ -62,77 +62,6 @@ def normalize_jav_media_filename(movie_number: str, source_name: str) -> str:
     return f"{movie_number}{ext}"
 
 
-async def create_cloud115_version_subdir(
-    client: Cloud115Client, *, parent_cid: str, now_ms: int
-) -> str:
-    """在 parent_cid 下建一个新版本目录，冲突时按 ``{ms}-N`` 递增。
-
-    对齐 ``file_transfer.create_version_directory``：先分页 list 判存在再建，
-    因为 115 允许同名目录并存。
-    """
-    base = str(now_ms)
-    candidate = base
-    suffix = 1
-    while True:
-        existing = await _lookup_cloud115_subdir_cid(
-            client, parent_cid=parent_cid, name=candidate
-        )
-        if existing is None:
-            return await client.mkdir(parent_cid, candidate)
-        candidate = f"{base}-{suffix}"
-        suffix += 1
-
-
-async def _lookup_cloud115_subdir_cid(
-    client: Cloud115Client, *, parent_cid: str, name: str
-) -> str | None:
-    offset = 0
-    while True:
-        entries, total = await client.list_dir(parent_cid, offset=offset, limit=1150)
-        for entry in entries:
-            if entry.is_dir and entry.name == name:
-                return entry.entry_id
-        offset += len(entries)
-        if not entries or offset >= total:
-            return None
-
-
-async def ensure_cloud115_jav_target_dir(
-    client: Cloud115Client,
-    *,
-    root_cid: str,
-    movie_number: str,
-    now_ms: int,
-) -> tuple[str, str]:
-    """建 ``jav/{番号}/{版本ms}/``，返回 ``(entity_cid, version_cid)``。"""
-    jav_cid = await find_or_create_subdir(client, parent_cid=root_cid, name=JAV_LIBRARY_SUBDIR)
-    entity_cid = await find_or_create_subdir(client, parent_cid=jav_cid, name=movie_number)
-    version_cid = await create_cloud115_version_subdir(
-        client, parent_cid=entity_cid, now_ms=now_ms
-    )
-    return entity_cid, version_cid
-
-
-async def ensure_cloud115_videos_target_dir(
-    client: Cloud115Client,
-    *,
-    root_cid: str,
-    video_id: int,
-    now_ms: int,
-) -> tuple[str, str]:
-    """建 ``videos/{video_id}/{版本ms}/``，返回 ``(entity_cid, version_cid)``。"""
-    videos_cid = await find_or_create_subdir(
-        client, parent_cid=root_cid, name=VIDEOS_LIBRARY_SUBDIR
-    )
-    entity_cid = await find_or_create_subdir(
-        client, parent_cid=videos_cid, name=str(video_id)
-    )
-    version_cid = await create_cloud115_version_subdir(
-        client, parent_cid=entity_cid, now_ms=now_ms
-    )
-    return entity_cid, version_cid
-
-
 async def _list_subdir_cids_by_name(
     client: Cloud115Client, parent_cid: str
 ) -> Dict[str, str]:
@@ -231,12 +160,31 @@ class Cloud115TargetDirResolver:
         return await self.create_version_dir(entity_cid=entity_cid, now_ms=now_ms)
 
     async def prepare_videos_version_dir(self, *, video_id: int, now_ms: int) -> str:
-        """建 ``videos/{video_id}/{版本ms}/``，返回版本目录 cid。"""
+        """建 ``videos/{video_id}/{版本ms}/``，返回版本目录 cid。
+
+        用于已存在的 VideoItem（如秒传），实体目录可能已被历史导入建过，必须 find-or-create。
+        """
         entity_cid, _ = await self._resolve_entity_cid(
             VIDEOS_LIBRARY_SUBDIR,
             str(video_id),
         )
         return await self.create_version_dir(entity_cid=entity_cid, now_ms=now_ms)
+
+    async def create_new_videos_entity_dirs(
+        self, *, video_id: int, now_ms: int
+    ) -> tuple[str, str]:
+        """为**刚创建**的 VideoItem 建 ``videos/{video_id}/{版本ms}/``，返回两级 cid。
+
+        video_id 来自数据库自增序列，删除后也不复用，所以实体目录必然不存在：直接两次
+        mkdir，跳过"翻整个 videos/ 找实体目录"（该开销随库内视频数线性增长）。
+        已存在的 VideoItem 请改用 prepare_videos_version_dir。
+        """
+        section_cid = await self._section_cid_for(VIDEOS_LIBRARY_SUBDIR)
+        entity_cid = await self._client.mkdir(section_cid, str(video_id))
+        version_cid = await self.create_version_dir(
+            entity_cid=entity_cid, now_ms=now_ms
+        )
+        return entity_cid, version_cid
 
 
 async def list_cloud115_entity_target_files(

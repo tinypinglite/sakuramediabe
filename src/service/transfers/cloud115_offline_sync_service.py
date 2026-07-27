@@ -3,7 +3,7 @@
 职责（APS 周期任务，与 qb 的 DownloadSyncService 平行）：
 1. 拉 115 离线任务列表，把进度/状态回写到本地 DownloadTask（只对账本系统提交的任务，
    即本地已有记录的 info_hash；用户自己在 115 加的离线任务不登记、不导入）。
-2. 完成（status=2）且待导入的任务 → 触发 cloud115 导入（cleanup-source：复制进库后清缓冲区）。
+2. 完成（status=2）且待导入的任务 → 触发 cloud115 导入（cleanup-source：把视频从缓冲区直接移动进库）。
 3. 提交超过 ``downloads.cloud115_offline_abandon_hours``（默认 24h）仍未完成 → 本地标记
    ``abandoned`` + 发系统通知；不删 115 侧任务，后续对账不再关注（用户明确要求的语义）。
 4. 同一媒体库的自动导入串行消费；每项成功后随机休息 10–30 秒再处理下一项。

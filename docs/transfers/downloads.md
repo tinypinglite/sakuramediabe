@@ -357,14 +357,14 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 - 任务幂等键仍为 `(client_id, canonical_hash)`；115 单项提交必须返回唯一、非空且一致的 hash，否则返回 `cloud115_offline_submit_invalid_response` 或 `cloud115_offline_submit_hash_mismatch`
 - 115 侧已存在同 hash 任务时，以远端真实 `save_dir_id` 为准，并通过目录面包屑确认它属于当前媒体库的受管下载根；位于用户目录或无法可靠定位时返回 `409 cloud115_offline_task_exists_unmanaged`，不会接管或清理
 - 离线月配额耗尽返回 `409 cloud115_offline_quota_exceeded`，不自动降级到其它下载器
-- 广告/垃圾小文件不做下载前过滤：导入管线按扩展名白名单分拣，`cleanup-source` 会在导入完成后清掉缓冲目录内的一切残留
+- 广告/垃圾小文件不做下载前过滤：导入管线按扩展名白名单分拣，`cleanup-source` 只把命中白名单的视频移进库，缓冲目录内的残留由用户按需清理
 
 ### 周期对账（`cloud115_offline_sync`）
 
 内部调度任务，默认每分钟执行一次（`[scheduler].cloud115_offline_sync_cron`），对每个 cloud115 下载入口：
 
 - 先用本地状态推进 completed 任务的导入与 ImportJob 终态；只有存在 `queued/downloading` 任务时才拉 115 离线列表
-- 任务完成（status=2）且待导入 → 按任务创建时间串行消费：触发 cloud115 导入（`cleanup-source`：云端复制进库后清缓冲目录）、关联 `ImportJob` 并在本轮等待终态。成功后若还有待导入任务，随机休息 10–30 秒再继续；作业失败或存在失败文件时立即停止本轮，剩余任务留待下一轮
+- 任务完成（status=2）且待导入 → 按任务创建时间串行消费：触发 cloud115 导入（`cleanup-source`：把视频从缓冲目录直接移动进库）、关联 `ImportJob` 并在本轮等待终态。成功后若还有待导入任务，随机休息 10–30 秒再继续；作业失败或存在失败文件时立即停止本轮，剩余任务留待下一轮
 - 自动导入队列在同一下载入口内串行，但不设置媒体库级 mutex；手动 JAV/videos 导入和媒体秒传不会因自动导入而返回库级冲突
 - 提交超过 `[downloads].cloud115_offline_abandon_hours`（默认 `24`，最小 `1`）仍处于 queued/downloading → 本地标记 `abandoned` 并发系统通知；**不删除 115 侧任务**，后续不再请求其远端进度。远端 failed 任务保持 failed，不再因超时改为 abandoned
 - 没有活跃任务时整轮零请求，不打扰 115

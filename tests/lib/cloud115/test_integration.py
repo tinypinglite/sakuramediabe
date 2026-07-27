@@ -575,8 +575,13 @@ async def test_copy_rename_move_delete_lifecycle_real(client: Cloud115Client) ->
         pass
 
 
-async def test_cleanup_source_copy_then_delete_real(client: Cloud115Client) -> None:
-    """只用原文件的临时复制品验证 cleanup-source 顺序，绝不删除用户原始文件。"""
+async def test_cleanup_source_move_real(client: Cloud115Client) -> None:
+    """只用原文件的临时复制品验证 cleanup-source 的移动语义，绝不动用户原始文件。
+
+    这是导入管线的载重假设：移动后 fid / pickcode 不变，所以 Media 可以在搬运之前
+    就用源 fid/pickcode 登记，搬运失败也不会产生孤儿。移动完成后源目录必须为空，
+    且不存在第二份副本（不占双倍空间）。
+    """
     original = await _find_small_file(client)
     if original is None:
         pytest.skip("no small file (<50MB) found for cleanup-source test")
@@ -586,7 +591,7 @@ async def test_cleanup_source_copy_then_delete_real(client: Cloud115Client) -> N
     temp_target_cid: str | None = None
     try:
         temp_target_cid = await client.mkdir("0", f"sdk-it-cleanup-target-{stamp}")
-        # 先把用户原文件复制为隔离的临时源，后续删除只针对这个副本。
+        # 先把用户原文件复制为隔离的临时源，后续移动只作用于这个副本。
         await client.copy_files([original.entry_id], pid=temp_source_cid)
         temp_source: DirEntry | None = None
         for _ in range(10):
@@ -597,30 +602,29 @@ async def test_cleanup_source_copy_then_delete_real(client: Cloud115Client) -> N
             time.sleep(1)
         assert temp_source is not None
 
-        # cleanup-source：复制到目标、单文件改名并按 fid 验证，最后才删除临时源。
-        await client.copy_files([temp_source.entry_id], pid=temp_target_cid)
-        target: DirEntry | None = None
-        for _ in range(10):
-            entries, _ = await client.list_dir(temp_target_cid, limit=50)
-            target = next((entry for entry in entries if not entry.is_dir), None)
-            if target is not None:
-                break
-            time.sleep(1)
-        assert target is not None
+        # cleanup-source：直接移动进目标版本目录，再单文件改名并按 fid 验证。
+        await client.move_files([temp_source.entry_id], pid=temp_target_cid)
+        target_entries, _ = await client.list_dir(temp_target_cid, limit=50)
+        target = next(
+            (entry for entry in target_entries if entry.entry_id == temp_source.entry_id),
+            None,
+        )
+        assert target is not None, "moved file should appear in target dir"
+        # 载重假设：move 不改 fid / pickcode，内容 sha1 自然也不变。
+        assert target.pickcode == temp_source.pickcode, "move must keep pickcode"
         assert target.sha1 == temp_source.sha1 == original.sha1
+
+        # 源目录必须已空：move 是搬走而不是复制，不产生第二份副本。
+        source_entries, _ = await client.list_dir(temp_source_cid, limit=50)
+        assert all(entry.is_dir for entry in source_entries)
 
         suffix = target.name.rsplit(".", 1)[-1] if "." in target.name else ""
         expected_name = f"cleanup-verified-{stamp}.{suffix}" if suffix else f"cleanup-verified-{stamp}"
         await client.rename_file(target.entry_id, expected_name)
         verified = await client.file_info(target.entry_id)
         assert verified.name == expected_name
-
-        await client.delete_files([temp_source.entry_id])
-        source_entries, _ = await client.list_dir(temp_source_cid, limit=50)
-        assert all(entry.entry_id != temp_source.entry_id for entry in source_entries)
-        # 清源完成后目标仍可查询，证明不是先移动或误删目标。
-        surviving_target = await client.file_info(target.entry_id)
-        assert surviving_target.name == expected_name
+        # 改名不改 fid：搬运前登记的 locator 在改名后依然指向同一个文件。
+        assert verified.file_id == temp_source.entry_id
     finally:
         cleanup_cids = [temp_source_cid]
         if temp_target_cid is not None:

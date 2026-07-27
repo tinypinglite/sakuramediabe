@@ -12,12 +12,16 @@ from src.service.transfers.cloud115_import_common import (
 from src.service.transfers.cloud115_import_service import (
     Cloud115ImportService,
     CloudImportGroup,
+    CloudSourceFile,
 )
 from src.service.transfers.cloud115_import_job_service import (
     Cloud115ImportJobService,
 )
 from src.service.transfers.cloud115_offline_sync_service import (
     Cloud115OfflineSyncService,
+)
+from src.service.videos.cloud115_video_import_service import (
+    Cloud115VideoImportService,
 )
 
 
@@ -402,6 +406,7 @@ def test_single_manual_import_and_managed_import_do_not_use_group_rest(monkeypat
 def test_new_entity_skips_reconciliation_but_existing_entity_keeps_it(
     monkeypatch,
 ):
+    # 目标目录 sha1 对账只属于 copy 模式：cleanup-source 已改为直接移动，不读目标目录。
     entity_scan = AsyncMock(return_value={})
     monkeypatch.setattr(
         "src.service.transfers.cloud115_import_service.list_cloud115_entity_target_files",
@@ -414,7 +419,7 @@ def test_new_entity_skips_reconciliation_but_existing_entity_keeps_it(
         "library": object(),
         "movie": object(),
         "group": group,
-        "transfer_mode": "cleanup-source",
+        "transfer_mode": "copy",
         "failure_items": [],
         "stats": {"imported": 0, "skipped": 0, "failed": 0},
         "new_playable_movies": {},
@@ -571,3 +576,504 @@ def test_auto_import_queue_stops_without_rest_after_failure(monkeypatch):
     assert count == 1
     assert triggered == [1]
     assert sleeps == []
+
+
+# ---------------------------------------------------------------------------
+# cleanup-source = 真正移动：不复制、不 re-list 目标、不删除已移动的视频源文件
+# ---------------------------------------------------------------------------
+
+
+class _FakeCloudClient:
+    """记录全部远端调用的假 client；rename 之后 file_info 立即可见。"""
+
+    def __init__(self, *, fail_on: str | None = None):
+        self.calls: list = []
+        self.names: dict[str, str] = {}
+        self._fail_on = fail_on
+
+    def _maybe_fail(self, kind: str) -> None:
+        if self._fail_on == kind:
+            raise RuntimeError(f"{kind} boom")
+
+    async def move_files(self, fids, *, pid):
+        self.calls.append(("move_files", tuple(fids), pid))
+        self._maybe_fail("move_files")
+
+    async def copy_files(self, fids, *, pid):
+        self.calls.append(("copy_files", tuple(fids), pid))
+
+    async def rename_file(self, fid, name):
+        self.calls.append(("rename_file", fid, name))
+        self._maybe_fail("rename_file")
+        self.names[fid] = name
+
+    async def delete_files(self, fids):
+        self.calls.append(("delete_files", tuple(fids)))
+
+    async def list_dir(self, cid, *, offset, limit):
+        self.calls.append(("list_dir", cid))
+        return [], 0
+
+    async def file_info(self, fid):
+        self.calls.append(("file_info", fid))
+        return SimpleNamespace(name=self.names.get(fid, ""))
+
+    @property
+    def kinds(self) -> list[str]:
+        return [call[0] for call in self.calls]
+
+
+class _FakeTargetDirResolver:
+    def __init__(self):
+        self.version_cids: list[str] = []
+
+    async def resolve_jav_entity(self, movie_number):
+        return f"entity-{movie_number}", True
+
+    async def create_version_dir(self, *, entity_cid, now_ms):
+        del entity_cid, now_ms
+        cid = f"version-{len(self.version_cids)}"
+        self.version_cids.append(cid)
+        return cid
+
+
+def _source_file(
+    *,
+    fid: str = "src-fid",
+    name: str = "ABC-001-hd.mp4",
+    sha1: str = "SHA-A",
+    subtitle=None,
+):
+    return CloudSourceFile(
+        fid=fid,
+        pickcode=f"pc-{fid}",
+        name=name,
+        sha1=sha1,
+        size=4096,
+        play_long=60,
+        censored=False,
+        rel_dir_parts=(),
+        parent_cid="source",
+        movie_number="ABC-001",
+        subtitle=subtitle,
+    )
+
+
+@contextmanager
+def _noop_atomic():
+    yield
+
+
+def _run_move_group(
+    monkeypatch,
+    *,
+    files,
+    existing_by_sha1: dict | None = None,
+    client: _FakeCloudClient | None = None,
+):
+    """跑一遍 cleanup-source 分支，返回 (client, resolver, stats, failure_items, 登记记录)。"""
+    existing_by_sha1 = existing_by_sha1 or {}
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.Cloud115MediaRegistrar"
+        ".find_library_media",
+        lambda library, sha1, *, valid=None: existing_by_sha1.get(sha1),
+    )
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.get_database",
+        lambda: SimpleNamespace(atomic=_noop_atomic),
+    )
+
+    service = Cloud115ImportService()
+    service._probe_cloud115_media = AsyncMock(
+        return_value=SimpleNamespace(
+            video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
+        )
+    )
+    service._import_subtitle = AsyncMock()
+
+    registered: list[dict] = []
+
+    def fake_register(**kwargs):
+        registered.append(kwargs)
+        # 与真实 _register_media 一致：命中已有有效记录时只更新定位，返回 is_new=False。
+        is_new = existing_by_sha1.get(kwargs["cloud_file"].sha1) is None
+        return (
+            SimpleNamespace(
+                id=len(registered),
+                backend_locator={
+                    "fid": kwargs["target_fid"],
+                    "pickcode": kwargs["target_pickcode"],
+                    "name": kwargs["encoded_name"],
+                    "source_path": kwargs["cloud_file"].rel_path,
+                },
+                save=lambda: None,
+            ),
+            is_new,
+        )
+
+    service._register_media = fake_register
+
+    client = client or _FakeCloudClient()
+    resolver = _FakeTargetDirResolver()
+    stats = {"imported": 0, "skipped": 0, "failed": 0}
+    failure_items: list[dict] = []
+
+    asyncio.run(
+        service._import_group_by_move(
+            client,
+            library=object(),
+            movie=SimpleNamespace(id=7, movie_number="ABC-001", title="t"),
+            group=CloudImportGroup(movie_number="ABC-001", files=list(files)),
+            target_dir_resolver=resolver,
+            failure_items=failure_items,
+            stats=stats,
+            new_playable_movies={},
+        )
+    )
+    return client, resolver, stats, failure_items, registered
+
+
+def test_cleanup_source_moves_instead_of_copying(monkeypatch):
+    source = _source_file()
+    client, resolver, stats, failure_items, registered = _run_move_group(
+        monkeypatch, files=[source]
+    )
+
+    assert client.calls == [
+        ("move_files", ("src-fid",), "version-0"),
+        ("rename_file", "src-fid", "ABC-001.mp4"),
+        ("file_info", "src-fid"),
+    ]
+    # 不复制、不 re-list 目标目录、不删除已移动的视频源文件。
+    assert "copy_files" not in client.kinds
+    assert "list_dir" not in client.kinds
+    assert "delete_files" not in client.kinds
+    assert resolver.version_cids == ["version-0"]
+    assert stats == {"imported": 1, "skipped": 0, "failed": 0}
+    assert failure_items == []
+    # 登记用源 fid/pickcode，因为 move 不改这两个值。
+    assert registered[0]["target_fid"] == "src-fid"
+    assert registered[0]["target_pickcode"] == "pc-src-fid"
+
+
+def test_cleanup_source_registers_before_moving(monkeypatch):
+    """登记必须先于搬运：移动失败时记录已在、可播，源也还在原处。"""
+    order: list[str] = []
+
+    class _OrderedClient(_FakeCloudClient):
+        async def move_files(self, fids, *, pid):
+            order.append("move")
+            await super().move_files(fids, pid=pid)
+
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.Cloud115MediaRegistrar"
+        ".find_library_media",
+        lambda library, sha1, *, valid=None: None,
+    )
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.get_database",
+        lambda: SimpleNamespace(atomic=_noop_atomic),
+    )
+    service = Cloud115ImportService()
+    service._probe_cloud115_media = AsyncMock(
+        return_value=SimpleNamespace(
+            video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
+        )
+    )
+    service._import_subtitle = AsyncMock()
+
+    def fake_register(**kwargs):
+        order.append("register")
+        return SimpleNamespace(id=1, backend_locator={}, save=lambda: None), True
+
+    service._register_media = fake_register
+
+    asyncio.run(
+        service._import_group_by_move(
+            _OrderedClient(),
+            library=object(),
+            movie=SimpleNamespace(id=7, movie_number="ABC-001", title="t"),
+            group=CloudImportGroup(movie_number="ABC-001", files=[_source_file()]),
+            target_dir_resolver=_FakeTargetDirResolver(),
+            failure_items=[],
+            stats={"imported": 0, "skipped": 0, "failed": 0},
+            new_playable_movies={},
+        )
+    )
+
+    assert order == ["register", "move"]
+
+
+def test_already_registered_same_fid_is_moved_not_deleted(monkeypatch):
+    """上轮登记成功但没搬走：locator.fid 与源 fid 相同，必须补搬运而不是删源。"""
+    source = _source_file()
+    existing = SimpleNamespace(
+        id=11,
+        video_info={"codec": "h264"},
+        backend_locator={"fid": "src-fid", "pickcode": "pc-src-fid"},
+    )
+    client, _resolver, stats, failure_items, registered = _run_move_group(
+        monkeypatch, files=[source], existing_by_sha1={"SHA-A": existing}
+    )
+
+    assert ("move_files", ("src-fid",), "version-0") in client.calls
+    assert "delete_files" not in client.kinds
+    assert len(registered) == 1
+    # 续做搬运的文件算导入成功：用户刚重试完，不该看到"跳过"。
+    assert stats == {"imported": 1, "skipped": 0, "failed": 0}
+    assert failure_items == []
+
+
+def test_library_duplicate_with_other_fid_only_deletes_source(monkeypatch):
+    """库里已有独立副本（fid 不同）：源是多余的一份，删掉即可，不再搬运。"""
+    source = _source_file()
+    existing = SimpleNamespace(
+        id=12,
+        video_info={"codec": "h264"},
+        backend_locator={"fid": "other-fid", "pickcode": "pc-other"},
+    )
+    client, resolver, stats, failure_items, registered = _run_move_group(
+        monkeypatch, files=[source], existing_by_sha1={"SHA-A": existing}
+    )
+
+    assert client.calls == [("delete_files", ("src-fid",))]
+    assert "move_files" not in client.kinds
+    assert resolver.version_cids == []
+    assert registered == []
+    assert stats["skipped"] == 1
+    assert failure_items[0]["reason"] == "duplicate_fingerprint"
+
+
+def test_move_failure_keeps_source_and_stays_retryable(monkeypatch):
+    """移动失败：不删源、不移回，只回收空版本目录，失败项保持可重导。"""
+    client = _FakeCloudClient(fail_on="move_files")
+    _client, _resolver, stats, failure_items, registered = _run_move_group(
+        monkeypatch, files=[_source_file()], client=client
+    )
+
+    assert client.kinds == ["move_files", "delete_files"]
+    # 唯一的 delete 是回收本轮新建的空版本目录，不是删源文件。
+    assert client.calls[1] == ("delete_files", ("version-0",))
+    assert len(registered) == 1  # 登记已完成，Media 仍可播
+    assert stats == {"imported": 0, "skipped": 0, "failed": 1}
+    assert failure_items[0]["reason"] == "cloud115_transfer_failed"
+    assert failure_items[0]["kind"] == "file"
+
+
+def test_rename_failure_after_move_is_warning_and_restores_locator_name(monkeypatch):
+    """改名失败时文件已在库、源已消失：降级为告警项，并把 locator.name 回写成实际名。"""
+    client = _FakeCloudClient(fail_on="rename_file")
+    _client, _resolver, stats, failure_items, registered = _run_move_group(
+        monkeypatch, files=[_source_file()], client=client
+    )
+
+    assert "move_files" in client.kinds
+    assert "delete_files" not in client.kinds
+    assert stats == {"imported": 1, "skipped": 0, "failed": 0}
+    assert failure_items[0]["reason"] == "cloud115_rename_failed"
+    # 重导会因为源已不存在而无从下手，所以不能留成可重导项。
+    assert failure_items[0]["kind"] == "warning"
+
+
+def test_import_group_dispatches_by_transfer_mode(monkeypatch):
+    service = Cloud115ImportService()
+    service._import_group_by_move = AsyncMock()
+    service._import_group_by_copy = AsyncMock()
+    common = {
+        "library": object(),
+        "movie": object(),
+        "group": CloudImportGroup(movie_number="ABC-001"),
+        "target_dir_resolver": object(),
+        "failure_items": [],
+        "stats": {"imported": 0, "skipped": 0, "failed": 0},
+        "new_playable_movies": {},
+    }
+
+    asyncio.run(service._import_group(object(), transfer_mode="cleanup-source", **common))
+    service._import_group_by_move.assert_awaited_once()
+    service._import_group_by_copy.assert_not_awaited()
+
+    asyncio.run(service._import_group(object(), transfer_mode="copy", **common))
+    service._import_group_by_copy.assert_awaited_once()
+    service._import_group_by_move.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# videos 导入：来源只遍历一次、videos/ 只解析一次、新实体目录直接建
+# ---------------------------------------------------------------------------
+
+
+def test_video_source_collection_lists_each_directory_once(monkeypatch):
+    source_meta = DirMeta(
+        cid="source",
+        name="batch",
+        pickcode="",
+        parent_id="parent-cid",
+        file_count=0,
+        folder_count=0,
+        play_long_seconds=0,
+        mtime=0,
+        ctime=0,
+        paths=(DirBreadcrumb(file_id="parent-cid", name="parent"),),
+    )
+    monkeypatch.setattr(
+        "src.service.videos.cloud115_video_import_service"
+        ".assert_cid_outside_library_root",
+        AsyncMock(return_value=source_meta),
+    )
+
+    class FakeClient:
+        def __init__(self):
+            self.list_calls = []
+            self.dir_info = AsyncMock()
+
+        async def list_dir(self, cid, *, offset, limit):
+            del offset, limit
+            self.list_calls.append(cid)
+            entries = {
+                "source": [
+                    _entry("sub", "source", "CD1", is_dir=True),
+                    _entry("f1", "source", "a.mp4", is_dir=False),
+                ],
+                "sub": [_entry("f2", "sub", "b.mp4", is_dir=False)],
+            }[cid]
+            return entries, len(entries)
+
+    client = FakeClient()
+    display, sources = asyncio.run(
+        Cloud115VideoImportService()._collect_sources(
+            client,
+            source_cid="source",
+            source_fid=None,
+            root_cid="root",
+            only_files=None,
+        )
+    )
+
+    # 目录树只 BFS 一遍，且安全校验取回的源目录元信息被复用，不再重复 dir_info。
+    assert client.list_calls == ["source", "sub"]
+    client.dir_info.assert_not_awaited()
+    assert sorted(item.rel_path for item in sources) == ["CD1/b.mp4", "a.mp4"]
+    assert display == "parent/batch"
+
+
+def test_new_video_entity_dirs_are_created_without_listing():
+    class FakeClient:
+        def __init__(self):
+            self.list_calls = []
+            self.mkdir_calls = []
+
+        async def list_dir(self, cid, *, offset, limit):
+            del offset, limit
+            self.list_calls.append(cid)
+            entries = [_entry("videos-cid", "root", "videos", is_dir=True)]
+            return entries, len(entries)
+
+        async def mkdir(self, parent_cid, name):
+            self.mkdir_calls.append((parent_cid, name))
+            return f"created-{parent_cid}-{name}"
+
+    client = FakeClient()
+    resolver = Cloud115TargetDirResolver(client, root_cid="root")
+
+    assert asyncio.run(
+        resolver.create_new_videos_entity_dirs(video_id=31, now_ms=1700000000000)
+    ) == ("created-videos-cid-31", "created-created-videos-cid-31-1700000000000")
+    assert asyncio.run(
+        resolver.create_new_videos_entity_dirs(video_id=32, now_ms=1700000000001)
+    ) == ("created-videos-cid-32", "created-created-videos-cid-32-1700000000001")
+
+    # videos/ 段目录整个作业只解析一次；每个新 video_id 只有两次 mkdir，零次列目录。
+    assert client.list_calls == ["root"]
+    assert client.mkdir_calls == [
+        ("videos-cid", "31"),
+        ("created-videos-cid-31", "1700000000000"),
+        ("videos-cid", "32"),
+        ("created-videos-cid-32", "1700000000001"),
+    ]
+
+
+def _run_video_cleanup_source(monkeypatch, *, existing, source_fid="src-fid"):
+    """跑一遍 videos 的 cleanup-source 分流，返回被 mock 的 service。"""
+    source = CloudSourceFile(
+        fid=source_fid,
+        pickcode="pc-src",
+        name="a.mp4",
+        sha1="SHA-A",
+        size=2048,
+        play_long=30,
+        censored=False,
+        rel_dir_parts=(),
+        parent_cid="source",
+    )
+
+    @asynccontextmanager
+    async def fake_client_for(_library):
+        yield SimpleNamespace()
+
+    module = "src.service.videos.cloud115_video_import_service"
+    monkeypatch.setattr(f"{module}.cloud115_client_for", fake_client_for)
+    monkeypatch.setattr(
+        f"{module}.require_cloud115_library", lambda _library: {"root_cid": "root"}
+    )
+    monkeypatch.setattr(
+        f"{module}.Cloud115MediaRegistrar.find_library_media",
+        lambda library, sha1, *, valid=None: existing,
+    )
+
+    service = Cloud115VideoImportService()
+    service._collect_sources = AsyncMock(return_value=("display", [source]))
+    service._move_registered_source = AsyncMock()
+    service._cleanup_source_only = AsyncMock()
+    service._import_file = AsyncMock()
+
+    asyncio.run(
+        service._run(
+            library=object(),
+            source_cid="source",
+            source_fid=None,
+            transfer_mode="cleanup-source",
+            collection_id=None,
+            only_files=None,
+            failure_items=[],
+            stats={"imported": 0, "skipped": 0, "failed": 0},
+            progress_callback=None,
+            job=SimpleNamespace(source_path="", save=lambda: None),
+        )
+    )
+    return service
+
+
+def test_video_registered_same_fid_is_moved_not_deleted(monkeypatch):
+    """videos 侧同样的安全底线：locator.fid 就是这个源时补搬运，绝不能当重复副本删掉。"""
+    service = _run_video_cleanup_source(
+        monkeypatch,
+        existing=SimpleNamespace(
+            id=5, video_item_id=9, backend_locator={"fid": "src-fid"}
+        ),
+    )
+
+    service._move_registered_source.assert_awaited_once()
+    service._cleanup_source_only.assert_not_awaited()
+    service._import_file.assert_not_awaited()
+
+
+def test_video_library_duplicate_with_other_fid_deletes_source(monkeypatch):
+    service = _run_video_cleanup_source(
+        monkeypatch,
+        existing=SimpleNamespace(
+            id=6, video_item_id=9, backend_locator={"fid": "other-fid"}
+        ),
+    )
+
+    service._cleanup_source_only.assert_awaited_once()
+    service._move_registered_source.assert_not_awaited()
+    service._import_file.assert_not_awaited()
+
+
+def test_video_new_content_goes_through_import_file(monkeypatch):
+    service = _run_video_cleanup_source(monkeypatch, existing=None)
+
+    service._import_file.assert_awaited_once()
+    service._move_registered_source.assert_not_awaited()
+    service._cleanup_source_only.assert_not_awaited()
