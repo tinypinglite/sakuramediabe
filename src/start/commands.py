@@ -685,13 +685,16 @@ def scan_media_files():
     service = MediaFileScanService()
     stats = service.scan_media_files()
     logger.info(
-        "CLI scan-media-files finished scanned_media={} updated_media={} skipped_media={} failed_media={} invalidated_media={} revived_media={}",
+        "CLI scan-media-files finished scanned_media={} updated_media={} "
+        "skipped_media={} failed_media={} invalidated_media={} revived_media={} "
+        "cloud115_index_failed_libraries={}",
         stats["scanned_media"],
         stats["updated_media"],
         stats["skipped_media"],
         stats["failed_media"],
         stats["invalidated_media"],
         stats["revived_media"],
+        stats["cloud115_index_failed_libraries"],
     )
     click.echo(
         "media file scan finished: "
@@ -700,7 +703,8 @@ def scan_media_files():
         f"skipped_media={stats['skipped_media']} "
         f"failed_media={stats['failed_media']} "
         f"invalidated_media={stats['invalidated_media']} "
-        f"revived_media={stats['revived_media']}"
+        f"revived_media={stats['revived_media']} "
+        f"cloud115_index_failed_libraries={stats['cloud115_index_failed_libraries']}"
     )
 
 

@@ -217,9 +217,11 @@ def test_aps_scan_media_files_command_runs_job(monkeypatch):
         {
             "scanned_media": 6, "updated_media": 3, "skipped_media": 2,
             "failed_media": 1, "invalidated_media": 1, "revived_media": 1,
+            "cloud115_index_failed_libraries": 1,
         },
         "media file scan finished: scanned_media=6 updated_media=3 skipped_media=2 "
-        "failed_media=1 invalidated_media=1 revived_media=1",
+        "failed_media=1 invalidated_media=1 revived_media=1 "
+        "cloud115_index_failed_libraries=1",
     )
 
 

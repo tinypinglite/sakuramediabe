@@ -73,7 +73,7 @@ cookies 明确失效后，重新执行扫码 token/status 两步；确认完成�
 - **缩略图**：APS `generate-media-thumbnails` 对 cloud115 媒体只使用最低可用清晰度的 HLS TS，每 10 秒固定一个目标点；媒体严格串行，单媒体内最多并发读取 3 个不同分片。同一 TS 命中多个目标时只解码一次。转码未完成或认证、会员、限流、网络/上游暂不可用时延后处理且不消耗重试次数，不回退整文件 Range。
 - **片段**：创建片段时现取绑定专用 UA 的 115 直链，经单请求、可 seek 的受控 RangeReader 交给 PyAV 按缩略图区间无转码 remux，生成本地独立片段资产；不会让 ffmpeg 并发直读 115 URL。
 - **删除**：删除 cloud115 Media 会同时删 115 云端文件（进 115 回收站）；cookies 失效等上游错误时记录保留并报错，避免云端孤儿文件。
-- **有效性对账**：APS `scan-media-files` 对 cloud115 媒体按 pickcode 探活——远端已删/封禁标 `invalid`、重新出现复活；cookies 失效等上游不可用**跳过本条不动 valid**。
+- **有效性对账**：APS `scan-media-files` 仅递归枚举每个 cloud115 媒体库配置的 `root_cid` 受管子树，再按 pickcode 在内存中对账——远端文件已删除则标 `invalid`、重新出现则复活。枚举失败时整库跳过、不改任何 `valid`，并通过 `cloud115_index_failed_libraries` 显式报告失败库数；任务不扫描或同步字幕。
 - **cookies 保活**：APS `keepalive-cloud115-cookies`（默认每 20 分钟）探活并把 SDK merge 到的最新 cookies 快照回写 `backend_config`；探测结果分为 `alive/expired/unavailable`，仅明确 `expired` 时发系统通知（同题未读去重）。
 
 ## 详细接口定义

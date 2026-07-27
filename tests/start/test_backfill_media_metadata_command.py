@@ -45,6 +45,7 @@ def test_scan_media_files_command_outputs_stats(monkeypatch):
                 "failed_media": 1,
                 "invalidated_media": 1,
                 "revived_media": 1,
+                "cloud115_index_failed_libraries": 1,
             }
 
     monkeypatch.setattr("src.start.commands._ensure_database_ready", lambda: None)
@@ -63,6 +64,7 @@ def test_scan_media_files_command_outputs_stats(monkeypatch):
     assert "failed_media=1" in result.output
     assert "invalidated_media=1" in result.output
     assert "revived_media=1" in result.output
+    assert "cloud115_index_failed_libraries=1" in result.output
 
 
 def test_cleanup_movie_subtitle_fetch_history_command_outputs_stats(monkeypatch):

@@ -266,6 +266,9 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
             ("failed_media", "failed_media", 0),
             ("invalidated_media", "invalidated_media", 0),
             ("revived_media", "revived_media", 0),
+            # 远端清单枚举失败的 cloud115 库数：非 0 时该库媒体本轮未做 valid 判定，
+            # 结果与"全部正常"同形，必须单独出数。
+            ("cloud115_index_failed_libraries", "cloud115_index_failed_libraries", 0),
         ),
     ),
     JobDefinition(
