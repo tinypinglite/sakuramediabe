@@ -11,7 +11,48 @@
 from src.common.movie_numbers import (
     movie_number_lookup_values,
     normalize_movie_number,
+    parse_movie_number_from_text,
 )
+from src.service.transfers.media_source_scanner import parse_movie_number_from_scan_path
+
+
+class TestParseMovieNumberFromText:
+    def test_letter_number_forms_join_with_dash(self):
+        assert parse_movie_number_from_text("abc-123.mp4") == "ABC-123"
+        assert parse_movie_number_from_text("SSIS00123") == "SSIS-123"
+        assert parse_movie_number_from_text("dvmm206") == "DVMM-206"
+
+    def test_numeric_pair_preserves_source_separator(self):
+        # 分隔符是片商标识：一本道 _ / 加勒比 -，同日番号是两部不同影片，绝不转写。
+        assert parse_movie_number_from_text("122124_001-1080p.mp4") == "122124_001"
+        assert parse_movie_number_from_text("Caribbeancom 122124-001") == "122124-001"
+
+    def test_fc2_variants_collapse_to_canonical(self):
+        assert parse_movie_number_from_text("FC2PPV-1234567") == "FC2-1234567"
+        assert parse_movie_number_from_text("FC2-PPV-1234567") == "FC2-1234567"
+        assert parse_movie_number_from_text("FC2PPV_1234567") == "FC2-1234567"
+
+    def test_domain_noise_removed_before_matching(self):
+        # remove_disturb 先剥域名，站点水印不会被误识别成番号。
+        assert parse_movie_number_from_text("hjd2048.com-0602meyd424") == "MEYD-424"
+
+    def test_unparseable_returns_empty(self):
+        assert parse_movie_number_from_text("random words") == ""
+        assert parse_movie_number_from_text("") == ""
+        assert parse_movie_number_from_text(None) == ""
+
+
+class TestParseMovieNumberFromScanPath:
+    def test_number_in_parent_directory(self):
+        # 截断到最后两级：番号在父目录名、文件名是 movie.mp4 的常见布局必须命中。
+        assert parse_movie_number_from_scan_path("/vol/media/ABC-123/movie.mp4") == "ABC-123"
+
+    def test_upper_directories_do_not_leak(self):
+        # 上层目录的数字串不进入扫描范围，不会被误判成番号。
+        assert parse_movie_number_from_scan_path("/downloads/temp1234/sub/movie.mp4") == ""
+
+    def test_plain_filename(self):
+        assert parse_movie_number_from_scan_path("122124_001.mp4") == "122124_001"
 
 
 class TestNormalizeMovieNumber:

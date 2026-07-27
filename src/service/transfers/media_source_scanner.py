@@ -14,7 +14,7 @@ from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
 from src.common import (
-    parse_movie_number_from_path,
+    parse_movie_number_from_text,
     subtitle_matches_movie_number,
 )
 from src.common.content_fingerprint import compute_content_fingerprint
@@ -53,8 +53,16 @@ class ImportGroup(BaseModel):
     files: List[ScannedSourceFile]
 
 
-def parse_movie_number(file_path: str) -> str:
-    return parse_movie_number_from_path(file_path)
+def parse_movie_number_from_scan_path(file_path: str) -> str:
+    """从扫描路径解析番号：只看最后两段（父目录 + 文件名）。
+
+    截断是扫描链路的领域知识，不放进番号模块——上层目录名里的数字串（临时目录、年份目录）
+    会被正则误识别成番号，限制扫描范围能挡住这类误报；代价是番号只出现在更上层目录名时
+    解析失败，走 FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND 由用户处理。
+    """
+    split_parts = (file_path or "").split("/")
+    target = "/".join(split_parts[-2:]) if len(split_parts) > 2 else split_parts[-1]
+    return parse_movie_number_from_text(target)
 
 
 def _normalize_for_fingerprint(movie_number: str) -> str:
@@ -231,7 +239,7 @@ def scan_source_files(
             failure_items.append(make_failure_item(path, FAILURE_REASON_FILE_TOO_SMALL))
             continue
 
-        movie_number = parse_movie_number(str(path))
+        movie_number = parse_movie_number_from_scan_path(str(path))
         if not movie_number:
             failed_count += 1
             logger.warning("Import scan failed to parse movie number path={}", str(path))

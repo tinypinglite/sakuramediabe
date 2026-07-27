@@ -28,7 +28,7 @@ from typing import Callable, Dict, List, NamedTuple
 
 from loguru import logger
 
-from src.common import parse_movie_number_from_path, subtitle_matches_movie_number
+from src.common import subtitle_matches_movie_number
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.common.media_import_status import (
     FAILURE_REASON_CLOUD115_FILE_CENSORED,
@@ -64,6 +64,7 @@ from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeService,
 )
 from src.service.transfers.file_transfer import JAV_LIBRARY_SUBDIR
+from src.service.transfers.media_source_scanner import parse_movie_number_from_scan_path
 from src.service.transfers.cloud115_import_common import (
     CLOUD115_METADATA_PROBE_MAX_BYTES,
     CLOUD115_METADATA_PROBE_UA,
@@ -522,9 +523,9 @@ class Cloud115ImportService:
             )
 
         # 番号识别前置：配对与分组共用识别结果，避免重复解析。
-        # 喂「源目录名/相对路径」，识别函数取最后两级（覆盖番号在目录名的情形）。
+        # 喂「源目录名/相对路径」，与本地扫描共用同一截断策略（取最后两级，覆盖番号在目录名的情形）。
         for video in videos:
-            video.movie_number = parse_movie_number_from_path(
+            video.movie_number = parse_movie_number_from_scan_path(
                 "/".join([source_name, video.rel_path])
             )
 

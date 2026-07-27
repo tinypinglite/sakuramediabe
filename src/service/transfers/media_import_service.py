@@ -29,7 +29,6 @@ from src.service.transfers.media_import_writer import import_single_scanned_file
 from src.service.transfers.media_source_scanner import (
     ImportTransferMode,
     find_media_library_containing_path,
-    parse_movie_number,
     scan_source_files,
 )
 # 导入状态/失败原因的取值统一收口到 media_import_status 模块。

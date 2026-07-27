@@ -17,7 +17,6 @@ from .logging import configure_logging, get_logging_level_name
 from .movie_numbers import (
     movie_number_lookup_values,
     normalize_movie_number,
-    parse_movie_number_from_path,
     parse_movie_number_from_text,
     remove_disturb,
     subtitle_matches_movie_number,
@@ -46,7 +45,6 @@ __all__ = [
     "movie_number_lookup_values",
     "normalize_movie_number",
     "parse_external_datetime",
-    "parse_movie_number_from_path",
     "parse_movie_number_from_text",
     "subtitle_matches_movie_number",
     "resolve_image_file_path",

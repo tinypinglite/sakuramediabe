@@ -20,7 +20,7 @@ from src.common.service_helpers import (
 )
 from src.common import (
     build_signed_media_url,
-    parse_movie_number_from_path,
+    parse_movie_number_from_text,
 )
 from src.common.runtime_time import utc_now_for_db
 from src.metadata._providers.javdb import JavdbProvider
@@ -588,7 +588,8 @@ class MovieService:
 
     @staticmethod
     def parse_movie_number_query(query: str) -> MovieNumberParseResponse:
-        parsed_movie_number = parse_movie_number_from_path(query.strip())
+        # 用户输入整体就是扫描范围，不需要路径截断，直接走文本识别。
+        parsed_movie_number = parse_movie_number_from_text(query.strip())
         if not parsed_movie_number:
             return MovieNumberParseResponse(
                 query=query,
