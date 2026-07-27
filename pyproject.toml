@@ -47,13 +47,13 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-# 默认开 xdist 并行 + testmon 增量：
-#   -n auto   pytest-xdist 按 CPU 核数并行，全量约 6× 提速
+# 默认开 6 个 xdist worker + testmon 增量：
+#   -n 6      与本机物理核心数匹配，避免每个 worker 独立建库时过度并发 PostgreSQL
 #   --testmon pytest-testmon 只跑受改动影响的用例（.testmondata 本地缓存，已 gitignore）
 # 日常开发改一个文件通常只跑几秒；首次运行会跑全集建 baseline（~90s）。
 # 想跑全量做验收/对比：uv run pytest --no-testmon
 # 调试单个用例（-s / pdb / 断点）：uv run pytest -n0 --no-testmon path::case
-addopts = "-n auto --testmon"
+addopts = "-n 6 --testmon"
 testpaths = ["tests"]
 # pytest-asyncio auto 模式：所有 async def test_* 自动按协程执行，免逐个 @pytest.mark.asyncio。
 asyncio_mode = "auto"
