@@ -28,7 +28,7 @@ from src.service.transfers.common import (
     QB_ETA_INFINITY,
     build_task_movie_filter,
     is_qb_managed_torrent,
-    map_download_state,
+    resolve_qbittorrent_download_state,
 )
 from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
 
@@ -86,7 +86,8 @@ class DownloadProgressHub:
         movie_number: str | None = None,
     ) -> DownloadProgressSubscription:
         client_ids = self._resolve_client_ids(client_id=client_id, movie_number=movie_number)
-        normalized_movie_number = (movie_number or "").strip().upper() or None
+        # 订阅过滤与推送 payload 两侧都是规范番号（来自影片页 / DownloadTask 行），精确比较。
+        normalized_movie_number = (movie_number or "").strip() or None
         with self._lock:
             if self._closed:
                 raise RuntimeError("download progress hub is closed")
@@ -533,7 +534,11 @@ class DownloadProgressHub:
             info_hash=info_hash,
             progress=self._as_float(torrent.get("progress")),
             raw_state=raw_state,
-            download_state=map_download_state(raw_state),
+            # 与对账用同一判定，避免实时流和数据库对同一个种子给出不同状态。
+            # sync 增量包里没有 last_activity 时函数自动退回 map_download_state 的结果。
+            download_state=resolve_qbittorrent_download_state(
+                raw_state, torrent.get("last_activity")
+            ),
             download_speed_bytes=self._as_int(torrent.get("dlspeed")),
             uploaded_speed_bytes=self._as_int(torrent.get("upspeed")),
             downloaded_bytes=self._as_int(torrent.get("downloaded")),
@@ -582,4 +587,4 @@ class DownloadProgressHub:
             return False
         if subscription.movie_number is None:
             return True
-        return str(payload.get("movie_number") or "").strip().upper() == subscription.movie_number
+        return str(payload.get("movie_number") or "").strip() == subscription.movie_number

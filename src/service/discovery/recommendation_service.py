@@ -11,12 +11,14 @@ from collections import defaultdict
 from typing import Iterable, Sequence
 
 from loguru import logger
-from peewee import fn
 
 from src.api.exception.errors import ApiError
-from src.common import normalize_movie_number
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import parse_special_tags_text, with_movie_card_relations
+from src.common.service_helpers import (
+    find_movie_by_number,
+    parse_special_tags_text,
+    with_movie_card_relations,
+)
 from src.model import (
     Media,
     Movie,
@@ -102,14 +104,6 @@ def _load_tag_groups(movie_ids: Iterable[int]) -> dict[int, set[int]]:
 
 class MovieRecommendationService:
     """影片相似度计算与查询。"""
-
-    @staticmethod
-    def _normalized_movie_number_expression():
-        normalized = fn.UPPER(fn.TRIM(Movie.movie_number))
-        normalized = fn.REPLACE(normalized, " ", "")
-        normalized = fn.REPLACE(normalized, "_", "-")
-        normalized = fn.REPLACE(normalized, "PPV-", "")
-        return normalized
 
     @staticmethod
     def _attach_movie_flags(movies: Sequence[Movie]) -> None:
@@ -341,20 +335,7 @@ class MovieRecommendationService:
         limit: int = 20,
     ) -> list[SimilarMovieItem]:
         """对外查询：按 movie_number 解出 source，取 Top-N 已落表结果。"""
-        normalized_number = normalize_movie_number(movie_number)
-        if not normalized_number:
-            raise ApiError(
-                404,
-                "movie_not_found",
-                "影片不存在",
-                {"movie_number": movie_number},
-            )
-
-        source_movie = (
-            Movie.select(Movie)
-            .where(self._normalized_movie_number_expression() == normalized_number)
-            .get_or_none()
-        )
+        source_movie = find_movie_by_number(movie_number)
         if source_movie is None:
             raise ApiError(
                 404,

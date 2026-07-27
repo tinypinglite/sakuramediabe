@@ -15,6 +15,7 @@ from .file_signatures import (
 )
 from .logging import configure_logging, get_logging_level_name
 from .movie_numbers import (
+    movie_number_lookup_values,
     normalize_movie_number,
     parse_movie_number_from_path,
     parse_movie_number_from_text,
@@ -42,6 +43,7 @@ __all__ = [
     "get_logging_level_name",
     "get_runtime_timezone",
     "get_runtime_timezone_name",
+    "movie_number_lookup_values",
     "normalize_movie_number",
     "parse_external_datetime",
     "parse_movie_number_from_path",

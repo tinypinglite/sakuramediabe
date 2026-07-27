@@ -16,12 +16,13 @@ dependencies = [
     "qbittorrent-api>=2026.5.0",
     "xmltodict>=0.13.0,<0.14.0",
     "libtorrent>=2.0.9,<3.0.0",
-    "ffmpy>=0.3.0,<0.4.0",
     "python-multipart>=0.0.6,<0.0.7",
     "bcrypt>=4.0.1,<5.0.0",
     "pydantic-settings>=2.2.1,<3.0.0",
     "apscheduler>=3.10.4,<4.0.0",
-    "av>=15.0.0,<16.0.0",
+    # 下限压到 14.2 是为了给 Intel macOS 开发机留出可解版本（见 [tool.uv] 的按平台约束）；
+    # linux / arm64 仍会解析到 15.x。代码只用到 av.open / av.time_base，两个大版本行为一致。
+    "av>=14.2.0,<16.0.0",
     "pydantic>=2.7.4,<3.0.0",
     "pillow==10.4.0",
     "opencv-python-headless==4.10.0.84",
@@ -61,8 +62,20 @@ markers = [
 ]
 
 [tool.uv]
-# libtorrent 2.0.12+ 不再发 macOS 13 Intel 轮子，钉在 2.0.11（与 main 锁一致）保证开发机可装。
-constraint-dependencies = ["libtorrent<2.0.12"]
+# 轮子可用性约束，全部按平台加 marker，避免为了照顾某台开发机把生产解析一起降下去。
+#
+# libtorrent：2.0.12+ 不再发 macOS 13 Intel 轮子，故全局钉在 <2.0.12（与 main 锁一致）；
+#   而 2.0.11 的 macOS Intel 轮子要求 macOS >= 13，macOS 12 Intel 机器上无解，再单独降到 2.0.9
+#   （最后一个发 macosx_10_9_x86_64 轮子的版本）。这条不能做成全局降版：2.0.9 没有 macOS arm64
+#   轮子，全局降会让 Apple Silicon 开发机退化成源码编译。
+# av：15.x 的 macOS 轮子要求 macOS >= 13，14.2.0 是最后一个发 macosx_12_0 轮子的版本；
+#   14.3 / 14.4 干脆没发 cp310 轮子（会退化成源码编译 ffmpeg），所以上界取 <14.3 而不是 <15。
+#   同样只降 macOS 12 Intel 这一个环境，linux / arm64 保持 15.x。
+constraint-dependencies = [
+    "libtorrent<2.0.12",
+    "libtorrent<2.0.10; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "av<14.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
     "sys_platform == 'linux' and platform_machine == 'aarch64'",

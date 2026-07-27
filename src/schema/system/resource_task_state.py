@@ -10,6 +10,8 @@ class TaskRecordStateCountsResource(SchemaModel):
     running: int = 0
     succeeded: int = 0
     failed: int = 0
+    # 已达到该任务的自动重试上限，不再自动排入；只能由用户显式重置后重新参与。
+    exhausted: int = 0
 
 
 class TaskRecordResourceSummary(SchemaModel):

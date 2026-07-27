@@ -13,7 +13,7 @@ from src.service.system import ActivityService
 from src.service.transfers.common import (
     ALLOWED_DOWNLOAD_STATES,
     DOWNLOAD_COMPLETE_STATES,
-    map_download_state,
+    resolve_qbittorrent_download_state,
     map_remote_path,
     require_client,
 )
@@ -64,7 +64,10 @@ class DownloadSyncService:
         unchanged_count = 0
         remote_hashes: set[str] = set()
         for remote_task in remote_tasks:
-            normalized_state = map_download_state(remote_task.get("state", ""))
+            # 判死收口在对账：stalledDL 且 qB 的 last_activity 超窗 -> stalled_dead。
+            normalized_state = resolve_qbittorrent_download_state(
+                remote_task.get("state", ""), remote_task.get("last_activity")
+            )
             movie_number = parse_movie_number_from_text(
                 f"{remote_task.get('name', '')} {remote_task.get('save_path', '')}"
             ) or None
@@ -87,7 +90,10 @@ class DownloadSyncService:
                 continue
 
             changed = False
-            if movie_number and task.movie != movie_number:
+            # 只填空不覆写：提交时写入的 movie_number 是 Movie 规范列的拷贝（权威），
+            # 这里 parse 出的是猜测（正则可能转写分隔符），拿猜测覆写权威值会打断与 Movie 的 JOIN。
+            # parse 的唯一正当用途是本地行丢失后从 qB 侧重建（上面 get_or_create 的 defaults）。
+            if movie_number and task.movie is None:
                 task.movie = movie_number
                 changed = True
             if task.name != remote_task.get("name", ""):

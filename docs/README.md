@@ -30,6 +30,7 @@
 
 - [catalog/images.md](./catalog/images.md): 通用图片资源与文件访问规则
 - [catalog/movies.md](./catalog/movies.md): 影片目录、详情、订阅和关联资源
+- [catalog/subscriptions.md](./catalog/subscriptions.md): 影片订阅管理、资源查询状态与重置
 - [catalog/actors.md](./catalog/actors.md): 演员目录、订阅和关联资源
 - [catalog/tags.md](./catalog/tags.md): 标签目录与标签下影片
 

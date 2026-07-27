@@ -324,6 +324,16 @@ def test_create_tables_creates_movie_series_schema(clean_db, monkeypatch):
     assert "series_name" not in Movie._meta.fields
 
 
+def test_create_tables_creates_movie_number_upper_index(clean_db, monkeypatch):
+    """人工输入点查依赖的 UPPER(movie_number) 函数索引：新库建表即有，存量库走 20260728_01 迁移。"""
+    create_tables()
+
+    assert clean_db.execute_sql(
+        "SELECT 1 FROM pg_indexes WHERE indexname = 'movie_movie_number_upper'"
+        " AND schemaname = current_schema()"
+    ).fetchone() is not None
+
+
 def test_init_user_creates_single_account_once(clean_db, monkeypatch):
     monkeypatch.setattr("src.start.initdb.settings.auth.username", "account")
     monkeypatch.setattr("src.start.initdb.settings.auth.password", "account")

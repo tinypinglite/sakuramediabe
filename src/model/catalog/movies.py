@@ -80,6 +80,10 @@ class Movie(TimestampedMixin, BaseModel):
         return super().create(**query)
 
     def save(self, *args, **kwargs):
+        # movie_number 存 provider（JavDB）给出的规范原样，只去首尾空白、不做任何归一化改写：
+        # 分隔符与大小写都是有效信息（一本道 072625_001 与加勒比 072625-001 是两部不同影片，
+        # 东热 n0646 的规范写法就是小写）。系统内部各处番号副本列只允许拷贝本列；
+        # 人工输入的匹配统一走 service_helpers.find_movie_by_number（大小写不敏感 + 分隔符候选）。
         self.javdb_id = (self.javdb_id or "").strip()
         self.movie_number = (self.movie_number or "").strip()
         return super().save(*args, **kwargs)
@@ -102,6 +106,17 @@ class Movie(TimestampedMixin, BaseModel):
 
     class Meta:
         table_name = "movie"
+
+
+# 人工输入按番号点查统一走 UPPER(movie_number) 等值匹配（movie_number_match_expression），
+# 函数索引保证它不退化为顺扫。索引名必须与迁移 20260728_01_add_movie_number_upper_index 一致。
+Movie.add_index(
+    peewee.ModelIndex(
+        Movie,
+        (peewee.fn.UPPER(Movie.movie_number),),
+        name="movie_movie_number_upper",
+    )
+)
 
 
 class MovieActor(BaseModel):

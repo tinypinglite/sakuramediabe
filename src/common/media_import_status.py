@@ -74,9 +74,7 @@ FAILURE_REASON_METADATA_FETCH_FAILED = "metadata_fetch_failed"
 FAILURE_REASON_IMAGE_DOWNLOAD_FAILED = "image_download_failed"
 FAILURE_REASON_METADATA_UPSERT_FAILED = "metadata_upsert_failed"
 FAILURE_REASON_MEDIA_IMPORT_FAILED = "media_import_failed"
-FAILURE_REASON_MULTI_PART_MERGE_FAILED = "multi_part_merge_failed"
 FAILURE_REASON_FILE_TOO_SMALL = "file_too_small"
-FAILURE_REASON_MERGE_SUBTITLE_SKIPPED_MULTIPLE_SIDECARS = "merge_subtitle_skipped_multiple_sidecars"
 FAILURE_REASON_SOURCE_DELETE_FAILED = "source_delete_failed"
 FAILURE_REASON_IMPORT_JOB_CRASHED = "import_job_crashed"
 FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED = "import_job_bootstrap_failed"
@@ -97,10 +95,11 @@ FAILURE_REASON_DESCRIPTIONS: Dict[str, str] = {
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED: "图片下载失败：影片封面/海报下载失败",
     FAILURE_REASON_METADATA_UPSERT_FAILED: "元数据入库失败：影片信息写入数据库失败",
     FAILURE_REASON_MEDIA_IMPORT_FAILED: "文件导入失败：单个媒体文件搬运/落库异常",
-    FAILURE_REASON_MULTI_PART_MERGE_FAILED: "多分段合并失败：多个分段文件合并为同一影片时出错",
     FAILURE_REASON_FILE_TOO_SMALL: "文件过小：低于最小体积阈值，按样本/残片跳过",
-    FAILURE_REASON_MERGE_SUBTITLE_SKIPPED_MULTIPLE_SIDECARS: "字幕未合并：多分段合并时发现多个外挂字幕，未自动合并",
     FAILURE_REASON_SOURCE_DELETE_FAILED: "源文件删除失败：媒体已入库，但清理源文件失败（仅告警）",
+    # 已废弃的历史 reason（本地 VR/FC2 合并已删除，新导入不再产生），仅为兼容旧 failed_files 展示保留标签。
+    "multi_part_merge_failed": "多分段合并失败：历史遗留原因，当前版本不再产生",
+    "merge_subtitle_skipped_multiple_sidecars": "字幕未合并：历史遗留告警，当前版本不再产生",
     FAILURE_REASON_IMPORT_JOB_CRASHED: "导入流程崩溃：导入过程整体异常中断",
     FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED: "作业启动失败：导入作业入队/引导阶段失败",
     FAILURE_REASON_IMPORT_JOB_INTERRUPTED: "导入进程中断：作业未正常结束（孤儿恢复判失败）",
@@ -122,10 +121,12 @@ _FAILED_FILE_KIND_BY_REASON: Dict[str, str] = {
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED: FAILED_FILE_KIND_FILE,
     FAILURE_REASON_METADATA_UPSERT_FAILED: FAILED_FILE_KIND_FILE,
     FAILURE_REASON_MEDIA_IMPORT_FAILED: FAILED_FILE_KIND_FILE,
-    FAILURE_REASON_MULTI_PART_MERGE_FAILED: FAILED_FILE_KIND_FILE,
     FAILURE_REASON_FILE_TOO_SMALL: FAILED_FILE_KIND_SKIPPED,
-    FAILURE_REASON_MERGE_SUBTITLE_SKIPPED_MULTIPLE_SIDECARS: FAILED_FILE_KIND_WARNING,
     FAILURE_REASON_SOURCE_DELETE_FAILED: FAILED_FILE_KIND_WARNING,
+    # 已废弃的历史 reason 显式锁死分类：merge_subtitle 老告警行对应的媒体已入库，
+    # 若掉到默认 file 会被前端当作可删除项暴露，误操作会删掉已入库媒体的源文件。
+    "multi_part_merge_failed": FAILED_FILE_KIND_FILE,
+    "merge_subtitle_skipped_multiple_sidecars": FAILED_FILE_KIND_WARNING,
     FAILURE_REASON_IMPORT_JOB_CRASHED: FAILED_FILE_KIND_JOB,
     FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED: FAILED_FILE_KIND_JOB,
     FAILURE_REASON_IMPORT_JOB_INTERRUPTED: FAILED_FILE_KIND_JOB,

@@ -38,8 +38,8 @@ from src.model import DownloadClient, DownloadTask, ImportJob, get_database
 from src.model.enums import DownloadClientKind
 from src.service.cloud115 import cloud115_client_for
 from src.service.transfers.cloud115_import_job_service import Cloud115ImportJobService
+from src.service.transfers.common import canonicalize_btih
 from src.service.transfers.cloud115_offline_service import (
-    canonicalize_btih,
     fetch_cloud115_offline_tasks_by_hash,
 )
 from src.service.transfers.cloud115_offline_notifications import (

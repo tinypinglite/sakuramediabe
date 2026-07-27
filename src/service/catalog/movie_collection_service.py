@@ -6,12 +6,8 @@ from src.model import Movie
 class MovieCollectionService:
     @staticmethod
     def _normalized_collection_prefixes() -> list[str]:
-        prefixes = []
-        for prefix in settings.media.others_number_features:
-            normalized_prefix = normalize_movie_number(prefix)
-            if normalized_prefix:
-                prefixes.append(normalized_prefix)
-        return prefixes
+        # 配置侧 validator 已把前缀规范成去空白+大写，这里直接用，不要再套番号归一化。
+        return [prefix for prefix in settings.media.others_number_features if prefix]
 
     @classmethod
     def _matches_collection_prefix(cls, movie_number: str) -> bool:

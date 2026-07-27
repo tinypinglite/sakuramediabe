@@ -7,16 +7,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Callable, Dict, List, Tuple
 
-import ffmpy
 from loguru import logger
 
-from src.common.media_import_status import (
-    FAILURE_REASON_MERGE_SUBTITLE_SKIPPED_MULTIPLE_SIDECARS,
-    make_failure_item,
-)
 from src.common.media_paths import allocate_next_movie_subtitle_path, movie_subtitle_dir
 from src.common.runtime_time import utc_now_for_db
 from src.model import Media, MediaLibrary, Movie
@@ -31,10 +25,8 @@ from src.service.transfers.file_transfer import (
     transfer_file,
 )
 from src.service.transfers.media_source_scanner import (
-    ImportGroup,
     ImportTransferMode,
     ScannedSourceFile,
-    build_group_content_fingerprint,
     existing_media_file_exists,
     find_media_by_content_fingerprint,
 )
@@ -106,84 +98,6 @@ def import_single_scanned_file(
     )
     delete_failed_count = delete_source_files(
         [file_entry.path],
-        failure_items,
-        transfer_mode=transfer_mode,
-    )
-    return True, delete_failed_count
-
-
-def import_vr_media_group(
-    *,
-    group: ImportGroup,
-    library: MediaLibrary,
-    movie: Movie,
-    failure_items: List[Dict[str, str]],
-    transfer_mode: ImportTransferMode,
-    now_ms: Callable[[], int],
-    media_metadata_probe_service: MediaMetadataProbeService,
-) -> Tuple[bool, int]:
-    """把 VR/FC2 多段文件按顺序拼接后落库为一条 Media 记录。"""
-    group_fingerprint = build_group_content_fingerprint(
-        [file_entry.content_fingerprint for file_entry in group.files]
-    )
-    existing_media = find_media_by_content_fingerprint(group_fingerprint, valid=True)
-    if existing_media is not None and existing_media_file_exists(
-        existing_media,
-        source_path=group.files[0].path,
-        content_fingerprint=group_fingerprint,
-    ):
-        logger.info(
-            "Import VR media group duplicate ignored movie_number={} source={} existing_media_id={} existing_media_path={} content_fingerprint={}",
-            movie.movie_number,
-            ",".join(str(file_entry.path) for file_entry in group.files),
-            existing_media.id,
-            existing_media.path,
-            group_fingerprint,
-        )
-        return False, 0
-
-    target_directory = create_version_directory(
-        Path(library.backend_config["root_path"]).expanduser()
-        / JAV_LIBRARY_SUBDIR
-        / movie.movie_number,
-        now_ms=now_ms(),
-    )
-    target_path = target_directory / f"{movie.movie_number}{group.files[0].path.suffix.lower()}"
-    merge_media_files(group.files, target_path)
-
-    subtitle_path, multiple_subtitles = select_group_subtitle(group)
-    if subtitle_path is not None:
-        transfer_file(
-            subtitle_path,
-            prepare_movie_subtitle_target_path(movie.movie_number, target_path),
-            transfer_mode=transfer_mode,
-        )
-    elif multiple_subtitles:
-        failure_items.append(
-            make_failure_item(group.files[0].path, FAILURE_REASON_MERGE_SUBTITLE_SKIPPED_MULTIPLE_SIDECARS)
-        )
-
-    upsert_media(
-        movie=movie,
-        library=library,
-        target_path=target_path,
-        storage_mode="concat",
-        content_fingerprint=group_fingerprint,
-        file_size=target_path.stat().st_size,
-        special_tag_source_paths=[file_entry.path for file_entry in group.files],
-        has_sidecar_subtitle=subtitle_path is not None,
-        media_metadata_probe_service=media_metadata_probe_service,
-    )
-    MovieSubtitleService.sync_movie_subtitles(movie)
-    logger.info(
-        "Import VR media group success movie_number={} sources={} target={} content_fingerprint={}",
-        movie.movie_number,
-        ",".join(str(file_entry.path) for file_entry in group.files),
-        str(target_path),
-        group_fingerprint,
-    )
-    delete_failed_count = delete_source_files(
-        [file_entry.path for file_entry in group.files],
         failure_items,
         transfer_mode=transfer_mode,
     )
@@ -318,48 +232,3 @@ def _import_sidecar_subtitle(
     transfer_file(subtitle_source_path, target_subtitle_path, transfer_mode=transfer_mode)
 
 
-def select_group_subtitle(group: ImportGroup) -> Tuple[Path | None, bool]:
-    """从 VR 分段组里挑一份可复用的字幕；多份字幕直接放弃合并。"""
-    subtitles = []
-    for file_entry in group.files:
-        if file_entry.subtitle_path is None:
-            continue
-        if file_entry.subtitle_path not in subtitles:
-            subtitles.append(file_entry.subtitle_path)
-    if len(subtitles) == 1:
-        return subtitles[0], False
-    if len(subtitles) > 1:
-        return None, True
-    return None, False
-
-
-def merge_media_files(files: List[ScannedSourceFile], target_path: Path) -> None:
-    """按文件名顺序调 ffmpeg concat demuxer 无损拼接为单个视频。"""
-    ordered_files = sorted(files, key=lambda item: item.path.name)
-    with NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", delete=False) as temp_file:
-        temp_file.write("\n".join([f"file '{str(file_entry.path)}'" for file_entry in ordered_files]))
-        temp_file_path = Path(temp_file.name)
-
-    try:
-        ffmpeg = ffmpy.FFmpeg(
-            global_options=["-f", "concat", "-safe", "0"],
-            inputs={str(temp_file_path): None},
-            outputs={str(target_path): ["-c", "copy"]},
-        )
-        ffmpeg.run()
-        output_size = target_path.stat().st_size if target_path.exists() else 0
-        total_input_size = sum(file_entry.path.stat().st_size for file_entry in ordered_files)
-        # 拼接产物明显偏小说明 ffmpeg 只处理了一段或者输出被截断，主动失败避免误落库。
-        if (
-            output_size <= 0
-            or output_size < max(file_entry.path.stat().st_size for file_entry in ordered_files)
-            or output_size < int(total_input_size * 0.8)
-        ):
-            raise RuntimeError("merged_file_size_invalid")
-    except Exception:
-        if target_path.exists():
-            target_path.unlink()
-        raise
-    finally:
-        if temp_file_path.exists():
-            temp_file_path.unlink()

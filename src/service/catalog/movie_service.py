@@ -12,6 +12,7 @@ from peewee import JOIN, Ordering, fn
 
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import (
+    find_movie_by_number,
     media_special_tag_match_expression,
     playable_exists_expression,
     require_record,
@@ -19,7 +20,6 @@ from src.common.service_helpers import (
 )
 from src.common import (
     build_signed_media_url,
-    normalize_movie_number,
     parse_movie_number_from_path,
 )
 from src.common.runtime_time import utc_now_for_db
@@ -64,6 +64,10 @@ from src.schema.catalog.movies import (
 from src.schema.common.pagination import PageResponse
 from src.metadata._providers.models import JavdbMovieReviewResource
 from src.service.collections import PlaylistService
+# 从子模块而非 src.service.transfers 包导入，理由见 media_import_service.py 顶部注释。
+from src.service.transfers.subscribed_movie_search_state_service import (
+    SubscribedMovieSearchStateService,
+)
 
 
 class MovieService:
@@ -302,15 +306,6 @@ class MovieService:
         )
 
     @staticmethod
-    def _normalized_movie_number_expression():
-        """把库内编号归一化成和搜索输入一致的比较格式。"""
-        normalized = fn.UPPER(fn.TRIM(Movie.movie_number))
-        normalized = fn.REPLACE(normalized, " ", "")
-        normalized = fn.REPLACE(normalized, "_", "-")
-        normalized = fn.REPLACE(normalized, "PPV-", "")
-        return normalized
-
-    @staticmethod
     def _build_javdb_provider() -> JavdbProvider:
         from src.metadata.factory import build_javdb_provider
         return build_javdb_provider()
@@ -327,19 +322,12 @@ class MovieService:
     @classmethod
     def require_movie_by_normalized_number(cls, movie_number: str) -> tuple[Movie, str]:
         # 跨服务共享：MovieMetadataRefreshService / MovieTaskService 都会用它把入参番号
-        # 归一化后定位到本地 Movie，作为公开 API 稳定住调用契约。
-        normalized_movie_number = normalize_movie_number(movie_number)
-        if not normalized_movie_number:
-            raise ApiError(404, "movie_not_found", "影片不存在", {"movie_number": movie_number})
-
-        movie = (
-            Movie.select(Movie)
-            .where(cls._normalized_movie_number_expression() == normalized_movie_number)
-            .get_or_none()
-        )
+        # 定位到本地 Movie。第二个返回值是库内规范形态（provider 原样），后续查 provider
+        # 必须用它而不是用户输入——两侧形态一致才能精确回查。
+        movie = find_movie_by_number(movie_number)
         if movie is None:
             raise ApiError(404, "movie_not_found", "影片不存在", {"movie_number": movie_number})
-        return movie, normalized_movie_number
+        return movie, movie.movie_number
 
     @staticmethod
     def _list_movie_media(movie: Movie) -> List[Media]:
@@ -617,29 +605,17 @@ class MovieService:
 
     @classmethod
     def search_local_movies(cls, movie_number: str) -> List[MovieListItemResource]:
-        normalized_movie_number = normalize_movie_number(movie_number)
-        if not normalized_movie_number:
-            return []
         # 本地搜索只取最匹配的一条，职责是回答“库里有没有这个番号”。
-        movies = list(
-            cls.movie_list_query().where(
-                cls._normalized_movie_number_expression() == normalized_movie_number
-            ).limit(1)
-        )
+        movie = find_movie_by_number(movie_number)
+        if movie is None:
+            return []
+        movies = list(cls.movie_list_query().where(Movie.id == movie.id))
         return MovieListItemResource.from_items(movies)
 
     @classmethod
     def get_movie_collection_status(cls, movie_number: str) -> MovieCollectionStatusResource:
-        normalized_movie_number = normalize_movie_number(movie_number)
-        if not normalized_movie_number:
-            raise ApiError(404, "movie_not_found", "影片不存在", {"movie_number": movie_number})
-
-        # 与本地搜索保持同一套标准化匹配，确保不同输入格式能命中同一影片。
-        movie = (
-            Movie.select(Movie.movie_number, Movie.is_collection)
-            .where(cls._normalized_movie_number_expression() == normalized_movie_number)
-            .get_or_none()
-        )
+        # 与本地搜索保持同一套匹配（find_movie_by_number），确保不同输入格式能命中同一影片。
+        movie = find_movie_by_number(movie_number)
         if movie is None:
             raise ApiError(404, "movie_not_found", "影片不存在", {"movie_number": movie_number})
 
@@ -655,16 +631,18 @@ class MovieService:
         collection_type: MovieCollectionMarkType,
     ) -> MovieCollectionMarkResponse:
         requested_count = len(movie_numbers)
-        normalized_movie_numbers: list[str] = []
+        # 批量入参按大小写不敏感的精确形态去重匹配；不做 '_'/'-' 互换——互换在两种分隔符
+        # 影片同时存在时会把操作扩散到另一部片上，批量场景宁可 miss 也不能错标。
+        movie_number_keys: list[str] = []
         seen_numbers: set[str] = set()
         for movie_number in movie_numbers:
-            normalized = normalize_movie_number(movie_number)
-            if not normalized or normalized in seen_numbers:
+            key = (movie_number or "").strip().upper()
+            if not key or key in seen_numbers:
                 continue
-            seen_numbers.add(normalized)
-            normalized_movie_numbers.append(normalized)
+            seen_numbers.add(key)
+            movie_number_keys.append(key)
 
-        if not normalized_movie_numbers:
+        if not movie_number_keys:
             return MovieCollectionMarkResponse(
                 requested_count=requested_count,
                 updated_count=0,
@@ -672,7 +650,7 @@ class MovieService:
 
         matched_movies = list(
             Movie.select(Movie.id).where(
-                cls._normalized_movie_number_expression().in_(normalized_movie_numbers)
+                fn.UPPER(Movie.movie_number).in_(movie_number_keys)
             )
         )
         matched_movie_ids = [movie.id for movie in matched_movies]
@@ -735,6 +713,17 @@ class MovieService:
                 },
             ) from exc
 
+    @staticmethod
+    def _reset_search_state_for_new_subscriptions(movie_ids: list[int]) -> None:
+        """未订阅 -> 订阅的影片要清掉上一轮订阅遗留的资源查询状态。
+
+        取消订阅不会删这些状态行，所以一部曾被判 exhausted 的影片重新订阅后，状态行还是
+        exhausted，自动下载任务会直接跳过它——用户侧表现为"重新订阅了却完全没动静"。
+        """
+        if not movie_ids:
+            return
+        SubscribedMovieSearchStateService.reset(movie_ids)
+
     @classmethod
     def set_subscription(cls, movie_number: str, subscribed: bool) -> None:
         movie = cls._require_movie(movie_number)
@@ -746,6 +735,8 @@ class MovieService:
         else:
             movie.subscribed_at = None
         movie.save()
+        if subscribed and not was_subscribed:
+            cls._reset_search_state_for_new_subscriptions([movie.id])
 
     @classmethod
     def unsubscribe_movie(cls, movie_number: str) -> None:
@@ -768,19 +759,24 @@ class MovieService:
         movie.save()
 
     @staticmethod
-    def _dedup_normalized_movie_numbers(
+    def _dedup_movie_number_keys(
         movie_numbers: List[str],
     ) -> tuple[list[str], dict[str, str]]:
-        """把批量入参归一化去重，返回有序归一化编号列表和 归一化编号->原始展示编号 的映射。"""
-        ordered_numbers: list[str] = []
-        display_by_normalized: dict[str, str] = {}
+        """批量入参按大小写不敏感的精确 key（strip+upper）去重。
+
+        返回有序 key 列表和 key->原始展示编号 的映射。不做 '_'/'-' 互换——互换在两种分隔符
+        影片同时存在时（一本道/加勒比同日番号）会把批量操作扩散到另一部片上，宁可 miss
+        进 skipped 让用户看见，也不能错订/错退。
+        """
+        ordered_keys: list[str] = []
+        display_by_key: dict[str, str] = {}
         for movie_number in movie_numbers:
-            normalized = normalize_movie_number(movie_number)
-            if not normalized or normalized in display_by_normalized:
+            key = (movie_number or "").strip().upper()
+            if not key or key in display_by_key:
                 continue
-            display_by_normalized[normalized] = movie_number
-            ordered_numbers.append(normalized)
-        return ordered_numbers, display_by_normalized
+            display_by_key[key] = movie_number
+            ordered_keys.append(key)
+        return ordered_keys, display_by_key
 
     @classmethod
     def batch_set_subscription(
@@ -788,31 +784,28 @@ class MovieService:
     ) -> MovieSubscriptionBatchResponse:
         # 批量订阅：逐条判定、部分成功，未命中番号进 skipped，不整批回滚。
         requested_count = len(movie_numbers)
-        ordered_numbers, display_by_normalized = cls._dedup_normalized_movie_numbers(
-            movie_numbers
-        )
-        if not ordered_numbers:
+        ordered_keys, display_by_key = cls._dedup_movie_number_keys(movie_numbers)
+        if not ordered_keys:
             return MovieSubscriptionBatchResponse(
                 requested_count=requested_count, updated_count=0
             )
 
         matched_movies = list(
             Movie.select().where(
-                cls._normalized_movie_number_expression().in_(ordered_numbers)
+                fn.UPPER(Movie.movie_number).in_(ordered_keys)
             )
         )
-        matched_normalized = {
-            normalize_movie_number(movie.movie_number) for movie in matched_movies
-        }
+        matched_keys = {movie.movie_number.strip().upper() for movie in matched_movies}
         skipped = [
             MovieSubscriptionSkippedItem(
-                movie_number=display_by_normalized[normalized],
+                movie_number=display_by_key[key],
                 reason=cls.SUBSCRIPTION_SKIP_MOVIE_NOT_FOUND,
             )
-            for normalized in ordered_numbers
-            if normalized not in matched_normalized
+            for key in ordered_keys
+            if key not in matched_keys
         ]
 
+        newly_subscribed_ids: List[int] = []
         for movie in matched_movies:
             # 与单条 set_subscription(True) 一致：仅在原本未订阅或订阅时间为空时写入当前时间。
             was_subscribed = bool(movie.is_subscribed)
@@ -820,6 +813,9 @@ class MovieService:
             if not was_subscribed or movie.subscribed_at is None:
                 movie.subscribed_at = utc_now_for_db()
             movie.save()
+            if not was_subscribed:
+                newly_subscribed_ids.append(movie.id)
+        cls._reset_search_state_for_new_subscriptions(newly_subscribed_ids)
 
         return MovieSubscriptionBatchResponse(
             requested_count=requested_count,
@@ -834,29 +830,25 @@ class MovieService:
     ) -> MovieSubscriptionBatchResponse:
         # 批量取消订阅：存在本地媒体的影片按部分成功语义跳过（has_media），不报错也不回滚。
         requested_count = len(movie_numbers)
-        ordered_numbers, display_by_normalized = cls._dedup_normalized_movie_numbers(
-            movie_numbers
-        )
-        if not ordered_numbers:
+        ordered_keys, display_by_key = cls._dedup_movie_number_keys(movie_numbers)
+        if not ordered_keys:
             return MovieSubscriptionBatchResponse(
                 requested_count=requested_count, updated_count=0
             )
 
         matched_movies = list(
             Movie.select().where(
-                cls._normalized_movie_number_expression().in_(ordered_numbers)
+                fn.UPPER(Movie.movie_number).in_(ordered_keys)
             )
         )
-        matched_normalized = {
-            normalize_movie_number(movie.movie_number) for movie in matched_movies
-        }
+        matched_keys = {movie.movie_number.strip().upper() for movie in matched_movies}
         skipped = [
             MovieSubscriptionSkippedItem(
-                movie_number=display_by_normalized[normalized],
+                movie_number=display_by_key[key],
                 reason=cls.SUBSCRIPTION_SKIP_MOVIE_NOT_FOUND,
             )
-            for normalized in ordered_numbers
-            if normalized not in matched_normalized
+            for key in ordered_keys
+            if key not in matched_keys
         ]
 
         # 一次聚合查询拿到"有本地媒体"的影片番号集合，避免逐条 _list_movie_media 的 N+1。

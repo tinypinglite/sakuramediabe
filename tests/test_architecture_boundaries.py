@@ -173,3 +173,4 @@ def test_multi_base_facades_have_no_ambiguous_method_names() -> None:
                 f"——给它们取互不冲突的名字"
             )
     assert not violations, "\n".join(violations)
+

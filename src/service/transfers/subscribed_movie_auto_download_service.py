@@ -3,19 +3,28 @@ from __future__ import annotations
 from typing import Any, Dict, List, Sequence
 
 from loguru import logger
-from peewee import fn
+from peewee import JOIN
 
 from src.common.service_helpers import media_exists_expression
 from src.config.config import IndexerKind, settings
-from src.model import DownloadTask, Media, Movie
+from src.model import DownloadTask, Movie, ResourceTaskState
 from src.model.enums import DownloadClientKind
 from src.schema.transfers.downloads import (
     DownloadCandidateCreatePayload,
     DownloadCandidateResource,
     DownloadRequestCreateRequest,
 )
+from src.service.transfers.common import (
+    active_download_task_exists_expression,
+    canonicalize_btih,
+    download_task_dead_expression,
+)
 from src.service.transfers.download_request_service import DownloadRequestService
 from src.service.transfers.download_search_service import DownloadSearchService
+from src.service.transfers.subscribed_movie_search_state_service import (
+    SubscribedMovieSearchStateService,
+    search_state_join_condition,
+)
 from src.service.transfers.tag_rules import BLURAY_TAG, SUBTITLE_TAG
 
 MIN_SEEDERS = 3
@@ -34,12 +43,13 @@ class SubscribedMovieAutoDownloadService:
         self.download_request_service = download_request_service or DownloadRequestService()
 
     def run(self) -> Dict[str, Any]:
-        movies = self._list_candidate_movies()
+        due_movies = self._collect_due_movies()
         summary: Dict[str, Any] = {
-            "candidate_movies": len(movies),
+            "candidate_movies": len(due_movies),
             "searched_movies": 0,
             "submitted_movies": 0,
             "no_candidate_movies": 0,
+            "newly_exhausted_movies": 0,
             "skipped_movies": 0,
             "failed_movies": 0,
             "submitted_movie_numbers": [],
@@ -47,7 +57,7 @@ class SubscribedMovieAutoDownloadService:
             "failed_items": [],
         }
 
-        for movie in movies:
+        for movie in due_movies:
             movie_number = movie.movie_number
             summary["searched_movies"] += 1
             logger.info("Auto download searching candidates for movie_number={}", movie_number)
@@ -55,6 +65,8 @@ class SubscribedMovieAutoDownloadService:
                 candidates = self.download_search_service.search_candidates(movie_number=movie_number)
             except Exception as exc:
                 self._record_failure(summary, movie_number, stage="search", detail=str(exc))
+                # 索引器故障不消耗该影片的查询预算，下一轮照常重试。
+                SubscribedMovieSearchStateService.record_search_error(movie, str(exc))
                 logger.exception(
                     "Auto download candidate search failed movie_number={} detail={}",
                     movie_number,
@@ -62,11 +74,21 @@ class SubscribedMovieAutoDownloadService:
                 )
                 continue
 
-            candidate = self._pick_best_candidate(candidates)
+            # 该影片已经试过并判死的种子：重查时必须排除，否则确定性排序会把同一个死种反复选中。
+            excluded_info_hashes = self._list_dead_info_hashes(movie_number)
+            candidate = self._pick_best_candidate(candidates, excluded_info_hashes)
             if candidate is None:
                 summary["no_candidate_movies"] += 1
                 summary["no_candidate_movie_numbers"].append(movie_number)
-                logger.info("Auto download found no usable candidate movie_number={}", movie_number)
+                state = SubscribedMovieSearchStateService.record_attempt(movie, submitted=False)
+                if state.state == SubscribedMovieSearchStateService.STATE_EXHAUSTED:
+                    summary["newly_exhausted_movies"] += 1
+                logger.info(
+                    "Auto download found no usable candidate movie_number={} excluded_dead={} state={}",
+                    movie_number,
+                    len(excluded_info_hashes),
+                    state.state,
+                )
                 continue
 
             payload = DownloadRequestCreateRequest(
@@ -77,6 +99,7 @@ class SubscribedMovieAutoDownloadService:
                 response = self.download_request_service.create_request(payload)
             except Exception as exc:
                 self._record_failure(summary, movie_number, stage="submit", detail=str(exc))
+                SubscribedMovieSearchStateService.record_search_error(movie, str(exc))
                 logger.exception(
                     "Auto download submit failed movie_number={} title={} detail={}",
                     movie_number,
@@ -85,6 +108,7 @@ class SubscribedMovieAutoDownloadService:
                 )
                 continue
 
+            SubscribedMovieSearchStateService.record_attempt(movie, submitted=True)
             if response.created:
                 summary["submitted_movies"] += 1
                 summary["submitted_movie_numbers"].append(movie_number)
@@ -118,22 +142,51 @@ class SubscribedMovieAutoDownloadService:
 
     _media_exists_expression = staticmethod(media_exists_expression)
 
-    @staticmethod
-    def _download_task_exists_expression():
-        existing_tasks = DownloadTask.select(DownloadTask.id).where(
-            fn.UPPER(fn.TRIM(DownloadTask.movie)) == fn.UPPER(fn.TRIM(Movie.movie_number))
-        )
-        return fn.EXISTS(existing_tasks)
+    @classmethod
+    def _collect_due_movies(cls) -> List[Movie]:
+        """本轮该发起搜索的订阅影片，一条 SQL 出结果。
 
-    def _list_candidate_movies(self) -> List[Movie]:
-        query = (
-            Movie.select()
+        不需要任何 Python 侧的到期筛选：放弃与否在 record_attempt 写入时就落进了 state，
+        所以"还要不要查"退化成一次纯集合判定。没有状态行（LEFT JOIN 出 NULL）= 从未查过 = 要查。
+        """
+        return list(
+            Movie.select(Movie)
+            .join(ResourceTaskState, JOIN.LEFT_OUTER, on=search_state_join_condition())
             .where(Movie.is_subscribed == True)
-            .where(~self._media_exists_expression())
-            .where(~self._download_task_exists_expression())
+            .where(~cls._media_exists_expression())
+            .where(~active_download_task_exists_expression())
+            .where(
+                ResourceTaskState.state.is_null(True)
+                | (ResourceTaskState.state != SubscribedMovieSearchStateService.STATE_EXHAUSTED)
+            )
             .order_by(Movie.subscribed_at.asc(), Movie.id.asc())
         )
-        return list(query)
+
+    @staticmethod
+    def _list_dead_info_hashes(movie_number: str) -> set[str]:
+        """取该影片所有已判死的下载任务 info_hash，作为本轮选种黑名单。
+
+        DownloadTask 本身就是台账，因此黑名单不需要额外的表或字段。黑名单是永久的：info_hash
+        内容寻址，同一个 hash 就是同一个 swarm，换索引器它照样是死的。要重试某个具体种子，
+        从 qB 里删掉它即可（_prune_ghost_tasks 的反向对账会同步删掉本地行）。
+        """
+        # 入参是 Movie 行的规范番号，download_task.movie_number 由提交链路拷贝同一列，
+        # 两侧直接裸列精确比较；套 UPPER(TRIM()) 只会废掉索引。
+        rows = DownloadTask.select(DownloadTask.info_hash).where(
+            (DownloadTask.movie == movie_number.strip()) & download_task_dead_expression()
+        )
+        dead_hashes: set[str] = set()
+        for row in rows:
+            try:
+                dead_hashes.add(canonicalize_btih(row.info_hash))
+            except ValueError:
+                # 下载器写回的 hash 理应是 40 位 hex，出现异常值时无法参与比较，记日志跳过。
+                logger.warning(
+                    "Skip unparseable download task info_hash movie_number={} info_hash={}",
+                    movie_number,
+                    row.info_hash,
+                )
+        return dead_hashes
 
     @staticmethod
     def _is_cloud115_preferred() -> bool:
@@ -144,6 +197,7 @@ class SubscribedMovieAutoDownloadService:
     def _pick_best_candidate(
         self,
         candidates: Sequence[DownloadCandidateResource],
+        excluded_info_hashes: set[str] | None = None,
     ) -> DownloadCandidateResource | None:
         # 策略在整轮选种内取一次，避免同一批候选被两套规则切开。
         cloud115_preferred = self._is_cloud115_preferred()
@@ -171,7 +225,20 @@ class SubscribedMovieAutoDownloadService:
             candidate for candidate in candidate_pool if BLURAY_TAG in (candidate.tags or [])
         ]
         candidate_pool = four_k_candidates or candidate_pool
-        return sorted(candidate_pool, key=self._candidate_sort_key)[0]
+        sorted_candidates = sorted(candidate_pool, key=self._candidate_sort_key)
+
+        if not excluded_info_hashes:
+            return sorted_candidates[0]
+
+        # 候选的 info_hash 在解析索引器响应时就已确定（torznab infohash 属性 / 磁力链），
+        # 这里纯内存比对，不产生任何网络请求。身份未知的候选照常放行：它可能压根不是死种，
+        # 为一个不确定的判断去拉 .torrent 文件不值得——真是死种的话，下一轮它带着
+        # DownloadTask 行回来，那时身份就是确定的了。
+        for candidate in sorted_candidates:
+            if candidate.info_hash and candidate.info_hash in excluded_info_hashes:
+                continue
+            return candidate
+        return None
 
     @staticmethod
     def _is_usable_candidate(

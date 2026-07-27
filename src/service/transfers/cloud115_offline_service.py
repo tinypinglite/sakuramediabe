@@ -12,9 +12,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
-import re
 from typing import Dict
 
 import httpx
@@ -36,26 +33,10 @@ from src.service.cloud115 import (
     find_or_create_subdir,
     map_cloud115_error,
 )
+from src.service.transfers.common import canonicalize_btih
 from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
 
 
-BTIH_HEX_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
-BTIH_BASE32_PATTERN = re.compile(r"^[A-Z2-7a-z]{32}$")
-
-
-def canonicalize_btih(value: str) -> str:
-    """把 hex/Base32 BTIH 严格规范化为 40 位小写 hex。"""
-    normalized = (value or "").strip()
-    if BTIH_HEX_PATTERN.fullmatch(normalized):
-        return normalized.lower()
-    if BTIH_BASE32_PATTERN.fullmatch(normalized):
-        try:
-            decoded = base64.b32decode(normalized.upper(), casefold=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ValueError("BTIH Base32 解码失败") from exc
-        if len(decoded) == 20:
-            return decoded.hex()
-    raise ValueError("BTIH 必须是 40 位 hex 或 32 位 Base32")
 
 
 async def fetch_cloud115_offline_tasks_by_hash(

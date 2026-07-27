@@ -80,6 +80,29 @@ def media_exists_expression():
     return fn.EXISTS(media_query)
 
 
+def find_movie_by_number(value: str):
+    """人工输入定位影片：逐个候选做大小写不敏感的等值点查，命中即返回。
+
+    列里存 provider 规范原样，输入的大小写/分隔符未必一致：大小写用 UPPER(movie_number)
+    抹平（走函数索引 movie_movie_number_upper），分隔符靠候选集依次尝试 ``_``/``-`` 互换。
+    候选有序、先精确后互换——两种分隔符的影片同时存在时（一本道/加勒比同日番号），
+    必须命中用户输入的那一部，绝不能落到互换形态的另一部上。
+
+    系统内部两列规范值之间的比较（如 DownloadTask/Media 与 Movie 的 JOIN）不要用它，
+    直接裸列相等即可。
+    """
+    from peewee import fn
+
+    from src.common.movie_numbers import movie_number_lookup_values
+    from src.model import Movie
+
+    for candidate in movie_number_lookup_values(value):
+        movie = Movie.get_or_none(fn.UPPER(Movie.movie_number) == candidate)
+        if movie is not None:
+            return movie
+    return None
+
+
 def media_special_tag_match_expression(media_tag: str):
     """按空格分隔标签做精确匹配，避免把普通子串误判成命中。"""
     from src.model import Media

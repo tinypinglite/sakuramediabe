@@ -5,6 +5,7 @@ import logging
 from types import SimpleNamespace
 
 from src.api.routers import deps
+from src.api.routers.catalog import subscriptions as movie_subscriptions
 from src.api.routers.catalog import tags
 from src.api.routers.files import images
 from src.api.routers.discovery import hot_reviews
@@ -176,6 +177,28 @@ def test_tags_router_uses_auth_and_db_dependencies():
 
     assert deps.db_deps in dependency_targets
     assert deps.get_current_user in dependency_targets
+
+
+def test_movie_subscriptions_router_uses_auth_and_db_dependencies():
+    dependency_targets = {
+        dependency.dependency
+        for dependency in movie_subscriptions.router.dependencies
+    }
+
+    assert deps.db_deps in dependency_targets
+    assert deps.get_current_user in dependency_targets
+
+
+def test_create_app_registers_movie_subscription_routes():
+    app = create_app()
+    paths = {getattr(route, "path", None) for route in app.routes}
+
+    # 顶层资源而非 /movies 子路径：避免和 /movies/{movie_number} 抢匹配。
+    assert "/movie-subscriptions" in paths
+    assert "/movie-subscriptions/status-counts" in paths
+    assert "/movie-subscriptions/search-resets" in paths
+    # 批量取消订阅刻意不在本域：复用已有的 /movies/unsubscriptions 与 DELETE /media/{id}。
+    assert "/movie-subscriptions/removals" not in paths
 
 
 def test_videos_routers_use_auth_and_db_dependencies():

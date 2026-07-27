@@ -32,11 +32,13 @@ class DownloadRequestService:
 
     def create_request(self, payload: DownloadRequestCreateRequest) -> DownloadRequestCreateResponse:
         client = self._resolve_client(payload)
+        # 入参是影片页传来的规范番号（provider 原样），不做 upper——东热 n0646 这类小写番号
+        # 一旦改写，落库的 task.movie_number 就与 Movie.movie_number 对不上，JOIN 全部失配。
         movie_number = validate_non_empty(
             payload.movie_number,
             "invalid_download_request_movie_number",
             "movie_number cannot be empty",
-        ).upper()
+        )
         if not ((payload.candidate.magnet_url or "").strip() or (payload.candidate.torrent_url or "").strip()):
             raise ApiError(
                 422,

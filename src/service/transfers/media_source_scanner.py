@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
 from typing import Dict, List, Literal, Tuple
@@ -14,7 +13,10 @@ from typing import Dict, List, Literal, Tuple
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
 
-from src.common import parse_movie_number_from_path, subtitle_matches_movie_number
+from src.common import (
+    parse_movie_number_from_path,
+    subtitle_matches_movie_number,
+)
 from src.common.content_fingerprint import compute_content_fingerprint
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 # 导入状态/失败原因的取值统一收口到 media_import_status 模块。
@@ -49,7 +51,6 @@ class ImportGroup(BaseModel):
 
     movie_number: str
     files: List[ScannedSourceFile]
-    merge_mode: Literal["single", "vr_concat"]
 
 
 def parse_movie_number(file_path: str) -> str:
@@ -57,9 +58,10 @@ def parse_movie_number(file_path: str) -> str:
 
 
 def _normalize_for_fingerprint(movie_number: str) -> str:
-    # 指纹用的归一化只做 strip+upper，不做 common.normalize_movie_number 的
-    # 去空格/下划线转横杠/剥离 PPV- 前缀，避免历史已入库指纹语义漂移。
-    return movie_number.strip().upper()
+    # 指纹判别位沿用历史口径：strip + upper + 分隔符折叠为 '-'。存量指纹全部按这个口径计算
+    # （旧 parse 输出恒为 '-' 拼接），换口径会让同一文件算出新指纹、判重失效导致重复导入。
+    # 它只是盐，不承担番号语义——两部真实不同的影片靠文件内容采样区分，不靠这里。
+    return movie_number.strip().upper().replace("_", "-")
 
 
 def build_content_fingerprint(file_path: Path, movie_number: str) -> str:
@@ -68,12 +70,6 @@ def build_content_fingerprint(file_path: Path, movie_number: str) -> str:
         file_path,
         discriminator=_normalize_for_fingerprint(movie_number),
     )
-
-
-def build_group_content_fingerprint(content_fingerprints: List[str]) -> str:
-    hasher = hashlib.sha256()
-    hasher.update("\0".join(content_fingerprints).encode("utf-8"))
-    return hasher.hexdigest()
 
 
 def find_media_by_content_fingerprint(content_fingerprint: str, *, valid: bool) -> Media | None:
@@ -179,22 +175,6 @@ def find_sidecar_subtitle(source_video_path: Path, movie_number: str) -> Path | 
     return None
 
 
-def group_needs_multi_part_merge(movie_number: str, files: List[ScannedSourceFile]) -> bool:
-    """判定同一番号的多文件分组是否需要拼接合并为一部影片。
-
-    命中的场景共用 ``merge_mode="vr_concat"`` 通道（落库 ``storage_mode="concat"``）：
-    - VR 影片常因时长被拆成多段，需要按文件名顺序拼接还原；
-    - FC2（含 FC2-PPV）虽然不是 VR，但分段命名习惯一致，复用同一拼接路径；
-    - 番号未带 VR 但文件名含 ``VR`` 字样（如片商命名不规范）也按 VR 处理。
-    """
-    normalized_number = movie_number.upper()
-    if "VR" in normalized_number:
-        return True
-    if normalized_number.startswith("FC2"):
-        return True
-    return any("VR" in file_entry.path.name.upper() for file_entry in files)
-
-
 def scan_source_files(
     source_entry: Path,
     failure_items: List[Dict[str, str]],
@@ -293,7 +273,6 @@ def scan_source_files(
 
     grouped_files: Dict[str, ImportGroup] = {}
     for movie_number, file_entries in grouped_candidates.items():
-        original_file_count = len(file_entries)
         deduplicated_entries: List[ScannedSourceFile] = []
         seen_fingerprints: set[str] = set()
         for file_entry in sorted(file_entries, key=lambda item: item.path.name):
@@ -309,13 +288,9 @@ def scan_source_files(
             deduplicated_entries.append(file_entry)
             seen_fingerprints.add(file_entry.content_fingerprint)
 
-        merge_mode: Literal["single", "vr_concat"] = "single"
-        if original_file_count > 1 and group_needs_multi_part_merge(movie_number, deduplicated_entries):
-            merge_mode = "vr_concat"
         grouped_files[movie_number] = ImportGroup(
             movie_number=movie_number,
             files=deduplicated_entries,
-            merge_mode=merge_mode,
         )
 
     logger.info(

@@ -42,8 +42,10 @@
 行为约定：
 
 - 仅处理 `is_subscribed = true` 的影片
-- 仅处理不存在有效 `Media` 且不存在任何 `DownloadTask` 记录的影片
+- 仅处理不存在有效 `Media` 且**不存在活跃 `DownloadTask`** 的影片（判定的是活跃而非存在，见下「死种判定」）
+- 仅处理**尚未放弃**的影片（`state != exhausted`，见下「查询次数与放弃」）
 - 使用 Jackett 搜索 PT 与 BT 候选资源
+- 选种时排除该影片已判死的种子（见下「选种黑名单」）
 - 选种优先级随 `downloads.preferred_client_kinds` 的**首项**切换两套策略（见下）
 - 复用 `POST /download-requests` 对应的 service 提交下载，不新增 API
 
@@ -71,6 +73,116 @@ BT/PT 分层在 4K 分层**之外**：115 优先且「PT 有 4K、BT 只有普�
 - 已通过 `/indexer-settings` 配置可用的 `Indexer`
 - 每个 `Indexer` 必须绑定一个 `DownloadClient`
 - `DownloadClient` 必须绑定一个可用的 `MediaLibrary`
+
+#### 死种判定
+
+下载任务进入下列状态即视为**死种**：本地已确知不会再有进展，该影片重新参与资源查询。
+
+| 判定 | 来源 |
+|---|---|
+| `download_state = failed` | qBittorrent 的 `error` / `missingFiles` |
+| `download_state = abandoned` | 115 离线任务超过 `cloud115_offline_abandon_hours`（默认 24h）后的本地放弃 |
+| `download_state = stalled_dead` | qB 的 `stalledDL`，且 qB 报告的 `last_activity` 已早于 `qbittorrent_stalled_abandon_days`（默认 7 天） |
+
+要点：
+
+- **判死不删记录。** `DownloadTask` 行本身就是「这部影片试过哪个种子」的台账，选种黑名单直接读它。
+- **番号关联一律「裸列 = 裸列」。** `movie.movie_number` 存 provider（JavDB）给出的规范原样
+  （分隔符与大小写都是有效信息，不做任何归一化改写）；`download_task.movie_number` 由提交链路
+  拷贝同一列（qB 对账重建行时只填空不覆写）。两侧天然同形态，比较时不需要也不能套函数：
+  套了就废掉该列索引，订阅管理页那种把此表达式嵌进状态判定的查询会从 1s 退化到 46s
+  （3 万订阅影片实测）。人工输入按番号点查是另一条路：`find_movie_by_number` 用
+  `UPPER(movie_number)` 等值匹配（函数索引 `movie_movie_number_upper`）+ `_`/`-` 候选互换。
+- **判死发生在对账时，不在查询时。** `DownloadSyncService.sync_client` 每轮用
+  `resolve_qbittorrent_download_state(raw_state, last_activity)` 把「躺太久的 stalledDL」直接落成
+  `stalled_dead`，因此查询侧的判死表达式是纯 `download_state IN (...)`，不带任何时间参数。
+  这一点是刻意的：判定依赖 qB 的 `last_activity`，**qB 联系不上时我们不该替它宣布种子死亡**——
+  对账不跑 = 状态冻结，正是想要的行为。
+- **`last_activity` 是 qB 官方字段**（"Last time (Unix Epoch) when a chunk was downloaded/uploaded"），
+  不是本系统自己维护的代理量。qB 对从未有过活动的种子返回的是**添加时刻**而非哨兵值（见
+  `serialize_torrent.cpp` 的 `getLastActivityTime`），所以「加进来 N 天一个 chunk 都没收到」也能
+  被正确判死，无需额外分支。拿不到可信值（缺失 / 非正 / 在未来）时一律不判死——误判的代价是给还
+  活着的种子拉黑并重复提交同一部影片。
+- **`stalled_dead` 不粘。** 每轮对账都按 qB 的实时 `last_activity` 重算，peer 回来会自动流回
+  `stalled` / `downloading`。这与 `abandoned`（115 的粘性终态）语义不同，故不复用同一取值。
+- `stalled` 只可能来自 `stalledDL`：`map_download_state` 已把 `stalledUP` 归到 `seeding`，不会误伤
+  做种任务。生产 qB 实测印证了这条的必要性——26 个 `stalledUP` 种子的 `last_activity` 最远已到
+  12.7 天前，一旦它们被归到 `stalled`，整批做种任务都会被判死并进黑名单。
+- `paused` 永远不判死，那是用户在 qB 里的显式意图。
+- `completed` 但 `import_status = failed` 仍算**活跃**：文件已在盘上，该修的是导入而不是重下。
+- 种子在 qB 里被手动删除时，`DownloadSyncService._prune_ghost_tasks` 的反向对账会直接删掉本地行，
+  该影片同样回到候选池——这条链路早已存在，与死种判定互补。
+
+#### 选种黑名单
+
+重新查资源时必须排除该影片已判死的种子，否则选种排序是确定性的，会把同一个死种反复选中。
+
+- 黑名单 = 该番号下所有已判死 `DownloadTask` 的 `info_hash`
+- 候选侧的 `info_hash` **在解析索引器响应时就已确定**，选种阶段是纯内存比对，**零网络请求**
+- 排除后无候选 = 本轮没找到资源，正常计入查询次数
+- **黑名单是永久的，重置查询状态不放开它。** `info_hash` 是内容寻址的——同一个 hash 就是同一个
+  swarm，换个索引器它照样是死的；用户重置后真正想要的是找一个**别的**种子，而黑名单本来就不挡这个。
+  确实要重试某个具体种子时，从 qB 里删掉它即可（上面 `_prune_ghost_tasks` 的反向对账会同步删掉
+  本地台账行，该 hash 随之离开黑名单）。
+
+**种子身份从哪来**（`JackettClient._resolve_info_hash`），按顺序取第一个能用的，两条都是纯字符串处理：
+
+1. torznab 响应里的 `<torznab:attr name="infohash">` —— 索引器直接给的
+2. 磁力链里的 `xt=urn:btih:`
+
+**绝不为了拿 hash 去下载 `.torrent` 文件。** 那是每候选一次网络往返，而选种阶段只是想知道「这个种子
+我是不是已经试过了」，不值得。生产实测（knaben + sukebei，4 个番号 56 个候选）第 1 条命中率 **100%**，
+第 2 条实际上是给不返回该属性的索引器留的后路。
+
+两者都拿不到时 `info_hash` 为空串——**空串表示「本次没能廉价地确定身份」，不表示「没有这个种子」**，
+所以选种时照常放行而不是跳过：它可能压根不是死种，为一个不确定的判断牺牲一个可用候选不划算；真是死种
+的话，下一轮它带着 `DownloadTask` 行回来，那时身份就是确定的了。
+
+`info_hash` 的规范化统一走 `src/service/transfers/common.py` 的 `canonicalize_btih()`（hex/Base32 →
+40 位小写 hex）。它放在 transfers 公共模块而不是某个下载器模块里：选种、115 离线对账、任务删除、索引器
+候选四条链路都要用，且必须是同一个实现，否则「这两个是不是同一个种子」在不同链路上会给出不同答案。
+实测同一个种子在 knaben（大写 hex）和 sukebei（小写 hex）上会收敛到同一个字符串。
+- **黑名单是永久的，重置查询状态不放开它。** `info_hash` 是内容寻址的——同一个 hash 就是同一个
+  swarm，换个索引器它照样是死的；用户重置后真正想要的是找一个**别的**种子，而黑名单本来就不挡这个。
+  确实要重试某个具体种子时，从 qB 里删掉它即可（上面 `_prune_ghost_tasks` 的反向对账会同步删掉
+  本地台账行，该 hash 随之离开黑名单）。
+
+#### 查询次数与放弃
+
+避免老片长期没有资源却年复一年地查索引器。状态落在 `ResourceTaskState`
+（`task_key=subscribed_movie_search`，`resource_type=movie`），不额外建表。
+
+调度是每天一轮（`subscribed_movie_auto_download_cron` 默认 `30 2 * * *`），所以「每轮都查」就等于
+「每天查一次」。规则只有两档：
+
+| 档 | 判定 | 节奏 |
+|---|---|---|
+| 新片 | `release_date` 在 `subscription_search_fresh_days`（默认 90 天）内，**含未来日期** | 每轮都查，**不计次数，永不放弃** |
+| 老片 | 其余，含 `release_date` 为空的（无法证明它新） | 每轮都查，累计 `attempt_count`，满 `subscription_search_stale_attempt_limit`（默认 3）置 `exhausted` |
+
+即老片**连查 3 天后放弃**。这里刻意不做逐次退避：老片的种子可得性基本是静态的，把 3 次摊到几十天
+并不比连查 3 天多抓到什么；真要捞重新做种的片子得是月/年尺度的重扫，那靠订阅管理页的「重置全部
+已放弃」手动触发，而不是让每部影片都背一套阶梯参数。
+
+因为「还要不要查」在写入时就落进了 `state`，读侧不需要任何时间推导——调度器的候选集是一条纯 SQL
+（`state IS NULL OR state != 'exhausted'`），没有 Python 侧的到期筛选，也不存冗余的「下次查询时间」。
+本任务不使用 `extra` 列。
+
+状态取值：
+
+| state | 含义 |
+|---|---|
+| `pending` | 等待或本轮没找到资源，下轮继续 |
+| `succeeded` | 已提交下载。提交成功也照常记 `attempt_count`——次数的语义是「为这片花了几次搜索」 |
+| `failed` | 索引器调用出错。**不记 attempt_count、不动 last_attempted_at**：索引器故障是运维问题，不该消耗该影片的查询次数 |
+| `exhausted` | 老片查询次数用尽，只能由用户手动重置 |
+
+**取消订阅不会删这些状态行，因此「未订阅 -> 订阅」的转变必须顺带重置它**（`MovieService` 的单条与
+批量订阅入口都做了）。否则一部曾被判 `exhausted` 的影片退订后重新订阅，状态行还是 `exhausted`，
+自动下载会直接跳过它，用户侧表现为「重新订阅了却完全没动静」。
+
+提交成功的种子后来判死时，该影片回到候选池并继续消耗次数，跑满同样会被放弃；此时用户能在订阅管理页
+看到失败的下载任务历史，据此决定要不要手动重置。
 
 ### 下载中种子小文件清理
 
@@ -196,7 +308,9 @@ BT/PT 分层在 4K 分层**之外**：115 优先且「PT 有 4K、BT 只有普�
 - `stalled`
 - `checking`
 - `queued`
-- `abandoned`（cloud115 专用：离线任务超时后的本地放弃态，不再对账、不再推进度；115 侧任务保留）
+- `abandoned`（cloud115 专用：离线任务超时后的本地放弃态，不再对账、不再推进度；115 侧任务保留。**粘性终态**）
+- `stalled_dead`（qB 专用：`stalledDL` 且 `last_activity` 超过 `qbittorrent_stalled_abandon_days`。
+  **非粘性**，每轮对账按 qB 实时值重算，peer 回来会自动流回 `stalled` / `downloading`）
 
 ### `import_status` 枚举
 

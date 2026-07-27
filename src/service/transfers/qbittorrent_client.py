@@ -378,6 +378,9 @@ class QBittorrentClient:
             "state": getattr(torrent, "state", ""),
             "save_path": str(content_path),
             "tags": getattr(torrent, "tags", "") or "",
+            # qB 官方定义："Last time (Unix Epoch) when a chunk was downloaded/uploaded"。
+            # 死种判定的唯一依据；从未活动的种子 qB 返回的是添加时刻，不是哨兵值。
+            "last_activity": getattr(torrent, "last_activity", None),
         }
 
     @staticmethod
@@ -399,6 +402,7 @@ class QBittorrentClient:
                 "downloaded",
                 "size",
                 "eta",
+                "last_activity",
                 "dl_info_speed",
                 "up_info_speed",
                 "connection_status",

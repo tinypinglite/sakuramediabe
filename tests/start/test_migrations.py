@@ -1182,6 +1182,7 @@ def test_run_pending_migrations_reverts_duration_based_collections(clean_db):
     Movie.create(movie_number="ABP-400", javdb_id="j-400", title="t4",
                  is_collection=False, is_collection_overridden=False)
     # 规范化后命中前缀（小写 / PPV- 前缀）：保持 True，锁死与 service 判定一致的番号规范化。
+    # 注意列里存的是原样（Movie.save() 只 strip），归一化只发生在迁移的匹配逻辑里。
     Movie.create(movie_number="ofje-500", javdb_id="j-500", title="t5",
                  is_collection=True, is_collection_overridden=False)
     Movie.create(movie_number="PPV-OFJE-777", javdb_id="j-777", title="t6",
@@ -1246,3 +1247,27 @@ def test_run_pending_migrations_moves_indexer_binding_to_junction_table(clean_db
     indexer_columns = {column.name for column in clean_db.get_columns("indexer")}
     assert "download_client_id" not in indexer_columns
     assert "20260714_07_indexer_multi_client_binding" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_adds_movie_number_upper_index(clean_db):
+    """存量库补 UPPER(movie_number) 函数索引；新库由 create_tables 直接建出。
+
+    movie_number 列存 provider 规范原样、不做归一化改写，人工输入点查走
+    UPPER(movie_number) 等值匹配（find_movie_by_number），全靠这个索引避免顺扫。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260728_01_add_movie_number_upper_index",),
+    )
+    # 模拟存量库：函数索引还不存在（create_tables 建出的先删掉）。
+    clean_db.execute_sql("DROP INDEX IF EXISTS movie_movie_number_upper")
+
+    run_pending_migrations(clean_db)
+
+    assert clean_db.execute_sql(
+        "SELECT 1 FROM pg_indexes WHERE indexname = 'movie_movie_number_upper'"
+        " AND schemaname = current_schema()"
+    ).fetchone() is not None
+    assert "20260728_01_add_movie_number_upper_index" in _schema_migration_names(clean_db)

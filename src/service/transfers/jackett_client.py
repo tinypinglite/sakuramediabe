@@ -12,7 +12,7 @@ from src.schema.transfers.downloads import (
     DownloadCandidateClientResource,
     DownloadCandidateResource,
 )
-from src.service.transfers.common import resolve_preferred_client
+from src.service.transfers.common import canonicalize_btih, resolve_preferred_client
 from src.service.transfers.tag_rules import detect_candidate_tags
 
 
@@ -22,6 +22,7 @@ class JackettClientError(Exception):
 
 class JackettClient:
     FC2_QUERY_PATTERN = re.compile(r"^FC2-?(\d+)$", re.IGNORECASE)
+    MAGNET_BTIH_PATTERN = re.compile(r"xt=urn:btih:([^&]+)", re.IGNORECASE)
 
     def __init__(
         self,
@@ -146,14 +147,39 @@ class JackettClient:
                 )
                 for download_client in download_clients
             ],
-            movie_number=movie_number.upper(),
+            movie_number=movie_number.strip(),
             title=full_title or title,
             size_bytes=size_bytes,
             seeders=seeders,
             magnet_url=magnet_url,
             torrent_url=torrent_url,
+            info_hash=self._resolve_info_hash(attr_map.get("infohash"), magnet_url),
             tags=detect_candidate_tags(full_title or title, movie_number, size_bytes),
         )
+
+    @classmethod
+    def _resolve_info_hash(cls, raw_info_hash, magnet_url: str) -> str:
+        """确定候选的种子身份，**零网络开销**。
+
+        torznab 规范里 ``infohash`` 是可选属性，但实际索引器基本都给（生产 knaben +
+        sukebei 实测 68/68 覆盖）；给不出时磁力链里的 btih 同样是现成的。两者都没有就返回空串，
+        由调用方决定怎么处理——绝不为了拿 hash 去下载 .torrent 文件：那是每候选一次网络往返，
+        而选种阶段只是想知道"这个种子我是不是已经试过了"。
+        """
+        attribute_value = str(raw_info_hash or "").strip()
+        if attribute_value:
+            try:
+                return canonicalize_btih(attribute_value)
+            except ValueError:
+                logger.warning("Ignore unparseable torznab infohash value={}", attribute_value)
+
+        matched = cls.MAGNET_BTIH_PATTERN.search(magnet_url or "")
+        if matched:
+            try:
+                return canonicalize_btih(matched.group(1))
+            except ValueError:
+                logger.warning("Ignore unparseable magnet btih magnet={}", (magnet_url or "")[:80])
+        return ""
 
     @classmethod
     def _split_download_links(cls, *raw_links) -> tuple[str, str]:

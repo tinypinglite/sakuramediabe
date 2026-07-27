@@ -19,9 +19,13 @@ from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import DownloadTask, ImportJob, MediaLibrary, Movie, get_database
 from src.model.enums import MediaLibraryBackend
-from src.service.catalog import CatalogImportService, ImageDownloadError
+# 从子模块而非 src.service.catalog 包导入：走包会执行 catalog/__init__.py，而其中的
+# movie_subscription_service 又要导入 transfers 域，形成 catalog <-> transfers 的包级循环，
+# 逼得对面只能把所有 transfers 导入塞进函数体。指到具体文件即可绕开 __init__ 的连锁初始化。
+from src.service.catalog.catalog_import_service import CatalogImportService
+from src.service.catalog.movie_image_service import ImageDownloadError
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
-from src.service.transfers.media_import_writer import import_single_scanned_file, import_vr_media_group
+from src.service.transfers.media_import_writer import import_single_scanned_file
 from src.service.transfers.media_source_scanner import (
     ImportTransferMode,
     find_media_library_containing_path,
@@ -35,7 +39,6 @@ from src.common.media_import_status import (
     FAILURE_REASON_MEDIA_IMPORT_FAILED,
     FAILURE_REASON_METADATA_FETCH_FAILED,
     FAILURE_REASON_METADATA_UPSERT_FAILED,
-    FAILURE_REASON_MULTI_PART_MERGE_FAILED,
     FAILURE_REASON_NO_MEDIA_FILES_FOUND,
     FAILURE_REASON_RETRY_SOURCES_MISSING,
     IMPORT_JOB_STATE_COMPLETED,
@@ -458,10 +461,11 @@ class MediaImportService:
                             },
                         )
 
-                        if group.merge_mode == "vr_concat":
+                        # 多分部（VR/FC2 等）不做合并：每个文件一条 Media，与 cloud115 管线保持一致。
+                        for file_entry in group.files:
                             try:
-                                imported, delete_failed_count = import_vr_media_group(
-                                    group=group,
+                                imported, delete_failed_count = import_single_scanned_file(
+                                    file_entry=file_entry,
                                     library=library,
                                     movie=movie,
                                     failure_items=failure_items,
@@ -482,56 +486,19 @@ class MediaImportService:
                             except Exception as exc:
                                 failed_count += 1
                                 logger.exception(
-                                    "Import VR media group failed job_id={} movie_number={} detail={}",
+                                    "Import media failed job_id={} movie_number={} source={} detail={}",
                                     job.id,
                                     movie_number,
+                                    str(file_entry.path),
                                     exc,
                                 )
                                 failure_items.append(
                                     make_failure_item(
-                                        group.files[0].path,
-                                        FAILURE_REASON_MULTI_PART_MERGE_FAILED,
+                                        file_entry.path,
+                                        FAILURE_REASON_MEDIA_IMPORT_FAILED,
                                         str(exc),
                                     )
                                 )
-                        else:
-                            for file_entry in group.files:
-                                try:
-                                    imported, delete_failed_count = import_single_scanned_file(
-                                        file_entry=file_entry,
-                                        library=library,
-                                        movie=movie,
-                                        failure_items=failure_items,
-                                        transfer_mode=transfer_mode,
-                                        now_ms=self.now_ms,
-                                        media_metadata_probe_service=self.media_metadata_probe_service,
-                                    )
-                                    if imported:
-                                        imported_count += 1
-                                        failed_count += delete_failed_count
-                                        new_playable_movies[movie.id] = {
-                                            "movie_id": movie.id,
-                                            "movie_number": movie.movie_number,
-                                            "title": movie.title,
-                                        }
-                                    else:
-                                        skipped_count += 1
-                                except Exception as exc:
-                                    failed_count += 1
-                                    logger.exception(
-                                        "Import media failed job_id={} movie_number={} source={} detail={}",
-                                        job.id,
-                                        movie_number,
-                                        str(file_entry.path),
-                                        exc,
-                                    )
-                                    failure_items.append(
-                                        make_failure_item(
-                                            file_entry.path,
-                                            FAILURE_REASON_MEDIA_IMPORT_FAILED,
-                                            str(exc),
-                                        )
-                                    )
 
                         completed_movie_numbers += 1
                         self._emit_progress(

@@ -180,6 +180,10 @@ class DownloadCandidateResource(SchemaModel):
     seeders: int
     magnet_url: str = ""
     torrent_url: str = ""
+    # 种子身份，已规范化为 40 位小写 hex（``canonicalize_btih``）。取自 torznab 的 infohash
+    # 属性，拿不到时从磁力链解析；两者都没有则为空串——**空串不代表"没有这个种子"，只代表
+    # 本次没能廉价地确定它的身份**，选种黑名单据此跳过该候选，不要拿空串去做相等比较。
+    info_hash: str = ""
     tags: List[str] = []
 
 

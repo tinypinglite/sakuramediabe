@@ -190,6 +190,15 @@
 | `POST` | `/movies/unsubscriptions` | 批量取消订阅影片（部分成功） |
 | `GET` | `/movies/{movie_number}` | 查询影片详情 |
 
+> 订阅的**管理视图**（订阅列表、资源查询状态与次数、缺失影片、重置查询状态）在独立的顶层资源
+> `/movie-subscriptions`，见 [subscriptions.md](./subscriptions.md)。本文档只覆盖订阅状态的写入侧。
+> 批量取消订阅就是上表的 `POST /movies/unsubscriptions`，管理页也调它——订阅管理域不另造一套；
+> 要连媒体文件一起删的走 `DELETE /media/{media_id}`。
+>
+> 写入侧的一条联动：影片从「未订阅」变为「订阅」时，会顺带重置（删除）该影片的资源查询状态行
+> （`ResourceTaskState`，`task_key=subscribed_movie_search`）。取消订阅不删这些行，不重置的话
+> 曾被判 `exhausted` 的影片重新订阅后会一直被自动下载跳过。
+
 ## 详细接口定义
 
 ### `POST /movies/search/parse-number`
@@ -1095,7 +1104,7 @@ Authorization: Bearer <token>
 - 请求体：
   - `movie_numbers`：番号数组（至少 1 项，逐项去空白，禁止空串）
 - 行为：
-  - 番号归一化后去重，逐条判定，采用**部分成功**语义，整体返回 `200`，不因个别条目失败而整批回滚
+  - 番号按大小写不敏感的精确形态去重匹配（不做 `_`/`-` 互换，宁可 miss 进 `skipped` 也不错标到另一部），逐条判定，采用**部分成功**语义，整体返回 `200`，不因个别条目失败而整批回滚
   - 命中的影片按与单条订阅一致的逻辑置为已订阅：仅在原本未订阅或 `subscribed_at` 为空时写入当前订阅时间，否则保留原值
   - 未在库内命中的番号进入 `skipped`，`reason=movie_not_found`
 - 成功响应：`200 OK`
@@ -1123,7 +1132,7 @@ Authorization: Bearer <token>
 - 请求体：
   - `movie_numbers`：番号数组（至少 1 项，逐项去空白，禁止空串）
 - 行为：
-  - 番号归一化后去重，逐条判定，采用**部分成功**语义，整体返回 `200`，不因个别条目失败而整批回滚
+  - 番号按大小写不敏感的精确形态去重匹配（不做 `_`/`-` 互换，宁可 miss 进 `skipped` 也不错标到另一部），逐条判定，采用**部分成功**语义，整体返回 `200`，不因个别条目失败而整批回滚
   - 命中且没有任何关联 `media` 记录的影片直接取消订阅（`is_subscribed=false`、`subscribed_at=null`）
   - 命中但存在关联 `media` 记录的影片被**跳过**（进入 `skipped`，`reason=has_media`），不报错也不修改，与单条端点"存在媒体文件拒绝取消"语义一致
   - 未在库内命中的番号进入 `skipped`，`reason=movie_not_found`

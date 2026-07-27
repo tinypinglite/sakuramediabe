@@ -20,6 +20,7 @@ from src.service.transfers.common import (
     ALLOWED_DOWNLOAD_STATES,
     DOWNLOAD_COMPLETE_STATES,
     build_task_movie_filter,
+    canonicalize_btih,
     is_download_complete,
     normalize_state_filter,
     require_task,
@@ -198,7 +199,6 @@ class DownloadTaskService:
             cloud115_client_for,
             map_cloud115_error,
         )
-        from src.service.transfers.cloud115_offline_service import canonicalize_btih
 
         try:
             canonical_hash = canonicalize_btih(task.info_hash)

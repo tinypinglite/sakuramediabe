@@ -24,17 +24,12 @@ from pydantic_settings import (
 )
 
 
-# 与 src.common.movie_numbers.normalize_movie_number 保持一致的番号规范化：
-# 去空白 / 大写 / _→- / 抹 PPV-。这里内联而非 import 是为了绕开 src.config ↔ src.common 的循环
-# （src.common.__init__ 会加载 file_signatures，后者在顶层 import 全局 settings；Media validator
-# 在 Settings() 构造过程中触发时，settings 尚未创建，任何形式的 src.common 引入都会崩）。逻辑很小，
-# 若源函数变化时需要同步这里。
+# 这里处理的是番号**前缀**（如 OFJE），不是完整番号，所以只做去空白 + 大写：
+# 前缀要跟已归一化的番号做 startswith 比较，大写是必须的；而 normalize_movie_number 的
+# _→- 与抹 PPV- 是番号整体的形状规则，对前缀无意义（抹 PPV- 更会把 PPV-XXX 削成 XXX）。
+# 两者是不同数据类型的不同规则，不要在这里去复用番号归一化。
 def _normalize_number_feature(value: str) -> str:
-    normalized = (value or "").strip().upper()
-    normalized = normalized.replace(" ", "")
-    normalized = normalized.replace("_", "-")
-    normalized = normalized.replace("PPV-", "")
-    return normalized
+    return (value or "").strip().upper()
 
 
 # 校验分档：
@@ -364,6 +359,21 @@ class Downloads(BaseModel):
     # 批量秒传对 115 webapi 的全局请求限速：相邻请求最小间隔（秒）。webapi 前置阿里云 WAF
     # 约 1-2 r/s 阈值，默认 1.0（=1 r/s，对标 AList 115 驱动 limit_rate）。0 关闭限速。
     cloud115_rapid_upload_min_interval_seconds: float = Field(default=1.0, ge=0.0, le=10.0)
+    # qBittorrent 任务停在 stalledDL（下载中无源），且 qB 报告的 last_activity（最后一次收发
+    # chunk 的时刻）已早于该时长，即判定为死种（对账时落成 download_state=stalled_dead）：
+    # 释放该影片重新参与订阅资源查询，并把这个 info_hash 加入该影片的选种黑名单。
+    # 比 115 的 cloud115_offline_abandon_hours 宽松得多——115 是云端拉取，24h 拉不到基本就是没有；
+    # 本地 BT 依赖 peer 在线，老片常态是只有一两个 seeder 且不挂机，卡几天后复活很正常。
+    qbittorrent_stalled_abandon_days: int = Field(default=7, ge=1)
+    # 订阅影片资源查询分两档，调度是每天一轮（subscribed_movie_auto_download_cron），所以
+    # "每轮都查" 就等于 "每天查一次"：
+    #   新片（release_date 落在下面这个窗口内，含未来日期）：每轮都查，不计次数，永不放弃；
+    #   老片（其余，含 release_date 为空的——无法证明它新）：每轮都查，但只查
+    #     subscription_search_stale_attempt_limit 次，跑满置 exhausted，只能手动重置。
+    # 不做逐次退避：老片的种子可得性基本是静态的，把 3 次摊到几十天并不比连查 3 天多抓到什么，
+    # 真要捞重新做种的片子得是月/年尺度的重扫，那靠"重置全部已放弃"手动触发。
+    subscription_search_fresh_days: int = Field(default=90, ge=1)
+    subscription_search_stale_attempt_limit: int = Field(default=3, ge=1)
 
 
 class MediaImport(BaseModel):

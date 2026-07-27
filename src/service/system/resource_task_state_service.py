@@ -56,6 +56,8 @@ class ResourceTaskStateService:
     STATE_RUNNING = "running"
     STATE_SUCCEEDED = "succeeded"
     STATE_FAILED = "failed"
+    # 已达到自动重试上限：调度器不再自动排入，只有用户显式重置才会回到 pending。
+    STATE_EXHAUSTED = "exhausted"
     # 批量重置的跳过原因，前端按 resource_id 标注本次未能重置的选择项。
     SKIP_REASON_TASK_STATE_NOT_FOUND = "task_state_not_found"
     SKIP_REASON_MEDIA_NOT_FOUND = "media_not_found"
@@ -105,6 +107,13 @@ class ResourceTaskStateService:
             display_name="媒体缩略图生成",
             default_sort="last_attempted_at:desc",
             resource_resolver=MEDIA_TASK_RECORD_RESOLVER,
+        ),
+        "subscribed_movie_search": ResourceTaskDefinition(
+            task_key="subscribed_movie_search",
+            resource_type="movie",
+            display_name="订阅影片资源查询",
+            default_sort="last_attempted_at:desc",
+            resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
         ),
     }
 
@@ -206,7 +215,12 @@ class ResourceTaskStateService:
         validate_page(page, page_size, error_code="invalid_resource_task_state_filter")
 
     @classmethod
-    def _get_or_create_record(cls, task_key: str, resource_id: int) -> ResourceTaskState:
+    def get_or_create_record(cls, task_key: str, resource_id: int) -> ResourceTaskState:
+        """按 (task_key, resource_id) 取状态行，不存在则建。
+
+        对外公开，供需要自定义记账语义（不走 mark_started/succeeded/failed 那套通用流转）的
+        任务复用，例如订阅影片资源查询的退避状态机。并发建行由唯一索引拦截后回读。
+        """
         task_definition = cls._require_task_definition(task_key)
         normalized_resource_id = int(resource_id)
         query = ResourceTaskState.select().where(
@@ -259,7 +273,7 @@ class ResourceTaskStateService:
             trigger_type=trigger_type,
             task_run_id=task_run_id,
         )
-        record = cls._get_or_create_record(task_key, resource_id)
+        record = cls.get_or_create_record(task_key, resource_id)
         now = utc_now_for_db()
         record.state = cls.STATE_RUNNING
         record.attempt_count += 1
@@ -295,7 +309,7 @@ class ResourceTaskStateService:
             trigger_type=trigger_type,
             task_run_id=task_run_id,
         )
-        record = cls._get_or_create_record(task_key, resource_id)
+        record = cls.get_or_create_record(task_key, resource_id)
         now = utc_now_for_db()
         record.state = cls.STATE_SUCCEEDED
         record.last_succeeded_at = now
@@ -332,7 +346,7 @@ class ResourceTaskStateService:
             trigger_type=trigger_type,
             task_run_id=task_run_id,
         )
-        record = cls._get_or_create_record(task_key, resource_id)
+        record = cls.get_or_create_record(task_key, resource_id)
         now = utc_now_for_db()
         record.state = cls.STATE_FAILED
         record.last_error = detail
@@ -368,7 +382,7 @@ class ResourceTaskStateService:
             trigger_type=trigger_type,
             task_run_id=task_run_id,
         )
-        record = cls._get_or_create_record(task_key, resource_id)
+        record = cls.get_or_create_record(task_key, resource_id)
         now = utc_now_for_db()
         record.state = cls.STATE_PENDING
         record.last_trigger_type = trigger_type
@@ -394,7 +408,7 @@ class ResourceTaskStateService:
 
     @classmethod
     def reset_for_requeue(cls, task_key: str, resource_id: int) -> ResourceTaskState:
-        record = cls._get_or_create_record(task_key, resource_id)
+        record = cls.get_or_create_record(task_key, resource_id)
         now = utc_now_for_db()
         # 资源进入新一轮处理时，需要清空上一轮尝试痕迹，避免新文件继承旧结果。
         record.state = cls.STATE_PENDING
@@ -577,6 +591,7 @@ class ResourceTaskStateService:
                 cls.STATE_RUNNING,
                 cls.STATE_SUCCEEDED,
                 cls.STATE_FAILED,
+                cls.STATE_EXHAUSTED,
             }:
                 raise ApiError(
                     422,

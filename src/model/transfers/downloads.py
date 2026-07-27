@@ -76,6 +76,10 @@ class DownloadTask(TimestampedMixin, BaseModel):
         on_delete="CASCADE",
         column_name="client_id",
     )
+    # 番号。不是外键（下载任务可能先于影片入库、也可能压根解析不出番号）。取值约定：
+    # 提交链路写入的是 Movie.movie_number 的规范原样（provider 形态）；qB 对账重建行时
+    # 允许落 parse 猜测且只填空不覆写（见 DownloadSyncService）。与 Movie 的 JOIN 因此
+    # 是两侧规范值的裸列精确比较，不要在查询里套 UPPER(TRIM())——会废掉本列索引（实测 1s -> 46s）。
     movie = peewee.CharField(max_length=255, null=True, column_name="movie_number", index=True)
     name = peewee.CharField(max_length=255)
     info_hash = peewee.CharField(max_length=128)

@@ -1,4 +1,7 @@
+import base64
+import binascii
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Sequence, Set
 from urllib.parse import urlparse
@@ -8,10 +11,41 @@ from peewee import fn
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import require_record, resolve_sort, validate_page as _validate_page
 from src.config.config import settings
-from src.model import DownloadClient, DownloadTask, Indexer, IndexerDownloadClient, MediaLibrary
+from src.model import (
+    DownloadClient,
+    DownloadTask,
+    Indexer,
+    IndexerDownloadClient,
+    MediaLibrary,
+    Movie,
+)
 from src.model.enums import DownloadClientKind, MediaLibraryBackend
 # 导入状态取值统一收口到 media_import_status 模块；此处再导出，兼容历史引用路径。
 from src.common.media_import_status import ALLOWED_IMPORT_STATUSES
+
+BTIH_HEX_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
+BTIH_BASE32_PATTERN = re.compile(r"^[A-Z2-7a-z]{32}$")
+
+
+def canonicalize_btih(value: str) -> str:
+    """把 hex/Base32 BTIH 严格规范化为 40 位小写 hex。
+
+    种子在本系统里的**唯一身份**。放在 transfers 公共模块而不是某个下载器模块里：它是纯字符串
+    处理，与 115 / qb / 索引器都无关，而选种、离线对账、任务删除、索引器候选四条链路都要用它，
+    且必须用同一个实现——不同写法的同一个 hash（大小写、Base32）必须收敛到同一个字符串，否则
+    「这个种子是不是同一个」在不同链路上会给出不同答案。
+    """
+    normalized = (value or "").strip()
+    if BTIH_HEX_PATTERN.fullmatch(normalized):
+        return normalized.lower()
+    if BTIH_BASE32_PATTERN.fullmatch(normalized):
+        try:
+            decoded = base64.b32decode(normalized.upper(), casefold=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("BTIH Base32 解码失败") from exc
+        if len(decoded) == 20:
+            return decoded.hex()
+    raise ValueError("BTIH 必须是 40 位 hex 或 32 位 Base32")
 
 ALLOWED_DOWNLOAD_STATES = {
     "downloading",
@@ -22,12 +56,27 @@ ALLOWED_DOWNLOAD_STATES = {
     "stalled",
     "checking",
     "queued",
-    # cloud115 离线任务超时后的本地放弃态：不再对账、不再推进度；115 侧任务保留。
+    # cloud115 离线任务超时后的本地放弃态：不再对账、不再推进度；115 侧任务保留。**粘性终态**，
+    # 一旦置上不会自己流回（删任务时据它决定动不动 115 远端）。
     "abandoned",
+    # qB 侧的死种态：stalledDL 且 qB 报告的 last_activity 已超过 qbittorrent_stalled_abandon_days。
+    # 与 abandoned 相反，它**不粘**——每轮对账都按 qB 的实时 last_activity 重算，peer 回来会自动
+    # 流回 stalled/downloading。两者语义不同，故不复用同一个取值。
+    "stalled_dead",
 }
 # 下载已完成的状态集合：completed（下完但不做种）与 seeding（做种中）在业务上都算文件已写定，
 # 可触发自动导入 / 允许手动导入。所有需要判"任务是否已完成下载"的地方走 is_download_complete。
 DOWNLOAD_COMPLETE_STATES = {"completed", "seeding"}
+# 死态集合：本地已确知不会再有进展。判死不删记录——DownloadTask 行本身就是"这部影片试过哪个种子"
+# 的台账，选种黑名单直接读它，删了黑名单就没了数据来源。
+#
+# 判死全部发生在**对账时**（写进 download_state），查询侧只做一次集合判定，因此这里不需要任何时间
+# 参数。这一点是刻意的：判定依赖 qB 的 last_activity，而 qB 联系不上时我们不该替它宣布种子死亡，
+# 对账不跑 = 状态冻结，正是想要的行为。
+DOWNLOAD_DEAD_STATES = {"failed", "abandoned", "stalled_dead"}
+DOWNLOAD_STALLED_STATE = "stalled"
+DOWNLOAD_STALLED_DEAD_STATE = "stalled_dead"
+# paused 是用户在 qB 里的显式意图，永远不判死。
 TASK_SORT_FIELDS = {
     "created_at:desc": (DownloadTask.created_at.desc(), DownloadTask.id.desc()),
     "created_at:asc": (DownloadTask.created_at.asc(), DownloadTask.id.asc()),
@@ -75,7 +124,9 @@ def map_download_state(raw_state: str) -> str:
         return "paused"
     if normalized in {"error", "missingFiles"}:
         return "failed"
-    if normalized in {"stalledDL", "stalledUP"}:
+    # 只收 stalledDL。stalledUP（做种中无对端）已在上面归到 seeding，绝不能同时列在这里：
+    # 死种判定把 stalled 当作"下载中无源"来判，一旦做种任务落进这个状态会被判死并加入选种黑名单。
+    if normalized == "stalledDL":
         return "stalled"
     if normalized in {"checkingDL", "checkingUP", "checkingResumeData"}:
         return "checking"
@@ -91,6 +142,68 @@ def map_download_state(raw_state: str) -> str:
 def is_download_complete(state: str) -> bool:
     """判断下载状态是否已进入"文件写定"阶段（含做种）。"""
     return state in DOWNLOAD_COMPLETE_STATES
+
+
+def resolve_qbittorrent_download_state(raw_state: str, last_activity: int | None) -> str:
+    """把 qB 原始 state 归一化，并把"躺太久的 stalledDL"升级成死种态。
+
+    死种判定用 qB 自己的 ``last_activity``（官方定义："Last time (Unix Epoch) when a chunk was
+    downloaded/uploaded"），不再自己维护一个"最后有进展时刻"的代理列。qB 对从未有过活动的种子返回
+    的是**添加时刻**而非哨兵值（见 serialize_torrent.cpp 的 getLastActivityTime），所以"加进来 N
+    天一个 chunk 都没收到"也能被正确判死，不需要额外分支。
+
+    只在拿到可信的 last_activity（正整数且不在未来）时才判死：宁可漏判也不误判——误判的代价是给
+    还活着的种子拉黑并重复提交同一部影片。
+    """
+    from src.common.runtime_time import utc_now_for_db
+
+    normalized = map_download_state(raw_state)
+    if normalized != DOWNLOAD_STALLED_STATE:
+        return normalized
+    if not isinstance(last_activity, int) or isinstance(last_activity, bool):
+        return normalized
+
+    now = utc_now_for_db()
+    try:
+        activity_at = datetime.utcfromtimestamp(last_activity)
+    except (OverflowError, OSError, ValueError):
+        return normalized
+    if last_activity <= 0 or activity_at > now:
+        return normalized
+    if now - activity_at >= timedelta(days=settings.downloads.qbittorrent_stalled_abandon_days):
+        return DOWNLOAD_STALLED_DEAD_STATE
+    return normalized
+
+
+def download_task_dead_expression():
+    """DownloadTask 是否已判死的 peewee 条件表达式，供选种黑名单与活跃任务判定复用。
+
+    纯集合判定：判死已经在对账时完成并落进 download_state（该列有索引）。
+    """
+    return DownloadTask.download_state.in_(tuple(sorted(DOWNLOAD_DEAD_STATES)))
+
+
+def download_task_movie_match_expression():
+    """DownloadTask 与 Movie 的番号关联条件。
+
+    **两侧都必须是裸列**：movie.movie_number 存 provider 规范原样，download_task.movie_number
+    由提交链路拷贝同一列（对账重建行只填空不覆写，见 DownloadSyncService），两列直接可比。
+    任何一侧套上 UPPER(TRIM()) 都会让该列索引失效，该表达式所在的相关子查询退化为逐行全表顺扫。
+    """
+    return DownloadTask.movie == Movie.movie_number
+
+
+def active_download_task_exists_expression():
+    """影片是否还有"活着的"下载任务。
+
+    判定的是活跃而非存在：failed / abandoned / stalled_dead 的任务留在库里当台账，但不再阻塞
+    重新查资源——过去按"存在任何 DownloadTask"判定，死种会让那部影片永久不再被查。
+    completed 但导入失败的任务仍算活跃：文件已经在盘上，该修的是导入而不是重下。
+    """
+    active_tasks = DownloadTask.select(DownloadTask.id).where(
+        download_task_movie_match_expression() & ~download_task_dead_expression()
+    )
+    return fn.EXISTS(active_tasks)
 
 
 def require_client(client_id: int) -> DownloadClient:
@@ -360,7 +473,9 @@ def validate_task_ids(task_ids: Optional[str]) -> list[int]:
 
 
 def build_task_movie_filter(movie_number: str):
-    return fn.UPPER(fn.TRIM(DownloadTask.movie)) == movie_number.strip().upper()
+    # 入参来自影片页/任务页的规范番号，movie 列由提交链路拷贝 Movie.movie_number，
+    # 两侧直接裸列精确比较；套函数会废掉该列索引。
+    return DownloadTask.movie == movie_number.strip()
 
 
 # 番号子目录只保留字母数字与连字符、下划线、点，其余字符统一替换成下划线，杜绝路径穿越与非法目录名。
