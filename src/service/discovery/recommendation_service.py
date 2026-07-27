@@ -1,39 +1,39 @@
-"""影片相似度推荐服务。
-
-基于影片演员/标签做加权 Jaccard，热度做排序 boost，离线预计算 Top-N 写入
-``movie_similarity`` 表。请求接口直接读表，不在请求线程内做计算。
-"""
+"""基于 Qdrant 稀疏向量的影片相似度索引与查询。"""
 
 from __future__ import annotations
 
 import math
+import time
 from collections import defaultdict
-from typing import Iterable, Sequence
+from typing import Iterator, Sequence
 
 from loguru import logger
+from peewee import fn
 
 from src.api.exception.errors import ApiError
-from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     find_movie_by_number,
     parse_special_tags_text,
     with_movie_card_relations,
 )
-from src.model import (
-    Media,
-    Movie,
-    MovieActor,
-    MovieSimilarity,
-    MovieTag,
-    get_database,
-)
+from src.model import Media, Movie, MovieActor, MovieTag
 from src.schema.catalog.movies import MovieListItemResource
+from src.service.discovery.qdrant_movie_similarity_store import (
+    MovieSimilarityIndexError,
+    MovieSimilarityIndexNotReadyError,
+    MovieSimilaritySearchHit,
+    MovieSimilarityUnavailableError,
+    QdrantMovieSimilarityStore,
+    get_qdrant_movie_similarity_store,
+)
 
 
 SIM_WEIGHT_ACTOR = 0.6
 SIM_WEIGHT_TAG = 0.4
-HEAT_BOOST_ALPHA = 0.3
 SIM_TOP_N = 50
+INDEX_BATCH_SIZE = 1000
+# 每轮取多少部影片的特征；分段读取避免全量结果集常驻内存，也不需要长事务。
+FEATURE_PAGE_SIZE = 2000
 
 
 class SimilarMovieItem:
@@ -45,65 +45,265 @@ class SimilarMovieItem:
         self.similarity_score = similarity_score
 
 
-def _jaccard(a: set[int], b: set[int]) -> float:
-    if not a or not b:
-        return 0.0
-    intersection = len(a & b)
-    if intersection == 0:
-        return 0.0
-    union = len(a | b)
-    return intersection / union
-
-
-def _heat_boost(heat: int, heat_ref: float) -> float:
-    if heat_ref <= 0:
-        return 1.0
-    normalized = min(1.0, max(0, heat) / heat_ref)
-    return 1.0 + HEAT_BOOST_ALPHA * normalized
-
-
-def _compute_heat_p95(non_collection_movie_ids: Sequence[int]) -> float:
-    """对非合集影片热度求 P95，作为热度归一化分母。"""
-    if not non_collection_movie_ids:
-        return 0.0
-    heats = [
-        heat
-        for (heat,) in Movie.select(Movie.heat)
-        .where(Movie.id.in_(list(non_collection_movie_ids)))
-        .tuples()
-    ]
-    heats = [int(heat or 0) for heat in heats]
-    positive_heats = [heat for heat in heats if heat > 0]
-    if not positive_heats:
-        return 0.0
-    positive_heats.sort()
-    # 按 P95 取分位数；在数据量很小的极端 case 下回退为最大值。
-    index = max(0, math.ceil(0.95 * len(positive_heats)) - 1)
-    return float(positive_heats[index])
-
-
-def _load_actor_groups(movie_ids: Iterable[int]) -> dict[int, set[int]]:
-    groups: dict[int, set[int]] = defaultdict(set)
-    rows = MovieActor.select(MovieActor.movie, MovieActor.actor).where(
-        MovieActor.movie.in_(list(movie_ids))
-    ).tuples()
-    for movie_id, actor_id in rows:
-        groups[movie_id].add(actor_id)
-    return groups
-
-
-def _load_tag_groups(movie_ids: Iterable[int]) -> dict[int, set[int]]:
-    groups: dict[int, set[int]] = defaultdict(set)
-    rows = MovieTag.select(MovieTag.movie, MovieTag.tag).where(
-        MovieTag.movie.in_(list(movie_ids))
-    ).tuples()
-    for movie_id, tag_id in rows:
-        groups[movie_id].add(tag_id)
-    return groups
-
-
 class MovieRecommendationService:
-    """影片相似度计算与查询。"""
+    """影片元数据稀疏索引的构建与相似影片查询。"""
+
+    def __init__(
+        self,
+        *,
+        store: QdrantMovieSimilarityStore | None = None,
+    ) -> None:
+        self.store = store or get_qdrant_movie_similarity_store()
+
+    @staticmethod
+    def _emit_progress(progress_callback, **payload) -> None:
+        if progress_callback is not None:
+            progress_callback(payload)
+
+    @staticmethod
+    def _load_feature_document_frequencies(
+        link_model,
+        feature_field,
+    ) -> dict[int, int]:
+        rows = (
+            link_model.select(feature_field, fn.COUNT(link_model.movie))
+            .join(Movie, on=(link_model.movie == Movie.id))
+            .where(Movie.is_collection == False)
+            .group_by(feature_field)
+            .tuples()
+        )
+        return {int(feature_id): int(count) for feature_id, count in rows}
+
+    @staticmethod
+    def _load_feature_groups(
+        link_model,
+        feature_field,
+        movie_ids: Sequence[int],
+    ) -> dict[int, list[int]]:
+        """取出指定影片分段内的全部特征，按影片聚合。"""
+        groups: dict[int, list[int]] = defaultdict(list)
+        rows = (
+            link_model.select(link_model.movie, feature_field)
+            .where(link_model.movie.in_(list(movie_ids)))
+            .tuples()
+        )
+        for movie_id, feature_id in rows:
+            groups[int(movie_id)].append(int(feature_id))
+        return groups
+
+    @classmethod
+    def _iter_movie_features(
+        cls,
+    ) -> Iterator[tuple[int, list[int], list[int]]]:
+        """按影片 id 分段读取特征；段内一次取全，无需长事务与服务端游标。"""
+        last_movie_id = 0
+        while True:
+            movie_ids = [
+                int(movie_id)
+                for (movie_id,) in Movie.select(Movie.id)
+                .where(
+                    Movie.is_collection == False,
+                    Movie.id > last_movie_id,
+                )
+                .order_by(Movie.id)
+                .limit(FEATURE_PAGE_SIZE)
+                .tuples()
+            ]
+            if not movie_ids:
+                return
+            last_movie_id = movie_ids[-1]
+
+            actor_groups = cls._load_feature_groups(
+                MovieActor, MovieActor.actor, movie_ids
+            )
+            tag_groups = cls._load_feature_groups(MovieTag, MovieTag.tag, movie_ids)
+            for movie_id in movie_ids:
+                actor_ids = actor_groups.get(movie_id, [])
+                tag_ids = tag_groups.get(movie_id, [])
+                # 没有任何演员/标签的影片构造不出向量，直接跳过不入索引。
+                if not actor_ids and not tag_ids:
+                    continue
+                yield movie_id, actor_ids, tag_ids
+
+            # 不满一页说明已经读到末尾，省掉一次必然为空的探测查询。
+            if len(movie_ids) < FEATURE_PAGE_SIZE:
+                return
+
+    @staticmethod
+    def _build_sparse_vector(
+        actor_ids: Sequence[int],
+        tag_ids: Sequence[int],
+        *,
+        actor_df: dict[int, int],
+        tag_df: dict[int, int],
+        total_movies: int,
+    ) -> tuple[list[int], list[float]]:
+        # 文档频次先于特征扫描加载，重建期间新入库的演员/标签取 DF=0（IDF 拉满）。
+        actor_idfs = [
+            math.log((total_movies + 1) / (actor_df.get(actor_id, 0) + 1)) + 1.0
+            for actor_id in actor_ids
+        ]
+        tag_idfs = [
+            math.log((total_movies + 1) / (tag_df.get(tag_id, 0) + 1)) + 1.0
+            for tag_id in tag_ids
+        ]
+        actor_norm = math.sqrt(sum(value * value for value in actor_idfs))
+        tag_norm = math.sqrt(sum(value * value for value in tag_idfs))
+        weighted_features = []
+        if actor_norm > 0:
+            actor_scale = math.sqrt(SIM_WEIGHT_ACTOR) / actor_norm
+            weighted_features.extend(
+                (actor_id * 2, idf * actor_scale)
+                for actor_id, idf in zip(actor_ids, actor_idfs)
+            )
+        if tag_norm > 0:
+            tag_scale = math.sqrt(SIM_WEIGHT_TAG) / tag_norm
+            weighted_features.extend(
+                (tag_id * 2 + 1, idf * tag_scale)
+                for tag_id, idf in zip(tag_ids, tag_idfs)
+            )
+        weighted_features.sort(key=lambda item: item[0])
+        return (
+            [index for index, _ in weighted_features],
+            [float(value) for _, value in weighted_features],
+        )
+
+    def _purge_orphan_collections(self) -> int:
+        """清理历史遗留集合：alias 切换失败或进程中断都会留下未被引用的集合。"""
+        active_collection = self.store.get_alias_target()
+        purged_count = 0
+        for collection_name in self.store.list_index_collections():
+            if collection_name == active_collection:
+                continue
+            try:
+                self.store.delete_collection(collection_name)
+                purged_count += 1
+            except MovieSimilarityIndexError as exc:
+                logger.warning(
+                    "清理遗留影片相似度索引集合失败 collection={} detail={}",
+                    collection_name,
+                    exc,
+                )
+        if purged_count:
+            logger.warning(
+                "清理遗留影片相似度索引集合 purged_collections={}", purged_count
+            )
+        return purged_count
+
+    def recompute_all(
+        self,
+        *,
+        progress_callback=None,
+    ) -> dict[str, int]:
+        """流式重建完整索引，成功后原子切换查询 alias。"""
+        total_movies = int(
+            Movie.select().where(Movie.is_collection == False).count()
+        )
+        actor_df = self._load_feature_document_frequencies(
+            MovieActor, MovieActor.actor
+        )
+        tag_df = self._load_feature_document_frequencies(MovieTag, MovieTag.tag)
+        stats = {
+            "total_movies": total_movies,
+            "indexed_movies": 0,
+            "actor_features": sum(actor_df.values()),
+            "tag_features": sum(tag_df.values()),
+        }
+        self._emit_progress(
+            progress_callback,
+            current=0,
+            total=total_movies,
+            text="开始构建影片相似度索引",
+            summary_patch=stats,
+        )
+
+        self._purge_orphan_collections()
+        collection_name = f"{self.store.COLLECTION_PREFIX}{time.time_ns()}"
+        self.store.create_collection(collection_name)
+        batch: list[tuple[int, list[int], list[float]]] = []
+
+        def _flush_batch() -> None:
+            """写入整批后再累加计数并上报，保证 stats 与索引内实际点数同步推进。"""
+            if not batch:
+                return
+            self.store.upsert_sparse_points(collection_name, batch)
+            stats["indexed_movies"] += len(batch)
+            batch.clear()
+            self._emit_progress(
+                progress_callback,
+                current=stats["indexed_movies"],
+                total=total_movies,
+                text=f"已索引 {stats['indexed_movies']}/{total_movies}",
+                summary_patch=stats,
+            )
+
+        try:
+            for movie_id, actor_ids, tag_ids in self._iter_movie_features():
+                indices, values = self._build_sparse_vector(
+                    actor_ids,
+                    tag_ids,
+                    actor_df=actor_df,
+                    tag_df=tag_df,
+                    total_movies=total_movies,
+                )
+                batch.append((movie_id, indices, values))
+                if len(batch) >= INDEX_BATCH_SIZE:
+                    _flush_batch()
+            _flush_batch()
+
+            stored_count = self.store.count(collection_name)
+            if stored_count != stats["indexed_movies"]:
+                raise RuntimeError(
+                    "影片相似度索引点数校验失败 "
+                    f"expected={stats['indexed_movies']} actual={stored_count}"
+                )
+        except Exception:
+            try:
+                self.store.delete_collection(collection_name)
+            except MovieSimilarityIndexError as cleanup_exc:
+                logger.warning(
+                    "清理失败的影片相似度索引集合失败 collection={} detail={}",
+                    collection_name,
+                    cleanup_exc,
+                )
+            raise
+
+        # alias 切换结果存在网络层歧义，切换报错时不能删除可能已激活的新集合。
+        old_collection = self.store.activate_collection(collection_name)
+        if old_collection and old_collection != collection_name:
+            try:
+                self.store.delete_collection(old_collection)
+            except MovieSimilarityIndexError as exc:
+                logger.warning(
+                    "清理旧影片相似度索引集合失败 collection={} detail={}",
+                    old_collection,
+                    exc,
+                )
+
+        self._emit_progress(
+            progress_callback,
+            current=total_movies,
+            total=total_movies,
+            text="影片相似度索引构建完成",
+            summary_patch=stats,
+        )
+        logger.info(
+            "movie similarity index rebuilt total_movies={} indexed_movies={} "
+            "actor_features={} tag_features={}",
+            stats["total_movies"],
+            stats["indexed_movies"],
+            stats["actor_features"],
+            stats["tag_features"],
+        )
+        return stats
+
+    def search_similar_movies(
+        self,
+        source_movie_ids: Sequence[int],
+        *,
+        limit: int = SIM_TOP_N,
+    ) -> dict[int, list[MovieSimilaritySearchHit]]:
+        return self.store.search_many(source_movie_ids, limit=limit)
 
     @staticmethod
     def _attach_movie_flags(movies: Sequence[Movie]) -> None:
@@ -127,214 +327,14 @@ class MovieRecommendationService:
                 is_4k_movie_numbers.add(movie_number)
 
         for movie in movies:
-            # 相似影片接口也要返回和普通影片列表一致的播放/4K 聚合标记。
             movie.can_play = movie.movie_number in playable_movie_numbers
             movie.is_4k = movie.movie_number in is_4k_movie_numbers
-
-    def compute_for_movie(
-        self,
-        movie_id: int,
-        *,
-        heat_ref: float,
-        top_n: int = SIM_TOP_N,
-    ) -> list[tuple[int, float]]:
-        """单部影片的 Top-N 相似列表，返回 [(target_movie_id, score)]。"""
-        source_actor_ids: set[int] = {
-            actor_id
-            for (actor_id,) in MovieActor.select(MovieActor.actor)
-            .where(MovieActor.movie == movie_id)
-            .tuples()
-        }
-        source_tag_ids: set[int] = {
-            tag_id
-            for (tag_id,) in MovieTag.select(MovieTag.tag)
-            .where(MovieTag.movie == movie_id)
-            .tuples()
-        }
-        if not source_actor_ids and not source_tag_ids:
-            return []
-
-        # 候选裁剪：演员或标签至少有一个交集，并排除合集与自身。
-        candidate_movie_ids: set[int] = set()
-        if source_actor_ids:
-            candidate_movie_ids.update(
-                movie_id_
-                for (movie_id_,) in MovieActor.select(MovieActor.movie)
-                .where(MovieActor.actor.in_(list(source_actor_ids)))
-                .tuples()
-            )
-        if source_tag_ids:
-            candidate_movie_ids.update(
-                movie_id_
-                for (movie_id_,) in MovieTag.select(MovieTag.movie)
-                .where(MovieTag.tag.in_(list(source_tag_ids)))
-                .tuples()
-            )
-        candidate_movie_ids.discard(movie_id)
-        if not candidate_movie_ids:
-            return []
-
-        candidate_rows = list(
-            Movie.select(Movie.id, Movie.heat)
-            .where(
-                Movie.id.in_(list(candidate_movie_ids)),
-                Movie.is_collection == False,
-            )
-            .tuples()
-        )
-        if not candidate_rows:
-            return []
-        candidate_ids = [row[0] for row in candidate_rows]
-        heat_by_id = {row[0]: int(row[1] or 0) for row in candidate_rows}
-
-        actor_groups = _load_actor_groups(candidate_ids)
-        tag_groups = _load_tag_groups(candidate_ids)
-
-        scored: list[tuple[int, float]] = []
-        for candidate_id in candidate_ids:
-            base_sim = (
-                SIM_WEIGHT_ACTOR * _jaccard(source_actor_ids, actor_groups.get(candidate_id, set()))
-                + SIM_WEIGHT_TAG * _jaccard(source_tag_ids, tag_groups.get(candidate_id, set()))
-            )
-            if base_sim <= 0:
-                continue
-            final_score = base_sim * _heat_boost(heat_by_id.get(candidate_id, 0), heat_ref)
-            scored.append((candidate_id, final_score))
-
-        scored.sort(key=lambda item: item[1], reverse=True)
-        return scored[:top_n]
-
-    def replace_similarity_rows(
-        self,
-        source_movie_id: int,
-        ranked: list[tuple[int, float]],
-    ) -> int:
-        """事务内删旧 + 批插新，保证 source 的 Top-N 切换原子化。"""
-        now = utc_now_for_db()
-        with get_database().atomic():
-            MovieSimilarity.delete().where(
-                MovieSimilarity.source_movie == source_movie_id
-            ).execute()
-            if not ranked:
-                return 0
-            rows = [
-                {
-                    "source_movie": source_movie_id,
-                    "target_movie": target_id,
-                    "score": float(score),
-                    "rank": rank,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                for rank, (target_id, score) in enumerate(ranked, start=1)
-            ]
-            MovieSimilarity.insert_many(rows).execute()
-            return len(rows)
-
-    @staticmethod
-    def _emit_progress(progress_callback, **payload) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(payload)
-
-    @staticmethod
-    def _purge_collection_source_rows() -> int:
-        # 合集影片不会参与 source 侧推荐，重算前先清掉历史遗留结果，避免接口读到陈旧数据。
-        collection_source_ids = Movie.select(Movie.id).where(Movie.is_collection == True)
-        return (
-            MovieSimilarity.delete()
-            .where(MovieSimilarity.source_movie.in_(collection_source_ids))
-            .execute()
-        )
-
-    def recompute_all(
-        self,
-        *,
-        top_n: int = SIM_TOP_N,
-        progress_callback=None,
-    ) -> dict[str, int]:
-        """全量重算：遍历所有非合集影片，重写 movie_similarity 表。"""
-        non_collection_ids = [
-            movie_id
-            for (movie_id,) in Movie.select(Movie.id)
-            .where(Movie.is_collection == False)
-            .tuples()
-        ]
-        stats = {
-            "total_movies": len(non_collection_ids),
-            "processed_movies": 0,
-            "stored_pairs": 0,
-            "skipped_movies": 0,
-        }
-        self._emit_progress(
-            progress_callback,
-            current=0,
-            total=stats["total_movies"],
-            text="开始计算影片相似度",
-            summary_patch=stats,
-        )
-        if not non_collection_ids:
-            return stats
-
-        deleted_collection_source_rows = self._purge_collection_source_rows()
-        heat_ref = _compute_heat_p95(non_collection_ids)
-        logger.info(
-            "movie similarity recompute started total_movies={} heat_ref={} deleted_collection_source_rows={}",
-            stats["total_movies"],
-            heat_ref,
-            deleted_collection_source_rows,
-        )
-
-        for movie_id in non_collection_ids:
-            try:
-                ranked = self.compute_for_movie(
-                    movie_id,
-                    heat_ref=heat_ref,
-                    top_n=top_n,
-                )
-                stored = self.replace_similarity_rows(movie_id, ranked)
-                stats["stored_pairs"] += stored
-                if stored == 0:
-                    stats["skipped_movies"] += 1
-            except Exception as exc:
-                # 单部失败仅记录，不能阻塞整体重算。
-                stats["skipped_movies"] += 1
-                logger.warning(
-                    "movie similarity compute failed movie_id={} detail={}",
-                    movie_id,
-                    exc,
-                )
-            stats["processed_movies"] += 1
-            if stats["processed_movies"] % 200 == 0:
-                self._emit_progress(
-                    progress_callback,
-                    current=stats["processed_movies"],
-                    total=stats["total_movies"],
-                    text=f"已处理 {stats['processed_movies']}/{stats['total_movies']}",
-                    summary_patch=stats,
-                )
-
-        self._emit_progress(
-            progress_callback,
-            current=stats["processed_movies"],
-            total=stats["total_movies"],
-            text="影片相似度重算完成",
-            summary_patch=stats,
-        )
-        logger.info(
-            "movie similarity recompute finished processed_movies={} stored_pairs={} skipped_movies={}",
-            stats["processed_movies"],
-            stats["stored_pairs"],
-            stats["skipped_movies"],
-        )
-        return stats
 
     def list_similar(
         self,
         movie_number: str,
         limit: int = 20,
     ) -> list[SimilarMovieItem]:
-        """对外查询：按 movie_number 解出 source，取 Top-N 已落表结果。"""
         source_movie = find_movie_by_number(movie_number)
         if source_movie is None:
             raise ApiError(
@@ -347,18 +347,30 @@ class MovieRecommendationService:
         safe_limit = max(int(limit), 0)
         if safe_limit == 0:
             return []
-
-        similarity_rows = list(
-            MovieSimilarity.select()
-            .where(MovieSimilarity.source_movie == source_movie.id)
-            .order_by(MovieSimilarity.rank.asc())
-            .limit(safe_limit)
-        )
-        if not similarity_rows:
+        try:
+            hits = self.search_similar_movies(
+                [source_movie.id],
+                limit=safe_limit,
+            )[source_movie.id]
+        except MovieSimilarityIndexNotReadyError as exc:
+            raise ApiError(
+                503,
+                "movie_similarity_index_not_ready",
+                "影片相似度索引尚未完成首次构建",
+            ) from exc
+        except MovieSimilarityUnavailableError as exc:
+            # 与每日/瞬时推荐保持一致：Qdrant 故障只降级相似度信号，不让详情页整体报错。
+            logger.warning(
+                "相似影片查询跳过：影片相似度服务不可用 movie_number={} detail={}",
+                movie_number,
+                exc,
+            )
+            return []
+        if not hits:
             return []
 
-        target_ids = [row.target_movie_id for row in similarity_rows]
-        score_by_target_id = {row.target_movie_id: row.score for row in similarity_rows}
+        target_ids = [hit.movie_id for hit in hits]
+        score_by_target_id = {hit.movie_id: hit.score for hit in hits}
         movie_query, _thin_cover_alias = with_movie_card_relations(Movie.select(Movie))
         movies_by_id = {
             movie.id: movie
@@ -375,7 +387,7 @@ class MovieRecommendationService:
                 SimilarMovieItem(
                     movie=movie,
                     can_play=bool(getattr(movie, "can_play", False)),
-                    similarity_score=score_by_target_id.get(target_id, 0.0),
+                    similarity_score=score_by_target_id[target_id],
                 )
             )
         return items
@@ -385,7 +397,6 @@ class MovieRecommendationService:
         movie_number: str,
         limit: int = 20,
     ):
-        """组装响应：复用 MovieListItemResource，附加 similarity_score 字段。"""
         from src.schema.catalog.movies import SimilarMovieListItemResource
 
         items = self.list_similar(movie_number=movie_number, limit=limit)

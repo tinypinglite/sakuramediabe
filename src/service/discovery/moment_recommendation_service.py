@@ -16,7 +16,6 @@ from src.model import (
     MediaThumbnail,
     MomentRecommendation,
     Movie,
-    MovieSimilarity,
     get_database,
 )
 from src.schema.catalog.actors import ImageResource
@@ -29,6 +28,7 @@ from src.service.discovery.qdrant_thumbnail_store import (
     get_qdrant_thumbnail_store,
 )
 from src.service.discovery.recommendation_service import MovieRecommendationService
+from src.service.discovery.qdrant_movie_similarity_store import MovieSimilarityIndexError
 
 
 MOMENT_RECOMMENDATION_LIMIT = 300
@@ -84,9 +84,13 @@ class MomentRecommendationService:
         *,
         store: QdrantThumbnailStore | None = None,
         embedder=None,
+        movie_recommendation_service: MovieRecommendationService | None = None,
     ) -> None:
         self.store = store or get_qdrant_thumbnail_store()
         self.embedder = embedder or get_joytag_embedder_client()
+        self.movie_recommendation_service = (
+            movie_recommendation_service or MovieRecommendationService()
+        )
 
     @staticmethod
     def _emit_progress(progress_callback: Callable[[dict], None] | None, **payload) -> None:
@@ -299,27 +303,28 @@ class MomentRecommendationService:
         seeds: Sequence[_MomentSeed],
         candidates_by_thumbnail_id: dict[int, _MomentCandidate],
     ) -> int:
+        try:
+            hits_by_seed_id = self.movie_recommendation_service.search_similar_movies(
+                [seed.movie.id for seed in seeds],
+                limit=SIMILAR_MOVIE_PER_SEED_LIMIT,
+            )
+        except MovieSimilarityIndexError as exc:
+            # 时刻推荐仍可由视觉相似与热门候选完成，Qdrant 故障不阻塞整池生成。
+            logger.warning("时刻推荐跳过影片相似度信号 detail={}", exc)
+            return 0
+
         added_count = 0
         for seed in seeds:
             target_ratio = self._safe_ratio(seed.point.offset_seconds, seed.media.duration_seconds)
-            rows = list(
-                MovieSimilarity.select(MovieSimilarity, Movie)
-                .join(Movie, on=(MovieSimilarity.target_movie == Movie.id))
-                .where(
-                    MovieSimilarity.source_movie == seed.movie.id,
-                    MovieSimilarity.target_movie != seed.movie.id,
-                    MovieSimilarity.rank <= SIMILAR_MOVIE_PER_SEED_LIMIT,
-                    Movie.is_collection == False,
-                )
-                .order_by(MovieSimilarity.rank.asc(), MovieSimilarity.id.asc())
-            )
-            for row in rows:
-                selected = self._choose_thumbnail_for_movie(row.target_movie_id, target_ratio)
+            for hit in hits_by_seed_id.get(seed.movie.id, []):
+                selected = self._choose_thumbnail_for_movie(hit.movie_id, target_ratio)
                 if selected is None:
                     continue
                 media, thumbnail = selected
                 movie = media.movie
-                score = 0.65 * float(row.score) + 0.20 * self._heat_score(movie) + 0.15 * seed.recency_score
+                if movie.is_collection:
+                    continue
+                score = 0.65 * hit.score + 0.20 * self._heat_score(movie) + 0.15 * seed.recency_score
                 before_count = len(candidates_by_thumbnail_id)
                 self._add_candidate(
                     candidates_by_thumbnail_id,
@@ -333,7 +338,7 @@ class MomentRecommendationService:
                         seed_point_id=seed.point.id,
                         seed_thumbnail_id=seed.thumbnail.id,
                         source_movie_id=seed.movie.id,
-                        movie_similarity_score=float(row.score),
+                        movie_similarity_score=hit.score,
                     ),
                 )
                 if len(candidates_by_thumbnail_id) > before_count:

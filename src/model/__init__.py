@@ -22,7 +22,6 @@ from .discovery import (
     HotReviewItem,
     ImageSearchSession,
     MomentRecommendation,
-    MovieSimilarity,
     RankingItem,
 )
 from .playback import Media, MediaClip, MediaLibrary, MediaPoint, MediaProgress, MediaThumbnail
@@ -80,7 +79,6 @@ __all__ = [
     "MovieActor",
     "MoviePlotImage",
     "MovieSeries",
-    "MovieSimilarity",
     "MovieTag",
     "PLAYLIST_KIND_4K",
     "PLAYLIST_KIND_CUSTOM",

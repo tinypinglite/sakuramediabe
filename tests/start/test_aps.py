@@ -6,7 +6,12 @@ from zoneinfo import ZoneInfo
 from src.scheduler.logging import _TASK_LEVELS, _TASK_SINKS, get_task_logger
 from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.service.system import TaskRunConflictError
-from src.start.aps import INTERRUPTED_TASK_RUN_ERROR_MESSAGE, build_scheduler, run_job
+from src.start.aps import (
+    INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
+    _bootstrap_movie_similarity_index,
+    build_scheduler,
+    run_job,
+)
 from src.start.commands import main
 
 
@@ -285,12 +290,12 @@ def test_aps_recompute_movie_similarities_command_runs_job(monkeypatch):
         "recompute-movie-similarities",
         {
             "total_movies": 8,
-            "processed_movies": 8,
-            "stored_pairs": 42,
-            "skipped_movies": 1,
+            "indexed_movies": 7,
+            "actor_features": 18,
+            "tag_features": 24,
         },
-        "movie similarity recompute finished: total_movies=8 processed_movies=8 "
-        "stored_pairs=42 skipped_movies=1",
+        "movie similarity recompute finished: total_movies=8 indexed_movies=7 "
+        "actor_features=18 tag_features=24",
     )
 
 
@@ -451,6 +456,21 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert scheduler.timezone.key == "Asia/Shanghai"
 
 
+def test_bootstrap_movie_similarity_index_schedules_missing_alias(monkeypatch):
+    scheduler = build_scheduler()
+    monkeypatch.setattr(
+        "src.service.discovery.qdrant_movie_similarity_store."
+        "get_qdrant_movie_similarity_store",
+        lambda: type("Store", (), {"is_ready": lambda self: False})(),
+    )
+
+    _bootstrap_movie_similarity_index(scheduler)
+
+    job = scheduler.get_job("bootstrap_movie_similarity_index")
+    assert job is not None
+    assert job.trigger.run_date is not None
+
+
 # ---------------------------------------------------------------------------
 # 启动恢复测试
 # ---------------------------------------------------------------------------
@@ -476,6 +496,7 @@ def test_aps_recovers_interrupted_scheduled_tasks_before_starting_scheduler(monk
         lambda self: (_ for _ in ()).throw(AssertionError("should not recover import state")),
     )
     monkeypatch.setattr("src.start.aps.build_scheduler", lambda: events.append("build") or FakeScheduler())
+    monkeypatch.setattr("src.start.aps._bootstrap_movie_similarity_index", lambda _scheduler: None)
 
     from src.start.aps import aps
 
@@ -563,6 +584,7 @@ def test_aps_recovers_task_related_business_running_states(monkeypatch):
         lambda self: events.append(("recover_import", True)) or {"recovered_count": 1},
     )
     monkeypatch.setattr("src.start.aps.build_scheduler", lambda: events.append("build") or FakeScheduler())
+    monkeypatch.setattr("src.start.aps._bootstrap_movie_similarity_index", lambda _scheduler: None)
 
     from src.start.aps import aps
 

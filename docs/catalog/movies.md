@@ -130,8 +130,11 @@
 - 额外字段：
   - `similarity_score`: `float`，相似度分数，按降序返回
 - 数据来源：
-  - 由离线任务预计算并写入 `movie_similarity` 表
-  - 请求接口只读已落库结果，不在请求线程中临时计算
+  - 离线任务把演员、标签构造成 IDF 加权稀疏向量并写入 Qdrant
+  - 请求接口只查询已激活的 Qdrant 索引，不在请求线程中临时计算
+  - 排序只取决于内容相似度，不再叠加影片热度加成
+  - 首次索引尚未构建完成时返回 `503`（`movie_similarity_index_not_ready`）
+  - Qdrant 不可用时降级返回空列表，并记录 warning 日志
 
 `MovieActorResource`：
 
@@ -295,8 +298,9 @@ Authorization: Bearer <token>
   - `limit`：返回条数，默认 `20`，范围 `0~100`
 - 行为：
   - 按标准化后的影片番号定位 source 影片（兼容空白、大小写、`PPV-` 前缀）
-  - 只读取离线预计算的相似影片结果，按 `rank` 升序返回
+  - 查询 Qdrant 稀疏向量索引，按相似度降序返回
   - 响应项复用 `MovieListItemResource`，并附加 `similarity_score`
+  - 影片尚未进入索引（无演员无标签，或建索引后新入库）时返回空列表
 
 示例请求：
 

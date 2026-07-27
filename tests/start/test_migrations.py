@@ -1271,3 +1271,17 @@ def test_run_pending_migrations_adds_movie_number_upper_index(clean_db):
         " AND schemaname = current_schema()"
     ).fetchone() is not None
     assert "20260728_01_add_movie_number_upper_index" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_drops_movie_similarity_table(clean_db):
+    """Qdrant 接管相似度查询后，存量结果表不再保留。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    clean_db.execute_sql(
+        'CREATE TABLE "movie_similarity" (id SERIAL PRIMARY KEY)'
+    )
+
+    run_pending_migrations(clean_db)
+
+    assert not clean_db.table_exists("movie_similarity")
+    assert "20260728_02_drop_movie_similarity" in _schema_migration_names(clean_db)

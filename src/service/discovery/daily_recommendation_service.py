@@ -5,6 +5,7 @@ from collections import defaultdict
 from datetime import date, datetime, time
 from typing import Callable, Sequence
 
+from loguru import logger
 from peewee import JOIN
 
 from src.common.runtime_time import runtime_now, utc_now_for_db
@@ -15,7 +16,6 @@ from src.model import (
     HotReviewItem,
     Movie,
     MovieActor,
-    MovieSimilarity,
     Playlist,
     PlaylistMovie,
     RankingItem,
@@ -26,6 +26,7 @@ from src.schema.catalog.movies import MovieListItemResource
 from src.schema.common.pagination import PageResponse
 from src.schema.discovery import DailyRecommendationMovieResource
 from src.service.discovery.recommendation_service import MovieRecommendationService
+from src.service.discovery.qdrant_movie_similarity_store import MovieSimilarityIndexError
 
 
 DAILY_RECOMMENDATION_LIMIT = 200
@@ -154,19 +155,23 @@ class DailyRecommendationService:
             seed_id: 1.0 - (index / max(len(seed_ids), 1))
             for index, seed_id in enumerate(seed_ids)
         }
-        rows = (
-            MovieSimilarity.select()
-            .where(
-                MovieSimilarity.source_movie.in_(list(seed_ids)),
-                MovieSimilarity.target_movie.in_(list(candidate_ids)),
-                MovieSimilarity.rank <= SIMILARITY_PER_SEED_LIMIT,
+        try:
+            hits_by_seed_id = MovieRecommendationService().search_similar_movies(
+                seed_ids,
+                limit=SIMILARITY_PER_SEED_LIMIT,
             )
-        )
+        except MovieSimilarityIndexError as exc:
+            # 每日推荐还有热度、榜单等信号，Qdrant 故障时只跳过相似度信号。
+            logger.warning("每日推荐跳过影片相似度信号 detail={}", exc)
+            return {}
         scores: dict[int, float] = defaultdict(float)
-        for row in rows:
-            seed_weight = seed_weight_by_id.get(row.source_movie_id, 0.0)
-            score = cls._normalize(float(row.score or 0.0) * seed_weight)
-            scores[row.target_movie_id] = max(scores[row.target_movie_id], score)
+        for seed_id, hits in hits_by_seed_id.items():
+            seed_weight = seed_weight_by_id.get(seed_id, 0.0)
+            for hit in hits:
+                if hit.movie_id not in candidate_ids:
+                    continue
+                score = cls._normalize(hit.score * seed_weight)
+                scores[hit.movie_id] = max(scores[hit.movie_id], score)
         return dict(scores)
 
     @classmethod

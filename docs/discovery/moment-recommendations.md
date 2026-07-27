@@ -94,12 +94,13 @@ Authorization: Bearer <token>
 单次生成命令：
 
 ```bash
-poetry run python -m src.start.commands aps generate-moment-recommendations
+uv run python -m src.start.commands aps generate-moment-recommendations
 ```
 
 生成规则：
 
 - 主召回使用用户收藏的 `MediaPoint` 缩略图做 JoyTag 向量检索
-- 视觉召回不足或不可用时，按相似影片和相近播放比例补足
+- 视觉召回不足或不可用时，批量查询 Qdrant 影片元数据相似度索引，并按相近播放比例补足
+- 影片相似度索引不可用时只跳过该信号，视觉召回与热门候选仍会继续生成
 - 没有可用收藏时刻时，从高热度可播放影片中选取精选缩略图补足
 - 同一缩略图只保留最高分候选，同一影片最多保留 3 个时刻

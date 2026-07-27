@@ -390,9 +390,9 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         format_stats=_build_stats_formatter(
             "movie similarity recompute finished:",
             ("total_movies", "total_movies", 0),
-            ("processed_movies", "processed_movies", 0),
-            ("stored_pairs", "stored_pairs", 0),
-            ("skipped_movies", "skipped_movies", 0),
+            ("indexed_movies", "indexed_movies", 0),
+            ("actor_features", "actor_features", 0),
+            ("tag_features", "tag_features", 0),
         ),
     ),
     JobDefinition(

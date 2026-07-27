@@ -177,12 +177,55 @@ def submit_manual_job(job_def: JobDefinition) -> BackgroundTaskRun:
     return task_run
 
 
+def _schedule_bootstrap_job(
+    scheduler: BlockingScheduler,
+    job_key: str,
+    *,
+    job_id: str,
+    func: Callable[..., Any] | None = None,
+) -> None:
+    """把一次性引导任务挂成立刻执行的 date job。
+
+    复用注册表里 cron 任务的 task_key、mutex 与日志名，因此与定时触发天然互斥；
+    ``func`` 缺省时直接跑该任务本身的 service_factory，只有需要收窄执行范围
+    （例如冷启动只抓单个榜单）时才显式传入。
+    """
+    job_def = JOB_REGISTRY_BY_KEY.get(job_key)
+    if job_def is None:
+        logger.warning("引导任务未在注册表中，跳过 job_key={}", job_key)
+        return
+    task_func = func or job_def.service_factory
+
+    def _runner() -> None:
+        ensure_database_ready()
+        try:
+            ActivityService.run_task(
+                task_key=job_def.task_key,
+                trigger_type="startup",
+                func=task_func,
+                log_task_name=job_def.log_name,
+                mutex_key=f"aps:{job_def.task_key}",
+                conflict_policy="skip",
+            )
+        except Exception:
+            logger.exception("Bootstrap job failed job_key={}", job_key)
+
+    # misfire_grace_time=None：避免默认 1s 宽限期把这次"立刻执行"的 date job
+    # 在启动瞬时忙碌时静默判成 missed 而丢弃。
+    scheduler.add_job(
+        _runner,
+        trigger="date",
+        id=job_id,
+        replace_existing=True,
+        misfire_grace_time=None,
+    )
+
+
 def _bootstrap_first_playback_ranking(scheduler: BlockingScheduler) -> None:
     """首次部署引导：若 Movie 表为空，安排一次 javdb 热播榜 daily 抓取。
 
     - 目的：新库启动后立刻有内容，不必等凌晨 01:45 的定时 ranking_sync
     - 目标最小：只抓 javdb 免登录的 playback_all/daily，冷启动足够轻
-    - 复用 ranking_sync 的 task_key 与 mutex，与定时触发天然互斥
     - 任何异常都吞掉：早期部署可能还没跑迁移，不能让引导逻辑打崩 APS 启动
     """
     try:
@@ -193,37 +236,13 @@ def _bootstrap_first_playback_ranking(scheduler: BlockingScheduler) -> None:
             return
 
         logger.info("首次部署检测：影片库为空，安排一次 javdb 热播榜（daily）抓取")
-
-        ranking_sync_def = JOB_REGISTRY_BY_KEY["ranking_sync"]
-
-        def _runner() -> None:
-            ensure_database_ready()
-
-            def _fetch(_reporter):
-                return RankingSyncService().sync_board_period(
-                    "javdb", "playback_all", "daily"
-                )
-
-            try:
-                ActivityService.run_task(
-                    task_key=ranking_sync_def.task_key,
-                    trigger_type="startup",
-                    func=_fetch,
-                    log_task_name=ranking_sync_def.log_name,
-                    mutex_key=f"aps:{ranking_sync_def.task_key}",
-                    conflict_policy="skip",
-                )
-            except Exception:
-                logger.exception("Bootstrap javdb playback ranking failed")
-
-        # misfire_grace_time=None：避免默认 1s 宽限期把这次"立刻执行"的 date job
-        # 在启动瞬时忙碌时静默判成 missed 而丢弃。
-        scheduler.add_job(
-            _runner,
-            trigger="date",
-            id="bootstrap_ranking_playback",
-            replace_existing=True,
-            misfire_grace_time=None,
+        _schedule_bootstrap_job(
+            scheduler,
+            "ranking_sync",
+            job_id="bootstrap_ranking_playback",
+            func=lambda _reporter: RankingSyncService().sync_board_period(
+                "javdb", "playback_all", "daily"
+            ),
         )
     except Exception:
         logger.exception("Skip bootstrap ranking due to unexpected error")
@@ -234,17 +253,12 @@ def _bootstrap_gfriends_filetree_refresh(scheduler: BlockingScheduler) -> None:
 
     - 目的：避免首个 JavDB 详情请求触发同步网络阻塞
     - 触发条件：disk cache 不存在或已超过 TTL（等 cron 又要一周太久）
-    - 与 cron 定时任务共享 task_key/mutex，不会重复触发
     - 任何异常都吞掉：GFriends 只是头像美化，不能让引导逻辑打崩 APS 启动
     """
     try:
         from pathlib import Path
 
         from src.metadata.factory import refresh_gfriends_filetree
-
-        gfriends_refresh_def = JOB_REGISTRY_BY_KEY.get("gfriends_filetree_refresh")
-        if gfriends_refresh_def is None:
-            return
 
         cache_path = Path(settings.metadata.gfriends_filetree_cache_path).expanduser()
         if cache_path.exists():
@@ -255,36 +269,39 @@ def _bootstrap_gfriends_filetree_refresh(scheduler: BlockingScheduler) -> None:
                 return
 
         logger.info("首次部署检测：GFriends Filetree 缓存缺失或过期，安排一次预热拉取")
-
-        def _runner() -> None:
-            ensure_database_ready()
-
-            def _fetch(_reporter):
-                return refresh_gfriends_filetree(force=False)
-
-            try:
-                ActivityService.run_task(
-                    task_key=gfriends_refresh_def.task_key,
-                    trigger_type="startup",
-                    func=_fetch,
-                    log_task_name=gfriends_refresh_def.log_name,
-                    mutex_key=f"aps:{gfriends_refresh_def.task_key}",
-                    conflict_policy="skip",
-                )
-            except Exception:
-                logger.exception("Bootstrap gfriends filetree refresh failed")
-
-        # misfire_grace_time=None：避免默认 1s 宽限期把这次"立刻执行"的 date job
-        # 在启动瞬时忙碌时静默判成 missed 而丢弃。
-        scheduler.add_job(
-            _runner,
-            trigger="date",
-            id="bootstrap_gfriends_filetree_refresh",
-            replace_existing=True,
-            misfire_grace_time=None,
+        _schedule_bootstrap_job(
+            scheduler,
+            "gfriends_filetree_refresh",
+            job_id="bootstrap_gfriends_filetree_refresh",
+            func=lambda _reporter: refresh_gfriends_filetree(force=False),
         )
     except Exception:
         logger.exception("Skip bootstrap gfriends filetree refresh due to unexpected error")
+
+
+def _bootstrap_movie_similarity_index(scheduler: BlockingScheduler) -> None:
+    """相似度 alias 缺失时立刻安排首次构建，不阻塞 APS 启动。"""
+    try:
+        from src.service.discovery.qdrant_movie_similarity_store import (
+            MovieSimilarityIndexError,
+            get_qdrant_movie_similarity_store,
+        )
+
+        try:
+            if get_qdrant_movie_similarity_store().is_ready():
+                return
+        except MovieSimilarityIndexError as exc:
+            # Qdrant 暂时不可达时仍安排一次启动任务，让失败进入统一任务记录。
+            logger.warning("检查影片相似度索引失败，仍安排启动构建 detail={}", exc)
+
+        logger.info("影片相似度索引尚未就绪，安排一次启动构建")
+        _schedule_bootstrap_job(
+            scheduler,
+            "movie_similarity_recompute",
+            job_id="bootstrap_movie_similarity_index",
+        )
+    except Exception:
+        logger.exception("Skip bootstrap movie similarity index due to unexpected error")
 
 
 def build_scheduler() -> BlockingScheduler:
@@ -321,6 +338,7 @@ def aps():
     scheduler = build_scheduler()
     _bootstrap_first_playback_ranking(scheduler)
     _bootstrap_gfriends_filetree_refresh(scheduler)
+    _bootstrap_movie_similarity_index(scheduler)
     cron_info = " ".join(
         f"{get_job_cron_setting(j)}={resolve_job_cron_expr(j)}"
         for j in JOB_REGISTRY

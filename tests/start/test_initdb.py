@@ -20,7 +20,6 @@ from src.model import (
     Movie,
     MoviePlotImage,
     MovieSeries,
-    MovieSimilarity,
     PLAYLIST_KIND_4K,
     PLAYLIST_KIND_RECENTLY_PLAYED,
     PLAYLIST_KIND_VR,
@@ -95,7 +94,6 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
     assert UserRefreshToken.table_exists()
     assert MoviePlotImage.table_exists()
     assert MovieSeries.table_exists()
-    assert MovieSimilarity.table_exists()
     assert DailyRecommendationItem.table_exists()
     assert RankingItem.table_exists()
     assert HotReviewItem.table_exists()
