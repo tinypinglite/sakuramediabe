@@ -60,7 +60,7 @@ class Cloud115Transport:
         *,
         timeout: float = 30.0,
         http_client: httpx.AsyncClient | None = None,
-        min_request_interval: float = 0.0,
+        min_request_interval: float = 1.0,
     ) -> None:
         self.session = session
         self._min_request_interval = max(0.0, min_request_interval)

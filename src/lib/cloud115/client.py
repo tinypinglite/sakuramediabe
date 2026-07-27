@@ -31,7 +31,7 @@ class Cloud115Client:
         user_agent: str | None = None,
         timeout: float = 30.0,
         http_client: httpx.AsyncClient | None = None,
-        min_request_interval: float = 0.0,
+        min_request_interval: float = 1.0,
     ) -> None:
         self.session = Cloud115Session(cookies, user_agent=user_agent)
         self.transport = Cloud115Transport(

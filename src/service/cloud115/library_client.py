@@ -97,12 +97,12 @@ async def cloud115_client_for(
     library: MediaLibrary,
     *,
     user_agent: str | None = None,
-    min_request_interval: float = 0.0,
+    min_request_interval: float = 1.0,
 ) -> AsyncIterator[Cloud115Client]:
     """按库配置建 Cloud115Client；可指定请求 UA，退出时回写 cookies 快照。
 
-    min_request_interval>0 时开启全局请求限速（秒/次），用于批量秒传等高频写入场景，
-    把请求匀速化以规避 webapi 前置 WAF 的风控阈值；浏览/播放等低频场景保持 0（不限速）。
+    默认把同一客户端内的请求按 1 秒间隔匀速化，规避 webapi 前置 WAF 的风控阈值；
+    高频写入场景可按需覆盖该间隔。
     """
     config = require_cloud115_library(library)
     original_config = dict(config)
