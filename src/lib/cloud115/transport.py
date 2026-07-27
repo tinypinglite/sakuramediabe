@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from loguru import logger
@@ -24,6 +25,27 @@ _NOT_FOUND_ERRNOS = frozenset({20121, 20125, 990002, 4100003, 4100008})
 _REQUEST_ERRNOS = frozenset({990005})
 _MEMBERSHIP_REQUIRED_ERRNOS = frozenset({406})
 _OFFLINE_QUOTA_EXCEEDED_ERRNOS = frozenset({10004, 10008})
+
+
+def _safe_endpoint(url: str) -> str:
+    """日志只保留主机和路径，避免查询参数中的敏感信息落盘。"""
+    parsed = urlsplit(url)
+    return f"{parsed.netloc}{parsed.path or '/'}"
+
+
+def _safe_action(
+    params: dict[str, Any] | None,
+    data: dict[str, Any] | bytes | None,
+) -> str:
+    """仅记录 115 的固定动作名，不记录完整请求参数。"""
+    for values in (params, data if isinstance(data, dict) else None):
+        if values and values.get("ac"):
+            return str(values["ac"])[:64]
+    return "-"
+
+
+def _safe_detail(value: Any) -> str:
+    return " ".join(str(value).split())[:200] or "-"
 
 
 class Cloud115Transport:
@@ -125,6 +147,8 @@ class Cloud115Transport:
         last_error: Exception | None = None
         should_retry = retryable if retryable is not None else method.upper() in {"GET", "HEAD", "OPTIONS"}
         max_retries = self._MAX_RETRIES if should_retry else 0
+        endpoint = _safe_endpoint(url)
+        action = _safe_action(params, data)
         for attempt in range(max_retries + 1):
             # 每次重试前重新拼 headers（因为上一次响应可能 merge 了新的 acw_tc）
             request_headers = self._base_headers()
@@ -145,8 +169,10 @@ class Cloud115Transport:
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc
                 logger.warning(
-                    "cloud115 request transient error method={} url={} attempt={}/{} detail={}",
-                    method, url, attempt + 1, max_retries + 1, exc,
+                    "cloud115 request transient error method={} endpoint={} action={} "
+                    "attempt={}/{} detail={}",
+                    method, endpoint, action, attempt + 1, max_retries + 1,
+                    _safe_detail(exc),
                 )
                 if attempt >= max_retries:
                     break
@@ -158,6 +184,13 @@ class Cloud115Transport:
                 self._merge_set_cookies(response)
 
             status = response.status_code
+            if not (200 <= status < 300):
+                logger.warning(
+                    "cloud115 http failure method={} endpoint={} action={} status={} "
+                    "attempt={}/{} detail={}",
+                    method, endpoint, action, status, attempt + 1, max_retries + 1,
+                    _safe_detail(response.reason_phrase),
+                )
             if status == 429:
                 # 限流：立刻抛，携带 Retry-After（不做重试，避免账号触发更严格的风控）
                 retry_after = response.headers.get("Retry-After")
@@ -185,10 +218,6 @@ class Cloud115Transport:
                     method=method,
                     url=url,
                     detail=response.text[:200],
-                )
-                logger.warning(
-                    "cloud115 5xx method={} url={} status={} attempt={}/{}",
-                    method, url, status, attempt + 1, max_retries + 1,
                 )
                 if attempt >= max_retries:
                     break
@@ -232,14 +261,35 @@ class Cloud115Transport:
             retryable=retryable,
         )
         try:
-            return response.json()
+            payload = response.json()
         except Exception as exc:
+            logger.warning(
+                "cloud115 invalid json method={} endpoint={} action={} status={} detail={}",
+                method, _safe_endpoint(url), _safe_action(params, data),
+                response.status_code, _safe_detail(exc),
+            )
             raise Cloud115RequestError(
                 f"non-json body on {method} {url}",
                 method=method,
                 url=url,
                 detail=str(exc),
             ) from exc
+        if payload.get("state") is False:
+            message = (
+                payload.get("error")
+                or payload.get("error_msg")
+                or payload.get("message")
+                or payload.get("msg")
+                or "unknown"
+            )
+            logger.warning(
+                "cloud115 api rejected method={} endpoint={} action={} errno={} "
+                "errcode={} detail={}",
+                method, _safe_endpoint(url), _safe_action(params, data),
+                payload.get("errno") or payload.get("errNo") or payload.get("code"),
+                payload.get("errcode"), _safe_detail(message),
+            )
+        return payload
 
     async def _get_text(
         self,
