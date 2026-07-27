@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, NamedTuple
@@ -56,14 +57,12 @@ from src.model import ImportJob, Media, MediaLibrary, Movie, Subtitle, get_datab
 from src.service.cloud115 import (
     assert_cid_outside_library_root,
     cloud115_client_for,
-    find_or_create_subdir,
     require_cloud115_library,
 )
 from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeResult,
     MediaMetadataProbeService,
 )
-from src.service.transfers.file_transfer import JAV_LIBRARY_SUBDIR
 from src.service.transfers.media_source_scanner import parse_movie_number_from_scan_path
 from src.service.transfers.cloud115_import_common import (
     CLOUD115_METADATA_PROBE_MAX_BYTES,
@@ -76,7 +75,6 @@ from src.service.transfers.cloud115_import_common import (
     build_cloud115_dir_map,
     collect_cloud115_source_tree,
     cloud115_rel_dir_parts,
-    create_cloud115_version_subdir,
     list_cloud115_entity_target_files,
     list_cloud115_target_files,
     normalize_cloud115_transfer_mode,
@@ -94,6 +92,9 @@ from src.service.transfers.tag_rules import build_media_special_tags
 SUBTITLE_DOWNLOAD_UA = "Mozilla/5.0 SakuraMedia-Cloud115-Import/1.0"
 # 字幕文件大小上限：.srt 纯文本，10MB 足够富余。
 SUBTITLE_MAX_BYTES = 10 * 1024 * 1024
+# 手动批量 JAV 导入在番号之间加入随机停顿，降低长时间持续请求 115 的频率。
+MANUAL_GROUP_REST_MIN_SECONDS = 10.0
+MANUAL_GROUP_REST_MAX_SECONDS = 30.0
 ImportProgressCallback = Callable[[dict], None]
 
 
@@ -356,20 +357,12 @@ class Cloud115ImportService:
             job.source_path = source_display[:1024] or f"cloud115:{source_cid}"
             job.save()
 
-            target_dir_resolver = (
-                Cloud115TargetDirResolver(
-                    client,
-                    root_cid=root_cid,
-                    cache=target_dir_cache,
-                )
-                if target_dir_cache is not None
-                else None
+            # 自动批次复用外部缓存；手动作业未传缓存时由 resolver 创建仅本作业有效的缓存。
+            target_dir_resolver = Cloud115TargetDirResolver(
+                client,
+                root_cid=root_cid,
+                cache=target_dir_cache,
             )
-            jav_cid = None
-            if target_dir_resolver is None:
-                jav_cid = await find_or_create_subdir(
-                    client, parent_cid=root_cid, name=JAV_LIBRARY_SUBDIR
-                )
 
             # 1) 枚举 + 分拣 + 去重
             groups, scan_skipped, scan_failed = await self._scan_source(
@@ -413,8 +406,34 @@ class Cloud115ImportService:
                 [group.movie_number for group in groups],
                 thread_name_prefix="cloud115-import-metadata",
             ) as metadata_futures:
-                for group in groups:
+                for group_index, group in enumerate(groups):
                     movie_number = group.movie_number
+                    if not managed_download_source and group_index > 0:
+                        delay = random.uniform(
+                            MANUAL_GROUP_REST_MIN_SECONDS,
+                            MANUAL_GROUP_REST_MAX_SECONDS,
+                        )
+                        logger.info(
+                            "Cloud115 manual import resting before next movie "
+                            "job_id={} movie_number={} delay_seconds={:.1f}",
+                            job.id,
+                            movie_number,
+                            delay,
+                        )
+                        self._emit(
+                            progress_callback,
+                            event="movie_waiting",
+                            stage="rest",
+                            movie_number=movie_number,
+                            completed_movies=completed_movies,
+                            total_movies=total_movies,
+                            current=completed_movies,
+                            total=total_movies,
+                            text=f"为降低 115 请求频率，{delay:.1f} 秒后继续导入 {movie_number}",
+                            summary_patch=self._summary(stats, new_playable_movies),
+                        )
+                        await asyncio.sleep(delay)
+
                     self._emit(
                         progress_callback,
                         event="movie_started",
@@ -472,7 +491,6 @@ class Cloud115ImportService:
                         library=library,
                         movie=movie,
                         group=group,
-                        jav_cid=jav_cid,
                         target_dir_resolver=target_dir_resolver,
                         transfer_mode=transfer_mode,
                         failure_items=failure_items,
@@ -638,8 +656,7 @@ class Cloud115ImportService:
         library: MediaLibrary,
         movie: Movie,
         group: CloudImportGroup,
-        jav_cid: str | None,
-        target_dir_resolver: Cloud115TargetDirResolver | None,
+        target_dir_resolver: Cloud115TargetDirResolver,
         transfer_mode: str,
         failure_items: List[dict],
         stats: dict,
@@ -652,17 +669,9 @@ class Cloud115ImportService:
         已复制条目，不重复复制。
         """
         try:
-            if target_dir_resolver is not None:
-                entity_cid, entity_created = (
-                    await target_dir_resolver.resolve_jav_entity(group.movie_number)
-                )
-            else:
-                if jav_cid is None:
-                    raise ValueError("cloud115_jav_cid_missing")
-                entity_cid = await find_or_create_subdir(
-                    client, parent_cid=jav_cid, name=group.movie_number
-                )
-                entity_created = False
+            entity_cid, entity_created = (
+                await target_dir_resolver.resolve_jav_entity(group.movie_number)
+            )
         except Exception as exc:
             self._record_group_failure(
                 group,
@@ -745,17 +754,10 @@ class Cloud115ImportService:
                 # 需要新复制：为本文件建独立版本目录，跟本地 create_version_directory 对齐。
                 version_cid: str | None = None
                 try:
-                    if target_dir_resolver is not None:
-                        version_cid = await target_dir_resolver.create_version_dir(
-                            entity_cid=entity_cid,
-                            now_ms=int(time.time() * 1000),
-                        )
-                    else:
-                        version_cid = await create_cloud115_version_subdir(
-                            client,
-                            parent_cid=entity_cid,
-                            now_ms=int(time.time() * 1000),
-                        )
+                    version_cid = await target_dir_resolver.create_version_dir(
+                        entity_cid=entity_cid,
+                        now_ms=int(time.time() * 1000),
+                    )
                     await client.copy_files([cloud_file.fid], pid=version_cid)
                     version_entries = await self._list_target_files(client, version_cid)
                 except Exception as exc:

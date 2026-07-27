@@ -1,7 +1,7 @@
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 from src.lib.cloud115 import DirBreadcrumb, DirEntry, DirMeta
 from src.service.transfers.cloud115_import_common import (
@@ -9,7 +9,10 @@ from src.service.transfers.cloud115_import_common import (
     Cloud115TargetDirResolver,
     collect_cloud115_source_tree,
 )
-from src.service.transfers.cloud115_import_service import Cloud115ImportService
+from src.service.transfers.cloud115_import_service import (
+    Cloud115ImportService,
+    CloudImportGroup,
+)
 from src.service.transfers.cloud115_import_job_service import (
     Cloud115ImportJobService,
 )
@@ -215,6 +218,232 @@ def test_manual_trigger_reuses_source_metadata_from_safety_check(monkeypatch):
         root_cid="library-root",
     )
     client.dir_info.assert_not_awaited()
+
+
+def _run_import_groups(
+    monkeypatch,
+    *,
+    managed_download_source: bool,
+    count: int,
+    failed_movie_ids: set[int] | None = None,
+):
+    source_meta = DirMeta(
+        cid="source",
+        name="batch",
+        pickcode="",
+        parent_id="download-root",
+        file_count=0,
+        folder_count=0,
+        play_long_seconds=0,
+        mtime=0,
+        ctime=0,
+        paths=(DirBreadcrumb(file_id="download-root", name="downloads"),),
+    )
+    client = SimpleNamespace(dir_info=AsyncMock(return_value=source_meta))
+    safety_check = AsyncMock(return_value=source_meta)
+
+    @asynccontextmanager
+    async def fake_client_for(_library):
+        yield client
+
+    groups = [
+        CloudImportGroup(movie_number=f"TEST-{index:03d}")
+        for index in range(1, count + 1)
+    ]
+    failed_movie_ids = failed_movie_ids or set()
+
+    def metadata_result(movie_id):
+        failed = movie_id in failed_movie_ids
+        return SimpleNamespace(
+            failure_reason="metadata_failed" if failed else None,
+            failure_detail="failed" if failed else None,
+            movie_id=movie_id,
+        )
+
+    @contextmanager
+    def metadata_import_batch(movie_numbers, *, thread_name_prefix):
+        del thread_name_prefix
+        yield {
+            movie_number: SimpleNamespace(
+                result=lambda movie_id=index: metadata_result(movie_id)
+            )
+            for index, movie_number in enumerate(movie_numbers, start=1)
+        }
+
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.cloud115_client_for",
+        fake_client_for,
+    )
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.require_cloud115_library",
+        lambda _library: {
+            "root_cid": "library-root",
+            "download_root_cid": "download-root",
+        },
+    )
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.assert_cid_outside_library_root",
+        safety_check,
+    )
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.Movie.get_by_id",
+        lambda movie_id: SimpleNamespace(
+            id=movie_id,
+            movie_number=f"TEST-{movie_id:03d}",
+            title="",
+        ),
+    )
+
+    delays = iter((11.0, 29.0))
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.random.uniform",
+        lambda minimum, maximum: next(delays),
+    )
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.asyncio.sleep",
+        sleep_mock,
+    )
+
+    service = Cloud115ImportService(
+        media_import_service=SimpleNamespace(
+            metadata_import_batch=metadata_import_batch,
+        )
+    )
+    service._scan_source = AsyncMock(return_value=(groups, 0, 0))
+    service._import_group = AsyncMock()
+    events = []
+    job = SimpleNamespace(id=42, source_path="", save=lambda: None)
+    shared_cache = Cloud115TargetDirCache() if managed_download_source else None
+
+    asyncio.run(
+        service._run(
+            library=object(),
+            source_cid="source",
+            transfer_mode="cleanup-source",
+            only_files=None,
+            failure_items=[],
+            stats={"imported": 0, "skipped": 0, "failed": 0},
+            new_playable_movies={},
+            progress_callback=events.append,
+            job=job,
+            managed_download_source=managed_download_source,
+            target_dir_cache=shared_cache,
+        )
+    )
+    return service, safety_check, sleep_mock, events, shared_cache
+
+
+def test_manual_import_rests_only_before_later_movie_groups(monkeypatch):
+    service, safety_check, sleep_mock, events, _ = _run_import_groups(
+        monkeypatch,
+        managed_download_source=False,
+        count=3,
+    )
+
+    assert sleep_mock.await_args_list == [call(11.0), call(29.0)]
+    waiting_events = [event for event in events if event["event"] == "movie_waiting"]
+    assert [event["movie_number"] for event in waiting_events] == [
+        "TEST-002",
+        "TEST-003",
+    ]
+    assert [event["completed_movies"] for event in waiting_events] == [1, 2]
+    assert "11.0 秒后继续" in waiting_events[0]["text"]
+    assert "29.0 秒后继续" in waiting_events[1]["text"]
+    safety_check.assert_awaited_once()
+
+    resolver_ids = {
+        id(awaited.kwargs["target_dir_resolver"])
+        for awaited in service._import_group.await_args_list
+    }
+    assert len(resolver_ids) == 1
+    resolver = service._import_group.await_args_list[0].kwargs[
+        "target_dir_resolver"
+    ]
+    assert isinstance(resolver._cache, Cloud115TargetDirCache)
+
+
+def test_manual_import_rests_before_next_group_after_ordinary_failure(
+    monkeypatch,
+):
+    service, _, sleep_mock, _, _ = _run_import_groups(
+        monkeypatch,
+        managed_download_source=False,
+        count=2,
+        failed_movie_ids={1},
+    )
+
+    sleep_mock.assert_awaited_once_with(11.0)
+    service._import_group.assert_awaited_once()
+    assert (
+        service._import_group.await_args.kwargs["group"].movie_number
+        == "TEST-002"
+    )
+
+
+def test_single_manual_import_and_managed_import_do_not_use_group_rest(monkeypatch):
+    _, _, manual_sleep, _, _ = _run_import_groups(
+        monkeypatch,
+        managed_download_source=False,
+        count=1,
+    )
+    manual_sleep.assert_not_awaited()
+
+    _, managed_safety, managed_sleep, _, shared_cache = _run_import_groups(
+        monkeypatch,
+        managed_download_source=True,
+        count=3,
+    )
+    managed_sleep.assert_not_awaited()
+    managed_safety.assert_not_awaited()
+    assert shared_cache is not None
+
+
+def test_new_entity_skips_reconciliation_but_existing_entity_keeps_it(
+    monkeypatch,
+):
+    entity_scan = AsyncMock(return_value={})
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115_import_service.list_cloud115_entity_target_files",
+        entity_scan,
+    )
+    service = Cloud115ImportService()
+    group = CloudImportGroup(movie_number="TEST-001")
+    common_kwargs = {
+        "client": object(),
+        "library": object(),
+        "movie": object(),
+        "group": group,
+        "transfer_mode": "cleanup-source",
+        "failure_items": [],
+        "stats": {"imported": 0, "skipped": 0, "failed": 0},
+        "new_playable_movies": {},
+    }
+
+    created_resolver = SimpleNamespace(
+        resolve_jav_entity=AsyncMock(return_value=("new-cid", True)),
+    )
+    asyncio.run(
+        service._import_group(
+            target_dir_resolver=created_resolver,
+            **common_kwargs,
+        )
+    )
+    entity_scan.assert_not_awaited()
+
+    existing_resolver = SimpleNamespace(
+        resolve_jav_entity=AsyncMock(return_value=("existing-cid", False)),
+    )
+    asyncio.run(
+        service._import_group(
+            target_dir_resolver=existing_resolver,
+            **common_kwargs,
+        )
+    )
+    entity_scan.assert_awaited_once_with(
+        common_kwargs["client"],
+        "existing-cid",
+    )
 
 
 def test_auto_import_queue_rests_only_between_successful_jobs(monkeypatch):

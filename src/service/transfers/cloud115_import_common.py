@@ -155,7 +155,7 @@ async def _list_subdir_cids_by_name(
 
 @dataclass
 class Cloud115TargetDirCache:
-    """同一自动导入批次跨作业共享的目标目录缓存。"""
+    """自动导入批次或单次手动作业内共享的目标目录缓存。"""
 
     section_cids: Dict[str, str] = field(default_factory=dict)
     entities: Dict[str, Dict[str, str]] = field(default_factory=dict)
