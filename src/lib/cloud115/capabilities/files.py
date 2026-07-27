@@ -162,7 +162,6 @@ class FilesCapability(Cloud115Capability):
         """递归枚举 cid 目录树下的**全部文件**（不含目录条目），逐条 yield DirEntry。
 
         - 触发条件：/files 加 show_dir=0 & cur=0（p115client 记载的全树递归模式）。
-        - 固定 o=file_name & asc=1 排序，保证大目录跨页分页一致（服务端默认排序不稳定）。
         - 递归模式下每条只带 parent cid（parent_id），**拿不到父目录名** ——
           cid→目录名映射由上层自己用 list_dir 遍历目录结构维护（目录数远小于文件数）。
         - play_long / ic 字段在本响应里白给，导入侧直接消费，无需逐文件再查。

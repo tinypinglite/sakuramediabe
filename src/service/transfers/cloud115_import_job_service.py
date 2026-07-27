@@ -6,8 +6,7 @@
 
 - 触发入参是 source_cid（115 目录）而非本地路径；transfer_mode 是 copy/cleanup-source。
 - 触发前打 115 API 做防御校验（源目录与库管理目录互不包含）——前端已禁选，服务端兜底。
-- mutex 按 **库** 锁而非（库 + 源）：115 的写操作（copy/rename/delete）是账号级串行约束，
-  同一 cloud115 库同时只允许一个导入任务。
+- Cloud115 导入不设置库级互斥键；Activity 只负责进度、通知与中断恢复。
 - 失败文件操作：仅支持重导（按源内相对路径子集重新枚举）；删除/重命名源文件是对用户
   115 目录的写操作，首版不提供（返回 422）。
 """
@@ -45,7 +44,7 @@ from src.service.transfers.cloud115_import_service import (
     Cloud115ImportService,
     normalize_cloud115_transfer_mode,
 )
-from src.service.transfers.cloud115_import_common import cloud115_import_mutex_key
+from src.service.transfers.cloud115_import_common import Cloud115TargetDirCache
 from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
 
 
@@ -54,7 +53,6 @@ class Cloud115ImportJobService(BaseImportJobService):
     JOB_MODEL = ImportJob
     # 与本地目录导入共用 task_key：活动流/恢复链路把两者视作同一类任务。
     TASK_KEY = "media_directory_import"
-    MUTEX_PREFIX = "media_import:cloud115"
     LIST_RESOURCE = ImportJobListItemResource
     DETAIL_RESOURCE = ImportJobResource
     TRIGGER_RESPONSE = ImportJobTriggerResponse
@@ -79,6 +77,10 @@ class Cloud115ImportJobService(BaseImportJobService):
         library_id: int,
         source_cid: str,
         transfer_mode: str = CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
+        *,
+        managed_download_source: bool = False,
+        target_dir_cache: Cloud115TargetDirCache | None = None,
+        task_name: str | None = None,
     ) -> ImportJobTriggerResponse:
         try:
             transfer_mode = normalize_cloud115_transfer_mode(transfer_mode)
@@ -102,17 +104,23 @@ class Cloud115ImportJobService(BaseImportJobService):
                 {"library_id": library_id, "detail": str(exc)},
             ) from exc
 
-        # 服务端防御：源目录与管理目录互不包含（前端禁选只是第一道）。
-        source_name = cls._validate_source_and_fetch_name(library, source_cid)
+        # 自动离线来源由执行阶段一次性校验其位于下载缓冲区；手动目录仍保留触发前防御。
+        source_name = (
+            source_cid
+            if managed_download_source
+            else cls._validate_source_and_fetch_name(library, source_cid)
+        )
 
-        mutex_key = cloud115_import_mutex_key(library_id)
         return cls._launch_import(
             library=library,
             resolved_source=source_cid,   # cloud115 语境下 source 是 cid 字符串
             transfer_mode=transfer_mode,
-            mutex_key=mutex_key,
+            mutex_key=None,
             only_files=None,
-            task_name=f"{cls.TRIGGER_TASK_NAME_PREFIX} {source_name or source_cid}",
+            task_name=task_name
+            or f"{cls.TRIGGER_TASK_NAME_PREFIX} {source_name or source_cid}",
+            managed_download_source=managed_download_source,
+            target_dir_cache=target_dir_cache,
         )
 
     @staticmethod
@@ -122,10 +130,9 @@ class Cloud115ImportJobService(BaseImportJobService):
 
         async def _check() -> str:
             async with cloud115_client_for(library) as client:
-                await assert_cid_outside_library_root(
+                meta = await assert_cid_outside_library_root(
                     client, source_cid=source_cid, root_cid=config["root_cid"]
                 )
-                meta = await client.dir_info(source_cid)
                 return meta.name
 
         try:
@@ -162,17 +169,16 @@ class Cloud115ImportJobService(BaseImportJobService):
         if not resolved_files:
             raise ApiError(422, "no_retry_files", "没有可重导的失败文件", {cls.JOB_ID_FIELD: job_id})
 
-        # 首次导入和所有失败重导共享同一个库级写锁；115 copy/rename/delete 不允许并发。
-        mutex_key = cloud115_import_mutex_key(library.id)
         return cls._launch_import(
             library=library,
             resolved_source=job.source_cid,
             transfer_mode=normalize_cloud115_transfer_mode(
                 job.transfer_mode or CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE
             ),
-            mutex_key=mutex_key,
+            mutex_key=None,
             only_files=resolved_files,
             task_name=f"{cls.RETRY_TASK_NAME_PREFIX}{job_id}",
+            managed_download_source=job.download_task_id is not None,
         )
 
     # ---- 首版不支持的失败文件操作 ----
@@ -219,6 +225,8 @@ class Cloud115ImportJobService(BaseImportJobService):
             task_run.id,
             transfer_mode,
             only_files,
+            bool(launch_kwargs.get("managed_download_source", False)),
+            launch_kwargs.get("target_dir_cache"),
         )
 
     @classmethod
@@ -230,6 +238,8 @@ class Cloud115ImportJobService(BaseImportJobService):
         task_run_id: int,
         transfer_mode: str,
         only_files: List[str] | None,
+        managed_download_source: bool = False,
+        target_dir_cache: Cloud115TargetDirCache | None = None,
     ) -> dict:
         ensure_database_ready()
         try:
@@ -242,6 +252,8 @@ class Cloud115ImportJobService(BaseImportJobService):
                     progress_callback=reporter.progress_callback,
                     transfer_mode=transfer_mode,
                     only_files=only_files,
+                    managed_download_source=managed_download_source,
+                    target_dir_cache=target_dir_cache,
                 )
                 return {
                     "import_job_id": job.id,

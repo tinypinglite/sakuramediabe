@@ -6,14 +6,15 @@
 2. 完成（status=2）且待导入的任务 → 触发 cloud115 导入（cleanup-source：复制进库后清缓冲区）。
 3. 提交超过 ``downloads.cloud115_offline_abandon_hours``（默认 24h）仍未完成 → 本地标记
    ``abandoned`` + 发系统通知；不删 115 侧任务，后续对账不再关注（用户明确要求的语义）。
-4. 导入中的任务按其关联 ImportJob 的终态回写 import_status（导入执行在 runner 线程，
-   本服务只做状态对账，不阻塞等待）。
+4. 同一媒体库的自动导入串行消费；每项成功后随机休息 10–30 秒再处理下一项。
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import random
+import time
 from datetime import timedelta
 from typing import Dict
 
@@ -37,6 +38,7 @@ from src.lib.cloud115 import Cloud115Error, OfflineTask
 from src.model import DownloadClient, DownloadTask, ImportJob, get_database
 from src.model.enums import DownloadClientKind
 from src.service.cloud115 import cloud115_client_for
+from src.service.transfers.cloud115_import_common import Cloud115TargetDirCache
 from src.service.transfers.cloud115_import_job_service import Cloud115ImportJobService
 from src.service.transfers.common import canonicalize_btih
 from src.service.transfers.cloud115_offline_service import (
@@ -57,6 +59,9 @@ class Cloud115OfflineSyncService:
     # 远端列表分页拉取的安全上限：50/页 × 20 页 = 1000 条，远超单账号常态任务量。
     PAGE_SIZE = 50
     MAX_PAGES = 20
+    IMPORT_POLL_INTERVAL_SECONDS = 1.0
+    IMPORT_REST_MIN_SECONDS = 10.0
+    IMPORT_REST_MAX_SECONDS = 30.0
 
     def run(self, progress_callback=None) -> dict:
         """APS 入口：对全部 cloud115 kind 的下载入口做一轮对账。"""
@@ -93,13 +98,13 @@ class Cloud115OfflineSyncService:
         summary = {"updated_count": 0, "import_triggered_count": 0, "abandoned_count": 0}
         tasks = list(DownloadTask.select().where(DownloadTask.client == client.id))
 
-        # completed 的导入推进完全依赖本地状态，不需要为它们访问 115。
+        # 先完成运行中作业的本地对账，再统一交给串行消费者选择下一项。
         for task in tasks:
-            if task.download_state == "completed":
-                if task.import_status == IMPORT_STATUS_PENDING and self._trigger_import(task):
-                    summary["import_triggered_count"] += 1
-                elif task.import_status == IMPORT_STATUS_RUNNING:
-                    self._reconcile_running_import(task)
+            if (
+                task.download_state == "completed"
+                and task.import_status == IMPORT_STATUS_RUNNING
+            ):
+                self._reconcile_running_import(task)
 
         # 只有远端仍可能变化的两种状态才需要拉离线列表。
         active_tasks = {
@@ -107,32 +112,104 @@ class Cloud115OfflineSyncService:
             for task in tasks
             if task.download_state in {"queued", "downloading"}
         }
-        if not active_tasks:
-            return summary
+        if active_tasks:
+            remote_tasks = asyncio.run(self._fetch_remote_tasks(client))
+            abandon_before = utc_now_for_db() - timedelta(
+                hours=settings.downloads.cloud115_offline_abandon_hours
+            )
 
-        remote_tasks = asyncio.run(self._fetch_remote_tasks(client))
-        abandon_before = utc_now_for_db() - timedelta(
-            hours=settings.downloads.cloud115_offline_abandon_hours
+            for info_hash, task in active_tasks.items():
+                remote = remote_tasks.get(info_hash)
+                if remote is not None and self._apply_remote_state(task, remote):
+                    summary["updated_count"] += 1
+                # 远端列表没有该 info_hash 时不动本地状态：分页上限内可能没拉全，宁可漏更新不误判。
+
+                if task.download_state == "completed":
+                    continue
+
+                # 超时放弃：提交后 N 小时仍未完成。不清 115 任务，只停止本地关注 + 通知。
+                if (
+                    task.download_state in {"queued", "downloading"}
+                    and task.created_at < abandon_before
+                ):
+                    self._abandon_task(task)
+                    summary["abandoned_count"] += 1
+
+        summary["import_triggered_count"] += self._drain_pending_imports(client)
+        return summary
+
+    @classmethod
+    def _next_pending_import(cls, client_id: int) -> DownloadTask | None:
+        return (
+            DownloadTask.select()
+            .where(
+                (DownloadTask.client == client_id)
+                & (DownloadTask.download_state == "completed")
+                & (DownloadTask.import_status == IMPORT_STATUS_PENDING)
+            )
+            .order_by(DownloadTask.created_at.asc(), DownloadTask.id.asc())
+            .first()
         )
 
-        for info_hash, task in active_tasks.items():
-            remote = remote_tasks.get(info_hash)
-            if remote is not None and self._apply_remote_state(task, remote):
-                summary["updated_count"] += 1
-            # 远端列表没有该 info_hash 时不动本地状态：分页上限内可能没拉全，宁可漏更新不误判。
+    @classmethod
+    def _drain_pending_imports(cls, client: DownloadClient) -> int:
+        """同库单消费者串行导入；成功后随机休息，失败立即停止本轮。"""
+        triggered_count = 0
+        target_dir_cache = Cloud115TargetDirCache()
 
-            if task.download_state == "completed":
-                if task.import_status == IMPORT_STATUS_PENDING and self._trigger_import(task):
-                    summary["import_triggered_count"] += 1
-                elif task.import_status == IMPORT_STATUS_RUNNING:
-                    self._reconcile_running_import(task)
-                continue
+        while True:
+            task = cls._next_pending_import(client.id)
+            if task is None:
+                return triggered_count
 
-            # 超时放弃：提交后 N 小时仍未完成。不清 115 任务，只停止本地关注 + 通知。
-            if task.download_state in {"queued", "downloading"} and task.created_at < abandon_before:
-                self._abandon_task(task)
-                summary["abandoned_count"] += 1
-        return summary
+            response = cls._trigger_import(
+                task,
+                target_dir_cache=target_dir_cache,
+            )
+            if response is None:
+                return triggered_count
+            triggered_count += 1
+
+            job = cls._wait_for_import_job(response.import_job_id)
+            cls._reconcile_running_import(task)
+            if (
+                job is None
+                or job.state != IMPORT_JOB_STATE_COMPLETED
+                or job.failed_count > 0
+            ):
+                logger.warning(
+                    "cloud115 import queue stopped after failed job client_id={} task_id={} job_id={}",
+                    client.id,
+                    task.id,
+                    response.import_job_id,
+                )
+                return triggered_count
+
+            if cls._next_pending_import(client.id) is None:
+                return triggered_count
+            delay = random.uniform(
+                cls.IMPORT_REST_MIN_SECONDS,
+                cls.IMPORT_REST_MAX_SECONDS,
+            )
+            logger.info(
+                "cloud115 import queue resting client_id={} completed_task_id={} delay_seconds={:.1f}",
+                client.id,
+                task.id,
+                delay,
+            )
+            time.sleep(delay)
+
+    @classmethod
+    def _wait_for_import_job(cls, import_job_id: int) -> ImportJob | None:
+        """只轮询本地作业状态，不访问 115。"""
+        while True:
+            job = ImportJob.get_or_none(ImportJob.id == import_job_id)
+            if job is None or job.state in (
+                IMPORT_JOB_STATE_COMPLETED,
+                IMPORT_JOB_STATE_FAILED,
+            ):
+                return job
+            time.sleep(cls.IMPORT_POLL_INTERVAL_SECONDS)
 
     async def _fetch_remote_tasks(self, client: DownloadClient) -> Dict[str, OfflineTask]:
         """分页拉全量离线任务，按 info_hash 索引。"""
@@ -239,7 +316,12 @@ class Cloud115OfflineSyncService:
         return changed
 
     @classmethod
-    def trigger_task_import(cls, task: DownloadTask):
+    def trigger_task_import(
+        cls,
+        task: DownloadTask,
+        *,
+        target_dir_cache: Cloud115TargetDirCache | None = None,
+    ):
         """触发 cleanup-source 导入并把 ImportJob 关联回任务，返回 ImportJobTriggerResponse。
 
         供两处复用：本服务对账时的自动触发（吞冲突留待下轮）与任务中心的手动导入
@@ -258,6 +340,12 @@ class Cloud115OfflineSyncService:
             task.client.media_library_id,
             source_cid,
             transfer_mode="cleanup-source",
+            managed_download_source=True,
+            target_dir_cache=target_dir_cache,
+            task_name=(
+                f"{Cloud115ImportJobService.TRIGGER_TASK_NAME_PREFIX} "
+                f"{task.movie or task.name}"
+            ),
         )
         # 关联 ImportJob ← DownloadTask：后续状态对账与孤儿恢复都靠这条链。
         ImportJob.update(download_task=task.id).where(
@@ -268,17 +356,20 @@ class Cloud115OfflineSyncService:
         return response
 
     @classmethod
-    def _trigger_import(cls, task: DownloadTask) -> bool:
-        """对账场景的自动触发：库级互斥冲突留待下轮，其余失败记日志不中断本轮。"""
+    def _trigger_import(
+        cls,
+        task: DownloadTask,
+        *,
+        target_dir_cache: Cloud115TargetDirCache,
+    ):
+        """对账场景的自动触发：触发失败留待后续轮次处理。"""
         try:
-            cls.trigger_task_import(task)
+            return cls.trigger_task_import(
+                task,
+                target_dir_cache=target_dir_cache,
+            )
         except ApiError as exc:
-            if exc.code == Cloud115ImportJobService.CONFLICT_CODE:
-                # 同库已有导入在跑（库级互斥）：保持 pending，下一轮对账重试。
-                logger.info(
-                    "cloud115 import mutex busy, retry next sync task_id={}", task.id
-                )
-            elif exc.code == "invalid_download_task_import_path":
+            if exc.code == "invalid_download_task_import_path":
                 # 缺 target_ref.cid 属数据缺陷，重试不可恢复：标失败停止自动重试。
                 logger.error(
                     "cloud115 offline task missing target_ref.cid task_id={}", task.id
@@ -290,13 +381,12 @@ class Cloud115OfflineSyncService:
                     "cloud115 offline import trigger failed task_id={} code={} detail={}",
                     task.id, exc.code, exc.details,
                 )
-            return False
+            return None
         except Cloud115Error as exc:
             logger.warning(
                 "cloud115 offline import trigger failed task_id={} detail={}", task.id, exc
             )
-            return False
-        return True
+            return None
 
     @staticmethod
     def _reconcile_running_import(task: DownloadTask) -> None:

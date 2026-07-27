@@ -236,7 +236,7 @@ class BaseImportJobService:
         library: MediaLibrary,
         resolved_source: Path,
         transfer_mode: str,
-        mutex_key: str,
+        mutex_key: str | None,
         only_files: List[str] | None,
         task_name: str,
         **launch_kwargs,
@@ -249,6 +249,8 @@ class BaseImportJobService:
                 mutex_key=mutex_key,
             )
         except IntegrityError as exc:
+            if mutex_key is None:
+                raise
             # mutex_key 唯一约束命中，说明同库同源（或同作业重导）已有进行中的任务。
             blocking = ActivityService.find_task_run_by_mutex_key(mutex_key)
             raise ApiError(
@@ -261,8 +263,8 @@ class BaseImportJobService:
                 },
             ) from exc
 
-        # task_run 建好后到入队成功之间任一步骤失败都必须回收 task_run（释放 mutex_key），
-        # 否则该 mutex_key 会长期占用导致同库同源永久 409。
+        # task_run 建好后到入队成功之间任一步骤失败都必须回收 task_run；
+        # 对带 mutex_key 的调用，这也会同步释放互斥键。
         import_job = None
         try:
             import_job = cls._create_job(

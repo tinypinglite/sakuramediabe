@@ -28,6 +28,7 @@ from src.lib.cloud115 import (
     Cloud115NotFoundError,
     Cloud115RateLimitedError,
     Cloud115RiskControlError,
+    DirMeta,
 )
 from src.model import MediaLibrary
 from src.model.enums import MediaLibraryBackend
@@ -210,7 +211,7 @@ async def ensure_download_root_cid(
 
 async def assert_cid_outside_library_root(
     client: Cloud115Client, *, source_cid: str, root_cid: str
-) -> None:
+) -> DirMeta:
     """校验 source_cid 与库管理目录（root_cid 子树）互不包含。前端已禁选，服务端兜底。
 
     三种拒绝情形：
@@ -239,6 +240,8 @@ async def assert_cid_outside_library_root(
             "导入源不能包含媒体库管理目录（请选择具体的来源子目录）",
             {"source_cid": source_cid, "root_cid": root_cid},
         )
+    # 调用方通常还需要源目录名称和面包屑，直接复用本次查询结果。
+    return source_meta
 
 
 class Cloud115KeepaliveService:

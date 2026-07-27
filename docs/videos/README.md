@@ -61,7 +61,7 @@
 - **发布时间**：导入时由 `MediaMetadataProbeService` 从视频容器自身的 `creation_time` 元数据（容器优先、其次视频流）解析为 `release_date`；读不到或解析失败则留空，不用文件 mtime 兜底。
 - **缩略图接手**：落库后 `ResourceTaskStateService.reset_for_requeue(...)` 置缩略图任务为待处理，由 `generate-media-thumbnails` 后台补齐。
 - **去重**：先按 `Media.path` 命中跳过，再按内容指纹（`src/common/content_fingerprint.py`）跳过；探测复用 `MediaMetadataProbeService`。
-- 后台执行复用 `DownloadImportRunner` 线程池 + `ActivityService.run_task`，触发防重依赖 `BackgroundTaskRun.mutex_key`；启动时 `recover_orphaned_jobs` 回收中断作业。
+- 后台执行复用 `DownloadImportRunner` 线程池 + `ActivityService.run_task`；本地导入按来源使用 `BackgroundTaskRun.mutex_key` 防重，启动时 `recover_orphaned_jobs` 回收中断作业。
 
 115 导入语义：
 
@@ -72,4 +72,4 @@
 - 115 标记违规的文件不取直链、不探测、不生成封面，仍创建 `valid=false` 的 Media 并记 `cloud115_file_censored` 告警。
 - 首帧封面同样通过受预算的 RangeReader 读取目标文件；封面失败只记日志。Media 事务成功后重置缩略图任务。
 - `copy` 保留源文件；`cleanup-source` 仅在探测、Media/VideoItem 事务及合集关联全部成功后删除源文件。库内或同批 SHA1 重复项只记 `duplicate_fingerprint`，即使是 `cleanup-source` 也保留源文件。
-- 115 videos 与 115 JAV 共用 `media_import:cloud115:{library_id}` 互斥键，同一库的两类云端复制、改名或删除不能并发；不同库互不影响。
+- 115 videos 与 115 JAV 都不设置库级互斥键；每个作业内仍按自身文件顺序执行云端复制、改名和清理。

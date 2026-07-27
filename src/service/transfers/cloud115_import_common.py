@@ -1,8 +1,9 @@
-"""cloud115 导入公共原语：模式、互斥键、受预算媒体探测与 RangeReader 构造。"""
+"""cloud115 导入公共原语：模式、目录解析、受预算媒体探测与 RangeReader 构造。"""
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -41,17 +42,11 @@ def normalize_cloud115_transfer_mode(
     raise ValueError("invalid_transfer_mode")
 
 
-def cloud115_import_mutex_key(library_id: int) -> str:
-    """JAV/videos 对同一 cloud115 库共享唯一写锁。"""
-    return f"media_import:cloud115:{library_id}"
-
-
 # ---------------------------------------------------------------------------
 # 分层目录构造：把 115 的存储结构对齐本地 MediaImportService/VideoImportService。
 # 布局：
 #   <root_cid>/jav/<番号>/<版本ms>/<番号>{ext}
 #   <root_cid>/videos/<video_id>/<版本ms>/<原文件名>
-# 调用方靠 cloud115_import_mutex_key 拿库级互斥锁，避免同 parent 下并发双建。
 # ---------------------------------------------------------------------------
 
 
@@ -73,7 +68,7 @@ async def create_cloud115_version_subdir(
     """在 parent_cid 下建一个新版本目录，冲突时按 ``{ms}-N`` 递增。
 
     对齐 ``file_transfer.create_version_directory``：先分页 list 判存在再建，
-    因为 115 允许同名目录并存。调用方应持有库级写锁，避免并发下同名双建。
+    因为 115 允许同名目录并存。
     """
     base = str(now_ms)
     candidate = base
@@ -158,6 +153,14 @@ async def _list_subdir_cids_by_name(
     return result
 
 
+@dataclass
+class Cloud115TargetDirCache:
+    """同一自动导入批次跨作业共享的目标目录缓存。"""
+
+    section_cids: Dict[str, str] = field(default_factory=dict)
+    entities: Dict[str, Dict[str, str]] = field(default_factory=dict)
+
+
 class Cloud115TargetDirResolver:
     """批次级目录缓存：把"每条 item 翻整个 jav//videos/ 找实体目录"降为"整批只翻一次"。
 
@@ -169,51 +172,71 @@ class Cloud115TargetDirResolver:
       - 版本目录名是毫秒时间戳，天然唯一，直接 mkdir，不再预列表去重。
     结果：每条 item 的 ``GET /files`` 从约 3 次降到 0 次（整批仅段解析 + 首次建表各一次）。
 
-    并发安全：调用方持库级写锁（``cloud115_import_mutex_key``），同一 115 库同时只有一个
-    写任务，故整批缓存有效；批次内新番号由本解析器自建并登记，不会漏。
+    缓存只在同一自动导入批次内共享；批次内新番号由本解析器自建并登记。
     """
 
-    def __init__(self, client: Cloud115Client, *, root_cid: str) -> None:
+    def __init__(
+        self,
+        client: Cloud115Client,
+        *,
+        root_cid: str,
+        cache: Cloud115TargetDirCache | None = None,
+    ) -> None:
         self._client = client
         self._root_cid = root_cid
-        self._section_cid: Dict[str, str] = {}          # {"jav"/"videos": cid}
-        self._entities: Dict[str, Dict[str, str]] = {}  # {section: {实体名: cid}}
+        self._cache = cache or Cloud115TargetDirCache()
 
     async def _section_cid_for(self, section: str) -> str:
-        cid = self._section_cid.get(section)
+        cid = self._cache.section_cids.get(section)
         if cid is None:
             cid = await find_or_create_subdir(
                 self._client, parent_cid=self._root_cid, name=section
             )
-            self._section_cid[section] = cid
+            self._cache.section_cids[section] = cid
         return cid
 
     async def _entity_map_for(self, section: str) -> Dict[str, str]:
-        entities = self._entities.get(section)
+        entities = self._cache.entities.get(section)
         if entities is None:
             section_cid = await self._section_cid_for(section)
             entities = await _list_subdir_cids_by_name(self._client, section_cid)
-            self._entities[section] = entities
+            self._cache.entities[section] = entities
         return entities
 
-    async def _resolve_entity_cid(self, section: str, entity_name: str) -> str:
+    async def _resolve_entity_cid(
+        self,
+        section: str,
+        entity_name: str,
+    ) -> tuple[str, bool]:
         entities = await self._entity_map_for(section)
         cid = entities.get(entity_name)
+        created = cid is None
         if cid is None:
             section_cid = await self._section_cid_for(section)
             cid = await self._client.mkdir(section_cid, entity_name)
             entities[entity_name] = cid
-        return cid
+        return cid, created
+
+    async def resolve_jav_entity(self, movie_number: str) -> tuple[str, bool]:
+        """解析番号目录，并返回本批次是否刚创建。"""
+        return await self._resolve_entity_cid(JAV_LIBRARY_SUBDIR, movie_number)
+
+    async def create_version_dir(self, *, entity_cid: str, now_ms: int) -> str:
+        """版本目录使用毫秒时间戳命名，直接创建，不做预列表。"""
+        return await self._client.mkdir(entity_cid, str(now_ms))
 
     async def prepare_jav_version_dir(self, *, movie_number: str, now_ms: int) -> str:
         """建 ``jav/{番号}/{版本ms}/``，返回版本目录 cid。"""
-        entity_cid = await self._resolve_entity_cid(JAV_LIBRARY_SUBDIR, movie_number)
-        return await self._client.mkdir(entity_cid, str(now_ms))
+        entity_cid, _ = await self.resolve_jav_entity(movie_number)
+        return await self.create_version_dir(entity_cid=entity_cid, now_ms=now_ms)
 
     async def prepare_videos_version_dir(self, *, video_id: int, now_ms: int) -> str:
         """建 ``videos/{video_id}/{版本ms}/``，返回版本目录 cid。"""
-        entity_cid = await self._resolve_entity_cid(VIDEOS_LIBRARY_SUBDIR, str(video_id))
-        return await self._client.mkdir(entity_cid, str(now_ms))
+        entity_cid, _ = await self._resolve_entity_cid(
+            VIDEOS_LIBRARY_SUBDIR,
+            str(video_id),
+        )
+        return await self.create_version_dir(entity_cid=entity_cid, now_ms=now_ms)
 
 
 async def list_cloud115_entity_target_files(
@@ -250,6 +273,31 @@ async def build_cloud115_dir_map(
             if not entries or offset >= total:
                 break
     return dir_map
+
+
+async def collect_cloud115_source_tree(
+    client: Cloud115Client,
+    source_cid: str,
+) -> tuple[Dict[str, tuple[str, str]], List[DirEntry]]:
+    """一次 BFS 同时收集目录映射与文件，避免随后再次递归枚举同一来源。"""
+    dir_map: Dict[str, tuple[str, str]] = {}
+    files: List[DirEntry] = []
+    queue = [source_cid]
+    while queue:
+        cid = queue.pop(0)
+        offset = 0
+        while True:
+            entries, total = await client.list_dir(cid, offset=offset, limit=1150)
+            for entry in entries:
+                if entry.is_dir:
+                    dir_map[entry.entry_id] = (entry.name, cid)
+                    queue.append(entry.entry_id)
+                else:
+                    files.append(entry)
+            offset += len(entries)
+            if not entries or offset >= total:
+                break
+    return dir_map, files
 
 
 def cloud115_rel_dir_parts(

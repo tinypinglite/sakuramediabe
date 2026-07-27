@@ -66,7 +66,7 @@
 
 - `transfer_mode` 只接受 `cleanup-source`（默认）/ `copy`；旧 `move` 兼容为 `cleanup-source`，其它值返回 `422 invalid_transfer_mode`。
 - **服务端防御校验**（前端目录选择器已按浏览端点返回的 `root_cid` 禁选，这里兜底）：源目录不能是库管理目录、不能在其内部（`422 cloud115_source_inside_library`）、也不能包含它——含选中网盘根目录的情形（`422 cloud115_source_contains_library`）。
-- **防重按库锁**：mutex 为 `media_import:cloud115:{library_id}`——115 的云端写操作是账号级串行约束，同一 cloud115 库同时只允许一个导入任务（与本地"同库同源"锁粒度不同）。
+- 115 导入不设置库级 `mutex_key`；每个作业各自创建 Activity 并进入后台线程池，同一媒体库允许多个导入或秒传作业并行入队。
 - 导入管线：递归枚举源目录 → 按「父目录名/文件名」识别番号 → 按 115 全量 sha1 对账 → 云端复制到 `sakuramedia/jav/` → 逐文件改名并按 fid 查询确认 → 通过受控 RangeReader + PyAV 探测技术元数据 → 事务登记 Media → 下载并登记字幕 → `cleanup-source` 逐项删除源字幕和源视频。有效文件探测失败时整组不入库、不清源；重试按 SHA1 复用已经复制或改名的目标文件。
 - 技术元数据探测按累计 Range 响应设置 `64 MiB` 读取预算，与影片总大小无关；CDN 若忽略 Range 返回超预算整文件，会在读取响应体前拒绝。
 - 多分部（VR/FC2）**不做合并**：每个文件一条 Media 挂同一影片；与本地 JAV 导入语义一致，均不做 ffmpeg 拼接。
@@ -194,7 +194,7 @@
 
 - 目录浏览/导入/删除/重命名/重导一律限定在 `[media_import].browse_roots` 白名单根目录（含子树）内，解析后越界一律 `403`；白名单外的符号链接条目自动跳过。
 - 删除/重命名/重导仅允许在作业终态、对 `kind=file` 的单文件失败项执行，且写操作前强制 `is_file` 校验，杜绝对目录的破坏性操作。
-- 触发导入带 mutex 防重；入队失败会回收 task_run 释放 mutex_key。
+- 本地目录导入按来源设置 mutex 防重；115 导入不设置库级 mutex。两类任务入队失败都会回收对应 task_run。
 
 ## 业务态恢复
 

@@ -197,7 +197,6 @@
 
 常见错误：
 
-- `409 media_rapid_upload_conflict`：目标 115 库已有写入任务。
 - `409 media_rapid_upload_media_conflict`：所选媒体已在其它秒传批次中。
 - `422 media_rapid_upload_source_not_local`：源媒体不是本地媒体。
 - `422 media_rapid_upload_target_not_cloud115`：目标不是 115 媒体库。

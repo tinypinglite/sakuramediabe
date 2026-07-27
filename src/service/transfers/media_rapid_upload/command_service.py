@@ -16,7 +16,6 @@ from src.model.enums import MediaLibraryBackend
 from src.schema.transfers.rapid_upload import MediaRapidUploadTriggerResponse
 from src.service.cloud115 import require_cloud115_library
 from src.service.system import ActivityService
-from src.service.transfers.cloud115_import_common import cloud115_import_mutex_key
 from src.service.transfers.import_runner import MediaRapidUploadRunner
 from src.service.transfers.media_rapid_upload.states import (
     BATCH_STATE_COMPLETED,
@@ -110,23 +109,11 @@ class MediaRapidUploadCommandService:
         specs: list[ItemSpec],
         retry_of_batch_id: int | None,
     ) -> MediaRapidUploadTriggerResponse:
-        try:
-            task_run = ActivityService.create_task_run(
-                task_key=TASK_KEY,
-                task_name=f"批量媒体秒传（{len(specs)} 个）",
-                trigger_type="manual",
-                mutex_key=cloud115_import_mutex_key(target_library.id),
-            )
-        except IntegrityError as exc:
-            blocking = ActivityService.find_task_run_by_mutex_key(
-                cloud115_import_mutex_key(target_library.id)
-            )
-            raise ApiError(
-                409,
-                "media_rapid_upload_conflict",
-                "该 115 媒体库已有写入任务正在执行",
-                {"blocking_task_run_id": blocking.id if blocking is not None else None},
-            ) from exc
+        task_run = ActivityService.create_task_run(
+            task_key=TASK_KEY,
+            task_name=f"批量媒体秒传（{len(specs)} 个）",
+            trigger_type="manual",
+        )
 
         batch: MediaRapidUploadBatch | None = None
         try:

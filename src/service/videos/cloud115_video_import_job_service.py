@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
 from pathlib import PurePosixPath
-from typing import Iterator, List
+from typing import List
 
 from loguru import logger
-from peewee import IntegrityError
 
 from src.api.exception.errors import ApiError
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
@@ -35,7 +33,6 @@ from src.service.transfers.base_import_job_service import BaseImportJobService
 from src.service.transfers.cloud115_import_common import (
     build_cloud115_dir_map,
     cloud115_rel_dir_parts,
-    cloud115_import_mutex_key,
     normalize_cloud115_transfer_mode,
     verify_cloud115_renamed_file,
 )
@@ -48,7 +45,6 @@ class Cloud115VideoImportJobService(BaseImportJobService):
     REQUIRED_LIBRARY_BACKEND = MediaLibraryBackend.CLOUD115
     JOB_MODEL = VideoImportJob
     TASK_KEY = "video_directory_import"
-    MUTEX_PREFIX = "media_import:cloud115"
     LIST_RESOURCE = VideoImportJobListItemResource
     DETAIL_RESOURCE = VideoImportJobResource
     TRIGGER_RESPONSE = VideoImportTriggerResponse
@@ -64,38 +60,6 @@ class Cloud115VideoImportJobService(BaseImportJobService):
     INTERRUPTED_RECOVER_MESSAGE = "115 视频导入进程已中断，作业已失败"
     LOG_LABEL = "Cloud115 video import"
     RECOVER_LOG_LABEL = "Recovered orphaned cloud115 video import"
-
-    @classmethod
-    @contextmanager
-    def _cloud_write_lock(cls, library_id: int, action_name: str) -> Iterator[None]:
-        """失败文件同步写操作也使用与 JAV/videos 导入相同的库级互斥键。"""
-        mutex_key = cloud115_import_mutex_key(library_id)
-        try:
-            task_run = ActivityService.create_task_run(
-                task_key=cls.TASK_KEY,
-                task_name=action_name,
-                trigger_type="manual",
-                state="running",
-                mutex_key=mutex_key,
-            )
-        except IntegrityError as exc:
-            blocking = ActivityService.find_task_run_by_mutex_key(mutex_key)
-            raise ApiError(
-                409,
-                cls.CONFLICT_CODE,
-                "该 115 媒体库已有导入或失败文件操作正在执行",
-                {
-                    "mutex_key": mutex_key,
-                    "blocking_task_run_id": blocking.id if blocking is not None else None,
-                },
-            ) from exc
-        try:
-            yield
-        except Exception as exc:
-            ActivityService.fail_task_run(task_run.id, error_message=str(exc))
-            raise
-        else:
-            ActivityService.complete_task_run(task_run.id)
 
     @classmethod
     def trigger_cloud115_import(
@@ -133,7 +97,7 @@ class Cloud115VideoImportJobService(BaseImportJobService):
             library=library,
             resolved_source=source_cid or source_fid,
             transfer_mode=transfer_mode,
-            mutex_key=cloud115_import_mutex_key(library_id),
+            mutex_key=None,
             only_files=None,
             task_name=f"{cls.TRIGGER_TASK_NAME_PREFIX} {source_label}",
             source_cid=source_cid,
@@ -316,7 +280,7 @@ class Cloud115VideoImportJobService(BaseImportJobService):
             transfer_mode=normalize_cloud115_transfer_mode(
                 job.transfer_mode or "copy", allow_legacy_move=False
             ),
-            mutex_key=cloud115_import_mutex_key(library.id),
+            mutex_key=None,
             only_files=resolved_files,
             task_name=f"{cls.RETRY_TASK_NAME_PREFIX}{job_id}",
             source_cid=job.source_cid,
@@ -349,45 +313,44 @@ class Cloud115VideoImportJobService(BaseImportJobService):
         cls._assert_job_terminal(job)
         cls._require_actionable_failed_entry(job, path)
         library = cls._require_library(job.library_id)
-        with cls._cloud_write_lock(library.id, f"删除 115 失败视频 #{job_id}"):
-            # 单文件已经被用户从 115 删除时，删除操作本身仍应幂等成功；目录来源则仍需
-            # 先确认整个来源目录位于媒体库管理目录外。
-            if job.source_cid:
-                cls._validate_source(library, source_cid=job.source_cid, source_fid=None)
+        # 单文件已经被用户从 115 删除时，删除操作本身仍应幂等成功；目录来源则仍需
+        # 先确认整个来源目录位于媒体库管理目录外。
+        if job.source_cid:
+            cls._validate_source(library, source_cid=job.source_cid, source_fid=None)
 
-            async def _delete() -> None:
-                async with cloud115_client_for(library) as client:
-                    entry = await cls._find_source_entry(client, job, path)
-                    if entry is not None:
-                        if job.source_fid:
-                            config = require_cloud115_library(library)
-                            try:
-                                await Cloud115VideoImportService._assert_file_outside_library_root(
-                                    client,
-                                    parent_cid=entry.parent_id,
-                                    root_cid=config["root_cid"],
-                                )
-                            except ValueError as exc:
-                                raise ApiError(
-                                    422,
-                                    "cloud115_source_inside_library",
-                                    "导入文件不能位于媒体库管理目录内部",
-                                    {
-                                        "source_fid": job.source_fid,
-                                        "root_cid": config["root_cid"],
-                                    },
-                                ) from exc
-                        fid = getattr(entry, "entry_id", None) or getattr(entry, "file_id")
-                        await client.delete_files([fid])
+        async def _delete() -> None:
+            async with cloud115_client_for(library) as client:
+                entry = await cls._find_source_entry(client, job, path)
+                if entry is not None:
+                    if job.source_fid:
+                        config = require_cloud115_library(library)
+                        try:
+                            await Cloud115VideoImportService._assert_file_outside_library_root(
+                                client,
+                                parent_cid=entry.parent_id,
+                                root_cid=config["root_cid"],
+                            )
+                        except ValueError as exc:
+                            raise ApiError(
+                                422,
+                                "cloud115_source_inside_library",
+                                "导入文件不能位于媒体库管理目录内部",
+                                {
+                                    "source_fid": job.source_fid,
+                                    "root_cid": config["root_cid"],
+                                },
+                            ) from exc
+                    fid = getattr(entry, "entry_id", None) or getattr(entry, "file_id")
+                    await client.delete_files([fid])
 
-            try:
-                asyncio.run(_delete())
-            except ApiError:
-                raise
-            except Cloud115Error as exc:
-                raise map_cloud115_error(exc) from exc
-            items = [item for item in cls._parse_failed_files(job) if item.get("path") != path]
-            cls._save_failed_files(job, items)
+        try:
+            asyncio.run(_delete())
+        except ApiError:
+            raise
+        except Cloud115Error as exc:
+            raise map_cloud115_error(exc) from exc
+        items = [item for item in cls._parse_failed_files(job) if item.get("path") != path]
+        cls._save_failed_files(job, items)
         return cls.DETAIL_RESOURCE.from_model(job, failed_files=cls._failed_file_resources(job))
 
     @classmethod
@@ -397,43 +360,42 @@ class Cloud115VideoImportJobService(BaseImportJobService):
         cls._require_actionable_failed_entry(job, path)
         normalized = cls._validate_new_name(new_name)
         library = cls._require_library(job.library_id)
-        with cls._cloud_write_lock(library.id, f"重命名 115 失败视频 #{job_id}"):
-            cls._validate_source(
-                library,
-                source_cid=job.source_cid,
-                source_fid=job.source_fid,
-                require_video=False,
-            )
+        cls._validate_source(
+            library,
+            source_cid=job.source_cid,
+            source_fid=job.source_fid,
+            require_video=False,
+        )
 
-            async def _rename() -> None:
-                async with cloud115_client_for(library) as client:
-                    entry = await cls._find_source_entry(client, job, path)
-                    if entry is None:
-                        raise ApiError(
-                            422,
-                            "cannot_rename_non_file",
-                            "失败源文件已不存在",
-                            {"path": path},
-                        )
-                    fid = getattr(entry, "entry_id", None) or getattr(entry, "file_id")
-                    await client.rename_file(fid, normalized)
-                    await verify_cloud115_renamed_file(client, fid, normalized)
+        async def _rename() -> None:
+            async with cloud115_client_for(library) as client:
+                entry = await cls._find_source_entry(client, job, path)
+                if entry is None:
+                    raise ApiError(
+                        422,
+                        "cannot_rename_non_file",
+                        "失败源文件已不存在",
+                        {"path": path},
+                    )
+                fid = getattr(entry, "entry_id", None) or getattr(entry, "file_id")
+                await client.rename_file(fid, normalized)
+                await verify_cloud115_renamed_file(client, fid, normalized)
 
-            try:
-                asyncio.run(_rename())
-            except ApiError:
-                raise
-            except Cloud115Error as exc:
-                raise map_cloud115_error(exc) from exc
-            new_path = str(PurePosixPath(path).with_name(normalized))
-            items = cls._parse_failed_files(job)
-            for item in items:
-                if item.get("path") == path:
-                    item["path"] = new_path
-            if job.source_fid:
-                job.source_path = str(PurePosixPath(job.source_path).with_name(normalized))
-                job.save()
-            cls._save_failed_files(job, items)
+        try:
+            asyncio.run(_rename())
+        except ApiError:
+            raise
+        except Cloud115Error as exc:
+            raise map_cloud115_error(exc) from exc
+        new_path = str(PurePosixPath(path).with_name(normalized))
+        items = cls._parse_failed_files(job)
+        for item in items:
+            if item.get("path") == path:
+                item["path"] = new_path
+        if job.source_fid:
+            job.source_path = str(PurePosixPath(job.source_path).with_name(normalized))
+            job.save()
+        cls._save_failed_files(job, items)
         return cls.DETAIL_RESOURCE.from_model(job, failed_files=cls._failed_file_resources(job))
 
     @classmethod
