@@ -22,6 +22,7 @@ from src.lib.cloud115.qrlogin import APPS, Cloud115QrLogin
 from src.lib.cloud115.reader import Cloud115RangeReader
 from src.lib.cloud115.exceptions import (
     Cloud115AuthError,
+    Cloud115DuplicateNameError,
     Cloud115CipherError,
     Cloud115Error,
     Cloud115MembershipRequiredError,
@@ -80,6 +81,7 @@ __all__ = [
     "RapidUploadStatus",
     "Cloud115Error",
     "Cloud115AuthError",
+    "Cloud115DuplicateNameError",
     "Cloud115NotFoundError",
     "Cloud115RequestError",
     "Cloud115CipherError",

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import random
+import time
 from typing import Any, Dict, List, Sequence
 
 from loguru import logger
@@ -30,6 +32,13 @@ from src.service.transfers.tag_rules import BLURAY_TAG, SUBTITLE_TAG
 MIN_SEEDERS = 3
 MIN_SIZE_BYTES = 1 * 1024 * 1024 * 1024
 MAX_SIZE_BYTES = 40 * 1024 * 1024 * 1024
+# 提交成功之间的随机停顿：cloud115 每次提交要打 1~2 个 webapi 请求（建任务目录），
+# 而每部影片各自新建 SDK client，transport 的匀速闸门与批次计数都会随之归零——
+# 也就是说跨影片**没有任何机制**在限速，实测提交间隔恒定约 3 秒。订阅积压时这就是
+# 上百个连续 webapi 请求（实测连续 200 余次即触发 WAF 405），故在调用方补节奏。
+# 与导入侧的番号间休息（MANUAL_GROUP_REST_*）保持同一量级。
+SUBMIT_REST_MIN_SECONDS = 10.0
+SUBMIT_REST_MAX_SECONDS = 30.0
 
 
 class SubscribedMovieAutoDownloadService:
@@ -41,6 +50,21 @@ class SubscribedMovieAutoDownloadService:
     ):
         self.download_search_service = download_search_service or DownloadSearchService()
         self.download_request_service = download_request_service or DownloadRequestService()
+
+    @staticmethod
+    def _cloud115_client_ids() -> set[int]:
+        from src.model import DownloadClient
+
+        return {
+            client.id
+            for client in DownloadClient.select(DownloadClient.id).where(
+                DownloadClient.kind == DownloadClientKind.CLOUD115.value
+            )
+        }
+
+    @staticmethod
+    def _is_cloud115_task(client_id: int | None, cloud115_client_ids: set[int]) -> bool:
+        return client_id is not None and client_id in cloud115_client_ids
 
     def run(self) -> Dict[str, Any]:
         due_movies = self._collect_due_movies()
@@ -56,6 +80,10 @@ class SubscribedMovieAutoDownloadService:
             "no_candidate_movie_numbers": [],
             "failed_items": [],
         }
+
+        # cloud115 下载入口 id 集合：判断某次提交是否打了 115，决定要不要为下一个排队等待。
+        cloud115_client_ids = self._cloud115_client_ids()
+        pending_cloud115_rest = False
 
         for movie in due_movies:
             movie_number = movie.movie_number
@@ -95,9 +123,25 @@ class SubscribedMovieAutoDownloadService:
                 movie_number=movie_number,
                 candidate=self._build_candidate_payload(candidate),
             )
+            # 上一次提交打过 115 时，先歇一会儿再发下一个（只在真正要提交前等，
+            # 查不到候选的影片不碰 115，不该白等）。
+            if pending_cloud115_rest:
+                delay = random.uniform(SUBMIT_REST_MIN_SECONDS, SUBMIT_REST_MAX_SECONDS)
+                logger.info(
+                    "Auto download resting before next cloud115 submit "
+                    "movie_number={} delay_seconds={:.1f}",
+                    movie_number,
+                    delay,
+                )
+                time.sleep(delay)
+                pending_cloud115_rest = False
             try:
                 response = self.download_request_service.create_request(payload)
             except Exception as exc:
+                # 提交失败时无从判断是否已经打到 115（"建目录成功、离线提交失败" 也走这条路径），
+                # 而 WAF 一旦触发正是最不能连打的时刻，故一律按"打过 115"记账、下一部先休息。
+                # 代价是磁力解析失败这类根本没碰 115 的失败也会多等一轮，换取失败不退化成连打。
+                pending_cloud115_rest = True
                 self._record_failure(summary, movie_number, stage="submit", detail=str(exc))
                 SubscribedMovieSearchStateService.record_search_error(movie, str(exc))
                 logger.exception(
@@ -107,6 +151,13 @@ class SubscribedMovieAutoDownloadService:
                     exc,
                 )
                 continue
+
+            # 只有真正向 115 发过请求才需要为下一个排队等待：qB 提交不碰 115；
+            # created=False 说明本地已有同 (client, info_hash) 的任务、提交直接短路返回，
+            # 同样一个 115 请求都没发（115 侧已存在任务那条分支会新建本地记录，created=True）。
+            pending_cloud115_rest = response.created and self._is_cloud115_task(
+                response.task.client_id, cloud115_client_ids
+            )
 
             SubscribedMovieSearchStateService.record_attempt(movie, submitted=True)
             if response.created:

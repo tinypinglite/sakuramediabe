@@ -23,6 +23,7 @@ from src.api.exception.errors import ApiError
 from src.config.config import settings
 from src.lib.cloud115 import (
     Cloud115AuthError,
+    Cloud115DuplicateNameError,
     Cloud115Client,
     Cloud115CookieStatus,
     Cloud115Error,
@@ -155,6 +156,14 @@ def map_cloud115_error(exc: Cloud115Error) -> ApiError:
             "115 目录不存在或已删除",
             {"detail": str(exc)},
         )
+    if isinstance(exc, Cloud115DuplicateNameError):
+        # 正常情况下 find_or_create_subdir 会自愈掉重名竞态，冒到这里说明是
+        # "115 说重名、重扫又找不到" 的自相矛盾状态，或调用方直接裸 mkdir 撞名。
+        return ApiError(
+            409, "cloud115_duplicate_name",
+            "115 上已存在同名目录",
+            {"detail": str(exc)},
+        )
     if isinstance(exc, Cloud115RateLimitedError):
         return ApiError(
             429, "cloud115_rate_limited",
@@ -175,13 +184,13 @@ def map_cloud115_error(exc: Cloud115Error) -> ApiError:
     )
 
 
-async def find_or_create_subdir(
+async def lookup_subdir_cid(
     client: Cloud115Client, *, parent_cid: str, name: str
-) -> str:
-    """在 parent_cid 下找叫 name 的子目录，没有就建，返回 cid。
+) -> str | None:
+    """分页找 parent_cid 下叫 name 的子目录，返回 cid；不存在返回 None。
 
-    115 允许同名目录并存 → 必须先分页 list 判存在再建；调用方需保证同一 parent
-    下的 find-or-create 串行（导入任务按库互斥即可满足），避免并发双建。
+    同名目录只取首个命中（115 的其它写入路径——转存、云下载、上传——确实可能造成
+    同名并存，只有 ``files/add`` 会拒绝重名）。
     """
     offset = 0
     while True:
@@ -191,8 +200,37 @@ async def find_or_create_subdir(
                 return entry.entry_id
         offset += len(entries)
         if not entries or offset >= total:
-            break
-    return await client.mkdir(parent_cid, name)
+            return None
+
+
+async def find_or_create_subdir(
+    client: Cloud115Client, *, parent_cid: str, name: str
+) -> str:
+    """在 parent_cid 下找叫 name 的子目录，没有就建，返回 cid。**竞态安全**。
+
+    ``files/add`` 对重名目录返回 errno=20004（HTTP 200 + state=false，2026-07-29 实测），
+    既不幂等也不建重名目录。于是"扫描→未命中→mkdir"之间的窗口里若有并发作业抢先建好，
+    我们的 mkdir 会被拒——此时重扫一遍取对方建好的 cid 即可收敛，两边都拿到同一个目录。
+
+    这条自愈路径是必需的：曾经的前提"调用方按库互斥即可保证串行"在 d70a532 移除库级
+    mutex 后已经不成立（``mutex_key=None``），而 API 手动触发与 APS 定时任务本来也无法
+    靠单个 mutex 串起来。
+    """
+    cid = await lookup_subdir_cid(client, parent_cid=parent_cid, name=name)
+    if cid is not None:
+        return cid
+    try:
+        return await client.mkdir(parent_cid, name)
+    except Cloud115DuplicateNameError:
+        logger.info(
+            "cloud115 subdir created concurrently, reusing it parent_cid={} name={}",
+            parent_cid, name,
+        )
+        cid = await lookup_subdir_cid(client, parent_cid=parent_cid, name=name)
+        if cid is None:
+            # 115 说重名、重扫又找不到：状态自相矛盾，不静默吞，交给上层暴露。
+            raise
+        return cid
 
 
 async def ensure_download_root_cid(

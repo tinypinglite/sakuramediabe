@@ -124,7 +124,11 @@ class FilesCapability(Cloud115Capability):
         """在 pid 目录下建一个叫 name 的子目录，返回新目录 cid。
 
         - pid: 父目录 cid，根用 "0"。name: 目录名（不做前后空格清理，上层负责）。
-        - 115 允许同目录同名共存 → 上层做 find-or-create 时必须先 list 判存在。
+        - 重名会被拒绝：同一父目录下已有同名目录时返回 HTTP 200 + state=false + errno=20004
+          （2026-07-29 实测），既不幂等返回既有 cid、也不建出重名目录，映射为
+          ``Cloud115DuplicateNameError``。上层可以乐观 mkdir、撞到本异常再定位复用
+          （见 ``find_or_create_subdir``）。注意别的写入路径（转存、云下载、上传）仍可能
+          造成同名目录并存，只有 files/add 这一条会拒绝。
         - 端点：POST webapi.115.com/files/add，body {pid, cname}。
         """
         if not name:

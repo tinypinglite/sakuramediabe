@@ -31,6 +31,16 @@ class Cloud115NotFoundError(Cloud115Error):
     """
 
 
+class Cloud115DuplicateNameError(Cloud115Error):
+    """同一父目录下已存在同名目录（errno=20004 "该目录名称已存在。"）。
+
+    实测（2026-07-29）：115 对重名 ``files/add`` 返回 **HTTP 200 + state=false + errno=20004**，
+    既不幂等返回既有 cid、也不建出重名目录。因此"先乐观 mkdir、撞名再定位"是可行的，
+    但必须按本 errno 精确分派——不能按"POST 失败"笼统兜底：裸 HTTP 400 是 WAF 风控的
+    签名（见 Cloud115RiskControlError），两者混淆会把风控当成重名、继续加压。
+    """
+
+
 class Cloud115MembershipRequiredError(Cloud115Error):
     """接口需要 VIP 会员（errno=406 "需要VIP会员"）。
 
@@ -96,7 +106,12 @@ class Cloud115RateLimitedError(Cloud115Error):
 
 
 class Cloud115RiskControlError(Cloud115Error):
-    """触发 115 风控：webapi 前置的阿里云 WAF 直接返回裸 HTTP 405（非 115 应用层 errno）。
+    """触发 115 风控：webapi 前置的阿里云 WAF 直接返回裸 HTTP 405 或 400（非 115 应用层 errno）。
+
+    405 在任意域都判风控；400 只在风控域（webapi.115.com）判风控——115 应用层的参数错误
+    一律走 HTTP 200 + state=false + errno，所以该域的裸 400 只剩 WAF 一种解释。其它域
+    （proapi / lixian / CDN）的 400 仍是普通请求错误。
+
 
     与 RateLimitedError（429，退避几秒可恢复）严格区分：这是账号/cookie 被标记异常并
     冻结一段时间（分钟到小时级），继续发请求只会不断制造新的 405、加深封禁、延长冻结。

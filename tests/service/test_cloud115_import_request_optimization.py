@@ -1260,3 +1260,222 @@ def test_source_dir_cleanup_failure_is_warning_only():
     assert len(failure_items) == 1
     assert failure_items[0]["kind"] == "warning"
     assert failure_items[0]["reason"] == "source_delete_failed"
+
+
+# ---------------------------------------------------------------------------
+# 离线提交：任务目录直接 mkdir，只在 errno=20004 时回退定位
+# ---------------------------------------------------------------------------
+
+
+def test_offline_task_dir_is_created_without_scanning():
+    """info_hash 全局唯一，旧实现那次全量翻页必然扫不中——现在直接 mkdir。"""
+    from src.service.transfers.cloud115_offline_service import _create_task_dir
+
+    class FakeClient:
+        def __init__(self):
+            self.list_calls = []
+            self.mkdir_calls = []
+
+        async def list_dir(self, cid, *, offset, limit):
+            self.list_calls.append(cid)
+            return [], 0
+
+        async def mkdir(self, pid, name):
+            self.mkdir_calls.append((pid, name))
+            return f"cid-{name}"
+
+    client = FakeClient()
+    cid = asyncio.run(
+        _create_task_dir(client, download_root_cid="root", info_hash="abc123")
+    )
+
+    assert cid == "cid-abc123"
+    assert client.mkdir_calls == [("root", "abc123")]
+    assert client.list_calls == []          # 不再翻下载根目录
+
+
+def test_offline_task_dir_falls_back_to_lookup_on_duplicate_name():
+    """上一轮中断留下孤儿目录时，115 回 errno=20004，此时才分页定位复用。"""
+    from src.lib.cloud115 import Cloud115DuplicateNameError
+    from src.service.transfers.cloud115_offline_service import _create_task_dir
+
+    class FakeClient:
+        def __init__(self):
+            self.list_calls = []
+            self.mkdir_calls = []
+
+        async def list_dir(self, cid, *, offset, limit):
+            self.list_calls.append(cid)
+            entries = [_entry("existing-cid", "root", "abc123", is_dir=True)]
+            return entries, len(entries)
+
+        async def mkdir(self, pid, name):
+            self.mkdir_calls.append((pid, name))
+            raise Cloud115DuplicateNameError("该目录名称已存在。 (errno=20004)", errno=20004)
+
+    client = FakeClient()
+    cid = asyncio.run(
+        _create_task_dir(client, download_root_cid="root", info_hash="abc123")
+    )
+
+    assert cid == "existing-cid"
+    assert client.list_calls == ["root"]
+
+
+def test_offline_task_dir_does_not_swallow_risk_control():
+    """webapi 域的裸 HTTP 400 是 WAF 签名（transport 映射为风控），绝不能当成重名去兜底重试。"""
+    from src.lib.cloud115 import Cloud115RiskControlError
+    from src.service.transfers.cloud115_offline_service import _create_task_dir
+    import pytest as _pytest
+
+    class FakeClient:
+        def __init__(self):
+            self.list_calls = []
+
+        async def list_dir(self, cid, *, offset, limit):
+            self.list_calls.append(cid)
+            return [], 0
+
+        async def mkdir(self, pid, name):
+            raise Cloud115RiskControlError(
+                "http 400 (risk control / WAF) on POST https://webapi.115.com/files/add",
+                method="POST",
+                url="https://webapi.115.com/files/add",
+            )
+
+    client = FakeClient()
+    with _pytest.raises(Cloud115RiskControlError):
+        asyncio.run(_create_task_dir(client, download_root_cid="root", info_hash="x"))
+    assert client.list_calls == []
+
+
+# ---------------------------------------------------------------------------
+# 订阅自动下载：cloud115 提交之间的休息
+# ---------------------------------------------------------------------------
+
+
+def test_subscription_submits_rest_only_between_cloud115_submissions(monkeypatch):
+    """qB 提交不碰 115，不该白等；cloud115 提交之间才需要排队。"""
+    from src.service.transfers import subscribed_movie_auto_download_service as mod
+
+    svc = mod.SubscribedMovieAutoDownloadService.__new__(
+        mod.SubscribedMovieAutoDownloadService
+    )
+    cloud_ids = {7}
+    assert svc._is_cloud115_task(7, cloud_ids) is True     # cloud115 入口
+    assert svc._is_cloud115_task(9, cloud_ids) is False    # qB 入口
+    assert svc._is_cloud115_task(None, cloud_ids) is False
+
+
+def test_subscription_rest_window_matches_import_side():
+    """与导入侧番号间休息保持同一量级，避免两套不一致的节奏常量。"""
+    from src.service.transfers.subscribed_movie_auto_download_service import (
+        SUBMIT_REST_MAX_SECONDS,
+        SUBMIT_REST_MIN_SECONDS,
+    )
+    from src.service.transfers.cloud115_import_service import (
+        MANUAL_GROUP_REST_MAX_SECONDS,
+        MANUAL_GROUP_REST_MIN_SECONDS,
+    )
+
+    assert (SUBMIT_REST_MIN_SECONDS, SUBMIT_REST_MAX_SECONDS) == (
+        MANUAL_GROUP_REST_MIN_SECONDS,
+        MANUAL_GROUP_REST_MAX_SECONDS,
+    )
+
+
+# ---------------------------------------------------------------------------
+# errno=20004 的接入层处理：竞态自愈 + 错误映射
+# ---------------------------------------------------------------------------
+
+
+def test_find_or_create_subdir_reuses_concurrently_created_dir():
+    """扫描→mkdir 之间被并发抢先建好：115 拒绝重名，重扫取对方的 cid 收敛。"""
+    from src.lib.cloud115 import Cloud115DuplicateNameError
+    from src.service.cloud115 import find_or_create_subdir
+
+    class FakeClient:
+        def __init__(self):
+            self.scans = 0
+            self.exists_after_first_scan = False
+
+        async def list_dir(self, cid, *, offset, limit):
+            self.scans += 1
+            if self.exists_after_first_scan:
+                entries = [_entry("winner-cid", cid, "jav", is_dir=True)]
+                return entries, len(entries)
+            # 第一次扫描时还不存在
+            self.exists_after_first_scan = True
+            return [], 0
+
+        async def mkdir(self, pid, name):
+            raise Cloud115DuplicateNameError("该目录名称已存在。 (errno=20004)", errno=20004)
+
+    client = FakeClient()
+    cid = asyncio.run(find_or_create_subdir(client, parent_cid="root", name="jav"))
+
+    assert cid == "winner-cid"
+    assert client.scans == 2      # 首扫未命中 + 撞名后重扫
+
+
+def test_find_or_create_subdir_raises_when_duplicate_but_not_findable():
+    """115 说重名、重扫又找不到：状态自相矛盾，不静默吞。"""
+    from src.lib.cloud115 import Cloud115DuplicateNameError
+    from src.service.cloud115 import find_or_create_subdir
+    import pytest as _pytest
+
+    class FakeClient:
+        async def list_dir(self, cid, *, offset, limit):
+            return [], 0
+
+        async def mkdir(self, pid, name):
+            raise Cloud115DuplicateNameError("该目录名称已存在。 (errno=20004)", errno=20004)
+
+    with _pytest.raises(Cloud115DuplicateNameError):
+        asyncio.run(find_or_create_subdir(FakeClient(), parent_cid="root", name="jav"))
+
+
+def test_entity_dir_race_marks_not_created_so_reconciliation_still_runs():
+    """并发建好的番号目录可能已有文件，created 必须回落为 False，否则会跳过 SHA1 对账。"""
+    from src.lib.cloud115 import Cloud115DuplicateNameError
+
+    class FakeClient:
+        def __init__(self):
+            self.mkdir_calls = []
+            self.list_calls = []
+
+        async def list_dir(self, cid, *, offset, limit):
+            self.list_calls.append(cid)
+            if cid == "root":
+                entries = [_entry("jav-cid", "root", "jav", is_dir=True)]
+            elif cid == "jav-cid" and len(self.list_calls) > 2:
+                # 撞名后的重扫：另一个作业建好的番号目录已可见
+                entries = [_entry("rival-cid", "jav-cid", "ABC-001", is_dir=True)]
+            else:
+                entries = []
+            return entries, len(entries)
+
+        async def mkdir(self, pid, name):
+            self.mkdir_calls.append((pid, name))
+            raise Cloud115DuplicateNameError("该目录名称已存在。 (errno=20004)", errno=20004)
+
+    client = FakeClient()
+    resolver = Cloud115TargetDirResolver(client, root_cid="root")
+    cid, created = asyncio.run(resolver.resolve_jav_entity("ABC-001"))
+
+    assert cid == "rival-cid"
+    assert created is False        # ← 关键：不能当成"本轮新建"跳过对账
+
+
+def test_duplicate_name_maps_to_conflict_not_generic_upstream_error():
+    """20004 不该掉进兜底的 502 上游错误。"""
+    from src.lib.cloud115 import Cloud115DuplicateNameError, Cloud115Error
+    from src.service.cloud115 import map_cloud115_error
+
+    err = map_cloud115_error(
+        Cloud115DuplicateNameError("该目录名称已存在。 (errno=20004)", errno=20004)
+    )
+    assert err.status_code == 409
+    assert err.code == "cloud115_duplicate_name"
+    # 未识别的错误仍走兜底
+    assert map_cloud115_error(Cloud115Error("boom")).status_code == 502

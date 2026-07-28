@@ -19,6 +19,7 @@ from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.lib.cloud115 import (
+    Cloud115DuplicateNameError,
     Cloud115Error,
     Cloud115OfflineQuotaExceededError,
     Cloud115OfflineTaskExistsError,
@@ -35,6 +36,36 @@ from src.service.cloud115 import (
 )
 from src.service.transfers.common import canonicalize_btih
 from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
+
+
+async def _create_task_dir(
+    client,
+    *,
+    download_root_cid: str,
+    info_hash: str,
+) -> str:
+    """在下载缓冲根下建 info_hash 专属目录，返回 cid。
+
+    直接 mkdir 而不是先分页扫描：调用方已经确认本地没有同 info_hash 的 DownloadTask，
+    而 info_hash 全局唯一，绝大多数情况下目录必然不存在——旧实现那次全量翻页
+    **必然扫不中**，纯属浪费（下载根随历史任务累积，页数还会增长）。
+
+    只有一种情况目录会已存在：上一轮在"建目录成功"和"登记 DownloadTask"之间中断，
+    留下孤儿目录。此时 115 返回 errno=20004（HTTP 200 + state=false，2026-07-29 实测），
+    才回退到分页定位复用它。
+
+    按 errno 精确分派、不按"POST 失败"笼统兜底：裸 HTTP 400 是 WAF 风控的签名，
+    两者混淆会把风控当成重名、继续加压。
+    """
+    try:
+        return await client.mkdir(download_root_cid, info_hash)
+    except Cloud115DuplicateNameError:
+        logger.info(
+            "cloud115 task dir already exists, locating it info_hash={}", info_hash
+        )
+        return await find_or_create_subdir(
+            client, parent_cid=download_root_cid, name=info_hash
+        )
 
 
 
@@ -155,8 +186,8 @@ class Cloud115OfflineDownloadService:
         async def _submit() -> str:
             async with cloud115_client_for(library) as client:
                 download_root_cid = await ensure_download_root_cid(library, client)
-                task_dir_cid = await find_or_create_subdir(
-                    client, parent_cid=download_root_cid, name=info_hash
+                task_dir_cid = await _create_task_dir(
+                    client, download_root_cid=download_root_cid, info_hash=info_hash
                 )
                 try:
                     results = await client.add_offline_urls([magnet], save_dir_id=task_dir_cid)

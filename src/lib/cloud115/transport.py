@@ -11,6 +11,7 @@ from loguru import logger
 
 from src.lib.cloud115.exceptions import (
     Cloud115AuthError,
+    Cloud115DuplicateNameError,
     Cloud115Error,
     Cloud115MembershipRequiredError,
     Cloud115NotFoundError,
@@ -26,6 +27,8 @@ _NOT_FOUND_ERRNOS = frozenset({20121, 20125, 990002, 4100003, 4100008})
 _REQUEST_ERRNOS = frozenset({990005})
 _MEMBERSHIP_REQUIRED_ERRNOS = frozenset({406})
 _OFFLINE_QUOTA_EXCEEDED_ERRNOS = frozenset({10004, 10008})
+# 目录重名：files/add 返回 HTTP 200 + state=false + errno=20004（2026-07-29 实测）。
+_DUPLICATE_NAME_ERRNOS = frozenset({20004})
 
 # 115 的 WAF 只挂在 webapi 域：观测到的 405/400 风控无一例外出自这里，而取直链（proapi）、
 # 离线任务（115.com/web/lixian）、cookies 探活（my.115.com）和 CDN Range 读都不受限。
@@ -176,7 +179,8 @@ class Cloud115Transport:
 
         - 429：直接抛 Cloud115RateLimitedError（不重试，避免账号信号升级）
         - 5xx / TimeoutException / NetworkError：仅幂等请求最多 2 次退避重试
-        - 4xx（401/403）：401/403 → Cloud115AuthError；其它 → Cloud115RequestError
+        - 405（任意域）/ 400（仅风控域）：WAF 打回 → Cloud115RiskControlError（不重试）
+        - 4xx：401/403 → Cloud115AuthError；其它 → Cloud115RequestError
 
         每次成功响应到达后会 merge Set-Cookie 到内部 cookies dict（保活 acw_tc 等）。
         401/403 抛异常前也会 merge（可能带着新 acw_tc / logout 信号）。
@@ -240,11 +244,14 @@ class Cloud115Transport:
                 raise Cloud115AuthError(
                     f"http {status} on {method} {url}", endpoint=url
                 )
-            if status == 405:
-                # 裸 HTTP 405 来自 webapi 前置的阿里云 WAF（不是 115 应用层 state=false+errno）：
-                # 账号/cookie 已被风控冻结。不重试、抛专用异常，让上层立即熔断停批。
+            if status == 405 or (status == 400 and _is_risk_controlled(url)):
+                # 裸 HTTP 405、以及风控域打回的裸 HTTP 400，都来自 webapi 前置的阿里云 WAF：
+                # 115 应用层的参数/业务错误一律是 HTTP 200 + state=false + errno（重名目录的
+                # errno=20004 即一例），所以风控域的裸 4xx 只剩 WAF 一种解释——账号/cookie
+                # 已被风控冻结。不重试、抛专用异常，让上层立即熔断停批。
+                # 400 只在风控域生效：proapi / lixian / CDN 等域的 400 仍按普通请求错误处理。
                 raise Cloud115RiskControlError(
-                    f"http 405 (risk control / WAF) on {method} {url}",
+                    f"http {status} (risk control / WAF) on {method} {url}",
                     method=method,
                     url=url,
                 )
@@ -364,6 +371,10 @@ class Cloud115Transport:
             )
         if errno_int in _OFFLINE_QUOTA_EXCEEDED_ERRNOS:
             return Cloud115OfflineQuotaExceededError(
+                f"{message} (errno={errno_int})", errno=errno_int, endpoint=endpoint
+            )
+        if errno_int in _DUPLICATE_NAME_ERRNOS:
+            return Cloud115DuplicateNameError(
                 f"{message} (errno={errno_int})", errno=errno_int, endpoint=endpoint
             )
         if errno_int in _NOT_FOUND_ERRNOS:

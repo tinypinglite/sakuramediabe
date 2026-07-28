@@ -81,7 +81,8 @@
   - `cleanup-source` 不读目标目录：移动保持 fid/pickcode 不变，已搬走的文件下一轮扫不到，"已登记但没搬走"的源会被扫到并按 `locator.fid == 源 fid` 认出来，补完搬运即收敛。库内已有同 sha1 且 `locator.fid` 不同才判定为多余副本，只删源、不再搬运。
 - **自动离线导入完成后删除来源任务目录**（连同 nfo / 封面 / 种子 / 判定过小的样本等非视频残留，进 115 回收站）。三重前提缺一不可：来源是软件自建的下载缓冲区（`managed_download_source`，用户手动选的目录一律不动）、本次**零失败项**（番号识别不出的视频计入失败，因此不会误删还需重导的内容）、来源不是缓冲区根目录本身。删除失败只记 `source_delete_failed` 告警，不把作业翻成失败——文件已入库。
 - **批量节奏控制**：导入作业的 SDK client 以 `batch_pacing=True` 创建，每累计 `cloud115_batch_rest_every_requests`（默认 30）个 **webapi 域**请求就额外随机长休 10~30 秒；取直链（proapi）、离线（lixian）、CDN Range 读不计数。休息期间通过进度事件 `pace_waiting` 显式透出，避免与卡死混淆。播放取直链、GUI 浏览目录等交互路径不启用。
-- cookies 失效返回 `422 cloud115_cookies_invalid`（引导重新扫码）；115 限流返回 `429 cloud115_rate_limited`；其它上游错误 `502 cloud115_upstream_error`。
+- cookies 失效返回 `422 cloud115_cookies_invalid`（引导重新扫码）；115 限流返回 `429 cloud115_rate_limited`；触发 WAF 风控（裸 HTTP 405，或 webapi 域的裸 HTTP 400——115 应用层错误一律是 200 + `state=false` + errno，故该域裸 4xx 只可能是 WAF）返回 `429 cloud115_risk_control`；目录重名返回 `409 cloud115_duplicate_name`；其它上游错误 `502 cloud115_upstream_error`。
+- **目录创建是竞态安全的**：`find_or_create_subdir` 在「扫描未命中 → mkdir」的窗口里若被并发作业抢先，115 回 `errno=20004` 拒绝重名，此时重扫一遍取对方建好的 cid 收敛，两边拿到同一个目录。番号实体目录撞到这种情况时，`created` 标志会**回落为 False** —— 目录不是本轮新建的、可能已有文件，必须继续跑 SHA1 对账，否则会重复导入。这条自愈路径在 `d70a532` 移除库级 mutex 后是必需的（`mutex_key=None`，且 API 手动触发与 APS 定时任务本来也无法靠单个 mutex 串起来）。
 
 ### 查询导入作业
 

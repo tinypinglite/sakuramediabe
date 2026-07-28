@@ -7,7 +7,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List
 
-from src.lib.cloud115 import Cloud115Client, Cloud115RangeReader, DirEntry, DirMeta
+from src.lib.cloud115 import (
+    Cloud115Client,
+    Cloud115DuplicateNameError,
+    Cloud115RangeReader,
+    DirEntry,
+    DirMeta,
+)
 from src.service.cloud115 import find_or_create_subdir
 from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeResult,
@@ -142,7 +148,17 @@ class Cloud115TargetDirResolver:
         created = cid is None
         if cid is None:
             section_cid = await self._section_cid_for(section)
-            cid = await self._client.mkdir(section_cid, entity_name)
+            try:
+                cid = await self._client.mkdir(section_cid, entity_name)
+            except Cloud115DuplicateNameError:
+                # 缓存是批次开始时建的，之后并发作业可能已经建好同名实体目录，
+                # 115 拒绝重名（errno=20004）→ 复位为"已存在"并定位复用。
+                # created 必须回落为 False：目录不是本轮新建的，可能已有文件，
+                # 跳过 SHA1 对账会导致重复导入。
+                cid = await find_or_create_subdir(
+                    self._client, parent_cid=section_cid, name=entity_name
+                )
+                created = False
             entities[entity_name] = cid
         return cid, created
 

@@ -354,6 +354,8 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 - 所有 115 下载统一走磁力：候选只有 `torrent_url` 时后端先拉取 .torrent 字节、解析 `info_hash`、拼标准磁力再提交；不使用 BT 选文件流程
 - BTIH 严格规范化为 40 位小写 hex：40 位 hex 直接转小写，32 位 Base32 解码为 20 bytes 后转 hex，其它格式返回 `422`
 - 落地目录为 `sakuramedia_downloads/<完整40位canonical_hash>/`（与库管理目录 `sakuramedia/` 平级的缓冲区），同番号不同资源完全隔离
+- 任务目录**直接 `mkdir`，不再先分页扫描下载根**：提交前已确认本地无同 info_hash 的 `DownloadTask`，而 info_hash 全局唯一，旧实现那次全量翻页必然扫不中（且页数随历史任务累积增长）。只有「上一轮在建目录与登记任务之间中断、留下孤儿目录」这一种情况会撞名，115 回 `errno=20004`，此时才回退分页定位复用。按 errno 精确分派，绝不当作「POST 失败就重试」笼统兜底：webapi 域的裸 HTTP 400 是 WAF 风控签名，由 transport 映射为 `Cloud115RiskControlError` 并触发熔断停批，不会走重名回退
+- **订阅自动下载在 cloud115 提交之间随机休息 10~30 秒**（`SUBMIT_REST_*`，与导入侧番号间休息同量级）。必需的原因：每部影片各自新建 SDK client，transport 的匀速闸门与批次计数都会随之归零，跨影片**没有任何机制**在限速——实测提交间隔恒定约 3 秒，订阅积压时就是上百个连续 webapi 请求。休息只在**下一次真要提交前**才等，判定按"上一部是否真的向 115 发过请求"：落到 qB 的提交不碰 115，本地已有同 `(client, info_hash)` 任务而短路返回（`created=false`）的也一个请求都没发，两者都不触发休息；反之提交抛异常时无从判断是否已经打到 115（建目录成功、离线提交失败也是这条路径），而 WAF 一旦触发正是最不能连打的时刻，故一律按"打过 115"记账、下一部先休息
 - 任务幂等键仍为 `(client_id, canonical_hash)`；115 单项提交必须返回唯一、非空且一致的 hash，否则返回 `cloud115_offline_submit_invalid_response` 或 `cloud115_offline_submit_hash_mismatch`
 - 115 侧已存在同 hash 任务时，以远端真实 `save_dir_id` 为准，并通过目录面包屑确认它属于当前媒体库的受管下载根；位于用户目录或无法可靠定位时返回 `409 cloud115_offline_task_exists_unmanaged`，不会接管或清理
 - 离线月配额耗尽返回 `409 cloud115_offline_quota_exceeded`，不自动降级到其它下载器
