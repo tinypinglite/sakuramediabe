@@ -591,6 +591,9 @@ class ResourceTaskStateService:
                 cls.STATE_RUNNING,
                 cls.STATE_SUCCEEDED,
                 cls.STATE_FAILED,
+                # kernel 记账任务（Wave 2 起）的失败二分状态。
+                "failed_retryable",
+                "failed_terminal",
                 cls.STATE_EXHAUSTED,
             }:
                 raise ApiError(

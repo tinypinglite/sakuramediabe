@@ -277,9 +277,8 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="sync-movie-desc",
         cli_help="执行一次影片描述回填",
         cron_setting="movie_desc_sync_cron",
-        service_factory=lambda reporter: MovieDescSyncService().run(
-            progress_callback=reporter.progress_callback,
-        ),
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
+        service_factory=lambda reporter: MovieDescSyncService().run(reporter=reporter),
         business_recovery=lambda: {
             "recovered_running_movies": MovieDescSyncService.recover_interrupted_running_movies(
                 error_message=MovieDescSyncService.INTERRUPTED_FETCH_ERROR_MESSAGE,

@@ -715,7 +715,7 @@ def test_run_job_movie_desc_sync_with_recovery(monkeypatch):
         def recover_interrupted_running_movies(cls, **kwargs):
             return 2
 
-        def run(self, progress_callback=None):
+        def run(self, *, reporter=None, only_ids=None):
             return {
                 "candidate_movies": 2,
                 "processed_movies": 2,

@@ -30,6 +30,13 @@ from src.service.catalog.movie_image_service import (
     ThinCoverResolution,
 )
 from src.service.system.resource_task_state_service import ResourceTaskStateService
+from src.service.system.resource_task_runner import (
+    STATE_FAILED_TERMINAL,
+    ResourceTaskLedger,
+    RetryPolicy,
+    TaskAbortError,
+    TaskItemError,
+)
 
 # 兼容既有导入路径：ImageDownloadError 等类型历史上从本模块导出，且多处 `except ImageDownloadError`
 # 依赖同一个类对象，这里显式再导出保证类身份唯一。
@@ -49,6 +56,12 @@ class CatalogImportService:
     # DMM 简介为次要补充：连续请求失败到达该阈值即判定 DMM 当前不可用，
     # 本 service 实例后续直接跳过抓取，避免每部影片都重复走超时+重试拖慢同步。
     DMM_UNAVAILABLE_FAILURE_THRESHOLD = 3
+
+    # movie_desc_sync 重试预算（kernel 记账）：网络性失败按小时级指数退避，
+    # 5 次后 exhausted；DMM 确认无此番号/无简介为 failed_terminal 不进预算。
+    DESC_SYNC_RETRY_POLICY = RetryPolicy(
+        max_attempts=5, backoff_base_seconds=3600, backoff_max_seconds=86400
+    )
 
     def __init__(
         self,
@@ -339,13 +352,10 @@ class CatalogImportService:
                 self.image_service.cleanup_prepared_image_files(prepared_files)
 
     def sync_movie_desc(self, movie: Movie) -> bool:
+        """公共入口（热评同步、影片导入等 upsert 链路复用）：kernel 记账的单资源执行。"""
         task_state = ResourceTaskStateService.get_state(self.TASK_KEY, movie.id)
-        if (
-            task_state is not None
-            and isinstance(task_state.extra, dict)
-            and task_state.extra.get("terminal") is True
-        ):
-            # 终态必须在公共入口统一拦截，避免热评同步、影片导入等 upsert 链路绕过候选过滤。
+        if task_state is not None and task_state.state == STATE_FAILED_TERMINAL:
+            # 终态必须在公共入口统一拦截，避免 upsert 链路绕过候选过滤反复请求 DMM。
             logger.info(
                 "Catalog movie desc sync skipped terminal failure movie_id={} movie_number={}",
                 movie.id,
@@ -353,52 +363,91 @@ class CatalogImportService:
             )
             return False
 
-        # DMM 已在本实例生命周期内判定不可用：直接跳过，不再发起请求，
-        # 影片描述状态保持原样，留待后续 sync-movie-desc 任务在网络恢复后补抓。
+        # DMM 已在本实例生命周期内判定不可用：直接跳过，不发请求也不消耗预算，
+        # 状态保持原样，留待网络恢复后的定时任务补抓。
         if self._dmm_circuit_open:
             return False
+
+        from src.service.system.activity_service import ActivityService
+
+        run_context = ActivityService.get_task_run_context()
         lock_context = self.persist_lock or nullcontext()
-        try:
-            with lock_context:
-                self._mark_movie_desc_fetch_started(movie)
-            movie_desc = self.dmm_provider.get_movie_desc(movie.movie_number)
-            with lock_context:
-                self._mark_movie_desc_fetch_succeeded(movie, movie_desc)
-            # 成功一次即清零连续失败计数。
-            self._dmm_request_failures = 0
-            return True
-        except Exception as exc:
-            # 仅 MetadataRequestError（连通性失败、已重试耗尽）计入熔断；番号不存在等业务性
-            # 失败说明 DMM 仍可用，不计数并清零，避免把正常的“无简介”误判成不可用。
-            if isinstance(exc, MetadataRequestError):
-                self._dmm_request_failures += 1
-                if self._dmm_request_failures >= self.DMM_UNAVAILABLE_FAILURE_THRESHOLD:
-                    self._dmm_circuit_open = True
-                    logger.warning(
-                        "DMM marked unavailable after {} consecutive request failures, skip desc sync for the rest of this run",
-                        self._dmm_request_failures,
-                    )
-            else:
-                self._dmm_request_failures = 0
-            # DMM 已确认番号不存在或详情页没有描述时标记为终态，避免自动任务反复请求。
-            is_terminal = isinstance(
-                exc,
-                (DmmMovieNumberNotFoundError, DmmMovieDescNotFoundError),
+        with lock_context:
+            attempt, record, _prior_state = ResourceTaskLedger.begin_attempt(
+                task_key=self.TASK_KEY,
+                resource_type="movie",
+                resource_id=movie.id,
+                trigger_type=getattr(run_context, "trigger_type", None),
+                task_run_id=getattr(run_context, "task_run_id", None),
             )
+        try:
+            movie_desc = self.fetch_movie_desc_strict(movie)
+        except TaskItemError as exc:
             with lock_context:
-                self._mark_movie_desc_fetch_failed(movie, str(exc), terminal=is_terminal)
+                ResourceTaskLedger.finish_failure(
+                    attempt,
+                    record,
+                    error_code=exc.error_code,
+                    error_message=str(exc),
+                    retryable=exc.retryable,
+                    policy=self.DESC_SYNC_RETRY_POLICY,
+                )
             logger.warning(
-                "Catalog movie desc fetch failed movie_id={} movie_number={} terminal={} detail={}",
+                "Catalog movie desc fetch failed movie_id={} movie_number={} code={} retryable={}",
                 movie.id,
                 movie.movie_number,
-                is_terminal,
-                exc,
+                exc.error_code,
+                exc.retryable,
             )
             return False
+        with lock_context:
+            self._apply_movie_desc(movie, movie_desc)
+            ResourceTaskLedger.finish_success(attempt, record)
+        return True
 
-    @classmethod
-    def _mark_movie_desc_fetch_started(cls, movie: Movie) -> None:
-        ResourceTaskStateService.mark_started(cls.TASK_KEY, movie.id)
+    def fetch_movie_desc_strict(self, movie: Movie) -> str:
+        """只抓不记账：维护熔断计数，失败一律抛带 error_code 的 TaskItemError。"""
+        try:
+            movie_desc = self.dmm_provider.get_movie_desc(movie.movie_number)
+        except DmmMovieNumberNotFoundError as exc:
+            # 业务性失败说明 DMM 仍可用：清零熔断计数，判终态。
+            self._dmm_request_failures = 0
+            raise TaskItemError(
+                "dmm_movie_number_not_found", str(exc), retryable=False
+            ) from exc
+        except DmmMovieDescNotFoundError as exc:
+            self._dmm_request_failures = 0
+            raise TaskItemError(
+                "dmm_movie_desc_not_found", str(exc), retryable=False
+            ) from exc
+        except MetadataRequestError as exc:
+            # 连通性失败（已重试耗尽）计入熔断。
+            self._dmm_request_failures += 1
+            if self._dmm_request_failures >= self.DMM_UNAVAILABLE_FAILURE_THRESHOLD:
+                self._dmm_circuit_open = True
+                logger.warning(
+                    "DMM marked unavailable after {} consecutive request failures, "
+                    "skip desc sync for the rest of this run",
+                    self._dmm_request_failures,
+                )
+            raise TaskItemError("dmm_request_error", str(exc)) from exc
+        except Exception as exc:
+            self._dmm_request_failures = 0
+            raise TaskItemError("dmm_fetch_failed", str(exc)) from exc
+        self._dmm_request_failures = 0
+        return movie_desc
+
+    def ensure_dmm_available_or_abort(self) -> None:
+        """cron runner 的逐资源前置检查：熔断已开则中止整轮（剩余资源不耗预算）。"""
+        if self._dmm_circuit_open:
+            raise TaskAbortError(
+                "dmm_unavailable", "DMM 连续请求失败已熔断，本轮剩余影片中止"
+            )
+
+    @staticmethod
+    def _apply_movie_desc(movie: Movie, movie_desc: str) -> None:
+        movie.desc = movie_desc
+        movie.save(only=[Movie.desc])
 
     def _refresh_movie_metadata_records_strict(
         self,
@@ -585,21 +634,6 @@ class CatalogImportService:
         self.image_service.delete_obsolete_image_files(obsolete_paths)
         refreshed_movie = Movie.get_by_id(movie.id)
         return refreshed_movie.thin_cover_image_id is not None
-
-    @classmethod
-    def _mark_movie_desc_fetch_succeeded(cls, movie: Movie, movie_desc: str) -> None:
-        movie.desc = movie_desc
-        movie.save(only=[Movie.desc])
-        ResourceTaskStateService.mark_succeeded(cls.TASK_KEY, movie.id)
-
-    @classmethod
-    def _mark_movie_desc_fetch_failed(cls, movie: Movie, detail: str, *, terminal: bool = False) -> None:
-        ResourceTaskStateService.mark_failed(
-            cls.TASK_KEY,
-            movie.id,
-            detail,
-            extra_patch={"terminal": terminal},
-        )
 
     def upsert_actor_from_javdb_resource(
         self,

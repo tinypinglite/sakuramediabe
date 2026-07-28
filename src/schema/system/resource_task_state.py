@@ -10,6 +10,9 @@ class TaskRecordStateCountsResource(SchemaModel):
     running: int = 0
     succeeded: int = 0
     failed: int = 0
+    # kernel 记账任务（Wave 2 起）的失败二分：可重试（等 next_retry_at 到期）与确定性终态。
+    failed_retryable: int = 0
+    failed_terminal: int = 0
     # 已达到该任务的自动重试上限，不再自动排入；只能由用户显式重置后重新参与。
     exhausted: int = 0
 

@@ -294,8 +294,18 @@ CLI 长任务（migrate-jav-layout / migrate-plot-layout / backfill-* / scan-med
   bootstrap 引导任务仍走进程内 date job（与队列 mutex 同名互斥，行为不冲突）
 - 验收：`test_aps` 新增 4 条接线护栏；队列语义 8 条护栏（tests/service/test_task_queue_service.py）
 
-### Wave 2：A 形态任务迁 ResourceExecutor
-- 顺序：desc_sync → 两个翻译 → 互动同步 → 缩略图 → 订阅搜索（合并 key）→
+### Wave 2：A 形态任务迁 ResourceExecutor（进行中）
+- [x] 内核落地：`ResourceTaskRunner` / `ResourceTaskLedger` / `RetryPolicy` /
+      `TaskItemError`(error_code+retryable) / `TaskItemDeferred` / `TaskAbortError`
+      （`src/service/system/resource_task_runner.py`；7 条生命周期护栏）。
+      本轮预算 = 投影 `attempt_count`（reset 归零、retry_round+1），终身次数 = attempt 表行数
+- [x] `movie_desc_sync` 迁移完成（首个任务，pathfinder）：
+      候选走内核状态条件；DMM 熔断由静默跳过改为显式 `TaskAbortError`；
+      `sync_movie_desc` 公共入口（upsert 链路复用）改 Ledger 单资源记账，
+      终态判定 `state == failed_terminal` 取代 extra.terminal 子串匹配；
+      存量状态行由 `20260729_03` 清空重建；counts schema 与筛选白名单
+      已加入 failed_retryable / failed_terminal
+- 剩余顺序：两个翻译 → 互动同步 → 缩略图 → 订阅搜索（合并 key）→
   媒体巡检 → 演员同步
 - **存量状态策略：切换即清空该 task_key 的 `resource_task_state` 行（清空重建，
   不做语义映射迁移），仅两个例外**（决策 #11）：

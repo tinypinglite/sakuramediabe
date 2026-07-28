@@ -249,6 +249,43 @@ class ResourceTaskLedger:
             record.updated_at = now
             record.save()
 
+    @classmethod
+    def recover_running(cls, task_key: str, *, error_message: str) -> int:
+        """崩溃回收：running 投影 → failed_retryable（立即到期），attempt 收口 aborted。
+
+        中断不消耗预算（回滚本轮计数），语义与 deferred/abort 一致。
+        """
+        now = utc_now_for_db()
+        running_records = list(
+            ResourceTaskState.select().where(
+                ResourceTaskState.task_key == task_key,
+                ResourceTaskState.state == STATE_RUNNING,
+            )
+        )
+        for record in running_records:
+            with get_database().atomic():
+                if record.last_attempt_id is not None:
+                    attempt = ResourceTaskAttempt.get_or_none(
+                        ResourceTaskAttempt.id == record.last_attempt_id
+                    )
+                    if attempt is not None and attempt.state == STATE_RUNNING:
+                        cls._finalize_attempt(
+                            attempt,
+                            "aborted",
+                            finished_at=now,
+                            error_code="interrupted",
+                            error_message=error_message,
+                        )
+                record.state = STATE_FAILED_RETRYABLE
+                record.attempt_count = max(record.attempt_count - 1, 0)
+                record.last_error = error_message
+                record.last_error_at = now
+                record.error_code = "interrupted"
+                record.next_retry_at = now
+                record.updated_at = now
+                record.save()
+        return len(running_records)
+
     @staticmethod
     def _finalize_attempt(
         attempt: ResourceTaskAttempt,
