@@ -32,6 +32,7 @@ from src.lib.cloud115 import (
     Cloud115RiskControlError,
     DirMeta,
 )
+from src.lib.cloud115.session import Cloud115Session
 from src.model import MediaLibrary
 from src.model.enums import MediaLibraryBackend
 
@@ -298,10 +299,14 @@ async def assert_cid_outside_library_root(
 
 
 class Cloud115KeepaliveService:
-    """cloud115 cookies 保活：周期探活 + 快照回写 + 失效通知。
+    """cloud115 cookies 保活：周期裁剪 + 探活 + 快照回写 + 失效通知。
 
     acw_tc（阿里云 WAF token）30 分钟过期，SDK 会在响应里自动 merge 服务端刷新值；
     本任务的意义是把刷新值持久化，并及早发现 UID/CID/SEID 长效凭据失效。
+
+    同时承担 cookie 体积的兜底修复：SDK 侧已按 ESSENTIAL_COOKIE_KEYS 白名单收
+    Set-Cookie，但扫码登录等直接写 backend_config 的路径不经过 SDK，历史库里也可能
+    残留已积累的 WAF 挑战 cookie，所以这里每轮显式裁一次。
     """
 
     @staticmethod
@@ -311,6 +316,36 @@ class Cloud115KeepaliveService:
                 MediaLibrary.backend == MediaLibraryBackend.CLOUD115.value
             )
         )
+
+    @staticmethod
+    def prune_library_cookies(library: MediaLibrary) -> int:
+        """裁掉该库已落库 cookie 里的非必需项，返回丢弃条数。
+
+        必须在探活**之前**执行：cookie 一旦涨过 nginx 的 8KB 请求头上限，连探活自己
+        都会被回 400，放在探活之后就永远等不到修复时机。
+        """
+        fresh = MediaLibrary.get_or_none(MediaLibrary.id == library.id)
+        if fresh is None:
+            return 0
+        original_config = dict(fresh.backend_config or {})
+        current = original_config.get("cookies") or ""
+        if not current:
+            return 0
+        pruned, dropped = Cloud115Session.prune_cookies(current)
+        # 裁完必须仍是可用会话；缺 UID 说明这份 cookie 本就不完整，交给探活报失效。
+        if dropped <= 0 or "UID=" not in pruned:
+            return 0
+        if not _persist_cookies_snapshot(library.id, original_config, pruned):
+            return 0
+        # 同步内存对象，紧接着的探活直接用裁剪后的 cookie。
+        next_config = dict(original_config)
+        next_config["cookies"] = pruned
+        library.backend_config = next_config
+        logger.info(
+            "cloud115 cookies pruned library_id={} name={} dropped={} bytes={}->{}",
+            library.id, library.name, dropped, len(current), len(pruned),
+        )
+        return dropped
 
     @classmethod
     async def probe_library_cookies_status(
@@ -338,8 +373,22 @@ class Cloud115KeepaliveService:
     @classmethod
     def run(cls, progress_callback=None) -> dict:
         libraries = cls._cloud115_libraries()
-        stats = {"total": len(libraries), "alive": 0, "expired": 0, "unavailable": 0}
+        stats = {
+            "total": len(libraries),
+            "alive": 0,
+            "expired": 0,
+            "unavailable": 0,
+            "pruned_cookies": 0,
+        }
         for library in libraries:
+            # 先裁后探：裁剪失败不影响探活，只是这轮没能修复体积。
+            try:
+                stats["pruned_cookies"] += cls.prune_library_cookies(library)
+            except Exception as exc:
+                logger.warning(
+                    "cloud115 cookies prune failed library_id={} name={} detail={}",
+                    library.id, library.name, exc,
+                )
             try:
                 cookie_status = asyncio.run(cls._check_library(library))
             except Cloud115AuthError:

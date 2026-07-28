@@ -40,6 +40,11 @@ def _is_risk_controlled(url: str) -> bool:
     return urlsplit(url).netloc in _RISK_CONTROLLED_HOSTS
 
 
+# nginx 请求头超限时返回的固定标题；115 应用层不会产出这个页面，可作精确判别锚点。
+# 2026-07-29 生产实测：Cookie 头累积到 11055 字节时稳定复现。
+_NGINX_HEADER_TOO_LARGE_MARKER = "Request Header Or Cookie Too Large"
+
+
 def _safe_endpoint(url: str) -> str:
     """日志只保留主机和路径，避免查询参数中的敏感信息落盘。"""
     parsed = urlsplit(url)
@@ -226,11 +231,14 @@ class Cloud115Transport:
 
             status = response.status_code
             if not (200 <= status < 300):
+                # 必须记响应体而不只是 reason phrase：nginx 的 400 页把真实原因写在 body
+                # 里（"Request Header Or Cookie Too Large"），只记 "Bad Request" 会让
+                # 请求头超限和账号风控在日志里长得一模一样。
                 logger.warning(
                     "cloud115 http failure method={} endpoint={} action={} status={} "
-                    "attempt={}/{} detail={}",
+                    "attempt={}/{} reason={} body={}",
                     method, endpoint, action, status, attempt + 1, max_retries + 1,
-                    _safe_detail(response.reason_phrase),
+                    _safe_detail(response.reason_phrase), _safe_detail(response.text),
                 )
             if status == 429:
                 # 限流：立刻抛，携带 Retry-After（不做重试，避免账号触发更严格的风控）
@@ -243,6 +251,19 @@ class Cloud115Transport:
             if status in (401, 403):
                 raise Cloud115AuthError(
                     f"http {status} on {method} {url}", endpoint=url
+                )
+            if status == 400 and _NGINX_HEADER_TOO_LARGE_MARKER in response.text:
+                # 请求头超过 nginx 单条 8KB 上限，被 115 应用层之前的反向代理直接打回。
+                # 这是**客户端自身的 bug**，与账号状态无关：同一份 cookie 重试多少次都是
+                # 400，熔断和退避都修不好，唯一出路是把 Cookie 头裁回来
+                # （见 Cloud115Session.ESSENTIAL_COOKIE_KEYS）。必须与风控区分开，否则
+                # 会把"自己发的头太大"误诊成"账号被封"，从而停掉整批、干等冷却。
+                raise Cloud115RequestError(
+                    f"http 400 request header or cookie too large on {method} {url}; "
+                    f"cookie_bytes={len(self.session.snapshot_cookies())}",
+                    method=method,
+                    url=url,
+                    detail=_safe_detail(response.text),
                 )
             if status == 405 or (status == 400 and _is_risk_controlled(url)):
                 # 裸 HTTP 405、以及风控域打回的裸 HTTP 400，都来自 webapi 前置的阿里云 WAF：

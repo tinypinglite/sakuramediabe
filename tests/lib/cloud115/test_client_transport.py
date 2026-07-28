@@ -266,3 +266,71 @@ async def test_batch_pacing_disabled_by_default(monkeypatch) -> None:
         await client.close()
 
     assert slept == []
+
+
+# --- Cookie 体积回归（2026-07-29 生产事故） ---------------------------------
+# WAF 挑战会持续下发随机名的一次性 cookie；曾经无差别 merge 并持久化，导致 Cookie 头
+# 涨到 8207 字节（123 个键），越过 nginx 8KB 上限后所有请求被回 400，且被误诊为风控。
+
+
+def _challenge_cookie_header(count: int) -> str:
+    """构造 count 个 WAF 挑战 cookie（32 位 hex 名、同一令牌值）。"""
+    return "; ".join(
+        f"{i:032x}=66cb0d6fa2ec6f76be6f2d2944775f2c" for i in range(count)
+    )
+
+
+async def test_session_keeps_only_essential_cookies_on_construction() -> None:
+    bloated = f"{MOCK_COOKIES}; KID=kid; acw_tc=tok; {_challenge_cookie_header(118)}"
+    client = Cloud115Client(bloated)
+    try:
+        snapshot = client.snapshot_cookies()
+        assert sorted(p.split("=")[0] for p in snapshot.split("; ")) == [
+            "CID", "KID", "SEID", "UID", "acw_tc",
+        ]
+        assert len(snapshot) < 200
+    finally:
+        await client.close()
+
+
+async def test_merge_set_cookie_drops_challenge_cookies_but_refreshes_acw_tc() -> None:
+    async_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={"state": True},
+                headers=[
+                    ("Set-Cookie", "acw_tc=refreshed; Path=/"),
+                    ("Set-Cookie", f"{'ab' * 16}=challenge; Path=/"),
+                    ("Set-Cookie", f"{'cd' * 16}=challenge; Path=/"),
+                ],
+            )
+        )
+    )
+    client = Cloud115Client(MOCK_COOKIES, http_client=async_client)
+    try:
+        assert await client.check_cookies_alive() is True
+        snapshot = client.snapshot_cookies()
+        assert "acw_tc=refreshed" in snapshot
+        assert "challenge" not in snapshot
+    finally:
+        await async_client.aclose()
+
+
+async def test_header_too_large_400_is_not_reported_as_risk_control() -> None:
+    """nginx 的请求头超限 400 必须与风控区分：前者靠裁 cookie 修，退避重试无效。"""
+    body = (
+        "<html>\r\n<head><title>400 Request Header Or Cookie Too Large</title></head>\r\n"
+        "<body bgcolor=\"white\">\r\n<center><h1>400 Bad Request</h1></center>\r\n"
+    )
+    async_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(400, text=body))
+    )
+    client = Cloud115Client(MOCK_COOKIES, http_client=async_client)
+    try:
+        with pytest.raises(Cloud115RequestError) as excinfo:
+            await client.list_dir("0")
+        assert not isinstance(excinfo.value, Cloud115RiskControlError)
+        assert "too large" in str(excinfo.value).lower()
+    finally:
+        await async_client.aclose()
