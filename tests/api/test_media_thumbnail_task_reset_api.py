@@ -1,4 +1,4 @@
-from src.model import Media, MediaLibrary, Movie, ResourceTaskState
+from src.model import BackgroundTaskRun, Media, MediaLibrary, Movie, ResourceTaskState
 
 
 RESET_PATH = "/system/resource-task-states/media_thumbnail_generation/reset"
@@ -32,6 +32,13 @@ def _create_media(movie_number: str, *, valid: bool = True) -> Media:
 
 
 def _create_task_state(media: Media, *, state: str = "failed", terminal: bool = True):
+    # last_task_run_id 已外键化（Wave 0），必须指向真实的 task_run 行。
+    task_run = BackgroundTaskRun.create(
+        task_key=TASK_KEY,
+        task_name="媒体缩略图生成",
+        trigger_type="scheduled",
+        state="completed",
+    )
     return ResourceTaskState.create(
         task_key=TASK_KEY,
         resource_type="media",
@@ -40,7 +47,7 @@ def _create_task_state(media: Media, *, state: str = "failed", terminal: bool = 
         attempt_count=2,
         last_error="thumbnail_generation_empty",
         last_trigger_type="scheduled",
-        last_task_run_id=10,
+        last_task_run_id=task_run.id,
         extra={"terminal": terminal, "source": "test"},
     )
 
