@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import httpx
@@ -25,6 +26,15 @@ _NOT_FOUND_ERRNOS = frozenset({20121, 20125, 990002, 4100003, 4100008})
 _REQUEST_ERRNOS = frozenset({990005})
 _MEMBERSHIP_REQUIRED_ERRNOS = frozenset({406})
 _OFFLINE_QUOTA_EXCEEDED_ERRNOS = frozenset({10004, 10008})
+
+# 115 的 WAF 只挂在 webapi 域：观测到的 405/400 风控无一例外出自这里，而取直链（proapi）、
+# 离线任务（115.com/web/lixian）、cookies 探活（my.115.com）和 CDN Range 读都不受限。
+# 批次休息只对本域计数，否则每个视频的取直链都会白白推高计数、无谓拖慢导入。
+_RISK_CONTROLLED_HOSTS = frozenset({"webapi.115.com"})
+
+
+def _is_risk_controlled(url: str) -> bool:
+    return urlsplit(url).netloc in _RISK_CONTROLLED_HOSTS
 
 
 def _safe_endpoint(url: str) -> str:
@@ -61,9 +71,21 @@ class Cloud115Transport:
         timeout: float = 30.0,
         http_client: httpx.AsyncClient | None = None,
         min_request_interval: float = 1.0,
+        batch_rest_every: int = 0,
+        batch_rest_min_seconds: float = 0.0,
+        batch_rest_max_seconds: float = 0.0,
+        on_pace_wait: Callable[[float], None] | None = None,
     ) -> None:
         self.session = session
         self._min_request_interval = max(0.0, min_request_interval)
+        # 批量节奏：每累计 N 个风控域请求长休一次。0 = 关闭（交互路径默认走这条）。
+        self._batch_rest_every = max(0, batch_rest_every)
+        self._batch_rest_min_seconds = max(0.0, batch_rest_min_seconds)
+        self._batch_rest_max_seconds = max(
+            self._batch_rest_min_seconds, batch_rest_max_seconds
+        )
+        self._on_pace_wait = on_pace_wait
+        self._batch_request_count = 0
         self._rate_lock = asyncio.Lock()
         self._next_request_at = 0.0
         self._owns_client = http_client is None
@@ -101,7 +123,7 @@ class Cloud115Transport:
         request_headers = self._base_headers()
         if headers:
             request_headers.update(headers)
-        await self._acquire_request_slot()
+        await self._acquire_request_slot(url)
         response = await self._client.request(
             method, url, params=params, headers=request_headers
         )
@@ -109,20 +131,35 @@ class Cloud115Transport:
             self.session.merge_set_cookies(response)
         return response
 
-    async def _acquire_request_slot(self) -> None:
+    async def _acquire_request_slot(self, url: str) -> None:
         """全局请求限速闸门：保证相邻请求（含重试）间隔 >= _min_request_interval。
 
         在锁内"预定"下一个发起时刻后立即释放锁再 sleep，避免持锁睡眠阻塞并发协程；
         因此即使多个协程并发调用，也能得到严格匀速的发起节奏。
+
+        批量模式下每累计 _batch_rest_every 个**风控域**请求，额外把下一次发起时刻推后
+        uniform(min, max) 秒：匀速闸门管得住瞬时速率，管不住单个任务累计打几百个请求——
+        实测连续 200 余次 GET /files（1 r/s）即触发 WAF 405。
         """
-        if self._min_request_interval <= 0:
+        if self._min_request_interval <= 0 and self._batch_rest_every <= 0:
             return
         async with self._rate_lock:
             now = time.monotonic()
             start_at = max(now, self._next_request_at)
-            self._next_request_at = start_at + self._min_request_interval
+            extra_rest = 0.0
+            if self._batch_rest_every > 0 and _is_risk_controlled(url):
+                self._batch_request_count += 1
+                if self._batch_request_count % self._batch_rest_every == 0:
+                    extra_rest = random.uniform(
+                        self._batch_rest_min_seconds, self._batch_rest_max_seconds
+                    )
+            self._next_request_at = start_at + self._min_request_interval + extra_rest
             delay = start_at - now
         if delay > 0:
+            # 真正吃到长等待的这次请求负责上报：一次十几秒的静默等待在用户侧与卡死无异，
+            # 上层据此把"正在降速"透出到进度。
+            if self._on_pace_wait is not None and delay > self._min_request_interval:
+                self._on_pace_wait(delay)
             await asyncio.sleep(delay)
 
     async def _request(
@@ -164,7 +201,7 @@ class Cloud115Transport:
                 else:
                     request_kwargs["data"] = data
                 # 限速闸门：紧贴真正的网络发起，重试也各自受限（避免退避后瞬时补偿式突发）
-                await self._acquire_request_slot()
+                await self._acquire_request_slot(url)
                 response = await self._client.request(method, url, **request_kwargs)
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_error = exc

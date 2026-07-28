@@ -6,7 +6,7 @@ HTTP 会话、请求策略和远端能力已拆分；本类保留原公开方法
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -32,6 +32,10 @@ class Cloud115Client:
         timeout: float = 30.0,
         http_client: httpx.AsyncClient | None = None,
         min_request_interval: float = 1.0,
+        batch_rest_every: int = 0,
+        batch_rest_min_seconds: float = 0.0,
+        batch_rest_max_seconds: float = 0.0,
+        on_pace_wait: Callable[[float], None] | None = None,
     ) -> None:
         self.session = Cloud115Session(cookies, user_agent=user_agent)
         self.transport = Cloud115Transport(
@@ -39,6 +43,10 @@ class Cloud115Client:
             timeout=timeout,
             http_client=http_client,
             min_request_interval=min_request_interval,
+            batch_rest_every=batch_rest_every,
+            batch_rest_min_seconds=batch_rest_min_seconds,
+            batch_rest_max_seconds=batch_rest_max_seconds,
+            on_pace_wait=on_pace_wait,
         )
         # 迁移期保留测试与调试脚本使用的底层 client 只读引用。
         self._client = self.transport._client

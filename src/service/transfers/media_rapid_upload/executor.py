@@ -89,7 +89,7 @@ class MediaRapidUploadExecutor:
         # 全局请求限速：把批内所有 115 请求匀速化，规避 webapi 前置 WAF 的风控阈值。
         min_interval = settings.downloads.cloud115_rapid_upload_min_interval_seconds
         async with cloud115_client_for(
-            target_library, min_request_interval=min_interval
+            target_library, min_request_interval=min_interval, batch_pacing=True
         ) as client:
             # 批次级目录缓存：整批只翻一次 jav//videos/，杜绝每条 item 列目录的风控请求。
             resolver = Cloud115TargetDirResolver(client, root_cid=config["root_cid"])

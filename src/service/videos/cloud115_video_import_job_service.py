@@ -31,8 +31,7 @@ from src.service.cloud115 import (
 from src.service.system import ActivityService
 from src.service.transfers.base_import_job_service import BaseImportJobService
 from src.service.transfers.cloud115_import_common import (
-    build_cloud115_dir_map,
-    cloud115_rel_dir_parts,
+    collect_cloud115_source_files,
     normalize_cloud115_transfer_mode,
     verify_cloud115_renamed_file,
 )
@@ -298,11 +297,17 @@ class Cloud115VideoImportJobService(BaseImportJobService):
             return meta if meta.name == path else None
         if not job.source_cid:
             return None
-        dir_map = await build_cloud115_dir_map(client, job.source_cid)
-        async for entry in client.iter_files_recursive(job.source_cid):
-            rel_parts = cloud115_rel_dir_parts(
-                entry.parent_id, dir_map, job.source_cid
-            )
+        # 只解析同名候选文件的父目录：按路径定位单个文件不需要还原整棵树的目录名。
+        target_name = path.rsplit("/", 1)[-1]
+        entries, rel_dirs = await collect_cloud115_source_files(
+            client,
+            job.source_cid,
+            needs_rel_path=lambda entry: entry.name == target_name,
+        )
+        for entry in entries:
+            if entry.name != target_name:
+                continue
+            rel_parts = rel_dirs[entry.parent_id]
             if "/".join([*rel_parts, entry.name]) == path:
                 return entry
         return None

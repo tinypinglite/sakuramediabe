@@ -20,6 +20,7 @@ from typing import AsyncIterator
 from loguru import logger
 
 from src.api.exception.errors import ApiError
+from src.config.config import settings
 from src.lib.cloud115 import (
     Cloud115AuthError,
     Cloud115Client,
@@ -99,19 +100,33 @@ async def cloud115_client_for(
     *,
     user_agent: str | None = None,
     min_request_interval: float = 1.0,
+    batch_pacing: bool = False,
+    on_pace_wait=None,
 ) -> AsyncIterator[Cloud115Client]:
     """按库配置建 Cloud115Client；可指定请求 UA，退出时回写 cookies 快照。
 
     默认把同一客户端内的请求按 1 秒间隔匀速化，规避 webapi 前置 WAF 的风控阈值；
     高频写入场景可按需覆盖该间隔。
+
+    ``batch_pacing``：批量链路（导入 / 秒传 / 巡检）显式开启后，每打满
+    ``cloud115_batch_rest_every_requests`` 个 webapi 请求会额外长休一次。
+    交互路径（播放取直链、GUI 浏览目录、离线提交）**必须保持默认关闭**——
+    用户正在等待的请求撞上十几秒强制休息就是事故。
     """
     config = require_cloud115_library(library)
     original_config = dict(config)
     original_cookies = original_config["cookies"]
+    downloads = settings.downloads
     client = Cloud115Client(
         cookies=original_cookies,
         user_agent=user_agent,
         min_request_interval=min_request_interval,
+        batch_rest_every=(
+            downloads.cloud115_batch_rest_every_requests if batch_pacing else 0
+        ),
+        batch_rest_min_seconds=downloads.cloud115_batch_rest_min_seconds,
+        batch_rest_max_seconds=downloads.cloud115_batch_rest_max_seconds,
+        on_pace_wait=on_pace_wait,
     )
     try:
         yield client

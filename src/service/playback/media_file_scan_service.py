@@ -93,7 +93,7 @@ class MediaFileScanService:
         async def _enumerate(library: MediaLibrary) -> set[str]:
             root_cid = require_cloud115_library(library)["root_cid"]
             pickcodes: set[str] = set()
-            async with cloud115_client_for(library) as client:
+            async with cloud115_client_for(library, batch_pacing=True) as client:
                 async for entry in client.iter_files_recursive(root_cid):
                     if entry.pickcode:
                         pickcodes.add(entry.pickcode)

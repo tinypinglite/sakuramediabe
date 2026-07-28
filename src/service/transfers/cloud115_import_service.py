@@ -76,9 +76,7 @@ from src.service.transfers.cloud115_import_common import (
     CLOUD115_TRANSFER_MODE_LEGACY_MOVE,
     Cloud115TargetDirCache,
     Cloud115TargetDirResolver,
-    build_cloud115_dir_map,
-    collect_cloud115_source_tree,
-    cloud115_rel_dir_parts,
+    collect_cloud115_source_files,
     list_cloud115_entity_target_files,
     list_cloud115_target_files,
     normalize_cloud115_transfer_mode,
@@ -168,9 +166,7 @@ class Cloud115ImportService:
         )
 
     # 兼容现有调用与测试；实现统一下沉到无 JAV 业务归属的公共模块。
-    _build_dir_map = staticmethod(build_cloud115_dir_map)
-    _collect_source_tree = staticmethod(collect_cloud115_source_tree)
-    _rel_dir_parts = staticmethod(cloud115_rel_dir_parts)
+    _collect_source_files = staticmethod(collect_cloud115_source_files)
     _list_target_files = staticmethod(list_cloud115_target_files)
     _resolve_copied_entry = staticmethod(resolve_cloud115_copied_entry)
     _verify_renamed_file = staticmethod(verify_cloud115_renamed_file)
@@ -330,7 +326,19 @@ class Cloud115ImportService:
         config = require_cloud115_library(library)
         root_cid = config["root_cid"]
 
-        async with cloud115_client_for(library) as client:
+        def _on_pace_wait(seconds: float) -> None:
+            # 批次休息期间不发请求，进度必须显式透出，否则与"卡死"无法区分。
+            self._emit(
+                progress_callback,
+                event="pace_waiting",
+                stage="pacing",
+                text=f"为降低 115 请求频率，暂停 {seconds:.0f} 秒后继续",
+                summary_patch=self._summary(stats, new_playable_movies),
+            )
+
+        async with cloud115_client_for(
+            library, batch_pacing=True, on_pace_wait=_on_pace_wait
+        ) as client:
             if managed_download_source:
                 # 自动离线任务只允许读取软件自建的下载缓冲区；一次 dir_info 同时完成
                 # 归属校验、名称和展示路径读取，不再重复查询媒体库根目录。
@@ -377,6 +385,7 @@ class Cloud115ImportService:
                 transfer_mode=transfer_mode,
                 only_files=only_files,
                 failure_items=failure_items,
+                progress_callback=progress_callback,
             )
             stats["skipped"] += scan_skipped
             stats["failed"] += scan_failed
@@ -403,6 +412,14 @@ class Cloud115ImportService:
             )
 
             if not groups:
+                await self._cleanup_managed_source_dir(
+                    client,
+                    config=config,
+                    source_cid=source_cid,
+                    managed_download_source=managed_download_source,
+                    failure_items=failure_items,
+                    stats=stats,
+                )
                 return
 
             # 2) 元数据并发抓取 + 逐番号搬运登记（目标目录/版本目录按番号在 _import_group 里建）
@@ -516,7 +533,75 @@ class Cloud115ImportService:
                         summary_patch=self._summary(stats, new_playable_movies),
                     )
 
+            # 3) 全部搬运完成后清理离线缓冲区里的来源任务目录。
+            await self._cleanup_managed_source_dir(
+                client,
+                config=config,
+                source_cid=source_cid,
+                managed_download_source=managed_download_source,
+                failure_items=failure_items,
+                stats=stats,
+            )
+
+    # ---- 来源目录清理 ----
+
+    @staticmethod
+    async def _cleanup_managed_source_dir(
+        client: Cloud115Client,
+        *,
+        config: dict,
+        source_cid: str,
+        managed_download_source: bool,
+        failure_items: List[dict],
+        stats: dict,
+    ) -> None:
+        """自动离线导入完成后，把来源任务目录整个删掉（进 115 回收站）。
+
+        cleanup-source 走 move，只搬文件不动目录，已导入完成的任务目录会永久残留在
+        ``sakuramedia_downloads`` 下；下次按整个缓冲区导入时，扫描要把这些空壳逐个列一遍，
+        成本随历史下载数无限增长（实测 158+ 个残留目录 → 连续 200 余次 list_dir → WAF 405）。
+
+        三重前提缺一不可：
+        1. 仅限软件自建的离线缓冲区来源，用户手动选的目录一律不动；
+        2. 本次无失败项——番号识别不出的视频计入 failed，因此不会误删还需重导的内容；
+        3. 来源不是缓冲区根目录本身（防御性兜底，执行阶段已校验过归属）。
+
+        非视频残留（nfo / 封面 / 种子 / 判定过小的样本）一并删除，回收站提供误删缓冲。
+        删除失败只记告警：文件已入库，不该把作业翻成失败。
+        """
+        if not managed_download_source or stats["failed"] > 0:
+            return
+        download_root_cid = str(config.get("download_root_cid") or "")
+        if not download_root_cid or source_cid == download_root_cid:
+            return
+        try:
+            await client.delete_files([source_cid])
+        except Exception as exc:
+            item = make_failure_item(
+                f"cloud115:{source_cid}",
+                FAILURE_REASON_SOURCE_DELETE_FAILED,
+                f"来源任务目录清理失败: {exc}",
+            )
+            item["kind"] = FAILED_FILE_KIND_WARNING
+            failure_items.append(item)
+            logger.warning(
+                "Cloud115 managed source dir cleanup failed source_cid={} detail={}",
+                source_cid, exc,
+            )
+            return
+        logger.info(
+            "Cloud115 managed source dir cleaned up source_cid={}", source_cid
+        )
+
     # ---- 枚举 / 分拣 ----
+
+    @staticmethod
+    def _entry_suffix(name: str) -> str:
+        return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
+
+    @classmethod
+    def _entry_is_video(cls, entry: DirEntry) -> bool:
+        return cls._entry_suffix(entry.name) in SUPPORTED_VIDEO_EXTENSIONS
 
     async def _scan_source(
         self,
@@ -528,6 +613,7 @@ class Cloud115ImportService:
         transfer_mode: str,
         only_files: List[str] | None,
         failure_items: List[dict],
+        progress_callback: ImportProgressCallback | None = None,
     ) -> tuple[List[CloudImportGroup], int, int]:
         """枚举源目录树 → 分拣视频/字幕 → 番号识别 → sha1 去重，产出按番号聚合的分组。"""
         minimum_size = settings.media.allowed_min_video_file_size
@@ -535,14 +621,28 @@ class Cloud115ImportService:
         failed_count = 0
         only_set = set(only_files) if only_files is not None else None
 
-        # 一次 BFS 同时取得目录名映射和文件，避免再调用递归文件枚举重复扫描来源。
-        dir_map, source_files = await self._collect_source_tree(client, source_cid)
+        self._emit(
+            progress_callback,
+            event="scan_started",
+            stage="scan",
+            text="正在枚举 115 源目录",
+        )
+        # 整树枚举 + 只为视频文件解析父目录名：请求数与源目录树的目录总数解耦，
+        # 空目录（已导入完成的历史任务目录）完全不会被访问。
+        source_files, rel_dirs = await self._collect_source_files(
+            client, source_cid, needs_rel_path=self._entry_is_video
+        )
+        self._emit(
+            progress_callback,
+            event="scan_progress",
+            stage="scan",
+            text=f"已枚举 {len(source_files)} 个文件，正在分拣",
+        )
 
         videos: List[CloudSourceFile] = []
         subtitles_by_dir: Dict[str, List[CloudSubtitleFile]] = {}
         for entry in source_files:
-            suffix = ("." + entry.name.rsplit(".", 1)[-1].lower()) if "." in entry.name else ""
-            rel_dir_parts = self._rel_dir_parts(entry.parent_id, dir_map, source_cid)
+            suffix = self._entry_suffix(entry.name)
             if suffix == ".srt":
                 subtitles_by_dir.setdefault(entry.parent_id, []).append(
                     CloudSubtitleFile(fid=entry.entry_id, pickcode=entry.pickcode, name=entry.name)
@@ -550,6 +650,7 @@ class Cloud115ImportService:
                 continue
             if suffix not in SUPPORTED_VIDEO_EXTENSIONS:
                 continue
+            rel_dir_parts = rel_dirs[entry.parent_id]
             rel_path = "/".join([*rel_dir_parts, entry.name])
             # 失败重导先按相对路径收窄，再做体积/SHA/番号校验；未选择文件不能污染本次统计。
             if only_set is not None and rel_path not in only_set:

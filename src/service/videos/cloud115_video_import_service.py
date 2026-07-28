@@ -43,8 +43,7 @@ from src.service.transfers.cloud115_import_common import (
     CLOUD115_COVER_UA,
     CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
     Cloud115TargetDirResolver,
-    cloud115_rel_dir_parts,
-    collect_cloud115_source_tree,
+    collect_cloud115_source_files,
     list_cloud115_target_files,
     normalize_cloud115_transfer_mode,
     open_cloud115_range_reader,
@@ -130,16 +129,17 @@ class Cloud115VideoImportService:
             display_path = "/".join(
                 [*(crumb.name for crumb in source_meta.paths), source_meta.name]
             )
-            # 一次 BFS 同时取得目录名映射和文件，避免再递归枚举一遍同一棵来源目录树。
-            dir_map, source_entries = await collect_cloud115_source_tree(
-                client, source_cid
+            # 整树枚举 + 只为视频文件解析父目录名：请求数与目录总数解耦，空目录不会被访问。
+            source_entries, rel_dirs = await collect_cloud115_source_files(
+                client,
+                source_cid,
+                needs_rel_path=lambda entry: self._suffix(entry.name)
+                in SUPPORTED_VIDEO_EXTENSIONS,
             )
             for entry in source_entries:
                 if self._suffix(entry.name) not in SUPPORTED_VIDEO_EXTENSIONS:
                     continue
-                rel_dir_parts = cloud115_rel_dir_parts(
-                    entry.parent_id, dir_map, source_cid
-                )
+                rel_dir_parts = rel_dirs[entry.parent_id]
                 rel_path = "/".join([*rel_dir_parts, entry.name])
                 if only_set is not None and rel_path not in only_set:
                     continue
@@ -334,7 +334,7 @@ class Cloud115VideoImportService:
         job: VideoImportJob,
     ) -> None:
         config = require_cloud115_library(library)
-        async with cloud115_client_for(library) as client:
+        async with cloud115_client_for(library, batch_pacing=True) as client:
             display_path, sources = await self._collect_sources(
                 client,
                 source_cid=source_cid,

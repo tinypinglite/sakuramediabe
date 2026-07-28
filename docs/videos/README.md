@@ -66,6 +66,7 @@
 115 导入语义：
 
 - 递归枚举目录或读取单个 FID，只接受现有视频扩展名；按源内相对路径排序后逐文件创建独立的 `VideoItem + Media`，并按相同顺序追加到可选合集。标题取原文件名 stem，不根据目录自动创建合集，也不处理外挂字幕。
+- 源目录扫描与 JAV 共用 `collect_cloud115_source_files`：一次整树递归枚举文件（`ceil(文件数/1150)` 次），再对源目录做一层 `list_dir` 覆盖直属父目录，仅剩的深层目录才逐个 `dir_info`。请求数与源目录树的**目录总数**解耦，不含视频的目录不会被访问。导入作业的 SDK client 开启 `batch_pacing`（每 30 个 webapi 请求长休 10~30 秒）。
 - 目标采用与本地视频库一致的分层布局：`sakuramedia/videos/<video_item_id>/<timestamp>/<filename>`。有效视频先完成源文件探测并创建 `VideoItem` 取得 ID，再创建实体目录与独立版本目录——`video_item_id` 来自数据库自增序列、删除也不复用，所以实体目录必然是新的，直接两次 `mkdir`，不枚举 `videos/` 下的既有目录（该开销随库内视频数线性增长）。`videos/` 段目录 cid 每个作业只解析一次。
 - 搬运顺序按模式分岔：
   - `copy`：复制 → 重新枚举版本目录，按 SHA1/FID/pickcode 对账并确认文件名 → 登记 Media。复制、改名或落库失败时尽力回收本次创建的云端文件、目录与 `VideoItem`。

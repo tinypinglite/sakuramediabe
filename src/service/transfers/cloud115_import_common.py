@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
-from src.lib.cloud115 import Cloud115Client, Cloud115RangeReader, DirEntry
+from src.lib.cloud115 import Cloud115Client, Cloud115RangeReader, DirEntry, DirMeta
 from src.service.cloud115 import find_or_create_subdir
 from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeResult,
@@ -202,67 +202,75 @@ async def list_cloud115_entity_target_files(
     return by_sha1
 
 
-async def build_cloud115_dir_map(
-    client: Cloud115Client, source_cid: str
-) -> Dict[str, tuple[str, str]]:
-    """BFS 枚举源目录树，返回 cid -> (名称, 父 cid)。"""
-    dir_map: Dict[str, tuple[str, str]] = {}
-    queue = [source_cid]
-    while queue:
-        cid = queue.pop(0)
-        offset = 0
-        while True:
-            entries, total = await client.list_dir(cid, offset=offset, limit=1150)
-            for entry in entries:
-                if entry.is_dir:
-                    dir_map[entry.entry_id] = (entry.name, cid)
-                    queue.append(entry.entry_id)
-            offset += len(entries)
-            if not entries or offset >= total:
-                break
-    return dir_map
+def _rel_parts_from_dir_meta(meta: DirMeta, source_cid: str) -> tuple[str, ...]:
+    """按面包屑链还原目录相对 source_cid 的名字链（不含 source 自身）。
+
+    ``DirMeta.paths`` 是从 115 根目录到该目录**父级**的完整面包屑，因此一次 dir_info
+    就能还原整条链，不需要逐级回溯。
+    """
+    names: List[str] = []
+    seen_source = False
+    for crumb in meta.paths:
+        if seen_source:
+            names.append(crumb.name)
+        elif crumb.file_id == source_cid:
+            seen_source = True
+    if not seen_source:
+        # 目录不在源子树内说明调用方传错了 cid；不静默兜底成半截路径，
+        # 否则会把库外路径写进失败清单、污染按相对路径重导的匹配。
+        raise ValueError(f"cloud115 dir {meta.cid} is not inside source {source_cid}")
+    names.append(meta.name)
+    return tuple(names)
 
 
-async def collect_cloud115_source_tree(
+async def collect_cloud115_source_files(
     client: Cloud115Client,
     source_cid: str,
-) -> tuple[Dict[str, tuple[str, str]], List[DirEntry]]:
-    """一次 BFS 同时收集目录映射与文件，避免随后再次递归枚举同一来源。"""
-    dir_map: Dict[str, tuple[str, str]] = {}
-    files: List[DirEntry] = []
-    queue = [source_cid]
-    while queue:
-        cid = queue.pop(0)
-        offset = 0
-        while True:
-            entries, total = await client.list_dir(cid, offset=offset, limit=1150)
-            for entry in entries:
-                if entry.is_dir:
-                    dir_map[entry.entry_id] = (entry.name, cid)
-                    queue.append(entry.entry_id)
-                else:
-                    files.append(entry)
-            offset += len(entries)
-            if not entries or offset >= total:
-                break
-    return dir_map, files
+    *,
+    needs_rel_path: Callable[[DirEntry], bool],
+) -> tuple[List[DirEntry], Dict[str, tuple[str, ...]]]:
+    """枚举源目录树下的全部文件，并**只**为需要的文件解析父目录相对链。
 
+    返回 ``(files, {parent_cid: 相对 source_cid 的目录名链})``。
 
-def cloud115_rel_dir_parts(
-    parent_cid: str,
-    dir_map: Dict[str, tuple[str, str]],
-    source_cid: str,
-) -> tuple[str, ...]:
-    parts: List[str] = []
-    current = parent_cid
-    while current != source_cid:
-        mapped = dir_map.get(current)
-        if mapped is None:
+    请求构成：
+      ``ceil(文件数/1150)``       —— 递归模式由服务端展开整棵子树，与目录层数无关
+    + ``ceil(直接子目录数/1150)`` —— 仅当存在非直属父目录时才发
+    + 深层父目录数               —— 逐个 dir_info
+
+    与"目录总数"解耦是关键：空目录、以及不含目标文件的目录一次都不会被访问。
+    按整个下载缓冲区导入时，历史任务目录只增不减，旧的逐目录 BFS 成本正来自这里
+    （实测 158+ 个残留目录 → 200~400 次 list_dir，连续打满即触发 WAF 405）。
+    """
+    files: List[DirEntry] = [
+        entry async for entry in client.iter_files_recursive(source_cid)
+    ]
+    rel_dirs: Dict[str, tuple[str, ...]] = {source_cid: ()}
+    pending = {
+        entry.parent_id
+        for entry in files
+        if entry.parent_id and entry.parent_id != source_cid and needs_rel_path(entry)
+    }
+    if not pending:
+        return files, rel_dirs
+
+    # 先一层列举：下载缓冲区是 <源>/<任务目录>/<文件> 的扁平结构，通常一次请求即可全覆盖。
+    offset = 0
+    while pending:
+        entries, total = await client.list_dir(source_cid, offset=offset, limit=1150)
+        for entry in entries:
+            if entry.is_dir and entry.entry_id in pending:
+                rel_dirs[entry.entry_id] = (entry.name,)
+                pending.discard(entry.entry_id)
+        offset += len(entries)
+        if not entries or offset >= total:
             break
-        name, parent = mapped
-        parts.append(name)
-        current = parent
-    return tuple(reversed(parts))
+
+    # 仅剩的深层目录逐个补查。
+    for cid in sorted(pending):
+        meta = await client.dir_info(cid)
+        rel_dirs[cid] = _rel_parts_from_dir_meta(meta, source_cid)
+    return files, rel_dirs
 
 
 async def list_cloud115_target_files(

@@ -359,6 +359,13 @@ class Downloads(BaseModel):
     # 批量秒传对 115 webapi 的全局请求限速：相邻请求最小间隔（秒）。webapi 前置阿里云 WAF
     # 约 1-2 r/s 阈值，默认 1.0（=1 r/s，对标 AList 115 驱动 limit_rate）。0 关闭限速。
     cloud115_rapid_upload_min_interval_seconds: float = Field(default=1.0, ge=0.0, le=10.0)
+    # 批量链路（导入 / 秒传 / 巡检）的累计请求节奏：每打满 N 个 webapi 请求就长休一次。
+    # 匀速的 min_interval 管得住瞬时速率，管不住"一个任务累计打几百个请求"——实测连续
+    # 200 余次 GET /files（1 r/s）即触发 WAF 405。只对 webapi.115.com 计数，取直链/离线/
+    # 探活不在风控域。0 = 关闭批次休息。交互路径（播放、GUI 浏览）永不启用，避免用户干等。
+    cloud115_batch_rest_every_requests: int = Field(default=30, ge=0)
+    cloud115_batch_rest_min_seconds: float = Field(default=10.0, ge=0.0, le=300.0)
+    cloud115_batch_rest_max_seconds: float = Field(default=30.0, ge=0.0, le=300.0)
     # qBittorrent 任务停在 stalledDL（下载中无源），且 qB 报告的 last_activity（最后一次收发
     # chunk 的时刻）已早于该时长，即判定为死种（对账时落成 download_state=stalled_dead）：
     # 释放该影片重新参与订阅资源查询，并把这个 info_hash 加入该影片的选种黑名单。

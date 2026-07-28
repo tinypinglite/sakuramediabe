@@ -67,6 +67,7 @@
 - `transfer_mode` 只接受 `cleanup-source`（默认）/ `copy`；旧 `move` 兼容为 `cleanup-source`，其它值返回 `422 invalid_transfer_mode`。
 - **服务端防御校验**（前端目录选择器已按浏览端点返回的 `root_cid` 禁选，这里兜底）：源目录不能是库管理目录、不能在其内部（`422 cloud115_source_inside_library`）、也不能包含它——含选中网盘根目录的情形（`422 cloud115_source_contains_library`）。
 - 115 导入不设置库级 `mutex_key`；每个作业各自创建 Activity 并进入后台线程池，同一媒体库允许多个导入或秒传作业并行入队。
+- **源目录扫描的请求构成**（`collect_cloud115_source_files`）：一次 `iter_files_recursive` 由服务端展开整棵子树只返文件（`ceil(文件数/1150)` 次，与目录层数无关），随后**只为视频文件**解析父目录名——先对源目录做**一层** `list_dir` 覆盖直属子目录，仅剩的深层目录才逐个 `dir_info`（其面包屑一次即可还原完整相对链）。因此请求数与**源目录树的目录总数解耦**：不含视频的目录（例如已导入完成、只剩空壳的历史离线任务目录）一次都不会被访问。
 - 导入管线前半段两模式共用：递归枚举源目录 → 按「父目录名/文件名」识别番号 → 按 115 全量 sha1 对账。之后按模式分岔：
   - `copy`：云端复制到 `sakuramedia/jav/` → re-list 目标目录拿新 fid/pickcode → 逐文件改名并按 fid 查询确认 → 探测技术元数据 → 事务登记 Media → 下载并登记字幕。源文件始终保留；有效文件探测失败时整组不入库，重试按 SHA1 复用已经复制或改名的目标文件。
   - `cleanup-source`：用**源 pickcode** 探测技术元数据 → 下载并登记字幕 → 建版本目录 → 事务登记 Media（locator 直接用源 fid/pickcode）→ `files/move` 移动进库 → 逐文件改名并按 fid 确认 → 删除远端源字幕。依赖源文件的步骤全部前置，探测或字幕失败时源原地未动、整组可完整重导。
@@ -78,6 +79,8 @@
 - **幂等**：
   - `copy` 中断重跑以「目标目录 sha1 对账」收敛——已搬的跳过搬运、没改名的补改名、没登记的补登记；复制产生新 fid/pickcode，登记一律以复制后 re-list 目标目录的条目为准。
   - `cleanup-source` 不读目标目录：移动保持 fid/pickcode 不变，已搬走的文件下一轮扫不到，"已登记但没搬走"的源会被扫到并按 `locator.fid == 源 fid` 认出来，补完搬运即收敛。库内已有同 sha1 且 `locator.fid` 不同才判定为多余副本，只删源、不再搬运。
+- **自动离线导入完成后删除来源任务目录**（连同 nfo / 封面 / 种子 / 判定过小的样本等非视频残留，进 115 回收站）。三重前提缺一不可：来源是软件自建的下载缓冲区（`managed_download_source`，用户手动选的目录一律不动）、本次**零失败项**（番号识别不出的视频计入失败，因此不会误删还需重导的内容）、来源不是缓冲区根目录本身。删除失败只记 `source_delete_failed` 告警，不把作业翻成失败——文件已入库。
+- **批量节奏控制**：导入作业的 SDK client 以 `batch_pacing=True` 创建，每累计 `cloud115_batch_rest_every_requests`（默认 30）个 **webapi 域**请求就额外随机长休 10~30 秒；取直链（proapi）、离线（lixian）、CDN Range 读不计数。休息期间通过进度事件 `pace_waiting` 显式透出，避免与卡死混淆。播放取直链、GUI 浏览目录等交互路径不启用。
 - cookies 失效返回 `422 cloud115_cookies_invalid`（引导重新扫码）；115 限流返回 `429 cloud115_rate_limited`；其它上游错误 `502 cloud115_upstream_error`。
 
 ### 查询导入作业

@@ -157,7 +157,7 @@ class FilesCapability(Cloud115Capability):
         self,
         cid: str,
         *,
-        page_size: int = 1000,
+        page_size: int = _LIST_DIR_MAX_LIMIT,
     ):
         """递归枚举 cid 目录树下的**全部文件**（不含目录条目），逐条 yield DirEntry。
 

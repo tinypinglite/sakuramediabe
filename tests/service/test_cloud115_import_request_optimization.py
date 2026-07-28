@@ -7,7 +7,7 @@ from src.lib.cloud115 import DirBreadcrumb, DirEntry, DirMeta
 from src.service.transfers.cloud115_import_common import (
     Cloud115TargetDirCache,
     Cloud115TargetDirResolver,
-    collect_cloud115_source_tree,
+    collect_cloud115_source_files,
 )
 from src.service.transfers.cloud115_import_service import (
     Cloud115ImportService,
@@ -46,33 +46,133 @@ def _entry(
     )
 
 
-def test_collect_source_tree_lists_each_directory_once():
-    class FakeClient:
-        def __init__(self):
-            self.calls = []
+class _FakeSourceTreeClient:
+    """按目录树建模的假 client：递归枚举一次性返回全部文件，list_dir 只列一层。"""
 
-        async def list_dir(self, cid, *, offset, limit):
-            self.calls.append((cid, offset, limit))
-            entries = {
-                "source": [
-                    _entry("sub", "source", "CD1", is_dir=True),
-                    _entry("file-1", "source", "ABC-001.mp4", is_dir=False),
-                ],
-                "sub": [
-                    _entry("file-2", "sub", "ABC-001-CD1.mp4", is_dir=False),
-                ],
-            }[cid]
-            return entries, len(entries)
+    def __init__(self, *, files, children_by_dir, breadcrumbs=None):
+        self._files = files
+        self._children_by_dir = children_by_dir
+        self._breadcrumbs = breadcrumbs or {}
+        self.recursive_calls = []
+        self.list_calls = []
+        self.dir_info_calls = []
 
-    client = FakeClient()
-    dir_map, files = asyncio.run(collect_cloud115_source_tree(client, "source"))
+    async def iter_files_recursive(self, cid, **kwargs):
+        self.recursive_calls.append(cid)
+        for entry in self._files:
+            yield entry
 
-    assert client.calls == [
-        ("source", 0, 1150),
-        ("sub", 0, 1150),
+    async def list_dir(self, cid, *, offset, limit):
+        self.list_calls.append((cid, offset, limit))
+        entries = self._children_by_dir.get(cid, [])
+        return entries, len(entries)
+
+    async def dir_info(self, cid):
+        self.dir_info_calls.append(cid)
+        name, crumbs = self._breadcrumbs[cid]
+        return DirMeta(
+            cid=cid,
+            name=name,
+            pickcode="",
+            parent_id=crumbs[-1].file_id if crumbs else "",
+            file_count=0,
+            folder_count=0,
+            play_long_seconds=0,
+            mtime=0,
+            ctime=0,
+            paths=tuple(crumbs),
+        )
+
+
+def _is_video(entry):
+    return entry.name.endswith(".mp4")
+
+
+def test_source_scan_resolves_only_direct_parents_without_touching_empty_dirs():
+    """扁平缓冲区：一次递归 + 一次层列举即可，空目录一次都不碰。"""
+    files = [
+        _entry("file-1", "task-a", "ABC-001.mp4", is_dir=False),
+        _entry("file-2", "task-b", "ABC-002.mp4", is_dir=False),
     ]
-    assert dir_map == {"sub": ("CD1", "source")}
-    assert [item.entry_id for item in files] == ["file-1", "file-2"]
+    children = {
+        "source": [
+            _entry("task-a", "source", "ABC-001", is_dir=True),
+            _entry("task-b", "source", "ABC-002", is_dir=True),
+            # 历史残留空目录：不含视频，绝不该被访问。
+            _entry("empty-1", "source", "old-task-1", is_dir=True),
+            _entry("empty-2", "source", "old-task-2", is_dir=True),
+        ]
+    }
+    client = _FakeSourceTreeClient(files=files, children_by_dir=children)
+
+    entries, rel_dirs = asyncio.run(
+        collect_cloud115_source_files(client, "source", needs_rel_path=_is_video)
+    )
+
+    assert client.recursive_calls == ["source"]
+    assert client.list_calls == [("source", 0, 1150)]
+    # 关键：空目录不产生任何 dir_info 请求，成本不随历史任务目录数增长。
+    assert client.dir_info_calls == []
+    assert [item.entry_id for item in entries] == ["file-1", "file-2"]
+    assert rel_dirs["task-a"] == ("ABC-001",)
+    assert rel_dirs["task-b"] == ("ABC-002",)
+
+
+def test_source_scan_rebuilds_full_rel_path_for_nested_dirs():
+    """深层目录用一次 dir_info 的面包屑还原完整相对链，rel_path 与旧 BFS 逐字节一致。"""
+    files = [_entry("file-1", "deep", "ABC-001.mp4", is_dir=False)]
+    children = {"source": [_entry("mid", "source", "ABC-001", is_dir=True)]}
+    breadcrumbs = {
+        "deep": (
+            "CD1",
+            [
+                DirBreadcrumb(file_id="0", name="根目录"),
+                DirBreadcrumb(file_id="source", name="downloads"),
+                DirBreadcrumb(file_id="mid", name="ABC-001"),
+            ],
+        )
+    }
+    client = _FakeSourceTreeClient(
+        files=files, children_by_dir=children, breadcrumbs=breadcrumbs
+    )
+
+    _entries, rel_dirs = asyncio.run(
+        collect_cloud115_source_files(client, "source", needs_rel_path=_is_video)
+    )
+
+    assert client.dir_info_calls == ["deep"]
+    assert rel_dirs["deep"] == ("ABC-001", "CD1")
+
+
+def test_source_scan_skips_layer_listing_when_all_files_sit_in_source():
+    """文件全在源目录根下时，连层列举都不需要。"""
+    files = [_entry("file-1", "source", "ABC-001.mp4", is_dir=False)]
+    client = _FakeSourceTreeClient(files=files, children_by_dir={})
+
+    _entries, rel_dirs = asyncio.run(
+        collect_cloud115_source_files(client, "source", needs_rel_path=_is_video)
+    )
+
+    assert client.list_calls == []
+    assert client.dir_info_calls == []
+    assert rel_dirs["source"] == ()
+
+
+def test_source_scan_ignores_parents_of_non_target_files():
+    """字幕等非视频文件不触发父目录解析。"""
+    files = [
+        _entry("sub-1", "subs-only", "ABC-001.srt", is_dir=False),
+        _entry("file-1", "source", "ABC-001.mp4", is_dir=False),
+    ]
+    client = _FakeSourceTreeClient(files=files, children_by_dir={})
+
+    _entries, rel_dirs = asyncio.run(
+        collect_cloud115_source_files(client, "source", needs_rel_path=_is_video)
+    )
+
+    assert client.list_calls == []
+    assert client.dir_info_calls == []
+    assert "subs-only" not in rel_dirs
 
 
 def test_target_directory_cache_is_reused_across_import_jobs():
@@ -150,7 +250,7 @@ def test_managed_import_uses_one_source_metadata_request(monkeypatch):
     client = SimpleNamespace(dir_info=AsyncMock(return_value=source_meta))
 
     @asynccontextmanager
-    async def fake_client_for(_library):
+    async def fake_client_for(_library, **_kwargs):
         yield client
 
     monkeypatch.setattr(
@@ -194,7 +294,7 @@ def test_manual_trigger_reuses_source_metadata_from_safety_check(monkeypatch):
     safety_check = AsyncMock(return_value=source_meta)
 
     @asynccontextmanager
-    async def fake_client_for(_library):
+    async def fake_client_for(_library, **_kwargs):
         yield client
 
     monkeypatch.setattr(
@@ -247,7 +347,7 @@ def _run_import_groups(
     safety_check = AsyncMock(return_value=source_meta)
 
     @asynccontextmanager
-    async def fake_client_for(_library):
+    async def fake_client_for(_library, **_kwargs):
         yield client
 
     groups = [
@@ -922,24 +1022,19 @@ def test_video_source_collection_lists_each_directory_once(monkeypatch):
         AsyncMock(return_value=source_meta),
     )
 
-    class FakeClient:
-        def __init__(self):
-            self.list_calls = []
-            self.dir_info = AsyncMock()
-
-        async def list_dir(self, cid, *, offset, limit):
-            del offset, limit
-            self.list_calls.append(cid)
-            entries = {
-                "source": [
-                    _entry("sub", "source", "CD1", is_dir=True),
-                    _entry("f1", "source", "a.mp4", is_dir=False),
-                ],
-                "sub": [_entry("f2", "sub", "b.mp4", is_dir=False)],
-            }[cid]
-            return entries, len(entries)
-
-    client = FakeClient()
+    client = _FakeSourceTreeClient(
+        files=[
+            _entry("f1", "source", "a.mp4", is_dir=False),
+            _entry("f2", "sub", "b.mp4", is_dir=False),
+        ],
+        children_by_dir={
+            "source": [
+                _entry("sub", "source", "CD1", is_dir=True),
+                # 不含视频的残留目录：不该被解析。
+                _entry("stale", "source", "old-task", is_dir=True),
+            ]
+        },
+    )
     display, sources = asyncio.run(
         Cloud115VideoImportService()._collect_sources(
             client,
@@ -950,9 +1045,10 @@ def test_video_source_collection_lists_each_directory_once(monkeypatch):
         )
     )
 
-    # 目录树只 BFS 一遍，且安全校验取回的源目录元信息被复用，不再重复 dir_info。
-    assert client.list_calls == ["source", "sub"]
-    client.dir_info.assert_not_awaited()
+    # 一次整树递归 + 一次层列举即可；残留目录不产生 dir_info，且安全校验的元信息被复用。
+    assert client.recursive_calls == ["source"]
+    assert client.list_calls == [("source", 0, 1150)]
+    assert client.dir_info_calls == []
     assert sorted(item.rel_path for item in sources) == ["CD1/b.mp4", "a.mp4"]
     assert display == "parent/batch"
 
@@ -1008,7 +1104,7 @@ def _run_video_cleanup_source(monkeypatch, *, existing, source_fid="src-fid"):
     )
 
     @asynccontextmanager
-    async def fake_client_for(_library):
+    async def fake_client_for(_library, **_kwargs):
         yield SimpleNamespace()
 
     module = "src.service.videos.cloud115_video_import_service"
@@ -1077,3 +1173,90 @@ def test_video_new_content_goes_through_import_file(monkeypatch):
     service._import_file.assert_awaited_once()
     service._move_registered_source.assert_not_awaited()
     service._cleanup_source_only.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# 自动离线导入完成后清理来源任务目录
+# ---------------------------------------------------------------------------
+
+
+class _FakeDeleteClient:
+    def __init__(self, *, fail: bool = False):
+        self.deleted: list[list[str]] = []
+        self._fail = fail
+
+    async def delete_files(self, fids, *, pid=None):
+        del pid
+        if self._fail:
+            raise RuntimeError("boom")
+        self.deleted.append(list(fids))
+
+
+def _run_source_cleanup(
+    *,
+    managed: bool,
+    failed: int = 0,
+    source_cid: str = "task-dir",
+    download_root_cid: str | None = "downloads-root",
+    client: _FakeDeleteClient | None = None,
+):
+    client = client or _FakeDeleteClient()
+    failure_items: list[dict] = []
+    stats = {"imported": 1, "skipped": 0, "failed": failed}
+    config = {}
+    if download_root_cid is not None:
+        config["download_root_cid"] = download_root_cid
+    asyncio.run(
+        Cloud115ImportService._cleanup_managed_source_dir(
+            client,
+            config=config,
+            source_cid=source_cid,
+            managed_download_source=managed,
+            failure_items=failure_items,
+            stats=stats,
+        )
+    )
+    return client, failure_items, stats
+
+
+def test_managed_source_dir_is_deleted_after_clean_import():
+    client, failure_items, _stats = _run_source_cleanup(managed=True)
+    assert client.deleted == [["task-dir"]]
+    assert failure_items == []
+
+
+def test_manual_import_never_deletes_its_source_dir():
+    """手动选的目录不属于软件自管缓冲区，一律不动。"""
+    client, _failure_items, _stats = _run_source_cleanup(managed=False)
+    assert client.deleted == []
+
+
+def test_source_dir_is_kept_when_any_file_failed():
+    """有失败项说明还需重导（如番号识别不出），源必须留着。"""
+    client, _failure_items, _stats = _run_source_cleanup(managed=True, failed=1)
+    assert client.deleted == []
+
+
+def test_download_root_itself_is_never_deleted():
+    client, _failure_items, _stats = _run_source_cleanup(
+        managed=True, source_cid="downloads-root"
+    )
+    assert client.deleted == []
+
+
+def test_missing_download_root_config_blocks_deletion():
+    client, _failure_items, _stats = _run_source_cleanup(
+        managed=True, download_root_cid=None
+    )
+    assert client.deleted == []
+
+
+def test_source_dir_cleanup_failure_is_warning_only():
+    """文件已入库，清理失败不该把作业翻成失败。"""
+    _client, failure_items, stats = _run_source_cleanup(
+        managed=True, client=_FakeDeleteClient(fail=True)
+    )
+    assert stats["failed"] == 0
+    assert len(failure_items) == 1
+    assert failure_items[0]["kind"] == "warning"
+    assert failure_items[0]["reason"] == "source_delete_failed"

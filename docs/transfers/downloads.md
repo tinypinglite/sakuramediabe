@@ -357,7 +357,8 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 - 任务幂等键仍为 `(client_id, canonical_hash)`；115 单项提交必须返回唯一、非空且一致的 hash，否则返回 `cloud115_offline_submit_invalid_response` 或 `cloud115_offline_submit_hash_mismatch`
 - 115 侧已存在同 hash 任务时，以远端真实 `save_dir_id` 为准，并通过目录面包屑确认它属于当前媒体库的受管下载根；位于用户目录或无法可靠定位时返回 `409 cloud115_offline_task_exists_unmanaged`，不会接管或清理
 - 离线月配额耗尽返回 `409 cloud115_offline_quota_exceeded`，不自动降级到其它下载器
-- 广告/垃圾小文件不做下载前过滤：导入管线按扩展名白名单分拣，`cleanup-source` 只把命中白名单的视频移进库，缓冲目录内的残留由用户按需清理
+- 广告/垃圾小文件不做下载前过滤：导入管线按扩展名白名单分拣，`cleanup-source` 只把命中白名单的视频移进库
+- **导入成功后整个任务目录被删除**（进 115 回收站），连同 nfo / 封面 / 种子 / 判定过小的样本等非视频残留一并清掉。仅在本次导入零失败项时执行；有失败项则整个目录保留，供按相对路径重导。这条是必需的：`cleanup-source` 走 `move`，只搬文件不动目录，否则已完成的任务目录会在缓冲区永久累积，而按整个缓冲区导入时扫描要把这些空壳逐个列一遍（实测 158+ 个残留目录会让扫描连打 200 余次 `list_dir` 并触发 WAF 405）
 
 ### 周期对账（`cloud115_offline_sync`）
 
