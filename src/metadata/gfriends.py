@@ -36,7 +36,20 @@ class GfriendsActorImageResolver(MetadataRequestClient):
         self._index: Optional[Dict[str, str]] = None
         # 记录是否已尝试过懒加载 disk cache，避免 resolve() 反复读盘。
         self._disk_hydrated: bool = False
+        # 跨进程缓存失效：refresh job 跑在 APS 进程，本进程（如 API）靠比对
+        # disk cache 的 mtime 发现被重写，作废内存 index 后重新加载；
+        # 检查按 _DISK_RECHECK_INTERVAL_SECONDS 节流，平时 resolve() 零 stat 开销。
+        self._hydrated_mtime: Optional[float] = None
+        self._next_disk_check: float = 0.0
         self._lock = threading.Lock()
+
+    _DISK_RECHECK_INTERVAL_SECONDS = 60.0
+
+    def _cache_mtime(self) -> Optional[float]:
+        try:
+            return self.cache_path.stat().st_mtime
+        except OSError:
+            return None
 
     def resolve(self, candidate_names: List[str]) -> Optional[str]:
         """只读内存 index 查找头像 URL；永远不发网络请求、不阻塞。
@@ -99,6 +112,8 @@ class GfriendsActorImageResolver(MetadataRequestClient):
             bytes_written = self._write_cache_payload(payload)
             self._index = self._build_index(payload)
             self._disk_hydrated = True
+            # 同步记录刚写入的 mtime，避免下一次节流检查把自己刚建好的 index 误判为过期。
+            self._hydrated_mtime = self._cache_mtime()
             return {
                 "entries": len(self._index),
                 "source": "network",
@@ -107,6 +122,15 @@ class GfriendsActorImageResolver(MetadataRequestClient):
             }
 
     def _read_index_lazy(self) -> Dict[str, str]:
+        now_ts = time.time()
+        if now_ts >= self._next_disk_check:
+            with self._lock:
+                if now_ts >= self._next_disk_check:
+                    self._next_disk_check = now_ts + self._DISK_RECHECK_INTERVAL_SECONDS
+                    if self._cache_mtime() != self._hydrated_mtime:
+                        # disk cache 被其他进程重写（或首次出现）：作废内存 index 重新加载。
+                        self._index = None
+                        self._disk_hydrated = False
         if self._index is not None:
             return self._index
         if self._disk_hydrated:
@@ -121,6 +145,7 @@ class GfriendsActorImageResolver(MetadataRequestClient):
 
     def _hydrate_from_disk_locked(self) -> None:
         """在锁内调用：若内存 index 空且 disk cache 存在，尝试构建内存 index。"""
+        self._hydrated_mtime = self._cache_mtime()
         if self._index:
             self._disk_hydrated = True
             return

@@ -279,13 +279,20 @@ CLI 长任务（migrate-jav-layout / migrate-plot-layout / backfill-* / scan-med
 - [x] 迁移版本 `20260729_01_add_task_queue_and_attempts` + `test_migrations` / `test_initdb` 护栏
 - 验收：存量库迁移幂等；现有全部行为无变化（纯加列）；悬空 last_task_run_id 清零
 
-### Wave 1：队列内核
-- 队列领取/lease/回收、三条并发道、coalesce 入队、APScheduler 改 enqueue-only、
-  手动触发走队列、`gfriends` 进程间缓存失效
-- B/C/D 共 14 个 job 直迁（不动任务内部）
-- 切换时清空 `background_task_run` / `system_event` 历史（纯观测数据，FK 已 SET NULL
-  兜底），活动流从新内核起点开始，不做旧数据兼容展示
-- 验收：6 个分钟级 job 节奏不劣化；`test_aps` 更新；手动触发 409/排队语义符合 definition
+### Wave 1：队列内核 ✅
+- [x] `TaskQueueService`：入队（mutex 唯一索引实现 coalesce/冲突）、SKIP LOCKED 领取、
+      续租、租约过期回收（`src/service/system/task_queue_service.py`）
+- [x] `TaskWorker`：APS 进程内 4 领取线程 + housekeeper（续租/租约回收/遗留行
+      pid 判活回收，均联动业务恢复钩子）（`src/scheduler/worker.py`）
+- [x] APScheduler 改 enqueue-only；手动触发入队（202 语义），Web 进程不再起执行线程
+- [x] `recover_interrupted_task_runs` 默认排除队列托管行（scheduled_at 非空），
+      队列 pending 行跨进程重启存活
+- [x] 切换迁移 `20260729_02` 清空 run/event 历史（FK SET NULL 兜底）
+- [x] `gfriends` 跨进程缓存失效：resolve 侧按 mtime 节流检查，disk cache 被
+      APS 进程重写后 API 进程自动重新加载
+- 未做（后续波次）：import / rapid_upload 并发道（Wave 3 随导入族迁移启用）；
+  bootstrap 引导任务仍走进程内 date job（与队列 mutex 同名互斥，行为不冲突）
+- 验收：`test_aps` 新增 4 条接线护栏；队列语义 8 条护栏（tests/service/test_task_queue_service.py）
 
 ### Wave 2：A 形态任务迁 ResourceExecutor
 - 顺序：desc_sync → 两个翻译 → 互动同步 → 缩略图 → 订阅搜索（合并 key）→
