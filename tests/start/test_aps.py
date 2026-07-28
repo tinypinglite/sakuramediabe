@@ -969,3 +969,74 @@ def test_get_task_logger_recreates_sink_when_level_changes(monkeypatch, tmp_path
 
     assert events["add"] == [(1, "INFO"), (2, "ERROR")]
     assert events["remove"] == [1]
+
+
+# ---------------------------------------------------------------------------
+# 任务架构 Wave 1：APS 只入队、worker 领取执行（docs/development/task-architecture.md）
+# ---------------------------------------------------------------------------
+
+
+def test_build_scheduler_wires_cron_jobs_to_enqueue_only():
+    from src.start.aps import enqueue_scheduled_job
+
+    scheduler = build_scheduler()
+    jobs = scheduler.get_jobs()
+
+    assert {job.id for job in jobs} == {job_def.task_key for job_def in JOB_REGISTRY}
+    # cron 触发一律指向入队函数，绝不直接执行 service_factory。
+    assert all(job.func is enqueue_scheduled_job for job in jobs)
+
+
+def test_submit_manual_job_enqueues_pending_run_without_inline_execution(test_db):
+    from src.model import BackgroundTaskRun
+    from src.start.aps import submit_manual_job
+
+    job_def = JOB_REGISTRY_BY_KEY["movie_heat_update"]
+
+    task_run = submit_manual_job(job_def)
+
+    stored = BackgroundTaskRun.get_by_id(task_run.id)
+    assert stored.state == "pending"
+    assert stored.trigger_type == "manual"
+    # scheduled_at 非空 = 队列托管行，等待 worker 领取，Web 进程不再起线程执行。
+    assert stored.scheduled_at is not None
+    assert stored.mutex_key == f"aps:{job_def.task_key}"
+
+    with pytest.raises(TaskRunConflictError):
+        submit_manual_job(job_def)
+
+
+def test_task_worker_executes_claimed_queue_run(test_db, monkeypatch):
+    from src.model import BackgroundTaskRun
+    from src.scheduler.worker import TaskWorker
+    from src.service.system.task_queue_service import TaskQueueService
+
+    calls = []
+    job_def = JOB_REGISTRY_BY_KEY["movie_heat_update"]
+    fake_def = job_def.model_copy(
+        update={"service_factory": lambda _reporter: calls.append(1) or {"updated_count": 1}}
+    )
+    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, "movie_heat_update", fake_def)
+
+    queued = TaskQueueService.enqueue(task_key="movie_heat_update", trigger_type="scheduled")
+    claimed = TaskQueueService.claim_next()
+    TaskWorker()._execute(claimed)
+
+    assert calls == [1]
+    stored = BackgroundTaskRun.get_by_id(queued.id)
+    assert stored.state == "completed"
+    assert stored.mutex_key is None
+
+
+def test_task_worker_fails_run_with_unregistered_task_key(test_db):
+    from src.model import BackgroundTaskRun
+    from src.scheduler.worker import TaskWorker
+    from src.service.system.task_queue_service import TaskQueueService
+
+    queued = TaskQueueService.enqueue(task_key="ghost_task", trigger_type="scheduled")
+    claimed = TaskQueueService.claim_next()
+    TaskWorker()._execute(claimed)
+
+    stored = BackgroundTaskRun.get_by_id(queued.id)
+    assert stored.state == "failed"
+    assert stored.mutex_key is None

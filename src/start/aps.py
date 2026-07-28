@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 import time
 from typing import Any, Callable
 
@@ -8,7 +7,6 @@ from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
-from peewee import IntegrityError
 
 from src.common.database import ensure_database_ready
 from src.common.runtime_time import get_runtime_timezone, get_runtime_timezone_name
@@ -16,8 +14,10 @@ from src.config.config import Scheduler, settings
 from src.model import BackgroundTaskRun
 from src.scheduler.contracts import JobDefinition
 from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
+from src.scheduler.worker import TaskWorker
 from src.service.system import ActivityService
 from src.service.system.activity_service import TaskRunConflictError
+from src.service.system.task_queue_service import TaskQueueConflictError, TaskQueueService
 from src.start.recovery import recover_interrupted_tasks
 
 INTERRUPTED_TASK_RUN_ERROR_MESSAGE = "任务执行中断，等待重试"
@@ -123,58 +123,48 @@ def run_job(
     return result
 
 
-def submit_manual_job(job_def: JobDefinition) -> BackgroundTaskRun:
-    """在当前进程内同步预占 task_run 并启动后台线程执行，返回新建的 task_run。
+def enqueue_scheduled_job(job_def: JobDefinition) -> BackgroundTaskRun | None:
+    """APS cron 触发只入队不执行，由 worker 领取；执行位置与调度解耦。
 
+    同 task_key 已有排队/在跑的 run 时按 coalesce 丢弃本次触发（等价旧
+    ``coalesce=True, max_instances=1`` 的"积压即丢弃"语义）。
+    """
+    ensure_database_ready()
+    task_run = TaskQueueService.enqueue(
+        task_key=job_def.task_key,
+        trigger_type="scheduled",
+        conflict="skip",
+    )
+    if task_run is None:
+        logger.info(
+            "定时任务已在队列或执行中，本次触发按 coalesce 丢弃 task_key={}",
+            job_def.task_key,
+        )
+    return task_run
+
+
+def submit_manual_job(job_def: JobDefinition) -> BackgroundTaskRun:
+    """手动触发入队（202 语义），由 worker 进程领取执行，返回新建的 task_run。
+
+    不再在当前进程起 daemon 线程执行——Web 进程只写队列，长任务不占请求线程。
     冲突时抛 ``TaskRunConflictError``；调用方负责把它映射为 HTTP 响应。
     """
     ensure_database_ready()
-
-    func, _recovery_stats, _recovered_count = _prepare_recovery(job_def)
-
-    mutex_key = f"aps:{job_def.task_key}"
     try:
-        task_run = ActivityService.create_task_run(
+        return TaskQueueService.enqueue(
             task_key=job_def.task_key,
             trigger_type="manual",
-            mutex_key=mutex_key,
+            conflict="raise",
         )
-    except IntegrityError as exc:
-        blocking_task_run = ActivityService.find_task_run_by_mutex_key(mutex_key)
+    except TaskQueueConflictError as exc:
+        blocking_task_run = (
+            BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == exc.blocking_task_run_id)
+            if exc.blocking_task_run_id is not None
+            else None
+        )
         if blocking_task_run is None:
             raise
         raise TaskRunConflictError(blocking_task_run) from exc
-
-    task_run_id = task_run.id
-
-    def _runner() -> None:
-        try:
-            ensure_database_ready()
-            ActivityService.run_task(
-                task_key=job_def.task_key,
-                trigger_type="manual",
-                func=func,
-                task_run_id=task_run_id,
-                log_task_name=job_def.log_name,
-                mutex_key=mutex_key,
-                conflict_policy="raise",
-            )
-        except Exception:
-            # run_task 内部已经把异常写入 task_run；这里仅记录线程层日志，
-            # 避免未捕获异常打断 daemon 线程的清理路径。
-            logger.exception(
-                "Manual job thread crashed task_key={} task_run_id={}",
-                job_def.task_key,
-                task_run_id,
-            )
-
-    thread = threading.Thread(
-        target=_runner,
-        name=f"manual-job-{job_def.task_key}-{task_run_id}",
-        daemon=True,
-    )
-    thread.start()
-    return task_run
 
 
 def _schedule_bootstrap_job(
@@ -313,8 +303,10 @@ def build_scheduler() -> BlockingScheduler:
     )
     for job_def in JOB_REGISTRY:
         cron_expr = resolve_job_cron_expr(job_def)
+        # cron 触发只入队（enqueue_scheduled_job），实际执行在 TaskWorker；
+        # 入队秒级完成，APS 线程池不再被长任务占用。
         scheduler.add_job(
-            run_job,
+            enqueue_scheduled_job,
             args=[job_def],
             trigger=CronTrigger.from_crontab(cron_expr, timezone=timezone),
             id=job_def.task_key,
@@ -339,6 +331,9 @@ def aps():
     _bootstrap_first_playback_ranking(scheduler)
     _bootstrap_gfriends_filetree_refresh(scheduler)
     _bootstrap_movie_similarity_index(scheduler)
+    # 队列 worker 与调度器同进程：APS 只按 cron 入队，worker 领取执行。
+    worker = TaskWorker()
+    worker.start()
     cron_info = " ".join(
         f"{get_job_cron_setting(j)}={resolve_job_cron_expr(j)}"
         for j in JOB_REGISTRY

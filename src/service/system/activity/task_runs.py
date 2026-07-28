@@ -131,6 +131,8 @@ class TaskRunService:
         state: str = "pending",
         owner_pid: int | None = None,
         mutex_key: str | None = None,
+        params: dict[str, Any] | None = None,
+        scheduled_at: datetime | None = None,
     ) -> BackgroundTaskRun:
         normalized_trigger_type = normalize_allowed_filter(
             trigger_type,
@@ -150,6 +152,10 @@ class TaskRunService:
                 state=normalized_state or "pending",
                 started_at=now() if normalized_state == "running" else None,
                 result_summary={},
+                # scheduled_at 非空是"队列托管行"的判别标志（TaskQueueService 领取范围）；
+                # 进程内直跑的 task_run 保持为空，不会被 worker 抢走。
+                params=params,
+                scheduled_at=scheduled_at,
             )
             SystemEventService.publish(
                 event_type="task_run_created",
@@ -300,7 +306,10 @@ class TaskRunService:
         suppress_notification_task_keys: set[str] | None = None,
     ) -> list[BackgroundTaskRun]:
         query = BackgroundTaskRun.select().where(
-            BackgroundTaskRun.state.in_(("pending", "running"))
+            BackgroundTaskRun.state.in_(("pending", "running")),
+            # 队列托管行（scheduled_at 非空）不走 owner_pid 判活回收：pending 行本就该
+            # 跨进程重启存活，running 行由 TaskQueueService 的租约过期机制负责。
+            BackgroundTaskRun.scheduled_at.is_null(True),
         )
         if trigger_type is not None:
             query = query.where(BackgroundTaskRun.trigger_type == trigger_type)

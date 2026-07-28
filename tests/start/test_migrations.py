@@ -1369,3 +1369,40 @@ def test_run_pending_migrations_adds_task_queue_and_attempts(clean_db):
     }
     assert ("task_key", "state", "next_retry_at") in state_indexed_columns
     assert "20260729_01_add_task_queue_and_attempts" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_wipes_task_run_history(clean_db):
+    """任务架构 Wave 1 切换：清空 run/event 历史，外键引用自动置空（决策 #11）。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260729_02_wipe_task_run_history",),
+    )
+    clean_db.execute_sql(
+        "INSERT INTO background_task_run"
+        " (created_at, updated_at, task_key, task_name, trigger_type, state, result_summary)"
+        " VALUES (now(), now(), 'ranking_sync', '排行榜', 'scheduled', 'completed', '{}')"
+    )
+    run_id = clean_db.execute_sql("SELECT max(id) FROM background_task_run").fetchone()[0]
+    clean_db.execute_sql(
+        "INSERT INTO system_event (created_at, updated_at, event_type, payload, emitted_at)"
+        " VALUES (now(), now(), 'task_run_updated', '{}', now())"
+    )
+    library = MediaLibrary.create(
+        name="wipe-lib", backend="local", backend_config={"root_path": "/library"}
+    )
+    clean_db.execute_sql(
+        "INSERT INTO import_job (created_at, updated_at, source_path, library_id, task_run_id,"
+        " state, transfer_mode, imported_count, skipped_count, failed_count, failed_files)"
+        " VALUES (now(), now(), '/downloads/x', %s, %s, 'completed', 'copy', 1, 0, 0, '[]')",
+        (library.id, run_id),
+    )
+
+    run_pending_migrations(clean_db)
+
+    assert clean_db.execute_sql("SELECT count(*) FROM background_task_run").fetchone()[0] == 0
+    assert clean_db.execute_sql("SELECT count(*) FROM system_event").fetchone()[0] == 0
+    assert clean_db.execute_sql("SELECT task_run_id FROM import_job").fetchone()[0] is None
+    assert "20260729_02_wipe_task_run_history" in _schema_migration_names(clean_db)
