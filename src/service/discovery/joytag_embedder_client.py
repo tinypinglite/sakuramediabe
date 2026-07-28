@@ -199,6 +199,9 @@ class JoyTagEmbedderClient:
         if isinstance(result, JoyTagEmbeddingItemError):
             if result.error_code in {"invalid_image", "empty_image"}:
                 raise ValueError(result.error_message)
+            # 向量退化是远端推理故障而非调用方送错图，按 502 上抛，不要污染成 400。
+            if result.error_code == "degenerate_vector":
+                raise JoyTagInferenceUpstreamError(result.error_message)
             raise JoyTagInferenceClientError(400, result.error_code, result.error_message)
         return result
 

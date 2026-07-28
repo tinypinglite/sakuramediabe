@@ -2,7 +2,11 @@ from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 
-from joytag_infer.runtime import JoyTagOnnxRuntime
+from joytag_infer.runtime import (
+    DegenerateVectorError,
+    InvalidImageError,
+    JoyTagOnnxRuntime,
+)
 from joytag_infer.schema import (
     EmbeddingBatchResource,
     EmbeddingItemResource,
@@ -94,16 +98,10 @@ def create_app(
 
         if valid_payloads:
             try:
-                vectors = infer_runtime.embed_image_batch(valid_payloads)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error_code": "invalid_image",
-                        "message": str(exc),
-                    },
-                ) from exc
+                outcomes = infer_runtime.embed_image_batch(valid_payloads)
             except Exception as exc:
+                # 能逃到这里的只剩整批级故障（推理引擎报错、输出形状不符）；
+                # 单图问题已在 runtime 内降级成逐项结果，不会再连坐整批。
                 raise HTTPException(
                     status_code=500,
                     detail={
@@ -111,7 +109,7 @@ def create_app(
                         "message": str(exc),
                     },
                 ) from exc
-            if len(vectors) != len(valid_indexes):
+            if len(outcomes) != len(valid_indexes):
                 raise HTTPException(
                     status_code=500,
                     detail={
@@ -119,11 +117,28 @@ def create_app(
                         "message": "Inference batch result count mismatch",
                     },
                 )
-            for index, vector in zip(valid_indexes, vectors):
+            for index, outcome in zip(valid_indexes, outcomes):
+                if isinstance(outcome, InvalidImageError):
+                    items[index] = EmbeddingItemResource(
+                        index=index,
+                        ok=False,
+                        error_code="invalid_image",
+                        error_message=str(outcome),
+                    )
+                    continue
+                # 向量退化是服务端推理故障，与"图片非法"分开报，避免排查时被误导。
+                if isinstance(outcome, DegenerateVectorError):
+                    items[index] = EmbeddingItemResource(
+                        index=index,
+                        ok=False,
+                        error_code="degenerate_vector",
+                        error_message=str(outcome),
+                    )
+                    continue
                 items[index] = EmbeddingItemResource(
                     index=index,
                     ok=True,
-                    vector=[float(value) for value in vector],
+                    vector=[float(value) for value in outcome],
                     metadata={
                         "provider": "joytag",
                         "backend": infer_runtime.backend,

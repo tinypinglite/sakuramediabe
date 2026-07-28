@@ -35,14 +35,51 @@ def _bicubic_resample():
     return getattr(Image, "Resampling", Image).BICUBIC
 
 
+class InvalidImageError(ValueError):
+    """输入图片无法解码，属于调用方送进来的数据问题。"""
+
+
+class DegenerateVectorError(ValueError):
+    """模型输出无法归一化（含 NaN/inf 或范数为零），属于服务端推理故障。"""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+
+
 def _l2_normalize_vector(vector: np.ndarray) -> np.ndarray:
     arr = np.asarray(vector, dtype=np.float32).reshape(-1)
     if arr.size == 0:
-        raise ValueError("vector is empty")
+        raise DegenerateVectorError("empty_vector", "degenerate embedding: reason=empty_vector dim=0")
+    nan_count = int(np.count_nonzero(np.isnan(arr)))
+    inf_count = int(np.count_nonzero(np.isinf(arr)))
+    # 统计量只在有限元素上算：只要有一个 NaN，min/max/mean 会全部变成 NaN，日志就失去诊断价值。
+    abs_finite = np.abs(arr[np.isfinite(arr)])
+    abs_max = float(abs_finite.max()) if abs_finite.size else 0.0
+    # 均值走 float64 累加：元素量级本就逼近 float32 上限时，float32 求和会把统计量自己烧成 inf。
+    abs_mean = float(abs_finite.mean(dtype=np.float64)) if abs_finite.size else 0.0
     norm = float(np.linalg.norm(arr))
-    if not np.isfinite(norm) or norm <= 0:
-        raise ValueError("vector norm must be a positive finite number")
-    return arr / norm
+    # 四种退化的排查方向完全不同，必须分开报：
+    #   nan/inf        -> 模型内部数值故障（kernel、精度、输入分布）
+    #   norm_overflow  -> 元素本身有限，但平方和在 float32 下溢出，说明激活量级已经失控
+    #   zero_vector    -> 模型确实输出了全零，跟数值溢出无关
+    if nan_count:
+        reason = "nan"
+    elif inf_count:
+        reason = "inf"
+    elif not np.isfinite(norm):
+        reason = "norm_overflow"
+    elif norm <= 0.0:
+        reason = "zero_vector"
+    else:
+        return arr / norm
+    raise DegenerateVectorError(
+        reason,
+        f"degenerate embedding: reason={reason} dim={arr.size} "
+        f"nan_count={nan_count} inf_count={inf_count} "
+        f"finite_abs_max={abs_max:.6g} finite_abs_mean={abs_mean:.6g} norm={norm:.6g}",
+    )
 
 
 class JoyTagOnnxRuntime:
@@ -359,37 +396,91 @@ class JoyTagOnnxRuntime:
         try:
             image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         except (UnidentifiedImageError, OSError, ValueError) as exc:
-            raise ValueError(f"Invalid image bytes: {exc}") from exc
+            raise InvalidImageError(f"Invalid image bytes: {exc}") from exc
         image = image.resize((image_size, image_size), _bicubic_resample())
         arr = np.asarray(image, dtype=np.float32) / 255.0
         arr = np.transpose(arr, (2, 0, 1))
         return np.expand_dims(arr, axis=0)
 
     def embed_image_bytes(self, image_bytes: bytes) -> list[float]:
-        results = self.embed_image_batch([image_bytes])
-        return results[0]
+        outcome = self.embed_image_batch([image_bytes])[0]
+        # 单图入口（含启动探针）保持严格失败语义，不把异常当结果往上传。
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
-    def embed_image_batch(self, image_bytes_list: list[bytes]) -> list[list[float]]:
+    def embed_image_batch(self, image_bytes_list: list[bytes]) -> list[list[float] | ValueError]:
+        """逐项返回结果：成功是向量，失败是对应的异常对象。
+
+        单张图的解码失败或输出退化只影响它自己，不再连坐同批其他图片——
+        上游索引任务据此把坏图标记 FAILED 并继续，而不是整个任务中止。
+        """
         if not image_bytes_list:
             return []
-        inputs = [
-            self._preprocess_image_bytes(image_bytes, image_size=self.image_size)
-            for image_bytes in image_bytes_list
-        ]
+        batch_size = len(image_bytes_list)
+        outcomes: list[Any] = [None] * batch_size
+        inputs: list[np.ndarray] = []
+        valid_positions: list[int] = []
+        for position, image_bytes in enumerate(image_bytes_list):
+            try:
+                inputs.append(self._preprocess_image_bytes(image_bytes, image_size=self.image_size))
+            except InvalidImageError as exc:
+                _logger.warning(
+                    "JoyTag image decode failed batch_index=%d batch_size=%d detail=%s",
+                    position,
+                    batch_size,
+                    exc,
+                )
+                outcomes[position] = exc
+                continue
+            valid_positions.append(position)
+        if not valid_positions:
+            return outcomes
+
         batch = np.concatenate(inputs, axis=0).astype(np.float32, copy=False)
+        started_at = time.perf_counter()
         with self._infer_lock:
             vector_array = self._run_inference(batch)
+        infer_ms = int((time.perf_counter() - started_at) * 1000)
+        # 输出形状不符属于模型/配置级故障，不是单张图的问题，整批失败才是正确语义。
         if vector_array.ndim != 2:
             raise RuntimeError(f"Unexpected JoyTag output rank: {vector_array.shape}")
+        if vector_array.shape[0] != len(valid_positions):
+            raise RuntimeError(
+                f"JoyTag output batch mismatch: expected={len(valid_positions)}, actual={vector_array.shape[0]}"
+            )
         if vector_array.shape[1] != self.vector_size:
             raise RuntimeError(
                 f"JoyTag vector size mismatch: expected={self.vector_size}, actual={vector_array.shape[1]}"
             )
+        _logger.info(
+            "JoyTag inference done batch_size=%d infer_ms=%d device=%s",
+            len(valid_positions),
+            infer_ms,
+            self.device,
+        )
         # 服务端统一 L2 归一化，与向量库口径保持一致。
-        return [
-            _l2_normalize_vector(vector).astype(float).tolist()
-            for vector in vector_array
-        ]
+        for offset, position in enumerate(valid_positions):
+            try:
+                outcomes[position] = _l2_normalize_vector(vector_array[offset]).astype(float).tolist()
+            except DegenerateVectorError as exc:
+                # 连输入侧统计一起打：input_std 接近 0 说明这是张纯色/近纯色图，
+                # 退化源在输入而非 GPU 数值故障，两种结论的后续动作完全不同。
+                sample = batch[offset]
+                _logger.warning(
+                    "JoyTag embedding degenerate batch_index=%d batch_size=%d device=%s %s "
+                    "input_min=%.4f input_max=%.4f input_mean=%.4f input_std=%.4f",
+                    position,
+                    batch_size,
+                    self.device,
+                    exc,
+                    float(sample.min()),
+                    float(sample.max()),
+                    float(sample.mean()),
+                    float(sample.std()),
+                )
+                outcomes[position] = exc
+        return outcomes
 
     def _run_inference(self, batch: np.ndarray) -> np.ndarray:
         if self._ov_infer_request is not None:

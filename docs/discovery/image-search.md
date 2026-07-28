@@ -31,6 +31,8 @@ API 本身只负责“上传查询图 -> 检索已索引缩略图”。要让搜
 - 如果 Qdrant collection 尚未建立，或还没有任何已索引缩略图，创建搜索会话仍然会成功，但 `items` 会是空数组
 - 删除媒体时，服务会 best-effort 删除对应 `media_id` 的向量记录
 - 当前索引任务只扫描 `joytag_index_status = PENDING` 的缩略图
+- 推理失败按单张缩略图隔离：某一张解码失败（`invalid_image`）或输出向量退化（`degenerate_vector`）时，只有该缩略图被标记 `FAILED`，同批其余缩略图和整个索引任务继续执行；只有推理服务整体故障（`inference_failed`、连接超时等）才会中止任务并让未处理缩略图保持 `PENDING`
+- `degenerate_vector` 表示模型输出含 NaN/inf 或范数为零，属于推理侧故障而非图片非法；joytag-infer 日志会打出 `reason`（`nan` / `inf` / `norm_overflow` / `zero_vector`）、输出统计与该图的输入像素统计，用于定位是输入退化还是推理引擎数值问题
 
 容器部署与 JoyTag 模型准备可参考 [../deployment/docker.md](../deployment/docker.md)。
 
