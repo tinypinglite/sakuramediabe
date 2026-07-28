@@ -300,9 +300,8 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="translate-movie-desc",
         cli_help="执行一次影片简介翻译",
         cron_setting="movie_desc_translation_cron",
-        service_factory=lambda reporter: MovieDescTranslationService().run(
-            progress_callback=reporter.progress_callback,
-        ),
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
+        service_factory=lambda reporter: MovieDescTranslationService().run(reporter=reporter),
         business_recovery=lambda: {
             "recovered_running_movies": MovieDescTranslationService.recover_interrupted_running_movies(
                 error_message=MovieDescTranslationService.INTERRUPTED_TRANSLATION_ERROR_MESSAGE,
@@ -324,9 +323,8 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="translate-movie-title",
         cli_help="执行一次影片标题翻译",
         cron_setting="movie_title_translation_cron",
-        service_factory=lambda reporter: MovieTitleTranslationService().run(
-            progress_callback=reporter.progress_callback,
-        ),
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
+        service_factory=lambda reporter: MovieTitleTranslationService().run(reporter=reporter),
         business_recovery=lambda: {
             "recovered_running_movies": MovieTitleTranslationService.recover_interrupted_running_movies(
                 error_message=MovieTitleTranslationService.INTERRUPTED_TRANSLATION_ERROR_MESSAGE,

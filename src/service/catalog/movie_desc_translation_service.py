@@ -43,8 +43,18 @@ class MovieDescTranslationService(MovieFieldTranslationServiceBase):
                 },
             )
 
-        # 单影片手动翻译与批量任务共用同一套翻译链路与状态写入逻辑。
-        self._mark_translation_started(latest_movie)
+        # 单影片手动翻译与批量任务共用同一套翻译链路与 kernel 记账。
+        from src.service.system.activity_service import ActivityService
+        from src.service.system.resource_task_runner import ResourceTaskLedger
+
+        run_context = ActivityService.get_task_run_context()
+        attempt, record, _prior_state = ResourceTaskLedger.begin_attempt(
+            task_key=self.TASK_KEY,
+            resource_type="movie",
+            resource_id=latest_movie.id,
+            trigger_type=getattr(run_context, "trigger_type", None),
+            task_run_id=getattr(run_context, "task_run_id", None),
+        )
         try:
             system_prompt = self._load_prompt_or_abort()
             translated_text = self._translate_with_retry(
@@ -53,27 +63,27 @@ class MovieDescTranslationService(MovieFieldTranslationServiceBase):
                 source_text=latest_movie.desc,
             )
             normalized_translated_text = self._normalize_translated_text(translated_text)
-            self._mark_translation_succeeded(latest_movie, normalized_translated_text)
-            return {
-                "movie_id": latest_movie.id,
-                "movie_number": latest_movie.movie_number,
-                "updated_movies": 1,
-            }
-        except MovieDescTranslationTaskAbortError as exc:
-            # 单影片接口里不保留批处理专用的 pending 语义,直接记为本次失败。
-            self._mark_translation_failed(latest_movie, exc.message)
-            logger.warning(
-                "Movie desc translation failed movie_number={} detail={}",
-                latest_movie.movie_number,
-                exc.message,
-            )
-            raise
         except Exception as exc:
+            # 单影片接口没有"整轮"可中止:上游不可用与业务性失败一律按可重试失败记账。
             error_message = self._normalize_error_message(exc)
-            self._mark_translation_failed(latest_movie, error_message)
+            ResourceTaskLedger.finish_failure(
+                attempt,
+                record,
+                error_code=getattr(exc, "error_code", None) or "translation_failed",
+                error_message=error_message,
+                retryable=True,
+                policy=self.TRANSLATION_RETRY_POLICY,
+            )
             logger.warning(
                 "Movie desc translation failed movie_number={} detail={}",
                 latest_movie.movie_number,
                 error_message,
             )
             raise
+        self._apply_translation(latest_movie, normalized_translated_text)
+        ResourceTaskLedger.finish_success(attempt, record)
+        return {
+            "movie_id": latest_movie.id,
+            "movie_number": latest_movie.movie_number,
+            "updated_movies": 1,
+        }
