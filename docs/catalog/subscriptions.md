@@ -47,13 +47,34 @@
 
 ### 状态取值
 
-六项由服务端**一个** SQL CASE 表达式判定（`MovieSubscriptionService._status_expression()`），
+七项由服务端**一个** SQL CASE 表达式判定（`MovieSubscriptionService._status_expression()`），
 筛选、计数、列表展示共用它。因此各状态严格互斥，`/status-counts` 各项之和恒等于 `total`。
+
+⚠️ **`import_failed`（导入失败）与 `failed`（查询出错）是两回事**：前者是种子下完了、文件已经在
+盘上，卡在入库那一步；后者是索引器调用出错、压根还没找到资源。前端文案必须分别念作「导入失败」
+与「查询出错」，别都写成「失败」。
+
+`downloading` 与 `import_failed` 是对「有活跃下载任务」这一集合的**二分**——两者并集恒等于该集合，
+所以这次细分不改变任何影片的归属，只是把原来的一个桶一分为二。这条不变量必须守住：
+资源查询的调度闸门（`SubscribedMovieAutoDownloadService._collect_due_movies` 里的
+`~active_download_task_exists_expression()`）读的是同一个集合，两边脱节就会出现「页面说缺资源、
+调度说别搜」的自相矛盾。**导入失败的影片同样不会被重新查资源**——文件已经在盘上，该修的是导入
+而不是重下。
+
+二分的切口是「导入还在不在途」（`import_status=pending/running`），不是「导入有没有报失败」。
+因为导入终态不止 `failed`：整包只有小于阈值的样本文件时，扫描记 `skipped_count`、`failed_count`
+为 0，任务会落成 `import_status=completed` 却一个 `Media` 都没产出。按 `failed` 切会把这类
+「跑完了零产出」永远藏在「下载中」里。同理，一部片同时挂着一个导入失败的任务和一个还在下的任务时，
+按「还在途」切才会正确显示「下载中」——还有希望，不该报导入失败。
+
+「下完了正在等自动导入」仍归 `downloading`：那是秒级过渡态，用户对它的动作和真下载中一样（等着），
+不值得再切一个状态。
 
 | status | 含义 | 判定 |
 |---|---|---|
 | `imported` | 已入库 | 存在 `Media` |
-| `downloading` | 下载中 | 无 `Media`，存在活跃 `DownloadTask` |
+| `downloading` | 下载中 | 无 `Media`，存在活跃 `DownloadTask` 且其中有 `import_status=pending/running` 的 |
+| `import_failed` | 导入失败 | 无 `Media`，存在活跃 `DownloadTask` 但没有一个还在途（导入跑完了，库里没有） |
 | `exhausted` | 已放弃 | 老片查询次数用尽，需手动重置 |
 | `failed` | 查询出错 | 索引器调用失败，不消耗次数，下轮重试 |
 | `missing` | 缺资源 | 查过但没找到可用资源，下轮继续查 |
@@ -99,7 +120,8 @@ Query：
 {
   "total": 1200,
   "imported": 1050,
-  "downloading": 12,
+  "downloading": 9,
+  "import_failed": 3,
   "pending": 30,
   "missing": 95,
   "exhausted": 12,

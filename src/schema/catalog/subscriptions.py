@@ -16,16 +16,24 @@ from src.schema.common.base import SchemaModel
 class MovieSubscriptionStatus(str, Enum):
     """订阅影片的资源状态。
 
-    ALL 之外的六项由 ``MovieSubscriptionService._status_expression()`` 这**一个** SQL CASE
-    表达式判定，筛选 / 计数 / 列表展示共用它，所以枚举顺序即优先级、六项严格互斥、计数之和
+    ALL 之外的七项由 ``MovieSubscriptionService._status_expression()`` 这**一个** SQL CASE
+    表达式判定，筛选 / 计数 / 列表展示共用它，所以枚举顺序即优先级、七项严格互斥、计数之和
     恒等于订阅总数。
     """
 
     ALL = "all"
     # 已入库：本地已有 Media。订阅继续保留——订阅是长期意图，不因为下到了就自动解除。
     IMPORTED = "imported"
-    # 下载中：有活跃的下载任务（failed / abandoned / stalled_dead 的任务不算）。
+    # 下载中：有活跃下载任务（failed / abandoned / stalled_dead 的任务不算）且其导入还在途
+    # （import_status=pending/running）。"下完了正等自动导入"也归这里——那是秒级过渡态，用户
+    # 对它的动作和真下载中一样（等着），不值得再切一个状态出来。
     DOWNLOADING = "downloading"
+    # 导入失败：有活跃下载任务，但没有一个还在途——导入这一趟已经跑完，库里却没有 Media。
+    # 除了 import_status=failed，也包含"跑完了零产出"（如整包只有小于阈值的样本文件，扫描记
+    # skipped、任务落 completed）。文件已经在盘上，卡的是入库这一步，重下没有意义。
+    # **注意与下面的 FAILED 区分**：FAILED 是"索引器查询出错"，两者都叫 failed 但语义完全
+    # 不同，前端文案必须分别念作「导入失败」与「查询出错」。
+    IMPORT_FAILED = "import_failed"
     # 已放弃：老片查询次数用尽，不再自动查，需要用户手动重置。
     EXHAUSTED = "exhausted"
     # 查询出错：索引器调用失败，不消耗查询次数，下一轮会重试。
@@ -81,6 +89,7 @@ class MovieSubscriptionStatusCountsResource(SchemaModel):
     total: int = 0
     imported: int = 0
     downloading: int = 0
+    import_failed: int = 0
     pending: int = 0
     missing: int = 0
     exhausted: int = 0

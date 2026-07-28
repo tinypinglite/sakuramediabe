@@ -36,6 +36,10 @@ IMPORT_STATUS_DESCRIPTIONS: Dict[str, str] = {
     IMPORT_STATUS_SKIPPED: "已跳过：任务未触发导入",
 }
 ALLOWED_IMPORT_STATUSES = set(IMPORT_STATUS_DESCRIPTIONS)
+# 导入"还在途"的两个取值：等自动导入排队、或导入作业正在跑。其余取值（completed / failed /
+# skipped）都表示这一趟导入已经跑完、不会再自动推进。中断恢复链路（DownloadSyncService 与
+# Cloud115OfflineSyncService 的孤儿回收）把中断的任务重置回 pending，所以"在途"恒由这两个值表达。
+UNFINISHED_IMPORT_STATUSES = (IMPORT_STATUS_PENDING, IMPORT_STATUS_RUNNING)
 
 
 # ===== ImportJob.state：可视化导入作业的执行状态 =====

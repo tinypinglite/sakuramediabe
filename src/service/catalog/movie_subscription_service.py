@@ -33,6 +33,7 @@ from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.service.transfers.common import (
     active_download_task_exists_expression,
+    unfinished_import_download_task_exists_expression,
     download_task_dead_expression,
 )
 from src.service.transfers.subscribed_movie_search_state_service import (
@@ -69,16 +70,24 @@ class MovieSubscriptionService:
         的漂移风险（此前正是两份实现，靠注释约束一致）。
 
         互斥性由 CASE 的分支顺序天然保证，各状态计数之和恒等于订阅总数这一性质自动成立。
-        另外 CASE 是短路求值的：每行最多只会跑到两个 EXISTS 子查询，不会把六个分支的子查询
-        全部展开（此前 count_by_status 为六个状态各建一个 SUM(CASE)，每行 11 个相关子查询）。
+        另外 CASE 是短路求值的：每行最多只会跑到三个 EXISTS 子查询，不会把七个分支的子查询
+        全部展开（此前 count_by_status 为每个状态各建一个 SUM(CASE)，每行 11 个相关子查询）。
         """
         return Case(
             None,
             (
                 (media_exists_expression(), MovieSubscriptionStatus.IMPORTED.value),
+                # 下面两个分支把"有活跃下载任务"这一集合二分：先命中"导入还在途"的算下载中，
+                # 剩下的活跃任务就是"导入这趟已经跑完、库里却没有 Media"，即卡在入库。
+                # 顺序不能反：DOWNLOADING 是 IMPORT_FAILED 所在超集的真子集，放后面会被吞掉。
+                # 两者并集恒等于"有活跃任务"——这条不变量必须守住，搜索闸门读的是同一个集合。
+                (
+                    unfinished_import_download_task_exists_expression(),
+                    MovieSubscriptionStatus.DOWNLOADING.value,
+                ),
                 (
                     active_download_task_exists_expression(),
-                    MovieSubscriptionStatus.DOWNLOADING.value,
+                    MovieSubscriptionStatus.IMPORT_FAILED.value,
                 ),
                 (
                     ResourceTaskState.state == SubscribedMovieSearchStateService.STATE_EXHAUSTED,

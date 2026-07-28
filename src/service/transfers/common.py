@@ -21,7 +21,7 @@ from src.model import (
 )
 from src.model.enums import DownloadClientKind, MediaLibraryBackend
 # 导入状态取值统一收口到 media_import_status 模块；此处再导出，兼容历史引用路径。
-from src.common.media_import_status import ALLOWED_IMPORT_STATUSES
+from src.common.media_import_status import ALLOWED_IMPORT_STATUSES, UNFINISHED_IMPORT_STATUSES
 
 BTIH_HEX_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 BTIH_BASE32_PATTERN = re.compile(r"^[A-Z2-7a-z]{32}$")
@@ -204,6 +204,30 @@ def active_download_task_exists_expression():
         download_task_movie_match_expression() & ~download_task_dead_expression()
     )
     return fn.EXISTS(active_tasks)
+
+
+def unfinished_import_download_task_exists_expression():
+    """影片是否还有"导入没跑完"的活跃下载任务——即还在下载、或下完了正等/正在导入。
+
+    是 :func:`active_download_task_exists_expression` 的**真子集**——`~dead` 那一半必须逐字
+    一致。订阅状态据此二分活跃任务：命中本表达式的是 `downloading`（还在路上），剩下的活跃
+    任务是 `import_failed`（导入这一趟已经跑完，库里却没有 Media）。两个分支的并集必须恒等于
+    "有活跃任务"，否则会有影片掉进"缺资源"：页面说该重新找种，而搜索闸门（同样读活跃任务）
+    说别找，两边自相矛盾。
+
+    判"在途"而不是判"失败"，是因为导入终态不止 failed：整包只有小于阈值的样本文件时，扫描
+    记 skipped_count、failed_count 为 0，任务会落成 import_status=completed 却一个 Media 都
+    没产出（见 MediaImportService）。按 failed 切会把这类漏在"下载中"里永远藏着。
+
+    这类任务文件已经在盘上，该修的是导入而不是重下，因此它**不放开搜索闸门**——闸门仍读
+    active_download_task_exists_expression，本表达式只服务于展示层的状态细分。
+    """
+    tasks = DownloadTask.select(DownloadTask.id).where(
+        download_task_movie_match_expression()
+        & ~download_task_dead_expression()
+        & DownloadTask.import_status.in_(UNFINISHED_IMPORT_STATUSES)
+    )
+    return fn.EXISTS(tasks)
 
 
 def require_client(client_id: int) -> DownloadClient:
