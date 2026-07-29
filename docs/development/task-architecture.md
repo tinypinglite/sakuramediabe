@@ -1,6 +1,6 @@
 # 统一任务架构改造设计（Task Architecture）
 
-> 状态：**设计定稿，分波实施中**（当前进度见文末「波次与验收」）。
+> 状态：**Wave 0–4 已全部落地**（缓做项见各波次清单）。
 > 本文是任务体系重构的单一事实来源：触发、队列、进度、状态、重试、恢复、操作协议全部以此为准。
 > 实施期间旧机制与新内核并存，以各波次的迁移清单为界。
 
@@ -359,16 +359,34 @@ CLI 长任务（migrate-jav-layout / migrate-plot-layout / backfill-* / scan-med
 - 删除：ContextVar 链路、TEXT 子串匹配、各任务手写状态 SQL、5 个纯复位恢复钩子
 - 验收：重试节奏按 next_retry_at；翻译任务预算生效；单资源与批跑互斥
 
-### Wave 3：领域作业接协议
-- 导入族迁 import 道（`DownloadImportRunner` 退役）、115/秒传补 mutex、
-  `MovieTaskService` 退役、领域恢复钩子进 TaskDefinition、
-  订阅页 rerun 动作 + 重导继承 `download_task`
-- 验收：`import_failed` 订阅行可操作；重导后订阅关联不断链
+### Wave 3：领域作业接协议 ✅
+- [x] 队列专属任务注册表（`src/scheduler/queue_tasks.py`）+ worker 三并发道
+      （default 4 / import 2 / rapid_upload 2），导入族与秒传迁 worker 执行，
+      `DownloadImportRunner` / `MediaRapidUploadRunner` 线程池退役
+      （共用 futures id 空间的缺陷随之消灭）
+- [x] 导入触发两阶段发布（占 mutex→建 job→回填 params 置 scheduled_at）；
+      孤儿判活从 owner_pid + 进程内 futures 改为 task_run 队列语义；
+      cloud115 受管来源标记经 params 跨进程（target_dir_cache 不再跨队列，
+      执行侧按需重建，代价每批多一两个列目录请求）
+- [x] `MovieTaskService` 翻译/互动改 202 入队（影片粒度 mutex 连点去重）；
+      热度重算毫秒级纯 SQL 保持同步
+- [x] 重导/重跑继承 `download_task`；新增 `POST /import-jobs/{id}/rerun`
+      （completed 零产出的恢复通路）；订阅列表 import_failed 档返回最新导入作业
+      上下文（一次 IN 查询）
+- 缓做：领域恢复钩子并入 TaskDefinition（现 BUSINESS_RECOVERY_HANDLERS 字典
+  已被 worker/启动两侧共用，插件为 0，纯 plumbing 统一收益不足）
 
-### Wave 4：前端与协议收口
-- action 驱动渲染、`exhausted` 展示、资源级 SSE（按 run 聚合节流）、
-  插件契约 host_api_version 2（可声明 ResourceExecutor 与恢复钩子）、
-  前后端状态枚举一次对齐
+### Wave 4：前端与协议收口 ✅
+- [x] 统一 action 端点 `POST /system/resource-task-actions`
+      （retry_now / rerun / reset_retry_budget；部分成功逐条给原因；
+      入队带 only_ids 的可跟踪 run；action 级 mutex 连点 409）；
+      6 个 kernel 任务全部支持 only_ids 子集执行
+- [x] 每条记录返回 `available_actions`（状态矩阵计算），前端只按枚举渲染
+- [x] 前端（sakuramedia）：三态入计数/筛选/徽标；记录操作按钮 action 化；
+      订阅页 import_failed 补救出口（重导失败文件/整作业重跑）；
+      影片页翻译/互动 202 语义
+- 缓做：资源级 SSE 事件流（前端暂靠 task_run 事件 + 手动刷新；独立资源事件
+  的量级需先设计聚合节流）；插件契约 host_api_version 2（无插件在用）
 
 ## 10. 决策记录
 
