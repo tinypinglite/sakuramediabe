@@ -204,7 +204,9 @@ GET /system/resource-task-states?task_key=media_thumbnail_generation&state=faile
   连点会被 mutex 顶 `409`（单资源操作互斥到资源粒度，不同资源互不阻塞）
 - 影片页"翻译简介 / 同步互动数"按钮 = `rerun` + `resource_ids=[movie_id]`
   （旧 `/movies/{movie_number}/desc-translation`、`/movies/{movie_number}/interaction-sync`
-  端点已删除；从未记账的影片后端会自动播种状态行）
+  端点已删除；从未记账的影片后端会自动播种状态行）。`movie_id` 取影片详情 / 摘要响应的
+  `id` 字段——`MovieListItemResource` 已统一带出它，所以榜单、播放列表、推荐等任何影片卡片
+  列表都能直接发起操作
 - 订阅页"重新查询 / 重置全部已放弃" = `reset_retry_budget`（task_key
   `subscribed_movie_auto_download`，后者用缺省 `resource_ids` + `state=exhausted`；
   旧 `/movie-subscriptions/search-resets` 端点已删除）。逐条 / 多选的 `resource_ids`

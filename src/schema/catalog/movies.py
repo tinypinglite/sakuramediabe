@@ -68,6 +68,9 @@ MOVIE_LIST_SORT_FIELDS = (
 
 
 class MovieListItemResource(SchemaModel):
+    # 影片主键：番号是对外主标识，但统一 action 协议的 resource_ids 收的是整数 id，
+    # 所以影片卡片一律带上它，详情页与各列表页都能直接发起资源任务操作。
+    id: int
     javdb_id: str = Field()
     movie_number: str
     title: str

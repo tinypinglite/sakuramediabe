@@ -46,6 +46,7 @@
       "like_count": 11,
       "watch_count": 21,
       "movie": {
+        "id": 1,
         "javdb_id": "javdb-abp001",
         "movie_number": "ABP-001",
         "title": "Movie A",

@@ -184,6 +184,7 @@ GET /tags/1/movies?director_name=嵐山みちる&maker_name=S1%20NO.1%20STYLE&pa
 {
   "items": [
     {
+      "id": 1,
       "javdb_id": "MovieA1",
       "movie_number": "ABC-001",
       "title": "Movie 1",

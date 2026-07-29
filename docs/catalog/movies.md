@@ -43,6 +43,7 @@
 
 ```json
 {
+  "id": 1,
   "javdb_id": "MovieA1",
   "movie_number": "ABC-001",
   "title": "Movie 1",
@@ -93,6 +94,8 @@
 
 其中：
 
+- `id`: 影片主键（整数）。对外主标识仍是 `movie_number`，但统一资源任务操作
+  （`POST /system/resource-task-actions` 的 `resource_ids`）收的是这个 id，列表与详情都会返回
 - `series_name`: 系列名称，可为 `null`
 - `series_id`: 系列 ID，可为 `null`；系列名来自独立 `movie_series` 表
 - `title`：原始标题
@@ -269,6 +272,7 @@ Authorization: Bearer <token>
 ```json
 [
   {
+    "id": 1,
     "javdb_id": "MovieA1",
     "movie_number": "FC2-PPV-123456",
     "title": "Movie 1",
@@ -315,6 +319,7 @@ Authorization: Bearer <token>
 ```json
 [
   {
+    "id": 2,
     "javdb_id": "MovieA2",
     "movie_number": "FC2-PPV-654321",
     "title": "Movie 2",
@@ -414,6 +419,7 @@ Authorization: Bearer <token>
 
 ```json
 {
+  "id": 1,
   "javdb_id": "MovieA1",
   "movie_number": "ABP-123",
   "title": "Movie 1",
@@ -467,6 +473,8 @@ POST /system/resource-task-actions
 }
 ```
 
+- `resource_ids` 收整数影片主键，取影片摘要 / 详情响应里的 `id` 字段（不是 `movie_number`，
+  也不是 `javdb_id`）
 - `rerun` 是强制语义：已翻译影片会重新翻译并覆盖 `desc_zh`；互动同步不受批量调度
   刷新窗口限制（`task_key` 换 `movie_interaction_sync`）
 - 202 入队语义：执行在 worker，响应携带 `task_run_id`，前端经 SSE / 单条查询跟进后
@@ -739,6 +747,7 @@ GET /movies?collection_type=single&sort=release_date:desc&page=1&page_size=20
 {
   "items": [
     {
+      "id": 1,
       "javdb_id": "MovieA1",
       "movie_number": "ABC-001",
       "title": "Movie 1",
@@ -791,6 +800,7 @@ Authorization: Bearer <token>
 {
   "items": [
     {
+      "id": 2,
       "javdb_id": "MovieA2",
       "movie_number": "ABC-002",
       "title": "Movie 2",
@@ -811,6 +821,7 @@ Authorization: Bearer <token>
       "is_4k": false
     },
     {
+      "id": 1,
       "javdb_id": "MovieA1",
       "movie_number": "ABC-001",
       "title": "Movie 1",
@@ -866,6 +877,7 @@ Authorization: Bearer <token>
 {
   "items": [
     {
+      "id": 2,
       "javdb_id": "MovieA2",
       "movie_number": "ABC-002",
       "title": "Movie 2",
@@ -886,6 +898,7 @@ Authorization: Bearer <token>
       "is_4k": false
     },
     {
+      "id": 1,
       "javdb_id": "MovieA1",
       "movie_number": "ABC-001",
       "title": "Movie 1",
@@ -947,6 +960,7 @@ Content-Type: application/json
 {
   "items": [
     {
+      "id": 2,
       "javdb_id": "MovieA2",
       "movie_number": "ABP-121",
       "title": "Movie 2",
@@ -1174,6 +1188,7 @@ GET /movies/ABC-001
 
 ```json
 {
+  "id": 1,
   "javdb_id": "MovieA1",
   "movie_number": "ABC-001",
   "title": "Movie 1",

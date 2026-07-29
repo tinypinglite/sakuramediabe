@@ -74,6 +74,7 @@
 
 ```json
 {
+  "id": 1,
   "javdb_id": "MovieA1",
   "movie_number": "ABC-001",
   "title": "Movie 1",
@@ -260,6 +261,7 @@
 {
   "items": [
     {
+      "id": 1,
       "javdb_id": "MovieA1",
       "movie_number": "ABC-001",
       "title": "Movie 1",

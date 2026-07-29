@@ -59,6 +59,7 @@ Authorization: Bearer <token>
         "large": "/files/images/movies/ABC-001/media/thumb.webp?expires=1700000900&signature=<signature>"
       },
       "movie": {
+        "id": 1,
         "javdb_id": "abc-id",
         "movie_number": "ABC-001",
         "title": "Movie title",
