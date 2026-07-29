@@ -58,12 +58,35 @@ class MediaImportJobService(BaseImportJobService):
         return cls._do_trigger(library_id, source_path, transfer_mode=transfer_mode)
 
     @classmethod
-    def _create_job(cls, *, library, resolved_source, transfer_mode, **launch_kwargs):
+    def _create_job(cls, *, library, resolved_source, transfer_mode, download_task_id=None, **launch_kwargs):
         return ImportJob.create(
             source_path=str(resolved_source),
             library=library,
             state=IMPORT_JOB_STATE_PENDING,
             transfer_mode=transfer_mode,
+            download_task=download_task_id,
+        )
+
+    @classmethod
+    def _launch_kwargs_from_retry(cls, job) -> dict:
+        # 重导/重跑必须继承 download_task 关联，否则订阅页「取最新导入作业」会断链。
+        return {"download_task_id": job.download_task_id}
+
+    @classmethod
+    def rerun_job(cls, job_id: int) -> ImportJobTriggerResponse:
+        """整作业重跑：不论上次成败按原源整目录重扫——"completed 零产出"的恢复通路。"""
+        job = cls._require_job(job_id)
+        cls._assert_job_terminal(job)
+        library = cls._require_library(job.library_id)
+        resolved_source = cls._resolve_source_path(job.source_path)
+        return cls._launch_import(
+            library=library,
+            resolved_source=resolved_source,
+            transfer_mode=job.transfer_mode or "auto",
+            mutex_key=f"{cls.MUTEX_PREFIX}:rerun:{library.id}:{job_id}",
+            only_files=None,
+            task_name=f"重跑导入 #{job_id}",
+            **cls._launch_kwargs_from_retry(job),
         )
 
     @classmethod

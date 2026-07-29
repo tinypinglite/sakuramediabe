@@ -178,6 +178,7 @@ class Cloud115ImportJobService(BaseImportJobService):
             only_files=resolved_files,
             task_name=f"{cls.RETRY_TASK_NAME_PREFIX}{job_id}",
             managed_download_source=job.download_task_id is not None,
+            **cls._launch_kwargs_from_retry(job),
         )
 
     # ---- 首版不支持的失败文件操作 ----
@@ -201,7 +202,7 @@ class Cloud115ImportJobService(BaseImportJobService):
     # ---- 基类钩子 ----
 
     @classmethod
-    def _create_job(cls, *, library, resolved_source, transfer_mode, **launch_kwargs):
+    def _create_job(cls, *, library, resolved_source, transfer_mode, download_task_id=None, **launch_kwargs):
         transfer_mode = normalize_cloud115_transfer_mode(transfer_mode)
         return ImportJob.create(
             source_path=f"cloud115:{resolved_source}",
@@ -209,6 +210,36 @@ class Cloud115ImportJobService(BaseImportJobService):
             library=library,
             state=IMPORT_JOB_STATE_PENDING,
             transfer_mode=transfer_mode,
+            download_task=download_task_id,
+        )
+
+    @classmethod
+    def _launch_kwargs_from_retry(cls, job) -> dict:
+        return {"download_task_id": job.download_task_id}
+
+    @classmethod
+    def rerun_job(cls, job_id: int):
+        """整作业重跑（cloud115）：按原 source_cid 整目录重扫。"""
+        job = cls._require_job(job_id)
+        cls._assert_job_terminal(job)
+        if not job.source_cid:
+            raise ApiError(
+                422, "not_cloud115_import_job",
+                "该作业不是 cloud115 导入作业",
+                {cls.JOB_ID_FIELD: job_id},
+            )
+        library = cls._require_library(job.library_id)
+        return cls._launch_import(
+            library=library,
+            resolved_source=job.source_cid,
+            transfer_mode=normalize_cloud115_transfer_mode(
+                job.transfer_mode or CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE
+            ),
+            mutex_key=f"{cls.MUTEX_PREFIX}:rerun:{library.id}:{job_id}",
+            only_files=None,
+            task_name=f"重跑导入 #{job_id}",
+            managed_download_source=job.download_task_id is not None,
+            **cls._launch_kwargs_from_retry(job),
         )
 
     @classmethod

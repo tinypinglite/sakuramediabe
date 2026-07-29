@@ -54,6 +54,23 @@ class MovieSubscriptionSort(str, Enum):
     ATTEMPT_COUNT_DESC = "attempt_count:desc"
 
 
+class MovieSubscriptionImportOperationResource(SchemaModel):
+    """最新相关导入作业的操作上下文（仅 import_failed 档返回）。
+
+    available_actions 由后端按作业状态计算，前端只按枚举渲染：
+    open_import_job / retry_failed_files / rerun_import。
+    """
+
+    import_job_id: int
+    state: str
+    imported_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    # failed_files 里 kind=file 的可重导条目数（retry_failed_files 是否可用的依据）。
+    retryable_file_count: int = 0
+    available_actions: list[str] = []
+
+
 class MovieSubscriptionListItemResource(SchemaModel):
     movie_number: str
     title: str
@@ -72,6 +89,8 @@ class MovieSubscriptionListItemResource(SchemaModel):
     # 该影片已判死的下载任务数：试过几个种子都失败了。
     dead_download_task_count: int = 0
     media_count: int = 0
+    # import_failed 档的可操作上下文：关联最新导入作业与可用动作（其余档为 null）。
+    import_operation: MovieSubscriptionImportOperationResource | None = None
 
     @field_validator("release_date", mode="before")
     @classmethod

@@ -23,6 +23,7 @@ from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import media_exists_expression, validate_page
 from src.model import DownloadTask, Image, Media, Movie, ResourceTaskState
 from src.schema.catalog.subscriptions import (
+    MovieSubscriptionImportOperationResource,
     MovieSubscriptionListItemResource,
     MovieSubscriptionSearchResetResponse,
     MovieSubscriptionSort,
@@ -221,6 +222,13 @@ class MovieSubscriptionService:
         )
         dead_task_counts = cls._count_dead_download_tasks(movie_numbers)
         attempt_limit = SubscribedMovieSearchStateService.stale_attempt_limit()
+        # 只为 import_failed 档取导入作业上下文：其余档没有可操作的导入语义。
+        import_failed_numbers = [
+            movie.movie_number
+            for movie in ordered_movies
+            if status_by_movie_id[movie.id] == MovieSubscriptionStatus.IMPORT_FAILED.value
+        ]
+        import_operations = cls._load_latest_import_operations(import_failed_numbers)
 
         items: list[MovieSubscriptionListItemResource] = []
         for movie in ordered_movies:
@@ -241,9 +249,74 @@ class MovieSubscriptionService:
                     last_error=record.last_error if record else None,
                     dead_download_task_count=dead_task_counts.get(movie.movie_number, 0),
                     media_count=media_counts.get(movie.movie_number, 0),
+                    import_operation=import_operations.get(movie.movie_number),
                 )
             )
         return items
+
+    @classmethod
+    def _load_latest_import_operations(
+        cls, movie_numbers: list[str]
+    ) -> dict[str, MovieSubscriptionImportOperationResource]:
+        """当页 import_failed 影片的最新导入作业上下文，一次 IN 查询完成。
+
+        通路：Movie.movie_number ==（裸列，双侧索引）== DownloadTask.movie_number
+        → ImportJob.download_task（外键）。「最新」= 影片维度 ImportJob.id 最大。
+        failed_files 的 kind 判定只能在 Python 侧解析（JSON 列），当页 ≤20 条无往返放大；
+        绝不把 ImportJob 引入 _status_expression 的 CASE——状态七态互斥的不变量不许破坏。
+        """
+        if not movie_numbers:
+            return {}
+        import json
+
+        from src.common.media_import_status import TERMINAL_JOB_STATES
+        from src.model import ImportJob
+        from src.service.transfers.base_import_job_service import BaseImportJobService
+
+        rows = (
+            ImportJob.select(
+                ImportJob.id,
+                ImportJob.state,
+                ImportJob.imported_count,
+                ImportJob.skipped_count,
+                ImportJob.failed_count,
+                ImportJob.failed_files,
+                DownloadTask.movie,
+            )
+            .join(DownloadTask, on=(ImportJob.download_task == DownloadTask.id))
+            .where(DownloadTask.movie.in_(movie_numbers))
+            .order_by(DownloadTask.movie, ImportJob.id.desc())
+            .tuples()
+        )
+        operations: dict[str, MovieSubscriptionImportOperationResource] = {}
+        for job_id, state, imported, skipped, failed, failed_files, movie_number in rows:
+            if movie_number in operations:
+                continue
+            try:
+                failure_items = json.loads(failed_files) if failed_files else []
+            except (TypeError, ValueError):
+                failure_items = []
+            retryable_file_count = sum(
+                1
+                for item in failure_items
+                if isinstance(item, dict)
+                and BaseImportJobService._entry_kind(item) == "file"
+            )
+            available_actions = ["open_import_job"]
+            if state in TERMINAL_JOB_STATES:
+                if retryable_file_count:
+                    available_actions.append("retry_failed_files")
+                available_actions.append("rerun_import")
+            operations[movie_number] = MovieSubscriptionImportOperationResource(
+                import_job_id=job_id,
+                state=state,
+                imported_count=imported,
+                skipped_count=skipped,
+                failed_count=failed,
+                retryable_file_count=retryable_file_count,
+                available_actions=available_actions,
+            )
+        return operations
 
     @staticmethod
     def _count_by_key(query) -> dict[str, int]:
