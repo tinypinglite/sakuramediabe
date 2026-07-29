@@ -235,8 +235,8 @@ ContextVar 传 run_id 的整套机制（`TASK_RUN_CONTEXT` / `wrap_current_task_
 | movie_interaction_sync | A | ResourceExecutor(movie) | 候选筛选留 Python 侧过滤器钩子 |
 | media_thumbnail_generation | A | ResourceExecutor(media) | deferred 三态；双泳道并发交 per_run_concurrency |
 | subscribed_movie_auto_download | A | ResourceExecutor(movie) | **与 `subscribed_movie_search` 合并为同一 task_key**；新片豁免走 RetryPolicy 钩子；115 匀速走 pacing |
-| actor_subscription_sync | A | ResourceExecutor(actor) | 迁移后获得资源级状态（现状仅领域时间戳列） |
-| media_file_scan | A | ResourceExecutor(media) | remote_index 走 setup_run；库级枚举失败=整库跳过 |
+| actor_subscription_sync | A | BatchExecutor（修订） | 记忆在领域时间戳列、无预算语义，不进投影表（见 Wave 2 范围修订） |
+| media_file_scan | A | BatchExecutor（修订） | 全库对账，逐资源记账是纯写放大，不进投影表（见 Wave 2 范围修订） |
 | image_search_index | A/B | BatchExecutor（暂） | 状态在领域列 `joytag_index_status`；补"重索 FAILED"action，暂不迁投影 |
 | download_task_auto_import | A(入队器) | BatchExecutor | 扇出的 `download_task_import` 变为带 params 的 TaskRun |
 | ranking_sync | C | UnitExecutor(board×period) | JavdbAuthError 特判保留 |
@@ -330,7 +330,23 @@ CLI 长任务（migrate-jav-layout / migrate-plot-layout / backfill-* / scan-med
       （error_code=no_candidate_found）归 MISSING、真故障才亮 FAILED；
       订阅重置从"删行"改为"重开预算"（两种 reset 语义就此统一）；
       115 匀速节奏保留在任务侧（ctx.shared 传递批内状态）
-- 剩余顺序：媒体巡检 → 演员同步
+- [x] **范围修订（实施期结论）**：`media_file_scan` 与 `actor_subscription_sync`
+      经重新评估**不迁** ResourceExecutor，维持 Batch 直迁（Wave 1 已跑在 worker 上）：
+      - `media_file_scan` 是每晚全库对账（30w Media、成功即写 `Media.valid` 领域列，
+        本就不写状态表）——套逐资源记账等于每晚 60w+ 次投影/attempt 写放大、
+        attempt 表月增千万行，零收益；失败语义就是"下一晚重来"，无预算需求；
+      - `actor_subscription_sync` 的记忆在领域列（`Actor.subscribed_movies_synced_at`），
+        订阅演员不存在"放弃"语义（预算无意义），失败次日自然重试；为它扩
+        actor resolver + 前端 tab 的收益撑不起成本。
+      这正是"按需上内核，不为统一而统一"原则的兑现：投影表只承载真需要
+      逐资源重试/预算/历史的任务。
+- [x] 旧记账机制清理：`wrap_current_task_run_context`（ContextVar 跨线程包装）、
+      `mark_started/succeeded/failed/pending`、`recover_running_records`、
+      `build_retryable_extra_condition` + TEXT 子串匹配常量全部删除，零使用者验证过；
+      `reset_for_requeue`（导入链路写 pending）与读侧/重置接口保留
+
+**Wave 2 完成**：6 个逐资源任务全部迁 kernel（desc_sync、两个翻译、互动同步、
+缩略图、订阅搜索），2 个任务经评估划回 Batch 形态。
 - **存量状态策略：切换即清空该 task_key 的 `resource_task_state` 行（清空重建，
   不做语义映射迁移），仅两个例外**（决策 #11）：
   - `movie_interaction_sync`：必须保留 `(resource_id, last_succeeded_at)`——

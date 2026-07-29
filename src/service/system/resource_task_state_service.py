@@ -18,7 +18,6 @@ from src.schema.system.resource_task_state import (
     ResourceTaskRecordResource,
     TaskRecordStateCountsResource,
 )
-from src.service.system.activity_service import ActivityService
 from src.service.system.resource_task_resolvers import (
     MEDIA_TASK_RECORD_RESOLVER,
     MOVIE_TASK_RECORD_RESOLVER,
@@ -63,7 +62,6 @@ class ResourceTaskStateService:
     SKIP_REASON_MEDIA_NOT_FOUND = "media_not_found"
     SKIP_REASON_MEDIA_INVALID = "media_invalid"
     SKIP_REASON_NOT_FAILED = "not_failed"
-    TERMINAL_TRUE_MARKERS = ('"terminal": true', '"terminal":true')
     TASK_STATE_SORT_FIELDS = {
         "last_attempted_at:desc": (ResourceTaskState.last_attempted_at.desc(), ResourceTaskState.id.desc()),
         "last_attempted_at:asc": (ResourceTaskState.last_attempted_at.asc(), ResourceTaskState.id.asc()),
@@ -175,47 +173,6 @@ class ResourceTaskStateService:
         return merged_extra
 
     @classmethod
-    def build_retryable_extra_condition(cls, extra_field):
-        normalized_extra = fn.COALESCE(extra_field, "")
-        terminal_true_condition = None
-        for marker in cls.TERMINAL_TRUE_MARKERS:
-            marker_condition = normalized_extra.contains(marker)
-            terminal_true_condition = (
-                marker_condition
-                if terminal_true_condition is None
-                else (terminal_true_condition | marker_condition)
-            )
-        # 终态失败统一靠 terminal=true 标记识别；没有该标记的记录继续视为可重试。
-        return (normalized_extra == "") | (~terminal_true_condition)
-
-    @staticmethod
-    def _resolve_task_runtime_context(
-        *,
-        task_key: str,
-        trigger_type: str | None,
-        task_run_id: int | None,
-    ) -> tuple[str | None, int | None]:
-        task_run_context = ActivityService.get_task_run_context()
-        if task_run_context is None or task_run_context.task_key != task_key:
-            return trigger_type, task_run_id
-        resolved_trigger_type = trigger_type if trigger_type is not None else task_run_context.trigger_type
-        resolved_task_run_id = task_run_id if task_run_id is not None else task_run_context.task_run_id
-        return resolved_trigger_type, resolved_task_run_id
-
-    @classmethod
-    def _resolve_sort(cls, task_definition: ResourceTaskDefinition, sort: str | None) -> Sequence:
-        return resolve_sort(
-            sort,
-            cls.TASK_STATE_SORT_FIELDS,
-            default_key=task_definition.default_sort,
-            error_code="invalid_resource_task_state_filter",
-        )
-
-    @staticmethod
-    def _validate_page(page: int, page_size: int) -> None:
-        validate_page(page, page_size, error_code="invalid_resource_task_state_filter")
-
-    @classmethod
     def get_or_create_record(cls, task_key: str, resource_id: int) -> ResourceTaskState:
         """按 (task_key, resource_id) 取状态行，不存在则建。
 
@@ -260,152 +217,6 @@ class ResourceTaskStateService:
         if record is None:
             return cls._build_default_snapshot(task_definition, int(resource_id))
         return cls._build_snapshot(record)
-
-    @classmethod
-    def mark_started(
-        cls,
-        task_key: str,
-        resource_id: int,
-        trigger_type: str | None = None,
-        task_run_id: int | None = None,
-    ) -> ResourceTaskState:
-        trigger_type, task_run_id = cls._resolve_task_runtime_context(
-            task_key=task_key,
-            trigger_type=trigger_type,
-            task_run_id=task_run_id,
-        )
-        record = cls.get_or_create_record(task_key, resource_id)
-        now = utc_now_for_db()
-        record.state = cls.STATE_RUNNING
-        record.attempt_count += 1
-        record.last_attempted_at = now
-        record.last_error = None
-        record.last_trigger_type = trigger_type
-        record.last_task_run_id = task_run_id
-        record.updated_at = now
-        record.save(
-            only=[
-                ResourceTaskState.state,
-                ResourceTaskState.attempt_count,
-                ResourceTaskState.last_attempted_at,
-                ResourceTaskState.last_error,
-                ResourceTaskState.last_trigger_type,
-                ResourceTaskState.last_task_run_id,
-                ResourceTaskState.updated_at,
-            ]
-        )
-        return record
-
-    @classmethod
-    def mark_succeeded(
-        cls,
-        task_key: str,
-        resource_id: int,
-        trigger_type: str | None = None,
-        task_run_id: int | None = None,
-        extra_patch: dict | None = None,
-    ) -> ResourceTaskState:
-        trigger_type, task_run_id = cls._resolve_task_runtime_context(
-            task_key=task_key,
-            trigger_type=trigger_type,
-            task_run_id=task_run_id,
-        )
-        record = cls.get_or_create_record(task_key, resource_id)
-        now = utc_now_for_db()
-        record.state = cls.STATE_SUCCEEDED
-        record.last_succeeded_at = now
-        record.last_error = None
-        record.last_trigger_type = trigger_type
-        record.last_task_run_id = task_run_id
-        record.extra = cls._merge_extra(record.extra, extra_patch)
-        record.updated_at = now
-        record.save(
-            only=[
-                ResourceTaskState.state,
-                ResourceTaskState.last_succeeded_at,
-                ResourceTaskState.last_error,
-                ResourceTaskState.last_trigger_type,
-                ResourceTaskState.last_task_run_id,
-                ResourceTaskState.extra,
-                ResourceTaskState.updated_at,
-            ]
-        )
-        return record
-
-    @classmethod
-    def mark_failed(
-        cls,
-        task_key: str,
-        resource_id: int,
-        detail: str,
-        trigger_type: str | None = None,
-        task_run_id: int | None = None,
-        extra_patch: dict | None = None,
-    ) -> ResourceTaskState:
-        trigger_type, task_run_id = cls._resolve_task_runtime_context(
-            task_key=task_key,
-            trigger_type=trigger_type,
-            task_run_id=task_run_id,
-        )
-        record = cls.get_or_create_record(task_key, resource_id)
-        now = utc_now_for_db()
-        record.state = cls.STATE_FAILED
-        record.last_error = detail
-        record.last_error_at = now
-        record.last_trigger_type = trigger_type
-        record.last_task_run_id = task_run_id
-        record.extra = cls._merge_extra(record.extra, extra_patch)
-        record.updated_at = now
-        record.save(
-            only=[
-                ResourceTaskState.state,
-                ResourceTaskState.last_error,
-                ResourceTaskState.last_error_at,
-                ResourceTaskState.last_trigger_type,
-                ResourceTaskState.last_task_run_id,
-                ResourceTaskState.extra,
-                ResourceTaskState.updated_at,
-            ]
-        )
-        return record
-
-    @classmethod
-    def mark_pending(
-        cls,
-        task_key: str,
-        resource_id: int,
-        detail: str | None = None,
-        trigger_type: str | None = None,
-        task_run_id: int | None = None,
-    ) -> ResourceTaskState:
-        trigger_type, task_run_id = cls._resolve_task_runtime_context(
-            task_key=task_key,
-            trigger_type=trigger_type,
-            task_run_id=task_run_id,
-        )
-        record = cls.get_or_create_record(task_key, resource_id)
-        now = utc_now_for_db()
-        record.state = cls.STATE_PENDING
-        record.last_trigger_type = trigger_type
-        record.last_task_run_id = task_run_id
-        record.updated_at = now
-        fields = [
-            ResourceTaskState.state,
-            ResourceTaskState.last_trigger_type,
-            ResourceTaskState.last_task_run_id,
-            ResourceTaskState.updated_at,
-        ]
-        if detail is not None:
-            record.last_error = detail
-            record.last_error_at = now
-            fields.extend(
-                [
-                    ResourceTaskState.last_error,
-                    ResourceTaskState.last_error_at,
-                ]
-            )
-        record.save(only=fields)
-        return record
 
     @classmethod
     def reset_for_requeue(cls, task_key: str, resource_id: int) -> ResourceTaskState:
@@ -688,30 +499,4 @@ class ResourceTaskStateService:
             created_at=record.created_at,
             updated_at=record.updated_at,
             resource=resource_summary,
-        )
-
-    @classmethod
-    def recover_running_records(
-        cls,
-        task_key: str,
-        error_message: str,
-        trigger_type: str = "startup",
-    ) -> int:
-        task_definition = cls._require_task_definition(task_key)
-        now = utc_now_for_db()
-        # 启动恢复只回收 running 记录，避免误改待处理和已完成状态。
-        return (
-            ResourceTaskState.update(
-                state=cls.STATE_FAILED,
-                last_error=error_message,
-                last_error_at=now,
-                last_trigger_type=trigger_type,
-                updated_at=now,
-            )
-            .where(
-                ResourceTaskState.task_key == task_definition.task_key,
-                ResourceTaskState.resource_type == task_definition.resource_type,
-                ResourceTaskState.state == cls.STATE_RUNNING,
-            )
-            .execute()
         )
