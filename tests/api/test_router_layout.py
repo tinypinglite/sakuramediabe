@@ -196,7 +196,8 @@ def test_create_app_registers_movie_subscription_routes():
     # 顶层资源而非 /movies 子路径：避免和 /movies/{movie_number} 抢匹配。
     assert "/movie-subscriptions" in paths
     assert "/movie-subscriptions/status-counts" in paths
-    assert "/movie-subscriptions/search-resets" in paths
+    # 资源查询重置已并入统一 action 协议，本域不再有 search-resets 端点。
+    assert "/movie-subscriptions/search-resets" not in paths
     # 批量取消订阅刻意不在本域：复用已有的 /movies/unsubscriptions 与 DELETE /media/{id}。
     assert "/movie-subscriptions/removals" not in paths
 
@@ -262,8 +263,9 @@ def test_create_app_registers_image_search_routes():
     assert "/movies/{movie_number}/subtitles" in paths
     assert "/movies/{movie_number}/collection-status" in paths
     assert "/movies/{movie_number}/metadata-refresh" in paths
-    assert "/movies/{movie_number}/desc-translation" in paths
-    assert "/movies/{movie_number}/interaction-sync" in paths
+    # 单片翻译/互动同步端点已并入统一 action 协议（rerun + only_ids）。
+    assert "/movies/{movie_number}/desc-translation" not in paths
+    assert "/movies/{movie_number}/interaction-sync" not in paths
     assert "/movies/{movie_number}/heat-recompute" in paths
     assert "/movies/series/{series_id}/javdb/import/stream" in paths
     # GET/PATCH 已剔除；此路由现在只暴露连通性探测端点。
@@ -503,6 +505,8 @@ def test_create_app_does_not_register_removed_api_endpoints():
         ("/actors/{actor_id}/movies", "GET"),
         ("/system/notifications/{notification_id}/archive", "PATCH"),
         ("/system/resource-task-states/{task_key}/{resource_id}/reset", "POST"),
+        # 任务专用 reset 端点已并入统一 action 协议（reset_retry_budget）。
+        ("/system/resource-task-states/media_thumbnail_generation/reset", "POST"),
         ("/download-clients/{client_id}/sync", "POST"),
         ("/download-tasks/{task_id}/import", "POST"),
     }

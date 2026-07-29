@@ -115,13 +115,6 @@ class MovieSubscriptionStatusCountsResource(SchemaModel):
     failed: int = 0
 
 
-class MovieSubscriptionSearchResetRequest(SchemaModel):
-    # 指定番号重置；留空并把 reset_all_exhausted 置 true 表示重置全部"已放弃"的影片。
-    movie_numbers: list[str] = Field(default_factory=list)
-    reset_all_exhausted: bool = False
-
-
-class MovieSubscriptionSearchResetResponse(SchemaModel):
-    # 被删掉的状态行数。重置不放开选种黑名单——同一个 info_hash 就是同一个 swarm，换索引器它照样
-    # 是死的；重置真正要的是让影片重新去找**别的**种子。
-    reset_count: int
+# 资源查询重置的请求/响应模型已删除：统一走 POST /system/resource-task-actions
+# 的 reset_retry_budget。重置不放开选种黑名单——同一个 info_hash 就是同一个 swarm，
+# 换索引器它照样是死的；重置真正要的是让影片重新去找**别的**种子。

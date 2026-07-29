@@ -10,7 +10,7 @@
 
 - `GET /system/resource-task-states/definitions`
 - `GET /system/resource-task-states`
-- `POST /system/resource-task-states/media_thumbnail_generation/reset`
+- `POST /system/resource-task-actions`
 
 如果是活动中心首屏，请优先使用：
 
@@ -159,55 +159,62 @@
 媒体缩略图失败列表直接复用本接口：
 
 ```http
-GET /system/resource-task-states?task_key=media_thumbnail_generation&state=failed&page=1&page_size=20&sort=last_error_at:desc
+GET /system/resource-task-states?task_key=media_thumbnail_generation&state=failed_retryable&page=1&page_size=20&sort=last_error_at:desc
 ```
 
 返回记录的 `resource_id` 即 `media_id`；`resource` 摘要同时包含影片番号、标题、媒体路径和有效状态。
 
-### `POST /system/resource-task-states/media_thumbnail_generation/reset`
+### `POST /system/resource-task-actions`
 
-批量把媒体缩略图失败记录重置为 `pending`，由现有 `generate-media-thumbnails` 调度任务重新处理。
+资源级操作的唯一入口。旧的任务专用端点（缩略图 reset、订阅 search-resets、影片页单片
+翻译/互动同步）均已删除，全部并入本协议。
 
 请求体：
 
 ```json
 {
+  "task_key": "media_thumbnail_generation",
+  "action": "reset_retry_budget",
   "resource_ids": [101, 102, 103]
 }
 ```
 
-约束：
+action 枚举：
 
-- 一次接受 `1` 到 `200` 个唯一正整数 ID
-- 采用部分成功语义：合格 ID 照常重置，不合格 ID 只记入 `skipped`，不再整批失败
-- 可被重置的条件是存在 `media_thumbnail_generation` 任务记录、状态为 `failed`、对应媒体仍存在且 `valid = true`
-- 全部 ID 都不合格时仍返回 `200`，此时 `reset_count = 0`
+- `retry_now`：`failed_retryable` / `exhausted` → 立即重试（`exhausted` 隐式重开预算），
+  入队一个带 `only_ids` 的可跟踪 run，响应携带 `task_run_id`
+- `rerun`：通用"立即强制执行"入口，`running` 之外任意状态可用；从未记账的资源就地播种
+  状态行；子集运行绕过"已完成"域条件（重译已翻译影片、强制补刷互动数都走它）
+- `reset_retry_budget`：`failed_retryable` / `failed_terminal` / `exhausted` → 回
+  `pending` 重开预算（`retry_round + 1`、本轮计数归零），不建 run，等下一轮定时任务处理
 
-`skipped[].reason` 取值（一个 ID 只回报一个最主要的原因）：
+约束与语义：
 
-- `task_state_not_found`：该 ID 没有 `media_thumbnail_generation` 任务记录
-- `media_not_found`：任务记录存在但媒体已被删除
-- `media_invalid`：媒体存在但 `valid = false`
-- `not_failed`：媒体正常，但任务记录当前状态不是 `failed`
-
-重置后：
-
-- `state = pending`
-- `attempt_count = 0`
-- 清空 `last_error`、`last_error_at` 和 `last_task_run_id`
-- `last_trigger_type = manual`
-- 清除 `extra.terminal`，重新开放自动重试预算
-- 保留 `last_attempted_at`、`last_succeeded_at` 作为历史痕迹
+- 每条记录实际可用的 action 以 `available_actions` 为准 = 状态可用集 ∩ 任务声明支持集
+  （definitions 接口的 `supported_actions`）；`media_thumbnail_generation` 与
+  `subscribed_movie_auto_download` 不开放 `rerun`
+- `resource_ids` 一次最多 `500` 个唯一正整数 ID；部分成功语义，不合格 ID 逐条记入
+  `skipped` 并给出原因
+- `resource_ids` 缺省时按 `state` 圈定整批目标，仅 `reset_retry_budget` 支持
+  （例：`{"task_key": "subscribed_movie_auto_download", "action": "reset_retry_budget",
+  "state": "exhausted"}` 即旧订阅页"重置全部已放弃"）；`state` 缺省为三个失败态全部
+- 领域合格性前置：影片已删除（`movie_not_found`）、缺原始简介（`movie_desc_missing`）、
+  缺 JavDB ID（`movie_javdb_id_missing`）、未订阅（`movie_not_subscribed`）、媒体已删除
+  （`media_not_found`）、媒体失效（`media_invalid`）等由任务注册的钩子逐条跳过
+- 协议级跳过原因：`task_state_not_found`（retry_now / reset 要求已有状态行；rerun 会播种）、
+  `state_not_actionable`（当前状态不允许该 action）
+- 连点去重：单资源操作互斥到 `resource_action:{task_key}:{resource_id}`（不同资源互不
+  阻塞），多资源操作互斥到 `resource_action:{task_key}`，冲突返回 `409`
+  （`resource_task_action_conflict`，携带 `blocking_task_run_id`）
 
 成功响应：
 
 ```json
 {
   "task_key": "media_thumbnail_generation",
-  "state": "pending",
-  "reset_count": 2,
-  "resource_ids": [101, 102],
-  "skipped_count": 1,
+  "action": "reset_retry_budget",
+  "task_run_id": null,
+  "accepted_resource_ids": [101, 102],
   "skipped": [
     {
       "resource_id": 103,
@@ -217,9 +224,9 @@ GET /system/resource-task-states?task_key=media_thumbnail_generation&state=faile
 }
 ```
 
-`resource_ids` 只包含本次真正被重置的 ID，`skipped` 按请求顺序给出未被重置的 ID 及原因。
-
-本接口只负责重新入队，不会同步生成缩略图，也不会触发全量任务。
+`retry_now` / `rerun` 的 `task_run_id` 指向入队的 run，前端凭它经
+`GET /system/task-runs/{task_run_id}` 或 SSE 事件跟进终态；`reset_retry_budget` 恒为 `null`。
+重置不清尝试历史（attempt 表保留），只重开预算并归位投影快照。
 
 ### `GET /system/events/stream`
 
@@ -248,8 +255,9 @@ GET /system/resource-task-states?task_key=media_thumbnail_generation&state=faile
 
 ## 影片描述回填终态失败
 
-- `movie_desc_sync` 在 DMM 明确返回“未找到对应番号”时，会把记录写成 `failed` 且 `extra.terminal = true`
-- 这类记录不会再被自动调度重复抓取
+- `movie_desc_sync` 在 DMM 明确返回“未找到对应番号”时，会把记录写成 `failed_terminal`
+  （`error_code` 结构化标注，Wave 2 起取代 `extra.terminal`）
+- 这类记录不会再被自动调度重复抓取；可经统一 action 的 `reset_retry_budget` / `rerun` 捞回
 
 ## APS 手动与定时互斥
 

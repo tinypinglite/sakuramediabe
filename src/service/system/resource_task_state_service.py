@@ -2,27 +2,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Sequence
+from typing import Callable, Sequence
 
 from peewee import IntegrityError, fn
 
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import resolve_sort, validate_page
 from src.common.runtime_time import utc_now_for_db
-from src.model import Media, ResourceTaskState
+from src.model import ResourceTaskState
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
 from src.schema.system.resource_task_state import (
-    MediaThumbnailTaskResetSkippedItem,
     ResourceTaskDefinitionResource,
     ResourceTaskRecordResource,
     TaskRecordStateCountsResource,
 )
-from src.service.system.resource_task_actions_registry import available_actions_for_state
+from src.service.system.resource_task_actions_registry import (
+    ACTION_RESET_RETRY_BUDGET,
+    ACTION_RETRY_NOW,
+    SUPPORTED_ACTIONS,
+    available_actions_for_state,
+)
 from src.service.system.resource_task_resolvers import (
     MEDIA_TASK_RECORD_RESOLVER,
     MOVIE_TASK_RECORD_RESOLVER,
     ResourceTaskRecordResolver,
+    build_movie_actionable_check,
+    media_actionable_check,
 )
 
 
@@ -33,6 +39,10 @@ class ResourceTaskDefinition:
     display_name: str
     default_sort: str
     resource_resolver: ResourceTaskRecordResolver | None = None
+    # 该任务开放的统一 action 集合：rerun（强制重跑）只有域语义安全的任务声明。
+    supported_actions: tuple[str, ...] = SUPPORTED_ACTIONS
+    # 领域合格性钩子：action 入口先跑它过滤领域上不成立的资源（影片缺字段 / 媒体失效等）。
+    check_actionable: Callable[[list[int]], dict[int, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -58,11 +68,6 @@ class ResourceTaskStateService:
     STATE_FAILED = "failed"
     # 已达到自动重试上限：调度器不再自动排入，只有用户显式重置才会回到 pending。
     STATE_EXHAUSTED = "exhausted"
-    # 批量重置的跳过原因，前端按 resource_id 标注本次未能重置的选择项。
-    SKIP_REASON_TASK_STATE_NOT_FOUND = "task_state_not_found"
-    SKIP_REASON_MEDIA_NOT_FOUND = "media_not_found"
-    SKIP_REASON_MEDIA_INVALID = "media_invalid"
-    SKIP_REASON_NOT_FAILED = "not_failed"
     TASK_STATE_SORT_FIELDS = {
         "last_attempted_at:desc": (ResourceTaskState.last_attempted_at.desc(), ResourceTaskState.id.desc()),
         "last_attempted_at:asc": (ResourceTaskState.last_attempted_at.asc(), ResourceTaskState.id.asc()),
@@ -78,6 +83,7 @@ class ResourceTaskStateService:
             display_name="影片描述回填",
             default_sort="last_attempted_at:desc",
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
+            check_actionable=build_movie_actionable_check(),
         ),
         "movie_interaction_sync": ResourceTaskDefinition(
             task_key="movie_interaction_sync",
@@ -85,6 +91,10 @@ class ResourceTaskStateService:
             display_name="影片互动数同步",
             default_sort="last_attempted_at:desc",
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
+            check_actionable=build_movie_actionable_check(
+                required_attr="javdb_id",
+                missing_reason="movie_javdb_id_missing",
+            ),
         ),
         "movie_desc_translation": ResourceTaskDefinition(
             task_key="movie_desc_translation",
@@ -92,6 +102,10 @@ class ResourceTaskStateService:
             display_name="影片简介翻译",
             default_sort="last_attempted_at:desc",
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
+            check_actionable=build_movie_actionable_check(
+                required_attr="desc",
+                missing_reason="movie_desc_missing",
+            ),
         ),
         "movie_title_translation": ResourceTaskDefinition(
             task_key="movie_title_translation",
@@ -99,6 +113,10 @@ class ResourceTaskStateService:
             display_name="影片标题翻译",
             default_sort="last_attempted_at:desc",
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
+            check_actionable=build_movie_actionable_check(
+                required_attr="title",
+                missing_reason="movie_title_missing",
+            ),
         ),
         "media_thumbnail_generation": ResourceTaskDefinition(
             task_key="media_thumbnail_generation",
@@ -106,6 +124,9 @@ class ResourceTaskStateService:
             display_name="媒体缩略图生成",
             default_sort="last_attempted_at:desc",
             resource_resolver=MEDIA_TASK_RECORD_RESOLVER,
+            # 不开放 rerun：缩略图不支持覆盖再生（已存在即跳过），rerun 只会空转。
+            supported_actions=(ACTION_RETRY_NOW, ACTION_RESET_RETRY_BUDGET),
+            check_actionable=media_actionable_check,
         ),
         # Wave 2：task_key 与 job 合并（原 subscribed_movie_search，历史行随迁移清空）。
         "subscribed_movie_auto_download": ResourceTaskDefinition(
@@ -114,6 +135,9 @@ class ResourceTaskStateService:
             display_name="订阅影片资源查询",
             default_sort="last_attempted_at:desc",
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
+            # 不开放 rerun：强制重搜会绕过"已有媒体 / 已有活跃下载"防护，重复提交下载。
+            supported_actions=(ACTION_RETRY_NOW, ACTION_RESET_RETRY_BUDGET),
+            check_actionable=build_movie_actionable_check(require_subscribed=True),
         ),
     }
 
@@ -251,104 +275,6 @@ class ResourceTaskStateService:
         return record
 
     @classmethod
-    def reset_failed_media_thumbnail_states(
-        cls, resource_ids: list[int]
-    ) -> tuple[list[int], list[MediaThumbnailTaskResetSkippedItem]]:
-        task_key = "media_thumbnail_generation"
-        task_definition = cls._require_task_definition(task_key)
-        normalized_resource_ids = [int(resource_id) for resource_id in resource_ids]
-
-        skipped: list[MediaThumbnailTaskResetSkippedItem] = []
-        reset_resource_ids: list[int] = []
-
-        database = get_database()
-        with database.atomic():
-            # 锁住所选记录逐条判定：不合格项只记跳过原因，合格项照常重置。
-            records = list(
-                ResourceTaskState.select()
-                .where(
-                    ResourceTaskState.task_key == task_definition.task_key,
-                    ResourceTaskState.resource_type == task_definition.resource_type,
-                    ResourceTaskState.resource_id.in_(normalized_resource_ids),
-                )
-                .for_update()
-            )
-            records_by_resource_id = {record.resource_id: record for record in records}
-            media_by_id = {
-                media.id: media
-                for media in Media.select(Media.id, Media.valid).where(
-                    Media.id.in_(tuple(records_by_resource_id.keys()) or (0,))
-                )
-            }
-
-            for resource_id in normalized_resource_ids:
-                reason = cls._resolve_media_thumbnail_reset_skip_reason(
-                    records_by_resource_id.get(resource_id),
-                    media_by_id.get(resource_id),
-                )
-                if reason is not None:
-                    skipped.append(
-                        MediaThumbnailTaskResetSkippedItem(
-                            resource_id=resource_id,
-                            reason=reason,
-                        )
-                    )
-                    continue
-                reset_resource_ids.append(resource_id)
-
-            now = utc_now_for_db()
-            for resource_id in reset_resource_ids:
-                record = records_by_resource_id[resource_id]
-                # kernel 记账（Wave 2）：重置 = 重开预算（retry_round+1、本轮计数归零），
-                # 尝试历史保留在 attempt 表，投影只清当前错误快照。
-                record.state = cls.STATE_PENDING
-                record.attempt_count = 0
-                record.retry_round = (record.retry_round or 0) + 1
-                record.last_error = None
-                record.last_error_at = None
-                record.error_code = None
-                record.next_retry_at = None
-                record.last_trigger_type = "manual"
-                record.last_task_run_id = None
-                record.extra = None
-                record.updated_at = now
-                record.save(
-                    only=[
-                        ResourceTaskState.state,
-                        ResourceTaskState.attempt_count,
-                        ResourceTaskState.retry_round,
-                        ResourceTaskState.last_error,
-                        ResourceTaskState.last_error_at,
-                        ResourceTaskState.error_code,
-                        ResourceTaskState.next_retry_at,
-                        ResourceTaskState.last_trigger_type,
-                        ResourceTaskState.last_task_run_id,
-                        ResourceTaskState.extra,
-                        ResourceTaskState.updated_at,
-                    ]
-                )
-
-        return reset_resource_ids, skipped
-
-    @classmethod
-    def _resolve_media_thumbnail_reset_skip_reason(
-        cls,
-        record: ResourceTaskState | None,
-        media: Media | None,
-    ) -> str | None:
-        # 判定顺序按“问题的根本程度”排列，一个 resource_id 只回报一个最主要的原因。
-        if record is None:
-            return cls.SKIP_REASON_TASK_STATE_NOT_FOUND
-        if media is None:
-            return cls.SKIP_REASON_MEDIA_NOT_FOUND
-        if not media.valid:
-            return cls.SKIP_REASON_MEDIA_INVALID
-        # kernel 记账后失败态三分：可重试 / 终态 / 预算耗尽，三者都允许手动重置。
-        if record.state not in ("failed_retryable", "failed_terminal", cls.STATE_EXHAUSTED, cls.STATE_FAILED):
-            return cls.SKIP_REASON_NOT_FAILED
-        return None
-
-    @classmethod
     def list_definition_resources(cls) -> list[ResourceTaskDefinitionResource]:
         counts_by_task_key = {
             definition.task_key: TaskRecordStateCountsResource()
@@ -374,6 +300,7 @@ class ResourceTaskStateService:
                 resource_type=definition.resource_type,
                 display_name=definition.display_name,
                 default_sort=definition.default_sort,
+                supported_actions=list(definition.supported_actions),
                 state_counts=counts_by_task_key[definition.task_key],
             )
             for definition in cls.list_definitions()
@@ -463,7 +390,9 @@ class ResourceTaskStateService:
                     created_at=record.created_at,
                     updated_at=record.updated_at,
                     resource=resource_summaries.get(record.resource_id),
-                    available_actions=available_actions_for_state(record.state),
+                    available_actions=available_actions_for_state(
+                        record.state, task_definition.supported_actions
+                    ),
                 )
                 for record in records
             ],
@@ -501,5 +430,7 @@ class ResourceTaskStateService:
             created_at=record.created_at,
             updated_at=record.updated_at,
             resource=resource_summary,
-            available_actions=available_actions_for_state(record.state),
+            available_actions=available_actions_for_state(
+                record.state, task_definition.supported_actions
+            ),
         )

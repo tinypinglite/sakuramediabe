@@ -30,6 +30,8 @@ class ResourceTaskDefinitionResource(SchemaModel):
     resource_type: str
     display_name: str
     default_sort: str
+    # 该任务开放的统一 action 集合（rerun 只有域语义安全的任务声明），前端按此渲染批量操作入口。
+    supported_actions: list[str] = []
     state_counts: TaskRecordStateCountsResource
 
 
@@ -52,38 +54,26 @@ class ResourceTaskRecordResource(SchemaModel):
     available_actions: list[str] = []
 
 
-class MediaThumbnailTaskBatchResetRequest(SchemaModel):
-    resource_ids: list[int] = Field(min_length=1, max_length=200)
+class ResourceTaskActionRequest(SchemaModel):
+    task_key: str
+    action: str
+    # 显式指定操作目标；缺省（None / 空列表）时按 state 圈定整批，仅 reset_retry_budget
+    # 支持（retry_now / rerun 会把 ids 写进 run params，必须显式指定并限制规模）。
+    resource_ids: list[int] | None = Field(default=None, max_length=500)
+    # 批量圈定的状态筛选：failed_retryable / failed_terminal / exhausted；缺省为三者全部。
+    state: str | None = None
 
     @field_validator("resource_ids")
     @classmethod
-    def validate_resource_ids(cls, value: list[int]) -> list[int]:
-        # 批量重置只接受唯一的正整数主键，避免重复项被误计入重置数量。
+    def validate_resource_ids(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        # 只接受唯一的正整数主键，避免重复项被误计入操作数量。
         if any(resource_id <= 0 for resource_id in value):
             raise ValueError("resource_ids must contain positive integers")
         if len(value) != len(set(value)):
             raise ValueError("resource_ids must be unique")
         return value
-
-
-class MediaThumbnailTaskResetSkippedItem(SchemaModel):
-    resource_id: int
-    reason: str
-
-
-class MediaThumbnailTaskBatchResetResponse(SchemaModel):
-    task_key: str
-    state: str
-    reset_count: int
-    resource_ids: list[int]
-    skipped_count: int = 0
-    skipped: list[MediaThumbnailTaskResetSkippedItem] = Field(default_factory=list)
-
-
-class ResourceTaskActionRequest(SchemaModel):
-    task_key: str
-    action: str
-    resource_ids: list[int]
 
 
 class ResourceTaskActionSkippedItem(SchemaModel):

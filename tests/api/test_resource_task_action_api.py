@@ -1,8 +1,14 @@
+"""统一资源任务操作端点（POST /system/resource-task-actions）API 护栏。
+
+资源级操作的唯一入口：旧的缩略图专用 reset 端点与订阅 search-resets 端点已删除，
+本文件覆盖它们的语义在统一协议下的对等物（媒体合格性钩子 / 批量按状态圈定）。
+"""
+
 from src.model import BackgroundTaskRun, Media, MediaLibrary, Movie, ResourceTaskState
 
 
-RESET_PATH = "/system/resource-task-states/media_thumbnail_generation/reset"
-TASK_KEY = "media_thumbnail_generation"
+ACTION_PATH = "/system/resource-task-actions"
+THUMBNAIL_TASK_KEY = "media_thumbnail_generation"
 
 
 def _login(client, username: str) -> str:
@@ -30,17 +36,16 @@ def _create_media(movie_number: str, *, valid: bool = True) -> Media:
         valid=valid,
     )
 
-
 def _create_task_state(media: Media, *, state: str = "failed_terminal"):
     # last_task_run_id 已外键化（Wave 0），必须指向真实的 task_run 行。
     task_run = BackgroundTaskRun.create(
-        task_key=TASK_KEY,
+        task_key=THUMBNAIL_TASK_KEY,
         task_name="媒体缩略图生成",
         trigger_type="scheduled",
         state="completed",
     )
     return ResourceTaskState.create(
-        task_key=TASK_KEY,
+        task_key=THUMBNAIL_TASK_KEY,
         resource_type="media",
         resource_id=media.id,
         state=state,
@@ -52,7 +57,7 @@ def _create_task_state(media: Media, *, state: str = "failed_terminal"):
     )
 
 
-def test_batch_reset_requeues_failed_media_thumbnail_tasks(client, account_user):
+def test_reset_retry_budget_requeues_failed_media_thumbnail_tasks(client, account_user):
     token = _login(client, account_user.username)
     first_media = _create_media("ABC-001")
     second_media = _create_media("ABC-002")
@@ -60,23 +65,26 @@ def test_batch_reset_requeues_failed_media_thumbnail_tasks(client, account_user)
     _create_task_state(second_media)
 
     response = client.post(
-        RESET_PATH,
+        ACTION_PATH,
         headers={"Authorization": f"Bearer {token}"},
-        json={"resource_ids": [first_media.id, second_media.id]},
+        json={
+            "task_key": THUMBNAIL_TASK_KEY,
+            "action": "reset_retry_budget",
+            "resource_ids": [first_media.id, second_media.id],
+        },
     )
 
     assert response.status_code == 200
     assert response.json() == {
-        "task_key": TASK_KEY,
-        "state": "pending",
-        "reset_count": 2,
-        "resource_ids": [first_media.id, second_media.id],
-        "skipped_count": 0,
+        "task_key": THUMBNAIL_TASK_KEY,
+        "action": "reset_retry_budget",
+        "task_run_id": None,
+        "accepted_resource_ids": [first_media.id, second_media.id],
         "skipped": [],
     }
     for media in (first_media, second_media):
         record = ResourceTaskState.get(
-            ResourceTaskState.task_key == TASK_KEY,
+            ResourceTaskState.task_key == THUMBNAIL_TASK_KEY,
             ResourceTaskState.resource_id == media.id,
         )
         assert record.state == "pending"
@@ -84,13 +92,12 @@ def test_batch_reset_requeues_failed_media_thumbnail_tasks(client, account_user)
         assert record.last_error is None
         assert record.error_code is None
         assert record.next_retry_at is None
-        assert record.last_task_run_id is None
         assert record.last_trigger_type == "manual"
         # kernel 记账：重置即重开预算，轮次 +1；尝试历史保留在 attempt 表。
         assert record.retry_round == 1
 
 
-def test_batch_reset_skips_unqualified_media_and_requeues_the_rest(client, account_user):
+def test_reset_skips_unqualified_media_and_requeues_the_rest(client, account_user):
     token = _login(client, account_user.username)
     failed_media = _create_media("ABC-003")
     pending_media = _create_media("ABC-004")
@@ -106,61 +113,92 @@ def test_batch_reset_skips_unqualified_media_and_requeues_the_rest(client, accou
     missing_state_resource_id = deleted_media_id + 10_000
 
     response = client.post(
-        RESET_PATH,
+        ACTION_PATH,
         headers={"Authorization": f"Bearer {token}"},
         json={
+            "task_key": THUMBNAIL_TASK_KEY,
+            "action": "reset_retry_budget",
             "resource_ids": [
                 failed_media.id,
                 pending_media.id,
                 invalid_media.id,
                 deleted_media_id,
                 missing_state_resource_id,
-            ]
+            ],
         },
     )
 
     assert response.status_code == 200
     assert response.json() == {
-        "task_key": TASK_KEY,
-        "state": "pending",
-        "reset_count": 1,
-        "resource_ids": [failed_media.id],
-        "skipped_count": 4,
+        "task_key": THUMBNAIL_TASK_KEY,
+        "action": "reset_retry_budget",
+        "task_run_id": None,
+        "accepted_resource_ids": [failed_media.id],
         "skipped": [
-            {"resource_id": pending_media.id, "reason": "not_failed"},
+            {"resource_id": pending_media.id, "reason": "state_not_actionable"},
             {"resource_id": invalid_media.id, "reason": "media_invalid"},
             {"resource_id": deleted_media_id, "reason": "media_not_found"},
-            {"resource_id": missing_state_resource_id, "reason": "task_state_not_found"},
+            {"resource_id": missing_state_resource_id, "reason": "media_not_found"},
         ],
     }
 
     reset_record = ResourceTaskState.get(
-        ResourceTaskState.task_key == TASK_KEY,
+        ResourceTaskState.task_key == THUMBNAIL_TASK_KEY,
         ResourceTaskState.resource_id == failed_media.id,
     )
     assert reset_record.state == "pending"
     assert reset_record.attempt_count == 0
-    for skipped_media in (invalid_media, deleted_media):
-        untouched = ResourceTaskState.get(
-            ResourceTaskState.task_key == TASK_KEY,
-            ResourceTaskState.resource_id == skipped_media.id,
-        )
-        assert untouched.attempt_count == 2
+    untouched = ResourceTaskState.get(
+        ResourceTaskState.task_key == THUMBNAIL_TASK_KEY,
+        ResourceTaskState.resource_id == invalid_media.id,
+    )
+    assert untouched.attempt_count == 2
 
 
-def test_batch_reset_returns_all_skipped_when_nothing_is_eligible(client, account_user):
+def test_bulk_reset_by_state_without_resource_ids(client, account_user):
+    # 缺省 resource_ids + state 圈定 = 旧订阅页"重置全部已放弃"的对等物。
     token = _login(client, account_user.username)
-    invalid_media = _create_media("ABC-007", valid=False)
-    _create_task_state(invalid_media)
+    exhausted_media = _create_media("ABC-010")
+    retryable_media = _create_media("ABC-011")
+    _create_task_state(exhausted_media, state="exhausted")
+    _create_task_state(retryable_media, state="failed_retryable")
 
     response = client.post(
-        RESET_PATH,
+        ACTION_PATH,
         headers={"Authorization": f"Bearer {token}"},
-        json={"resource_ids": [invalid_media.id]},
+        json={
+            "task_key": THUMBNAIL_TASK_KEY,
+            "action": "reset_retry_budget",
+            "state": "exhausted",
+        },
     )
 
     assert response.status_code == 200
     body = response.json()
-    assert body["reset_count"] == 0
-    assert body["resource_ids"] == []
-    assert body["skipped"] == [{"resource_id": invalid_media.id, "reason": "media_invalid"}]
+    assert body["accepted_resource_ids"] == [exhausted_media.id]
+    assert body["skipped"] == []
+    # 状态筛选之外的行不受影响。
+    untouched = ResourceTaskState.get(
+        ResourceTaskState.task_key == THUMBNAIL_TASK_KEY,
+        ResourceTaskState.resource_id == retryable_media.id,
+    )
+    assert untouched.state == "failed_retryable"
+
+
+def test_rerun_not_supported_for_thumbnail_task(client, account_user):
+    token = _login(client, account_user.username)
+    media = _create_media("ABC-020")
+    _create_task_state(media)
+
+    response = client.post(
+        ACTION_PATH,
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "task_key": THUMBNAIL_TASK_KEY,
+            "action": "rerun",
+            "resource_ids": [media.id],
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "resource_task_action_not_supported"

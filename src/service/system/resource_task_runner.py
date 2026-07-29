@@ -177,10 +177,11 @@ class ResourceTaskLedger:
     ) -> tuple[ResourceTaskAttempt, ResourceTaskState, str] | None:
         """行级领取并开启一次尝试；领取失败返回 None（调用方按跳过处理）。
 
-        TaskRun 层三套 mutex 命名空间（aps:* / resource_action:* / movie_task:*）
-        互不阻塞，资源级互斥唯一收口在这里：FOR UPDATE 锁行重读最新投影，
-        running 行一律拒领；eligible_check（批跑传入）在锁内复核候选快照是否已
-        过期。单资源直跑路径不传 eligible_check 即强制语义（仅拒 running）。
+        TaskRun 层两套 mutex 命名空间（aps:* / resource_action:*，后者单资源操作
+        细化到 resource_action:{task_key}:{id}）互不阻塞，资源级互斥唯一收口在
+        这里：FOR UPDATE 锁行重读最新投影，running 行一律拒领；eligible_check
+        （批跑传入）在锁内复核候选快照是否已过期。单资源直跑路径不传
+        eligible_check 即强制语义（仅拒 running）。
         """
         now = utc_now_for_db()
         with get_database().atomic():

@@ -27,15 +27,16 @@ class MovieDescSyncService:
     def _select_candidates(cls, state_condition, only_ids=None):
         query = (
             Movie.select(Movie)
-            .where(
-                Movie.desc == "",
-                state_condition(cls.TASK_KEY, "movie", Movie.id),
-            )
+            .where(state_condition(cls.TASK_KEY, "movie", Movie.id))
             # 已订阅影片优先（订阅时间升序），其余按 id 稳定排序。
             .order_by(Movie.subscribed_at.is_null(), Movie.subscribed_at.asc(), Movie.id.asc())
         )
         if only_ids:
+            # 手动指定即强制（统一 action 的 rerun 语义）：已有简介也重拉覆盖。
             query = query.where(Movie.id.in_(list(only_ids)))
+        else:
+            # 批跑只补缺。
+            query = query.where(Movie.desc == "")
         return query
 
     def _process_one(self, _ctx, movie: Movie) -> None:

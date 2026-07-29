@@ -15,17 +15,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from loguru import logger
 from peewee import JOIN, Case, fn
 
-from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import media_exists_expression, validate_page
 from src.model import DownloadTask, Image, Media, Movie, ResourceTaskState
 from src.schema.catalog.subscriptions import (
     MovieSubscriptionImportOperationResource,
     MovieSubscriptionListItemResource,
-    MovieSubscriptionSearchResetResponse,
     MovieSubscriptionSort,
     MovieSubscriptionStatus,
     MovieSubscriptionStatusCountsResource,
@@ -39,8 +36,6 @@ from src.service.transfers.common import (
 )
 from src.service.transfers.subscribed_movie_search_state_service import (
     ERROR_CODE_NO_CANDIDATE,
-    RESOURCE_TYPE as SEARCH_RESOURCE_TYPE,
-    TASK_KEY as SEARCH_TASK_KEY,
     SubscribedMovieSearchStateService,
     search_state_join_condition,
 )
@@ -348,67 +343,6 @@ class MovieSubscriptionService:
             for image in Image.select().where(Image.id.in_(list(image_ids)))
         }
 
-    # ------------------------------------------------------------------ 重置
-
-    @classmethod
-    def reset_search_state(
-        cls, *, movie_numbers: list[str], reset_all_exhausted: bool
-    ) -> MovieSubscriptionSearchResetResponse:
-        """重置资源查询状态：删掉状态行，下轮定时任务即会重新查。
-
-        重置不放开选种黑名单——理由见 SubscribedMovieSearchStateService.reset 的说明。
-        """
-        movie_ids = cls._resolve_reset_targets(
-            movie_numbers=movie_numbers, reset_all_exhausted=reset_all_exhausted
-        )
-        reset_count = SubscribedMovieSearchStateService.reset(movie_ids)
-        logger.info(
-            "Subscription search state reset movies={} deleted_rows={}",
-            len(movie_ids),
-            reset_count,
-        )
-        return MovieSubscriptionSearchResetResponse(reset_count=reset_count)
-
-    @classmethod
-    def _resolve_reset_targets(
-        cls, *, movie_numbers: list[str], reset_all_exhausted: bool
-    ) -> list[int]:
-        if reset_all_exhausted:
-            exhausted_ids = ResourceTaskState.select(ResourceTaskState.resource_id).where(
-                ResourceTaskState.task_key == SEARCH_TASK_KEY,
-                ResourceTaskState.resource_type == SEARCH_RESOURCE_TYPE,
-                ResourceTaskState.state == SubscribedMovieSearchStateService.STATE_EXHAUSTED,
-            )
-            return [
-                row[0]
-                for row in Movie.select(Movie.id)
-                .where(Movie.is_subscribed == True, Movie.id.in_(exhausted_ids))
-                .tuples()
-            ]
-
-        deduped_numbers = cls._dedup_movie_numbers(movie_numbers)
-        if not deduped_numbers:
-            raise ApiError(
-                422,
-                "invalid_movie_subscription_reset",
-                "需要指定 movie_numbers 或把 reset_all_exhausted 置为 true",
-            )
-        return [
-            row[0]
-            for row in Movie.select(Movie.id)
-            .where(
-                Movie.is_subscribed == True,
-                Movie.movie_number.in_(deduped_numbers),
-            )
-            .tuples()
-        ]
-
-    @staticmethod
-    def _dedup_movie_numbers(movie_numbers: list[str]) -> list[str]:
-        # 入参来自管理页展示的规范番号，只去空白去重、精确匹配即可，不做归一化改写。
-        deduped_numbers: list[str] = []
-        for movie_number in movie_numbers:
-            stripped = (movie_number or "").strip()
-            if stripped and stripped not in deduped_numbers:
-                deduped_numbers.append(stripped)
-        return deduped_numbers
+    # 资源查询重置已并入统一 action 协议（POST /system/resource-task-actions 的
+    # reset_retry_budget），本域不再提供重置入口；订阅时的状态重开仍走
+    # MovieService._reset_search_state_for_new_subscriptions。

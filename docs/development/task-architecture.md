@@ -154,8 +154,9 @@ class ResourceExecutor:
 
 ```
 行级领取（FOR UPDATE 锁行重读：running 一律拒领；批跑另按 claim_eligible 在锁内
-  复核候选快照是否过期。拒领计入 skipped_count，不写 attempt。三套 TaskRun mutex
-  命名空间 aps:*/resource_action:*/movie_task:* 互不阻塞，资源级互斥唯一收口在此）
+  复核候选快照是否过期。拒领计入 skipped_count，不写 attempt。两套 TaskRun mutex
+  命名空间 aps:*/resource_action:*（单资源操作细化到 resource_action:{task_key}:{id}）
+  互不阻塞，资源级互斥唯一收口在此）
 → 写 attempt(running, run_id, attempt_no)
 → process_one(ctx, resource)
 → 成功        → attempt=succeeded；投影=succeeded
@@ -212,18 +213,36 @@ ContextVar 传 run_id 的整套机制（`TASK_RUN_CONTEXT` / `wrap_current_task_
 
 ## 7. 操作协议
 
-- 资源任务统一入口 `POST /system/resource-task-actions`：
-  `{task_key, action, resource_ids}` → `{task_run_id, accepted, skipped:[{id, reason}]}`。
+- 资源任务统一入口 `POST /system/resource-task-actions`（**资源级操作的唯一入口**）：
+  `{task_key, action, resource_ids?, state?}` →
+  `{task_run_id, accepted_resource_ids, skipped:[{id, reason}]}`。
   action 枚举：`retry_now`（建带 only_ids 的 TaskRun）/ `rerun` / `reset_retry_budget`
   （retry_round+1，不清历史）/ `cancel`（预留）。
-- `available_actions` 由后端按投影状态 + definition 计算返回，与 action 枚举同名，
-  前端只按枚举渲染（教训：`allow_reset` 只给能力位不给协议，前端解析后弃用）。
-- 领域作业（导入 retry/rerun、订阅搜索、下载任务）**保留领域 endpoint**，只统一响应
-  形状（accepted/skipped+reason/task_run_id/available_actions）——导入 retry 的
-  kind 过滤、browse_roots 白名单、cloud115 分叉塞不进通用 handler。
-- 两种 reset 语义统一为"保留历史、重开预算"；订阅搜索的 DELETE 行重置废弃。
-- `MovieTaskService` 三个单片任务（单片翻译/互动同步/热度重算）退役，
-  改为统一 action（`retry_now` + only_ids），从此与全量批跑行级互斥。
+- `rerun` 是通用"立即强制执行"入口：running 之外任意状态（含 pending）可用；从未记账
+  的资源就地播种状态行；**only_ids 子集运行按约定绕过"已完成"域条件**（手动指定即强制，
+  translation/desc_sync 的候选查询在 only_ids 模式放掉 target/desc 空判定），因此
+  rerun 只对域语义安全的任务开放（definition.supported_actions 声明；缩略图不支持覆盖
+  再生、订阅查询强制重搜会绕过已有媒体防护，两者不开放）。
+- 领域合格性钩子（definition.check_actionable）在状态判定前逐条过滤：影片缺必填字段 /
+  媒体失效 / 未订阅等落 skipped+reason，取代旧任务专用端点里散落的 422 前置校验。
+- `resource_ids` 缺省 + `state` 圈定 = 批量操作（仅 reset_retry_budget：不建 run、
+  无 params 膨胀，集合 UPDATE + RETURNING 收口），即旧订阅页 reset_all_exhausted 的对等物。
+- mutex 粒度：单资源操作 `resource_action:{task_key}:{id}`（影片页连点去重、不同影片
+  互不阻塞），多资源批量 `resource_action:{task_key}`；资源级并发正确性由行级领取兜底。
+- `available_actions` 由后端按"投影状态可用集 ∩ definition.supported_actions"计算返回，
+  与 action 枚举同名，前端只按枚举渲染（教训：`allow_reset` 只给能力位不给协议，
+  前端解析后弃用）。
+- 领域作业（导入 retry/rerun、下载任务）**保留领域 endpoint**，只统一响应形状
+  （accepted/skipped+reason/task_run_id/available_actions）——导入 retry 的 kind 过滤、
+  browse_roots 白名单、cloud115 分叉塞不进通用 handler。
+- **四个旧端点已删除**（Wave 4 收口）：缩略图专用 reset
+  （`/system/resource-task-states/media_thumbnail_generation/reset`）、订阅
+  `search-resets`、影片页 `desc-translation` / `interaction-sync`——全部由统一 action
+  覆盖；`movie_task:*` mutex 命名空间与 params.movie_id 分发随之退役。
+- 两种 reset 语义统一为"保留历史、重开预算"；订阅搜索的 DELETE 行重置废弃
+  （订阅时的状态重开走 MovieService 内部链路，不经 API）。
+- `MovieTaskService` 三个单片任务中翻译/互动同步退役（改统一 action `rerun` + only_ids，
+  从此与全量批跑行级互斥）；热度重算毫秒级纯 SQL，保留同步端点 `heat-recompute`。
 
 ## 8. 全量任务映射
 
@@ -381,14 +400,27 @@ CLI 长任务（migrate-jav-layout / migrate-plot-layout / backfill-* / scan-med
 ### Wave 4：前端与协议收口 ✅
 - [x] 统一 action 端点 `POST /system/resource-task-actions`
       （retry_now / rerun / reset_retry_budget；部分成功逐条给原因；
-      入队带 only_ids 的可跟踪 run；action 级 mutex 连点 409）；
+      入队带 only_ids 的可跟踪 run；mutex 连点 409）；
       6 个 kernel 任务全部支持 only_ids 子集执行
 - [x] 每条记录返回 `available_actions`（状态矩阵计算），前端只按枚举渲染
 - [x] 前端（sakuramedia）：三态入计数/筛选/徽标；记录操作按钮 action 化；
       订阅页 import_failed 补救出口（重导失败文件/整作业重跑）；
       影片页翻译/互动 202 语义
+- [x] **API 面收口**（本波补章，见 §7）：统一 action 升级为资源级操作唯一入口——
+      rerun 强制语义（only_ids 绕过完成度域条件 + 无行播种）、领域合格性钩子、
+      definition.supported_actions 裁剪、批量按状态圈定 reset、单资源 mutex 粒度；
+      删除缩略图专用 reset / 订阅 search-resets / 影片页 desc-translation /
+      interaction-sync 四个端点，`movie_task:*` 命名空间与单影片强制路径
+      （translate_movie / sync_movie / params.movie_id 分发）退役。
+      顺带修复：旧 rerun 走 only_ids 候选时被 target 非空域条件排除导致
+      succeeded 行 rerun 空转、投影卡 pending 的缺陷
 - 缓做：资源级 SSE 事件流（前端暂靠 task_run 事件 + 手动刷新；独立资源事件
-  的量级需先设计聚合节流）；插件契约 host_api_version 2（无插件在用）
+  的量级需先设计聚合节流）；插件契约 host_api_version 2（无插件在用）；
+  `image_search_index` 的"重索 FAILED"action（§8.1 承诺项：joytag_index_status
+  是领域列、不在 TASK_REGISTRY，候选只捞 PENDING 导致 FAILED 是死端；
+  待该任务迁投影时随统一 action 一并解决）；`cancel` action（状态机已留
+  cancelled 终态：default 道领取延迟 1–2s 撤回窗口趋零，仅 import 道排队
+  场景有真实价值，running 中止需执行器协作式检查，均暂不做）
 
 ## 10. 决策记录
 

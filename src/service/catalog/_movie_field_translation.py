@@ -148,7 +148,6 @@ class MovieFieldTranslationServiceBase:
             Movie.select(Movie)
             .where(
                 source_field != "",
-                target_field == "",
                 state_condition(cls.TASK_KEY, "movie", Movie.id),
             )
             .order_by(
@@ -160,7 +159,12 @@ class MovieFieldTranslationServiceBase:
             )
         )
         if only_ids:
+            # 手动指定即强制（统一 action 的 rerun 语义）：不看"是否已有译文"，
+            # 只保留源字段非空；重译已完成影片就靠这条通路。
             query = query.where(Movie.id.in_(list(only_ids)))
+        else:
+            # 批跑只补缺：已有译文的影片不进候选。
+            query = query.where(target_field == "")
         return query
 
     # -------- prompt / 输出规范化 --------

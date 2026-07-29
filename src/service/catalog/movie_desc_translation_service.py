@@ -2,10 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from loguru import logger
-
-from src.api.exception.errors import ApiError
-from src.model import Movie
 from src.service.catalog._movie_field_translation import (
     MovieFieldTranslationServiceBase,
     MovieFieldTranslationTaskAbortError,
@@ -29,70 +25,3 @@ class MovieDescTranslationService(MovieFieldTranslationServiceBase):
         Path(__file__).resolve().parent / "prompts" / "movie_desc_translation.md"
     )
     ABORT_ERROR_CLASS = MovieDescTranslationTaskAbortError
-
-    def translate_movie(self, movie: Movie) -> dict[str, int | str]:
-        latest_movie = Movie.get_by_id(movie.id)
-        if not str(latest_movie.desc or "").strip():
-            raise ApiError(
-                422,
-                "movie_desc_missing",
-                "影片缺少原始简介",
-                {
-                    "movie_number": latest_movie.movie_number,
-                    "movie_id": latest_movie.id,
-                },
-            )
-
-        # 单影片手动翻译与批量任务共用同一套翻译链路与 kernel 记账。
-        from src.service.system.activity_service import ActivityService
-        from src.service.system.resource_task_runner import ResourceTaskLedger
-
-        run_context = ActivityService.get_task_run_context()
-        claim = ResourceTaskLedger.begin_attempt(
-            task_key=self.TASK_KEY,
-            resource_type="movie",
-            resource_id=latest_movie.id,
-            trigger_type=getattr(run_context, "trigger_type", None),
-            task_run_id=getattr(run_context, "task_run_id", None),
-        )
-        if claim is None:
-            # 行级领取失败：该影片正被批跑/子集跑翻译中，结果由对方产出，本次跳过。
-            return {
-                "movie_id": latest_movie.id,
-                "movie_number": latest_movie.movie_number,
-                "updated_movies": 0,
-                "skipped": "already_running",
-            }
-        attempt, record, _prior_state = claim
-        try:
-            system_prompt = self._load_prompt_or_abort()
-            translated_text = self._translate_with_retry(
-                movie=latest_movie,
-                system_prompt=system_prompt,
-                source_text=latest_movie.desc,
-            )
-            normalized_translated_text = self._normalize_translated_text(translated_text)
-        except Exception as exc:
-            # 单影片接口没有"整轮"可中止:上游不可用与业务性失败一律按可重试失败记账。
-            error_message = self._normalize_error_message(exc)
-            ResourceTaskLedger.finish_failure(
-                attempt,
-                record,
-                error_code=getattr(exc, "error_code", None) or "translation_failed",
-                error_message=error_message,
-                retryable=True,
-                policy=self.TRANSLATION_RETRY_POLICY,
-            )
-            logger.warning(
-                "Movie desc translation failed movie_number={} detail={}",
-                latest_movie.movie_number,
-                error_message,
-            )
-            raise
-        self._apply_translation(latest_movie, normalized_translated_text)
-        ResourceTaskLedger.finish_success(attempt, record)
-        return {
-            "movie_id": latest_movie.id,
-            "movie_number": latest_movie.movie_number,
-            "updated_movies": 1,
-        }

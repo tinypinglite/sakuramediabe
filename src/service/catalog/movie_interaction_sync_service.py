@@ -275,58 +275,6 @@ class MovieInteractionSyncService:
             counters["unchanged_movies"] += 1
         counters["heat_updated_movies"] += heat_updated_count
 
-    def sync_movie(self, movie: Movie) -> dict[str, int | str]:
-        """单影片补刷入口（订阅接口联动等）：与批量共用抓取链路与 kernel 记账。"""
-        from src.service.system.activity_service import ActivityService
-
-        latest_movie = Movie.get_by_id(movie.id)
-        run_context = ActivityService.get_task_run_context()
-        claim = ResourceTaskLedger.begin_attempt(
-            task_key=self.TASK_KEY,
-            resource_type="movie",
-            resource_id=latest_movie.id,
-            trigger_type=getattr(run_context, "trigger_type", None),
-            task_run_id=getattr(run_context, "task_run_id", None),
-        )
-        if claim is None:
-            # 行级领取失败：该影片正被批跑/子集跑同步中，本次跳过。
-            return {
-                "movie_id": latest_movie.id,
-                "movie_number": latest_movie.movie_number,
-                "updated_movies": 0,
-                "unchanged_movies": 0,
-                "heat_updated_movies": 0,
-                "skipped": "already_running",
-            }
-        attempt, record, _prior_state = claim
-        try:
-            interaction_changed, heat_updated_count = self._fetch_and_apply(latest_movie)
-        except TaskItemError as exc:
-            ResourceTaskLedger.finish_failure(
-                attempt,
-                record,
-                error_code=exc.error_code,
-                error_message=str(exc),
-                retryable=exc.retryable,
-                policy=self.RETRY_POLICY,
-            )
-            logger.warning(
-                "Movie interaction sync failed movie_id={} movie_number={} javdb_id={} detail={}",
-                latest_movie.id,
-                latest_movie.movie_number,
-                latest_movie.javdb_id,
-                exc,
-            )
-            raise
-        ResourceTaskLedger.finish_success(attempt, record)
-        return {
-            "movie_id": latest_movie.id,
-            "movie_number": latest_movie.movie_number,
-            "updated_movies": 1 if interaction_changed else 0,
-            "unchanged_movies": 0 if interaction_changed else 1,
-            "heat_updated_movies": heat_updated_count,
-        }
-
     def run(self, *, reporter, only_ids: list[int] | None = None) -> dict[str, int]:
         spec = ResourceTaskSpec(
             task_key=self.TASK_KEY,

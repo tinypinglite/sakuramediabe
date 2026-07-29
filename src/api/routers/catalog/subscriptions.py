@@ -3,8 +3,6 @@ from fastapi import APIRouter, Depends, Query
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.catalog.subscriptions import (
     MovieSubscriptionListItemResource,
-    MovieSubscriptionSearchResetRequest,
-    MovieSubscriptionSearchResetResponse,
     MovieSubscriptionSort,
     MovieSubscriptionStatus,
     MovieSubscriptionStatusCountsResource,
@@ -45,9 +43,6 @@ def count_movie_subscriptions_by_status():
 
 # 批量取消订阅不在本域：不删文件走 POST /movies/unsubscriptions，要删媒体文件走
 # DELETE /media/{media_id}，两者都已存在，不在这里平行造一套。
-@router.post("/search-resets", response_model=MovieSubscriptionSearchResetResponse)
-def reset_movie_subscription_search(payload: MovieSubscriptionSearchResetRequest):
-    return MovieSubscriptionService.reset_search_state(
-        movie_numbers=payload.movie_numbers,
-        reset_all_exhausted=payload.reset_all_exhausted,
-    )
+# 资源查询重置也不在本域：统一走 POST /system/resource-task-actions 的
+# reset_retry_budget（task_key=subscribed_movie_auto_download；resource_ids 缺省 +
+# state=exhausted 即旧 reset_all_exhausted 语义，未订阅影片由合格性钩子跳过）。

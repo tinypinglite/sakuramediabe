@@ -63,23 +63,14 @@ def _run_media_rapid_upload(reporter, params: dict) -> dict:
 
 
 def _run_movie_desc_translation_subset(reporter, params: dict) -> dict:
-    from src.model import Movie
     from src.service.catalog.movie_desc_translation_service import MovieDescTranslationService
 
-    if "movie_id" in params:
-        # 单影片手动翻译：强制语义（不看候选过滤），走单资源 Ledger 路径。
-        movie = Movie.get_by_id(int(params["movie_id"]))
-        return MovieDescTranslationService().translate_movie(movie)
     return MovieDescTranslationService().run(reporter=reporter, only_ids=params.get("only_ids"))
 
 
 def _run_movie_interaction_sync_subset(reporter, params: dict) -> dict:
-    from src.model import Movie
     from src.service.catalog.movie_interaction_sync_service import MovieInteractionSyncService
 
-    if "movie_id" in params:
-        movie = Movie.get_by_id(int(params["movie_id"]))
-        return MovieInteractionSyncService().sync_movie(movie)
     return MovieInteractionSyncService().run(reporter=reporter, only_ids=params.get("only_ids"))
 
 
@@ -142,8 +133,8 @@ QUEUE_TASK_REGISTRY: dict[str, QueueTaskDefinition] = {
             # 批次完成通知由业务侧幂等发送（含崩溃恢复补发），任务级通知关闭。
             notify_result=False,
         ),
-        # 子集/单资源手动任务：与 cron 批任务同 key，仅当运行带 params 时命中
-        # （统一 action 端点的 retry_now/rerun 与影片页单片按钮都走这里）。
+        # 子集手动任务：与 cron 批任务同 key，仅当运行带 params 时命中
+        # （统一 action 端点的 retry_now/rerun 走这里；only_ids 即强制语义）。
         QueueTaskDefinition(
             task_key="movie_desc_translation",
             log_name="movie-desc-translation",
