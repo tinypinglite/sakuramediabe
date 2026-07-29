@@ -322,7 +322,15 @@ CLI 长任务（migrate-jav-layout / migrate-plot-layout / backfill-* / scan-med
       2 次/轮后 exhausted、源未就绪 deferred；重置接口对齐 kernel 语义
       （接受三种失败态、重开预算 retry_round+1、不再动 extra）；
       `20260729_06` 清空并按 MediaThumbnail 存在性播种 succeeded
-- 剩余顺序：订阅搜索（合并 key）→ 媒体巡检 → 演员同步
+- [x] 订阅资源查询迁移完成：task_key 与 job 合并为 `subscribed_movie_auto_download`
+      （原 `subscribed_movie_search` 随 `20260730_01` 清空，两套 key 的包袱了结）；
+      内核扩展 `TaskItemError(consumes_budget=False)`——索引器/提交故障落错误
+      但不吃预算；新片豁免走 `RetryPolicy.exempt`（决策 #10），豁免同时回滚计数；
+      退避为零复刻"每晚一轮直到预算耗尽"；订阅页 CASE 对齐：「查过没找到」
+      （error_code=no_candidate_found）归 MISSING、真故障才亮 FAILED；
+      订阅重置从"删行"改为"重开预算"（两种 reset 语义就此统一）；
+      115 匀速节奏保留在任务侧（ctx.shared 传递批内状态）
+- 剩余顺序：媒体巡检 → 演员同步
 - **存量状态策略：切换即清空该 task_key 的 `resource_task_state` 行（清空重建，
   不做语义映射迁移），仅两个例外**（决策 #11）：
   - `movie_interaction_sync`：必须保留 `(resource_id, last_succeeded_at)`——

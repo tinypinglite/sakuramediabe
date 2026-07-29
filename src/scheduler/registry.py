@@ -30,6 +30,7 @@ from src.service.playback import (
     MediaThumbnailService,
 )
 from src.service.system import ActivityCleanupService
+from src.service.system.resource_task_runner import ResourceTaskLedger
 
 from src.service.transfers import (
     Cloud115OfflineSyncService,
@@ -95,7 +96,14 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="auto-download-subscribed-movies",
         cli_help="执行一次已订阅缺失影片自动下载",
         cron_setting="subscribed_movie_auto_download_cron",
-        service_factory=lambda _reporter: SubscribedMovieAutoDownloadService().run(),
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
+        service_factory=lambda reporter: SubscribedMovieAutoDownloadService().run(reporter=reporter),
+        business_recovery=lambda: {
+            "recovered_running_movies": ResourceTaskLedger.recover_running(
+                "subscribed_movie_auto_download",
+                error_message="订阅影片资源查询任务中断，等待重试",
+            )
+        },
         format_stats=_build_stats_formatter(
             "auto download finished:",
             ("candidate_movies", "candidate_movies", 0),

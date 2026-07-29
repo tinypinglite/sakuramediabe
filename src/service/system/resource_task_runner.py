@@ -38,12 +38,24 @@ ERROR_CODE_UNHANDLED = "unhandled_exception"
 
 
 class TaskItemError(Exception):
-    """单资源处理失败：带结构化 error_code 与可重试性，由内核分类落库。"""
+    """单资源处理失败：带结构化 error_code 与可重试性，由内核分类落库。
 
-    def __init__(self, error_code: str, message: str | None = None, *, retryable: bool = True):
+    ``consumes_budget=False`` 表示基础设施性失败（如索引器故障）：照常落
+    failed_retryable + 错误信息，但不计入该资源的重试预算、也不触发 exhausted。
+    """
+
+    def __init__(
+        self,
+        error_code: str,
+        message: str | None = None,
+        *,
+        retryable: bool = True,
+        consumes_budget: bool = True,
+    ):
         super().__init__(message or error_code)
         self.error_code = error_code
         self.retryable = retryable
+        self.consumes_budget = consumes_budget
 
 
 class TaskItemDeferred(Exception):
@@ -198,8 +210,14 @@ class ResourceTaskLedger:
         policy: RetryPolicy,
         budget_exempt: bool = False,
     ) -> str:
-        """按可重试性与预算分类落库，返回投影最终状态。"""
+        """按可重试性与预算分类落库，返回投影最终状态。
+
+        ``budget_exempt=True``（策略豁免如"新片不计次"，或错误声明不耗预算）时：
+        回滚本轮计数且永不判 exhausted，失败照常落 failed_retryable + 错误信息。
+        """
         now = utc_now_for_db()
+        if budget_exempt:
+            record.attempt_count = max(record.attempt_count - 1, 0)
         if not retryable:
             final_state = STATE_FAILED_TERMINAL
             next_retry_at = None
@@ -209,7 +227,7 @@ class ResourceTaskLedger:
         else:
             final_state = STATE_FAILED_RETRYABLE
             next_retry_at = now + timedelta(
-                seconds=policy.next_retry_delay_seconds(record.attempt_count)
+                seconds=policy.next_retry_delay_seconds(max(record.attempt_count, 1))
             )
         with get_database().atomic():
             cls._finalize_attempt(
@@ -356,9 +374,14 @@ class ResourceTaskRunner:
         except Exception as exc:
             if isinstance(exc, TaskItemError):
                 error_code, retryable = exc.error_code, exc.retryable
+                consumes_budget = exc.consumes_budget
             else:
                 error_code, retryable = ERROR_CODE_UNHANDLED, True
-            budget_exempt = bool(spec.retry.exempt and spec.retry.exempt(resource))
+                consumes_budget = True
+            budget_exempt = bool(
+                not consumes_budget
+                or (spec.retry.exempt and spec.retry.exempt(resource))
+            )
             final_state = ResourceTaskLedger.finish_failure(
                 attempt,
                 record,

@@ -279,3 +279,45 @@ def test_status_filter_selects_only_import_failed(client):
 
     assert [item.movie_number for item in page.items] == ["FIL-001"]
     assert page.total == 1
+
+
+def test_search_state_branches_map_kernel_vocabulary(client):
+    """kernel 记账（Wave 2）后的搜索状态档位：
+    exhausted → 已放弃；failed_retryable 里「查过没找到」归 MISSING、真故障才亮 FAILED；
+    succeeded（提交过、种子后来判死）归 MISSING；无状态行 → PENDING。"""
+    from src.common.runtime_time import utc_now_for_db
+    from src.model import ResourceTaskState
+    from src.service.transfers.subscribed_movie_search_state_service import (
+        ERROR_CODE_NO_CANDIDATE,
+        RESOURCE_TYPE,
+        TASK_KEY,
+    )
+
+    now = utc_now_for_db()
+
+    def _search_state(movie, *, state, error_code=None, attempted=True):
+        return ResourceTaskState.create(
+            task_key=TASK_KEY,
+            resource_type=RESOURCE_TYPE,
+            resource_id=movie.id,
+            state=state,
+            attempt_count=1,
+            last_attempted_at=now if attempted else None,
+            error_code=error_code,
+        )
+
+    exhausted = _subscribe("SRCH-001")
+    _search_state(exhausted, state="exhausted")
+    no_candidate = _subscribe("SRCH-002")
+    _search_state(no_candidate, state="failed_retryable", error_code=ERROR_CODE_NO_CANDIDATE)
+    infra_failed = _subscribe("SRCH-003")
+    _search_state(infra_failed, state="failed_retryable", error_code="indexer_search_failed")
+    submitted_then_dead = _subscribe("SRCH-004")
+    _search_state(submitted_then_dead, state="succeeded")
+    never_searched = _subscribe("SRCH-005")
+
+    assert _status_of("SRCH-001") == MovieSubscriptionStatus.EXHAUSTED.value
+    assert _status_of("SRCH-002") == MovieSubscriptionStatus.MISSING.value
+    assert _status_of("SRCH-003") == MovieSubscriptionStatus.FAILED.value
+    assert _status_of("SRCH-004") == MovieSubscriptionStatus.MISSING.value
+    assert _status_of("SRCH-005") == MovieSubscriptionStatus.PENDING.value

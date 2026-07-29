@@ -37,6 +37,7 @@ from src.service.transfers.common import (
     download_task_dead_expression,
 )
 from src.service.transfers.subscribed_movie_search_state_service import (
+    ERROR_CODE_NO_CANDIDATE,
     RESOURCE_TYPE as SEARCH_RESOURCE_TYPE,
     TASK_KEY as SEARCH_TASK_KEY,
     SubscribedMovieSearchStateService,
@@ -94,7 +95,16 @@ class MovieSubscriptionService:
                     MovieSubscriptionStatus.EXHAUSTED.value,
                 ),
                 (
-                    ResourceTaskState.state == SubscribedMovieSearchStateService.STATE_FAILED,
+                    # kernel 记账后失败落 failed_retryable；「查过没找到」有专属 error_code，
+                    # 仍归 MISSING 档（走下面 last_attempted_at 分支），只有真故障才亮 FAILED。
+                    (
+                        ResourceTaskState.state
+                        == SubscribedMovieSearchStateService.STATE_FAILED_RETRYABLE
+                    )
+                    & (
+                        ResourceTaskState.error_code.is_null(True)
+                        | (ResourceTaskState.error_code != ERROR_CODE_NO_CANDIDATE)
+                    ),
                     MovieSubscriptionStatus.FAILED.value,
                 ),
                 (

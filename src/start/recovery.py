@@ -12,6 +12,7 @@ from src.service.catalog import (
 )
 from src.service.playback import MediaThumbnailService
 from src.service.system import ActivityService
+from src.service.system.resource_task_runner import ResourceTaskLedger
 from src.service.transfers import (
     Cloud115OfflineSyncService,
     DownloadSyncService,
@@ -46,6 +47,11 @@ BUSINESS_RECOVERY_HANDLERS: dict[str, Callable[[], object]] = {
     ),
     "media_thumbnail_generation": lambda: MediaThumbnailService.recover_interrupted_running_media(
         error_message=MediaThumbnailService.INTERRUPTED_GENERATION_ERROR_MESSAGE,
+    ),
+    # Wave 2：task_key 与资源状态 key 已合并，崩溃回收走 kernel 的 running 复位。
+    "subscribed_movie_auto_download": lambda: ResourceTaskLedger.recover_running(
+        "subscribed_movie_auto_download",
+        error_message="订阅影片资源查询任务中断，等待重试",
     ),
     "download_task_import": lambda: DownloadSyncService().recover_orphaned_imports_only(),
     "media_directory_import": _recover_media_directory_imports,

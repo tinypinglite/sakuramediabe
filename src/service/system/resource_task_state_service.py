@@ -108,8 +108,9 @@ class ResourceTaskStateService:
             default_sort="last_attempted_at:desc",
             resource_resolver=MEDIA_TASK_RECORD_RESOLVER,
         ),
-        "subscribed_movie_search": ResourceTaskDefinition(
-            task_key="subscribed_movie_search",
+        # Wave 2：task_key 与 job 合并（原 subscribed_movie_search，历史行随迁移清空）。
+        "subscribed_movie_auto_download": ResourceTaskDefinition(
+            task_key="subscribed_movie_auto_download",
             resource_type="movie",
             display_name="订阅影片资源查询",
             default_sort="last_attempted_at:desc",
