@@ -72,6 +72,8 @@ class MovieSubscriptionImportOperationResource(SchemaModel):
 
 
 class MovieSubscriptionListItemResource(SchemaModel):
+    # 统一 action 协议的操作主键（resource_ids 收整数 movie id），前端选择态以它为准。
+    movie_id: int
     movie_number: str
     title: str
     title_zh: str = ""

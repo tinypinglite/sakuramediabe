@@ -230,6 +230,7 @@ class MovieSubscriptionService:
             record = records.get(movie.id)
             items.append(
                 MovieSubscriptionListItemResource(
+                    movie_id=movie.id,
                     movie_number=movie.movie_number,
                     title=movie.title,
                     title_zh=movie.title_zh or "",

@@ -207,7 +207,10 @@ GET /system/resource-task-states?task_key=media_thumbnail_generation&state=faile
   端点已删除；从未记账的影片后端会自动播种状态行）
 - 订阅页"重新查询 / 重置全部已放弃" = `reset_retry_budget`（task_key
   `subscribed_movie_auto_download`，后者用缺省 `resource_ids` + `state=exhausted`；
-  旧 `/movie-subscriptions/search-resets` 端点已删除）
+  旧 `/movie-subscriptions/search-resets` 端点已删除）。逐条 / 多选的 `resource_ids`
+  取订阅列表项新增的 `movie_id` 字段；后端没有 is_fresh 之类的额外前置——合格性钩子
+  只会跳过 `movie_not_found` / `movie_not_subscribed`，其余全由状态决定
+  （`state_not_actionable`），按钮照常按 `available_actions` 渲染即可
 
 ### 1. 资源任务入口页
 

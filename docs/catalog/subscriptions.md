@@ -19,6 +19,7 @@
 
 ```json
 {
+  "movie_id": 123,
   "movie_number": "ABP-123",
   "title": "…",
   "title_zh": "…",
@@ -38,6 +39,8 @@
 
 字段说明：
 
+- `movie_id`：统一 action 协议（`POST /system/resource-task-actions` 的 `resource_ids`）
+  的操作主键，前端选择态以它为准，不要再用番号寻址
 - `status`：资源状态，取值见下表
 - `is_fresh`：是否算新片（`release_date` 在 90 天内，含未来日期）。新片每轮都查、**不计次数、
   永不放弃**，所以它为 `true` 时 `attempt_count` 恒为 `0`，前端该展示「持续查询中」而不是次数

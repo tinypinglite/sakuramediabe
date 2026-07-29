@@ -279,6 +279,8 @@ def test_status_filter_selects_only_import_failed(client):
 
     assert [item.movie_number for item in page.items] == ["FIL-001"]
     assert page.total == 1
+    # movie_id 是统一 action 协议（resource_ids）的操作主键，必须随列表带出。
+    assert page.items[0].movie_id == Movie.get(Movie.movie_number == "FIL-001").id
 
 
 def test_search_state_branches_map_kernel_vocabulary(client):
