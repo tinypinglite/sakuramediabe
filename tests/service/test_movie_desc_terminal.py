@@ -90,5 +90,6 @@ def test_sync_movie_desc_still_retries_non_terminal_failure(test_db):
     assert provider.calls == [movie.movie_number]
     assert refreshed_movie.desc == "可重试后获取的简介"
     assert refreshed_state.state == "succeeded"
-    assert refreshed_state.attempt_count == 4
+    # 成功收口本轮：计数归零。
+    assert refreshed_state.attempt_count == 0
     assert refreshed_state.error_code is None

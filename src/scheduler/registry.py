@@ -126,9 +126,8 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="sync-movie-interactions",
         cli_help="执行一次影片互动数同步",
         cron_setting="movie_interaction_sync_cron",
-        service_factory=lambda reporter: MovieInteractionSyncService().run(
-            progress_callback=reporter.progress_callback,
-        ),
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
+        service_factory=lambda reporter: MovieInteractionSyncService().run(reporter=reporter),
         business_recovery=lambda: {
             "recovered_running_movies": MovieInteractionSyncService.recover_interrupted_running_movies(
                 error_message=MovieInteractionSyncService.INTERRUPTED_SYNC_ERROR_MESSAGE,

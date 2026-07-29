@@ -22,7 +22,7 @@ class ResourceTaskAttempt(TimestampedMixin, BaseModel):
         on_delete="SET NULL",
         column_name="task_run_id",
     )
-    # 该资源生命周期内的第 N 次尝试（终身序号，不随 retry_round 重置）
+    # 本轮内的第 N 次尝试（成功或重开预算后从 1 重计）；终身序号看行 id 顺序即可
     attempt_no = peewee.IntegerField()
     trigger_type = peewee.CharField(max_length=32, null=True)
     # running / succeeded / failed / deferred / aborted

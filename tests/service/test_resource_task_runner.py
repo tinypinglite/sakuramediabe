@@ -70,7 +70,8 @@ def test_runner_success_writes_projection_and_attempt(test_db):
     assert stats["succeeded_count"] == 1
     record = _record(movie)
     assert record.state == "succeeded"
-    assert record.attempt_count == 1
+    # 成功收口本轮：计数归零，终身次数由 attempt 表体现。
+    assert record.attempt_count == 0
     assert record.next_retry_at is None
     attempt = ResourceTaskAttempt.get_by_id(record.last_attempt_id)
     assert attempt.state == "succeeded"

@@ -310,7 +310,12 @@ CLI 长任务（migrate-jav-layout / migrate-plot-layout / backfill-* / scan-med
       上游限流重试耗尽 → TaskAbortError（当前影片回 pending 不耗预算）；
       业务性失败首次获得预算（30min 起步指数退避、5 次/轮，决策 #9）；
       单影片手动入口同步改 Ledger 记账；存量状态行由 `20260729_04` 清空
-- 剩余顺序：互动同步 → 缩略图 → 订阅搜索（合并 key）→ 媒体巡检 → 演员同步
+- [x] `movie_interaction_sync` 迁移完成：时间分层判定保留 Python 侧（不用内核
+      默认状态条件，状态排除语义等价合入）；`last_succeeded_at` 记忆经 `20260729_05`
+      保留（决策 #11 例外），未成功行删除重 seed；JavDB 番号消失判 failed_terminal。
+      顺带修内核语义：成功收口本轮（attempt_count 归零），周期任务的历史成功
+      不再吃掉失败预算
+- 剩余顺序：缩略图 → 订阅搜索（合并 key）→ 媒体巡检 → 演员同步
 - **存量状态策略：切换即清空该 task_key 的 `resource_task_state` 行（清空重建，
   不做语义映射迁移），仅两个例外**（决策 #11）：
   - `movie_interaction_sync`：必须保留 `(resource_id, last_succeeded_at)`——

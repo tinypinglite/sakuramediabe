@@ -1406,3 +1406,42 @@ def test_run_pending_migrations_wipes_task_run_history(clean_db):
     assert clean_db.execute_sql("SELECT count(*) FROM system_event").fetchone()[0] == 0
     assert clean_db.execute_sql("SELECT task_run_id FROM import_job").fetchone()[0] is None
     assert "20260729_02_wipe_task_run_history" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_resets_interaction_sync_states_preserving_memory(clean_db):
+    """互动同步迁 kernel（20260729_05）：保留 last_succeeded_at 记忆、清历史；未成功行删除。
+
+    该时间戳是分层调度的唯一记忆载体，清空等于重放全库 seed（每片一次 JavDB 请求）。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260729_05_reset_movie_interaction_sync_states",),
+    )
+    clean_db.execute_sql(
+        "INSERT INTO resource_task_state"
+        " (created_at, updated_at, task_key, resource_type, resource_id, state,"
+        "  attempt_count, retry_round, last_succeeded_at, last_error, error_code)"
+        " VALUES"
+        " (now(), now(), 'movie_interaction_sync', 'movie', 1, 'failed', 3, 0,"
+        "  '2026-07-01 00:00:00', 'javdb 超时', 'javdb_request_error'),"
+        " (now(), now(), 'movie_interaction_sync', 'movie', 2, 'running', 1, 0,"
+        "  NULL, NULL, NULL)"
+    )
+
+    run_pending_migrations(clean_db)
+
+    rows = clean_db.execute_sql(
+        "SELECT resource_id, state, attempt_count, last_succeeded_at, last_error, error_code"
+        " FROM resource_task_state WHERE task_key = 'movie_interaction_sync'"
+        " ORDER BY resource_id"
+    ).fetchall()
+    assert len(rows) == 1
+    resource_id, state, attempt_count, last_succeeded_at, last_error, error_code = rows[0]
+    assert resource_id == 1
+    assert state == "succeeded"
+    assert attempt_count == 0
+    assert last_succeeded_at is not None
+    assert last_error is None
+    assert error_code is None

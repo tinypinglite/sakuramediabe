@@ -172,6 +172,9 @@ class ResourceTaskLedger:
         with get_database().atomic():
             cls._finalize_attempt(attempt, STATE_SUCCEEDED, finished_at=now)
             record.state = STATE_SUCCEEDED
+            # 成功即收口本轮：计数归零，让周期性任务（如互动同步）的历史成功
+            # 不吃掉失败预算；终身次数由 attempt 表行数体现。
+            record.attempt_count = 0
             record.last_succeeded_at = now
             record.last_error = None
             record.last_error_at = None
@@ -394,4 +397,7 @@ class ResourceTaskRunner:
                 ResourceTaskLedger.finish_success(attempt, record)
                 stats["succeeded_count"] += 1
             reporter.emit(current=index, total=total)
+        if isinstance(ctx.shared, dict):
+            # setup_run 产出的共享上下文若是 dict，回传给任务侧合并领域计数。
+            stats["shared"] = ctx.shared
         return stats
