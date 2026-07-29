@@ -48,6 +48,8 @@ class ResourceTaskRecordResource(SchemaModel):
     created_at: datetime
     updated_at: datetime
     resource: TaskRecordResourceSummary | None = None
+    # 后端按投影状态计算的可用操作（Wave 4 统一 action 协议），前端只按枚举渲染。
+    available_actions: list[str] = []
 
 
 class MediaThumbnailTaskBatchResetRequest(SchemaModel):
@@ -76,3 +78,23 @@ class MediaThumbnailTaskBatchResetResponse(SchemaModel):
     resource_ids: list[int]
     skipped_count: int = 0
     skipped: list[MediaThumbnailTaskResetSkippedItem] = Field(default_factory=list)
+
+
+class ResourceTaskActionRequest(SchemaModel):
+    task_key: str
+    action: str
+    resource_ids: list[int]
+
+
+class ResourceTaskActionSkippedItem(SchemaModel):
+    resource_id: int
+    reason: str
+
+
+class ResourceTaskActionResponse(SchemaModel):
+    task_key: str
+    action: str
+    # retry_now / rerun 会入队一个带 only_ids 的可跟踪 run；reset_retry_budget 为 null。
+    task_run_id: int | None = None
+    accepted_resource_ids: list[int] = []
+    skipped: list[ResourceTaskActionSkippedItem] = []

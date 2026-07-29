@@ -12,12 +12,16 @@ from src.schema.system.activity import (
     TaskRunResource,
 )
 from src.schema.system.resource_task_state import (
+    ResourceTaskActionRequest,
+    ResourceTaskActionResponse,
+    ResourceTaskActionSkippedItem,
     MediaThumbnailTaskBatchResetRequest,
     MediaThumbnailTaskBatchResetResponse,
     ResourceTaskDefinitionResource,
     ResourceTaskRecordResource,
 )
 from src.service.system import ActivityService, SystemEventService
+from src.service.system.resource_task_action_service import ResourceTaskActionService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 
 router = APIRouter(
@@ -148,6 +152,27 @@ def reset_failed_media_thumbnail_task_states(
         resource_ids=resource_ids,
         skipped_count=len(skipped),
         skipped=skipped,
+    )
+
+
+@router.post("/system/resource-task-actions", response_model=ResourceTaskActionResponse)
+def apply_resource_task_action(payload: ResourceTaskActionRequest):
+    """统一资源任务操作（Wave 4）：retry_now / rerun / reset_retry_budget。
+
+    后端判定可执行性并允许部分成功；retry_now / rerun 会入队一个带 only_ids 的
+    可跟踪 run（响应携带 task_run_id），连点由 action 级 mutex 去重（409）。
+    """
+    outcome = ResourceTaskActionService.apply(
+        task_key=payload.task_key,
+        action=payload.action,
+        resource_ids=payload.resource_ids,
+    )
+    return ResourceTaskActionResponse(
+        task_key=outcome.task_key,
+        action=outcome.action,
+        task_run_id=outcome.task_run_id,
+        accepted_resource_ids=outcome.accepted_resource_ids,
+        skipped=[ResourceTaskActionSkippedItem(**item) for item in outcome.skipped],
     )
 
 

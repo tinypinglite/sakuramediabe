@@ -62,20 +62,55 @@ def _run_media_rapid_upload(reporter, params: dict) -> dict:
     return MediaRapidUploadExecutor.execute_batch_from_queue(reporter, params)
 
 
-def _run_single_movie_desc_translation(reporter, params: dict) -> dict:
+def _run_movie_desc_translation_subset(reporter, params: dict) -> dict:
     from src.model import Movie
     from src.service.catalog.movie_desc_translation_service import MovieDescTranslationService
 
-    movie = Movie.get_by_id(int(params["movie_id"]))
-    return MovieDescTranslationService().translate_movie(movie)
+    if "movie_id" in params:
+        # 单影片手动翻译：强制语义（不看候选过滤），走单资源 Ledger 路径。
+        movie = Movie.get_by_id(int(params["movie_id"]))
+        return MovieDescTranslationService().translate_movie(movie)
+    return MovieDescTranslationService().run(reporter=reporter, only_ids=params.get("only_ids"))
 
 
-def _run_single_movie_interaction_sync(reporter, params: dict) -> dict:
+def _run_movie_interaction_sync_subset(reporter, params: dict) -> dict:
     from src.model import Movie
     from src.service.catalog.movie_interaction_sync_service import MovieInteractionSyncService
 
-    movie = Movie.get_by_id(int(params["movie_id"]))
-    return MovieInteractionSyncService().sync_movie(movie)
+    if "movie_id" in params:
+        movie = Movie.get_by_id(int(params["movie_id"]))
+        return MovieInteractionSyncService().sync_movie(movie)
+    return MovieInteractionSyncService().run(reporter=reporter, only_ids=params.get("only_ids"))
+
+
+def _run_movie_title_translation_subset(reporter, params: dict) -> dict:
+    from src.service.catalog.movie_title_translation_service import MovieTitleTranslationService
+
+    return MovieTitleTranslationService().run(reporter=reporter, only_ids=params.get("only_ids"))
+
+
+def _run_movie_desc_sync_subset(reporter, params: dict) -> dict:
+    from src.service.catalog.movie_desc_sync_service import MovieDescSyncService
+
+    return MovieDescSyncService().run(reporter=reporter, only_ids=params.get("only_ids"))
+
+
+def _run_media_thumbnail_generation_subset(reporter, params: dict) -> dict:
+    from src.service.playback import MediaThumbnailService
+
+    return MediaThumbnailService.generate_pending_thumbnails(
+        reporter=reporter, only_ids=params.get("only_ids")
+    )
+
+
+def _run_subscribed_movie_auto_download_subset(reporter, params: dict) -> dict:
+    from src.service.transfers.subscribed_movie_auto_download_service import (
+        SubscribedMovieAutoDownloadService,
+    )
+
+    return SubscribedMovieAutoDownloadService().run(
+        reporter=reporter, only_ids=params.get("only_ids")
+    )
 
 
 QUEUE_TASK_REGISTRY: dict[str, QueueTaskDefinition] = {
@@ -107,16 +142,37 @@ QUEUE_TASK_REGISTRY: dict[str, QueueTaskDefinition] = {
             # 批次完成通知由业务侧幂等发送（含崩溃恢复补发），任务级通知关闭。
             notify_result=False,
         ),
-        # 单资源手动任务：与 cron 批任务同 key，仅当运行带 params 时命中。
+        # 子集/单资源手动任务：与 cron 批任务同 key，仅当运行带 params 时命中
+        # （统一 action 端点的 retry_now/rerun 与影片页单片按钮都走这里）。
         QueueTaskDefinition(
             task_key="movie_desc_translation",
             log_name="movie-desc-translation",
-            handler=_run_single_movie_desc_translation,
+            handler=_run_movie_desc_translation_subset,
         ),
         QueueTaskDefinition(
             task_key="movie_interaction_sync",
             log_name="movie-interaction-sync",
-            handler=_run_single_movie_interaction_sync,
+            handler=_run_movie_interaction_sync_subset,
+        ),
+        QueueTaskDefinition(
+            task_key="movie_title_translation",
+            log_name="movie-title-translation",
+            handler=_run_movie_title_translation_subset,
+        ),
+        QueueTaskDefinition(
+            task_key="movie_desc_sync",
+            log_name="movie-desc-sync",
+            handler=_run_movie_desc_sync_subset,
+        ),
+        QueueTaskDefinition(
+            task_key="media_thumbnail_generation",
+            log_name="media-thumbnail-generation",
+            handler=_run_media_thumbnail_generation_subset,
+        ),
+        QueueTaskDefinition(
+            task_key="subscribed_movie_auto_download",
+            log_name="subscribed-movie-auto-download",
+            handler=_run_subscribed_movie_auto_download_subset,
         ),
     )
 }

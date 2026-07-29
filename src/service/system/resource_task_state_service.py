@@ -18,6 +18,7 @@ from src.schema.system.resource_task_state import (
     ResourceTaskRecordResource,
     TaskRecordStateCountsResource,
 )
+from src.service.system.resource_task_actions_registry import available_actions_for_state
 from src.service.system.resource_task_resolvers import (
     MEDIA_TASK_RECORD_RESOLVER,
     MOVIE_TASK_RECORD_RESOLVER,
@@ -462,6 +463,7 @@ class ResourceTaskStateService:
                     created_at=record.created_at,
                     updated_at=record.updated_at,
                     resource=resource_summaries.get(record.resource_id),
+                    available_actions=available_actions_for_state(record.state),
                 )
                 for record in records
             ],
@@ -499,4 +501,5 @@ class ResourceTaskStateService:
             created_at=record.created_at,
             updated_at=record.updated_at,
             resource=resource_summary,
+            available_actions=available_actions_for_state(record.state),
         )
