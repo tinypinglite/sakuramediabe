@@ -32,6 +32,7 @@ from src.service.transfers.subscribed_movie_search_state_service import (
 from src.service.transfers.tag_rules import BLURAY_TAG, SUBTITLE_TAG
 from src.common.runtime_time import utc_now_for_db
 from src.service.system.resource_task_runner import (
+    ResourceTaskLedger,
     ResourceTaskRunner,
     ResourceTaskSpec,
     RetryPolicy,
@@ -201,6 +202,8 @@ class SubscribedMovieAutoDownloadService:
             select_candidates=self._select_candidates,
             process_one=self._process_one,
             setup_run=self._setup_run,
+            # 种子判死后 succeeded 行会重新进候选，领取复核用宽松版。
+            claim_eligible=ResourceTaskLedger.resync_claim_eligible,
         )
         stats = ResourceTaskRunner.run(spec, reporter, only_ids=only_ids)
         shared = stats.get("shared") or {}

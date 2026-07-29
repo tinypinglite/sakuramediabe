@@ -9,6 +9,7 @@ import pytest
 from src.common.runtime_time import utc_now_for_db
 from src.model import Movie, ResourceTaskAttempt, ResourceTaskState
 from src.service.system.resource_task_runner import (
+    ResourceTaskLedger,
     ResourceTaskRunner,
     ResourceTaskSpec,
     RetryPolicy,
@@ -187,4 +188,101 @@ def test_runner_only_ids_limits_candidates(test_db):
         .where(ResourceTaskState.resource_id == first.id)
         .count()
         == 0
+    )
+
+
+def _forced_spec(movie_ids: list[int], *, claim_eligible=None) -> ResourceTaskSpec:
+    """无视内核状态条件的候选查询：模拟批跑候选快照过期后仍持有该资源的场景。"""
+
+    def select_candidates(_state_condition, only_ids=None):
+        return list(Movie.select().where(Movie.id.in_(movie_ids)).order_by(Movie.id))
+
+    return ResourceTaskSpec(
+        task_key=TASK_KEY,
+        resource_type="movie",
+        retry=RetryPolicy(max_attempts=3, backoff_base_seconds=600),
+        select_candidates=select_candidates,
+        process_one=lambda _ctx, _movie: None,
+        claim_eligible=claim_eligible,
+    )
+
+
+def _create_state(movie: Movie, state: str) -> ResourceTaskState:
+    return ResourceTaskState.create(
+        task_key=TASK_KEY, resource_type="movie", resource_id=movie.id, state=state
+    )
+
+
+def test_runner_claim_refuses_running_row(test_db):
+    # 行级领取：running 行说明有其它 run 正在处理，跳过且不写 attempt、不覆盖投影。
+    movie = _create_movie("KER-010")
+    _create_state(movie, "running")
+
+    stats = ResourceTaskRunner.run(_forced_spec([movie.id]), StubReporter())
+
+    assert stats["skipped_count"] == 1
+    assert stats["succeeded_count"] == 0
+    assert _record(movie).state == "running"
+    assert (
+        ResourceTaskAttempt.select()
+        .where(ResourceTaskAttempt.resource_id == movie.id)
+        .count()
+        == 0
+    )
+
+
+def test_runner_default_claim_recheck_skips_stale_snapshot(test_db):
+    # 快照后资源已被子集跑做成 succeeded：默认领取复核在行锁内识别并跳过，不重复处理。
+    movie = _create_movie("KER-011")
+    _create_state(movie, "succeeded")
+
+    stats = ResourceTaskRunner.run(_forced_spec([movie.id]), StubReporter())
+
+    assert stats["skipped_count"] == 1
+    assert _record(movie).state == "succeeded"
+
+
+def test_runner_resync_claim_allows_succeeded_row(test_db):
+    # 互动同步/订阅搜索语义：succeeded 行本来就是候选，宽松复核放行重采。
+    movie = _create_movie("KER-012")
+    _create_state(movie, "succeeded")
+
+    stats = ResourceTaskRunner.run(
+        _forced_spec([movie.id], claim_eligible=ResourceTaskLedger.resync_claim_eligible),
+        StubReporter(),
+    )
+
+    assert stats["succeeded_count"] == 1
+    assert _record(movie).state == "succeeded"
+
+
+def test_ledger_force_claim_only_refuses_running(test_db):
+    # 单资源直跑（不传 eligible_check）：succeeded 可强制领取（重跑语义），running 拒绝。
+    movie = _create_movie("KER-013")
+    _create_state(movie, "succeeded")
+
+    claim = ResourceTaskLedger.begin_attempt(
+        task_key=TASK_KEY,
+        resource_type="movie",
+        resource_id=movie.id,
+        trigger_type="manual",
+        task_run_id=None,
+    )
+    assert claim is not None
+    attempt, record, prior_state = claim
+    assert prior_state == "succeeded"
+    ResourceTaskLedger.finish_success(attempt, record)
+
+    ResourceTaskState.update(state="running").where(
+        ResourceTaskState.resource_id == movie.id
+    ).execute()
+    assert (
+        ResourceTaskLedger.begin_attempt(
+            task_key=TASK_KEY,
+            resource_type="movie",
+            resource_id=movie.id,
+            trigger_type="manual",
+            task_run_id=None,
+        )
+        is None
     )

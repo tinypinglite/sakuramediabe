@@ -48,13 +48,22 @@ class MovieDescTranslationService(MovieFieldTranslationServiceBase):
         from src.service.system.resource_task_runner import ResourceTaskLedger
 
         run_context = ActivityService.get_task_run_context()
-        attempt, record, _prior_state = ResourceTaskLedger.begin_attempt(
+        claim = ResourceTaskLedger.begin_attempt(
             task_key=self.TASK_KEY,
             resource_type="movie",
             resource_id=latest_movie.id,
             trigger_type=getattr(run_context, "trigger_type", None),
             task_run_id=getattr(run_context, "task_run_id", None),
         )
+        if claim is None:
+            # 行级领取失败：该影片正被批跑/子集跑翻译中，结果由对方产出，本次跳过。
+            return {
+                "movie_id": latest_movie.id,
+                "movie_number": latest_movie.movie_number,
+                "updated_movies": 0,
+                "skipped": "already_running",
+            }
+        attempt, record, _prior_state = claim
         try:
             system_prompt = self._load_prompt_or_abort()
             translated_text = self._translate_with_retry(

@@ -153,7 +153,9 @@ class ResourceExecutor:
 内核对每个资源固定执行：
 
 ```
-行级领取（UPDATE state='running' WHERE state != 'running'，天然与批跑互斥）
+行级领取（FOR UPDATE 锁行重读：running 一律拒领；批跑另按 claim_eligible 在锁内
+  复核候选快照是否过期。拒领计入 skipped_count，不写 attempt。三套 TaskRun mutex
+  命名空间 aps:*/resource_action:*/movie_task:* 互不阻塞，资源级互斥唯一收口在此）
 → 写 attempt(running, run_id, attempt_no)
 → process_one(ctx, resource)
 → 成功        → attempt=succeeded；投影=succeeded

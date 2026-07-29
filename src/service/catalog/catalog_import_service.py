@@ -373,13 +373,22 @@ class CatalogImportService:
         run_context = ActivityService.get_task_run_context()
         lock_context = self.persist_lock or nullcontext()
         with lock_context:
-            attempt, record, _prior_state = ResourceTaskLedger.begin_attempt(
+            claim = ResourceTaskLedger.begin_attempt(
                 task_key=self.TASK_KEY,
                 resource_type="movie",
                 resource_id=movie.id,
                 trigger_type=getattr(run_context, "trigger_type", None),
                 task_run_id=getattr(run_context, "task_run_id", None),
             )
+        if claim is None:
+            # 行级领取失败：该影片正被其它 run（批跑/子集跑）抓取中，本次跳过。
+            logger.info(
+                "Catalog movie desc sync skipped, movie busy in another run movie_id={} movie_number={}",
+                movie.id,
+                movie.movie_number,
+            )
+            return False
+        attempt, record, _prior_state = claim
         try:
             movie_desc = self.fetch_movie_desc_strict(movie)
         except TaskItemError as exc:

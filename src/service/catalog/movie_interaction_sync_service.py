@@ -281,13 +281,24 @@ class MovieInteractionSyncService:
 
         latest_movie = Movie.get_by_id(movie.id)
         run_context = ActivityService.get_task_run_context()
-        attempt, record, _prior_state = ResourceTaskLedger.begin_attempt(
+        claim = ResourceTaskLedger.begin_attempt(
             task_key=self.TASK_KEY,
             resource_type="movie",
             resource_id=latest_movie.id,
             trigger_type=getattr(run_context, "trigger_type", None),
             task_run_id=getattr(run_context, "task_run_id", None),
         )
+        if claim is None:
+            # 行级领取失败：该影片正被批跑/子集跑同步中，本次跳过。
+            return {
+                "movie_id": latest_movie.id,
+                "movie_number": latest_movie.movie_number,
+                "updated_movies": 0,
+                "unchanged_movies": 0,
+                "heat_updated_movies": 0,
+                "skipped": "already_running",
+            }
+        attempt, record, _prior_state = claim
         try:
             interaction_changed, heat_updated_count = self._fetch_and_apply(latest_movie)
         except TaskItemError as exc:
@@ -328,6 +339,8 @@ class MovieInteractionSyncService:
                 "unchanged_movies": 0,
                 "heat_updated_movies": 0,
             },
+            # 分层重刷会把 succeeded 行选进候选，领取复核用宽松版。
+            claim_eligible=ResourceTaskLedger.resync_claim_eligible,
         )
         stats = ResourceTaskRunner.run(spec, reporter, only_ids=only_ids)
         counters = stats.get("shared") or {}

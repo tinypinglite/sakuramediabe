@@ -113,6 +113,10 @@ class ResourceTaskSpec:
     # 任务内并发：>1 时内核开线程池逐资源执行（每 worker 自建 DB 连接、ctx 显式传参，
     # 取代旧的 ContextVar wrap）。并发模式下 TaskAbortError 在收齐已提交项后再抛出。
     concurrency: int = 1
+    # 领取复核：候选快照与实际处理之间可能间隔很久（长批跑），领取时在行锁内用最新
+    # 投影复核。None = 内核默认（pending / 到期的 failed_retryable）；候选含 succeeded
+    # 行的任务（互动同步 / 订阅搜索）传 ResourceTaskLedger.resync_claim_eligible。
+    claim_eligible: Callable[[Any], bool] | None = None
 
 
 class ResourceTaskLedger:
@@ -142,6 +146,25 @@ class ResourceTaskLedger:
         )
 
     @classmethod
+    def default_claim_eligible(cls, record: ResourceTaskState) -> bool:
+        """内核默认领取复核：与 eligible_state_condition 同语义（pending / 到期的 failed_retryable）。"""
+        if record.state == STATE_PENDING:
+            return True
+        if record.state == STATE_FAILED_RETRYABLE:
+            return record.next_retry_at is None or record.next_retry_at <= utc_now_for_db()
+        return False
+
+    @classmethod
+    def resync_claim_eligible(cls, record: ResourceTaskState) -> bool:
+        """候选含 succeeded 行的任务（互动同步分层重刷 / 订阅搜索种子判死重搜）用：
+        只排除终态与未到期退避，其余状态放行。"""
+        if record.state in (STATE_FAILED_TERMINAL, STATE_EXHAUSTED):
+            return False
+        if record.state == STATE_FAILED_RETRYABLE:
+            return record.next_retry_at is None or record.next_retry_at <= utc_now_for_db()
+        return True
+
+    @classmethod
     def begin_attempt(
         cls,
         *,
@@ -150,8 +173,15 @@ class ResourceTaskLedger:
         resource_id: int,
         trigger_type: str | None,
         task_run_id: int | None,
-    ) -> tuple[ResourceTaskAttempt, ResourceTaskState, str]:
-        """开启一次尝试：attempt 行 + 投影置 running；返回 (attempt, 投影, 尝试前状态)。"""
+        eligible_check: Callable[[ResourceTaskState], bool] | None = None,
+    ) -> tuple[ResourceTaskAttempt, ResourceTaskState, str] | None:
+        """行级领取并开启一次尝试；领取失败返回 None（调用方按跳过处理）。
+
+        TaskRun 层三套 mutex 命名空间（aps:* / resource_action:* / movie_task:*）
+        互不阻塞，资源级互斥唯一收口在这里：FOR UPDATE 锁行重读最新投影，
+        running 行一律拒领；eligible_check（批跑传入）在锁内复核候选快照是否已
+        过期。单资源直跑路径不传 eligible_check 即强制语义（仅拒 running）。
+        """
         now = utc_now_for_db()
         with get_database().atomic():
             record, _created = ResourceTaskState.get_or_create(
@@ -160,6 +190,17 @@ class ResourceTaskLedger:
                 resource_id=int(resource_id),
                 defaults={"state": STATE_PENDING},
             )
+            # get_or_create 的读路径无锁，可能拿到过期快照；锁行重读后再判定。
+            record = (
+                ResourceTaskState.select()
+                .where(ResourceTaskState.id == record.id)
+                .for_update()
+                .get()
+            )
+            if record.state == STATE_RUNNING:
+                return None
+            if eligible_check is not None and not eligible_check(record):
+                return None
             prior_state = record.state
             attempt = ResourceTaskAttempt.create(
                 task_key=task_key,
@@ -335,13 +376,18 @@ class ResourceTaskRunner:
     ) -> tuple[str, TaskAbortError | None]:
         """单资源完整生命周期，返回 (统计桶, abort 异常或 None)。线程安全（无共享写）。"""
         resource_id = spec.resource_id_of(resource)
-        attempt, record, prior_state = ResourceTaskLedger.begin_attempt(
+        claim = ResourceTaskLedger.begin_attempt(
             task_key=spec.task_key,
             resource_type=spec.resource_type,
             resource_id=resource_id,
             trigger_type=ctx.trigger_type,
             task_run_id=ctx.task_run_id,
+            eligible_check=spec.claim_eligible or ResourceTaskLedger.default_claim_eligible,
         )
+        if claim is None:
+            # 领取失败：资源正被其它 run 处理，或候选快照已过期，跳过不写 attempt。
+            return "skipped_count", None
+        attempt, record, prior_state = claim
         try:
             spec.process_one(ctx, resource)
         except TaskItemDeferred as exc:
@@ -426,6 +472,7 @@ class ResourceTaskRunner:
             "failed_terminal_count": 0,
             "exhausted_count": 0,
             "deferred_count": 0,
+            "skipped_count": 0,
         }
         total = len(candidates)
         progress_lock = threading.Lock()
