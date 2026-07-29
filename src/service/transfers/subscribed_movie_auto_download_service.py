@@ -8,7 +8,6 @@ from loguru import logger
 from peewee import JOIN
 
 from src.common.service_helpers import media_exists_expression
-from src.config.config import IndexerKind, settings
 from src.model import DownloadTask, Movie, ResourceTaskState
 from src.model.enums import DownloadClientKind
 from src.schema.transfers.downloads import (
@@ -27,11 +26,13 @@ from src.service.transfers.subscribed_movie_search_state_service import (
     SubscribedMovieSearchStateService,
     search_state_join_condition,
 )
-from src.service.transfers.tag_rules import BLURAY_TAG, SUBTITLE_TAG
+from src.service.transfers.tag_rules import SUBTITLE_TAG
 
-MIN_SEEDERS = 3
 MIN_SIZE_BYTES = 1 * 1024 * 1024 * 1024
 MAX_SIZE_BYTES = 40 * 1024 * 1024 * 1024
+# 打分时中字折算的字节加成：大小主导，中字只在两个候选差不多大时翻盘，
+# 等价于「中字版最多容忍比无中字版小 2G 仍然优先」。
+SUBTITLE_BONUS_BYTES = 2 * 1024 * 1024 * 1024
 # 提交成功之间的随机停顿：cloud115 每次提交要打 1~2 个 webapi 请求（建任务目录），
 # 而每部影片各自新建 SDK client，transport 的匀速闸门与批次计数都会随之归零——
 # 也就是说跨影片**没有任何机制**在限速，实测提交间隔恒定约 3 秒。订阅积压时这就是
@@ -239,87 +240,59 @@ class SubscribedMovieAutoDownloadService:
                 )
         return dead_hashes
 
-    @staticmethod
-    def _is_cloud115_preferred() -> bool:
-        """全局下载器偏好首项是否为 115：决定本轮选种走「网盘优先」策略。"""
-        preferred_kinds = settings.downloads.preferred_client_kinds or []
-        return bool(preferred_kinds) and preferred_kinds[0] == DownloadClientKind.CLOUD115.value
-
     def _pick_best_candidate(
         self,
         candidates: Sequence[DownloadCandidateResource],
         excluded_info_hashes: set[str] | None = None,
     ) -> DownloadCandidateResource | None:
-        # 策略在整轮选种内取一次，避免同一批候选被两套规则切开。
-        cloud115_preferred = self._is_cloud115_preferred()
-        filtered_candidates = [
-            candidate
-            for candidate in candidates
-            if self._is_usable_candidate(candidate, cloud115_preferred=cloud115_preferred)
-        ]
-        if not filtered_candidates:
-            return None
-
-        candidate_pool = filtered_candidates
-        if cloud115_preferred:
-            # 网盘优先：pt 资源只能落到本地 qb（PT 索引器禁绑 115），违背「内容进 115」的意图，
-            # 降为兜底层，只有 bt 池整体为空时才回落到含 pt 的全池。该分层在 4K 分层之外，
-            # 即「pt 有 4K、bt 只有普通版」时仍选 bt。
-            bt_candidates = [
-                candidate
-                for candidate in candidate_pool
-                if candidate.indexer_kind != IndexerKind.PT.value
-            ]
-            candidate_pool = bt_candidates or candidate_pool
-
-        four_k_candidates = [
-            candidate for candidate in candidate_pool if BLURAY_TAG in (candidate.tags or [])
-        ]
-        candidate_pool = four_k_candidates or candidate_pool
-        sorted_candidates = sorted(candidate_pool, key=self._candidate_sort_key)
-
-        if not excluded_info_hashes:
-            return sorted_candidates[0]
-
-        # 候选的 info_hash 在解析索引器响应时就已确定（torznab infohash 属性 / 磁力链），
-        # 这里纯内存比对，不产生任何网络请求。身份未知的候选照常放行：它可能压根不是死种，
-        # 为一个不确定的判断去拉 .torrent 文件不值得——真是死种的话，下一轮它带着
-        # DownloadTask 行回来，那时身份就是确定的了。
-        for candidate in sorted_candidates:
-            if candidate.info_hash and candidate.info_hash in excluded_info_hashes:
+        excluded = excluded_info_hashes or set()
+        # 各过滤环节的击杀计数：全灭时打进日志，回答「订阅了为什么一直不下」。
+        filtered_no_source = 0
+        filtered_size = 0
+        filtered_blacklist = 0
+        filtered_seeders = 0
+        pool: list[DownloadCandidateResource] = []
+        for candidate in candidates:
+            if not ((candidate.magnet_url or "").strip() or (candidate.torrent_url or "").strip()):
+                filtered_no_source += 1
                 continue
-            return candidate
-        return None
+            if not (MIN_SIZE_BYTES <= candidate.size_bytes <= MAX_SIZE_BYTES):
+                filtered_size += 1
+                continue
+            # 候选的 info_hash 在解析索引器响应时就已确定（torznab infohash 属性 / 磁力链），
+            # 这里纯内存比对，不产生任何网络请求。身份未知的候选照常放行：它可能压根不是死种，
+            # 为一个不确定的判断去拉 .torrent 文件不值得——真是死种的话，下一轮它带着
+            # DownloadTask 行回来，那时身份就是确定的了。
+            if candidate.info_hash and candidate.info_hash in excluded:
+                filtered_blacklist += 1
+                continue
+            if candidate.seeders <= 0:
+                filtered_seeders += 1
+                continue
+            pool.append(candidate)
 
-    @staticmethod
-    def _is_usable_candidate(
-        candidate: DownloadCandidateResource,
-        *,
-        cloud115_preferred: bool,
-    ) -> bool:
-        has_source = bool((candidate.magnet_url or "").strip() or (candidate.torrent_url or "").strip())
-        if not has_source:
-            return False
-        # 115 离线是云端拉取，本地做种数无参考意义，且部分索引器根本不返回 seeders（恒 0）；
-        # 网盘优先时对 bt 候选取消该门槛。pt 候选必然落到 qb，门槛照旧生效。
-        skip_seeders_check = cloud115_preferred and candidate.indexer_kind == IndexerKind.BT.value
-        if not skip_seeders_check and candidate.seeders < MIN_SEEDERS:
-            return False
-        return MIN_SIZE_BYTES <= candidate.size_bytes <= MAX_SIZE_BYTES
+        if not pool:
+            logger.info(
+                "Auto download candidates all filtered total={} no_source={} size_filtered={} "
+                "blacklist_filtered={} seeders_filtered={}",
+                len(candidates),
+                filtered_no_source,
+                filtered_size,
+                filtered_blacklist,
+                filtered_seeders,
+            )
+            return None
+        return min(pool, key=self._candidate_sort_key)
 
     @staticmethod
     def _candidate_sort_key(candidate: DownloadCandidateResource) -> tuple:
-        tags = candidate.tags or []
-        # 第一维「pt 优先」只在 qb 优先策略下生效：115 优先且 bt 池非空时池内已无 pt，
-        # 回落到全池时池内又全是 pt，两种情况该维度都无差别，因此无需按策略反转。
-        return (
-            0 if candidate.indexer_kind == "pt" else 1,
-            0 if SUBTITLE_TAG in tags else 1,
-            -candidate.seeders,
-            -candidate.size_bytes,
-            candidate.indexer_name,
-            candidate.title,
-        )
+        # 打分取最高：大小主导 + 中字小额加成（见 SUBTITLE_BONUS_BYTES）。同一个种子常被多个
+        # 索引器同时返回而分数完全相同，(indexer_name, title) 兜底保证选种确定性——黑名单
+        # 排除逻辑依赖「同一批候选每轮选出同一个」。
+        score = candidate.size_bytes
+        if SUBTITLE_TAG in (candidate.tags or []):
+            score += SUBTITLE_BONUS_BYTES
+        return (-score, candidate.indexer_name, candidate.title)
 
     @staticmethod
     def _build_candidate_payload(candidate: DownloadCandidateResource) -> DownloadCandidateCreatePayload:
