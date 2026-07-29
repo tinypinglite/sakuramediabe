@@ -151,7 +151,8 @@
 #### 查询次数与放弃
 
 避免老片长期没有资源却年复一年地查索引器。状态落在 `ResourceTaskState`
-（`task_key=subscribed_movie_search`，`resource_type=movie`），不额外建表。
+（`task_key=subscribed_movie_auto_download`，与定时任务同 key；kernel 逐资源记账，
+见 [task-architecture.md](../development/task-architecture.md)），不额外建表。
 
 调度是每天一轮（`subscribed_movie_auto_download_cron` 默认 `30 2 * * *`），所以「每轮都查」就等于
 「每天查一次」。规则只有两档：
@@ -165,9 +166,11 @@
 并不比连查 3 天多抓到什么；真要捞重新做种的片子得是月/年尺度的重扫，那靠订阅管理页的「重置全部
 已放弃」手动触发，而不是让每部影片都背一套阶梯参数。
 
-因为「还要不要查」在写入时就落进了 `state`，读侧不需要任何时间推导——调度器的候选集是一条纯 SQL
-（`state IS NULL OR state != 'exhausted'`），没有 Python 侧的到期筛选，也不存冗余的「下次查询时间」。
-本任务不使用 `extra` 列。
+「还要不要查」在写入时就落进了 `state`，调度器的候选集仍是一条纯 SQL：排除
+`exhausted` / `failed_terminal` / `running`，`failed_retryable` 看 `next_retry_at`——本任务退避
+为零、写入即到期，等价「下一轮照查」。「查过没找到」带 `error_code=no_candidate_found`，
+订阅页据此归入「未找到」档而非「查询失败」；索引器/提交故障声明不消耗查询次数
+（`consumes_budget=False`），只落错误信息。本任务不使用 `extra` 列。
 
 状态取值：
 

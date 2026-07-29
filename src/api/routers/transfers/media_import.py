@@ -69,6 +69,13 @@ def retry_import_job_failed_files(import_job_id: int, payload: RetryFailedFilesR
     return import_job_service_for(import_job_id).retry_failed_files(import_job_id, payload.files)
 
 
+
+@router.post("/import-jobs/{import_job_id}/rerun", response_model=ImportJobTriggerResponse)
+def rerun_import_job(import_job_id: int):
+    """整作业重跑：不论上次成败按原源整目录重扫（completed 零产出的恢复通路）。"""
+    return import_job_service_for(import_job_id).rerun_job(import_job_id)
+
+
 @router.delete("/import-jobs/{import_job_id}/failed-files", response_model=ImportJobResource)
 def delete_import_job_failed_file(import_job_id: int, payload: DeleteFailedFileRequest):
     return import_job_service_for(import_job_id).delete_failed_file(import_job_id, payload.path)

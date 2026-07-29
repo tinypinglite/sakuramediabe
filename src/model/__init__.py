@@ -27,6 +27,7 @@ from .discovery import (
 from .playback import Media, MediaClip, MediaLibrary, MediaPoint, MediaProgress, MediaThumbnail
 from .system import (
     BackgroundTaskRun,
+    ResourceTaskAttempt,
     ResourceTaskState,
     SchemaMigration,
     SystemEvent,
@@ -87,6 +88,7 @@ __all__ = [
     "SYSTEM_PLAYLIST_KINDS",
     "Playlist",
     "PlaylistMovie",
+    "ResourceTaskAttempt",
     "ResourceTaskState",
     "SchemaMigration",
     "SystemEvent",

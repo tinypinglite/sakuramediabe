@@ -9,12 +9,20 @@ from loguru import logger
 from peewee import Case, fn
 
 from src.config.config import settings
-from src.model import Actor, Movie, MovieActor, ResourceTaskState
+from src.model import Actor, Movie, MovieActor
 from src.service.catalog.movie_desc_translation_client import (
     MovieDescTranslationClient,
     MovieDescTranslationClientError,
 )
-from src.service.system.resource_task_state_service import ResourceTaskStateService
+from src.service.system.resource_task_runner import (
+    ResourceTaskLedger,
+    ResourceTaskRunner,
+    ResourceTaskSpec,
+    RetryPolicy,
+    TaskAbortError,
+    TaskItemDeferred,
+    TaskItemError,
+)
 
 
 class MovieFieldTranslationTaskAbortError(RuntimeError):
@@ -33,10 +41,14 @@ class MovieFieldTranslationTaskAbortError(RuntimeError):
 
 
 class MovieFieldTranslationServiceBase:
-    """影片字段翻译服务的通用基类。
+    """影片字段翻译服务的通用基类（已迁 kernel 记账，任务架构 Wave 2）。
 
-    子类通过类属性声明:任务 key、源/目标字段名、prompt 路径、文案与专属 abort 异常类,
-    其余候选筛选、状态写入、重试与进度上报流程均由基类负责。
+    子类通过类属性声明:任务 key、源/目标字段名、prompt 路径、文案与专属 abort 异常类。
+    候选筛选、逐资源记账、重试预算与进度上报由 ResourceTaskRunner 统一负责：
+    - 上游不可用（限流重试耗尽 / prompt 缺失）→ TaskAbortError，当前影片回 pending
+      不耗预算、整轮中止；
+    - 单影片业务性失败（如内容被拒）→ TaskItemError 按预算退避，超限 exhausted
+      （旧实现无预算、失败每轮无限重试，本版起收敛）。
     """
 
     # === 子类必须覆写的差异化配置 ===
@@ -51,16 +63,14 @@ class MovieFieldTranslationServiceBase:
     ABORT_ERROR_CLASS: ClassVar[type[MovieFieldTranslationTaskAbortError]] = (
         MovieFieldTranslationTaskAbortError
     )
-    # 与原两份实现里不完全对称的“跳过”文案,允许子类各自定义;默认按简介版口径。
-    SKIP_ACTION_TEXT: ClassVar[str] = "跳过无需翻译影片"
 
     # === 通用配置,一般不用覆写 ===
-    TRANSLATION_STATUS_PENDING = ResourceTaskStateService.STATE_PENDING
-    TRANSLATION_STATUS_RUNNING = ResourceTaskStateService.STATE_RUNNING
-    TRANSLATION_STATUS_SUCCEEDED = ResourceTaskStateService.STATE_SUCCEEDED
-    TRANSLATION_STATUS_FAILED = ResourceTaskStateService.STATE_FAILED
     TRANSLATION_MAX_RETRIES = 3
     TRANSLATION_RETRY_DELAY_SECONDS = 5
+    # 重试预算（决策 #9）：业务性失败按 30 分钟起步指数退避，5 次后 exhausted。
+    TRANSLATION_RETRY_POLICY = RetryPolicy(
+        max_attempts=5, backoff_base_seconds=1800, backoff_max_seconds=86400
+    )
 
     def __init__(
         self,
@@ -73,30 +83,6 @@ class MovieFieldTranslationServiceBase:
             Path(prompt_path) if prompt_path is not None else self.DEFAULT_PROMPT_PATH
         )
 
-    # -------- 进度回调工具 --------
-
-    @staticmethod
-    def _emit_progress(progress_callback, **payload) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(payload)
-
-    def _emit_movie_progress(
-        self,
-        *,
-        progress_callback,
-        stats: dict[str, int],
-        movie: Movie,
-        action_text: str,
-    ) -> None:
-        self._emit_progress(
-            progress_callback,
-            current=stats["processed_movies"],
-            total=stats["candidate_movies"],
-            text=f"{action_text} {movie.movie_number}",
-            summary_patch=stats,
-        )
-
     # -------- 中断恢复 --------
 
     @classmethod
@@ -106,9 +92,8 @@ class MovieFieldTranslationServiceBase:
         normalized_error = (
             (error_message or "").strip() or cls.INTERRUPTED_TRANSLATION_ERROR_MESSAGE
         )
-        # 仅把遗留在 running 的翻译任务重置为 failed,保留历史尝试信息。
-        return ResourceTaskStateService.recover_running_records(
-            cls.TASK_KEY, normalized_error
+        return ResourceTaskLedger.recover_running(
+            cls.TASK_KEY, error_message=normalized_error
         )
 
     # -------- 候选查询 --------
@@ -140,19 +125,12 @@ class MovieFieldTranslationServiceBase:
         )
 
     @classmethod
-    def _candidate_query(cls):
-        # 通过 SOURCE_ATTR / TARGET_ATTR 从 Movie 上取字段,让基类适配不同翻译目标字段。
+    def _select_candidates(cls, state_condition, only_ids=None):
         source_field = getattr(Movie, cls.SOURCE_ATTR)
         target_field = getattr(Movie, cls.TARGET_ATTR)
-        matching_state_query = ResourceTaskState.select(ResourceTaskState.id).where(
-            ResourceTaskState.task_key == cls.TASK_KEY,
-            ResourceTaskState.resource_type == "movie",
-            ResourceTaskState.resource_id == Movie.id,
-        )
         priority_order = cls._candidate_priority_expression()
         subscribed_time_is_null_order = Case(
             None,
-            # 已订阅影片里,把缺失订阅时间的记录排到后面;所有分支统一返回整数排序位。
             ((((Movie.is_subscribed == True) & Movie.subscribed_at.is_null()), 1),),
             0,
         )
@@ -166,24 +144,11 @@ class MovieFieldTranslationServiceBase:
             ((Movie.is_subscribed == True, 0),),
             Movie.heat,
         )
-        return (
+        query = (
             Movie.select(Movie)
             .where(
                 source_field != "",
-                target_field == "",
-                (
-                    ~fn.EXISTS(matching_state_query)
-                    | fn.EXISTS(
-                        matching_state_query.where(
-                            ResourceTaskState.state.in_(
-                                [
-                                    cls.TRANSLATION_STATUS_PENDING,
-                                    cls.TRANSLATION_STATUS_FAILED,
-                                ]
-                            )
-                        )
-                    )
-                ),
+                state_condition(cls.TASK_KEY, "movie", Movie.id),
             )
             .order_by(
                 priority_order.asc(),
@@ -193,6 +158,14 @@ class MovieFieldTranslationServiceBase:
                 Movie.id.desc(),
             )
         )
+        if only_ids:
+            # 手动指定即强制（统一 action 的 rerun 语义）：不看"是否已有译文"，
+            # 只保留源字段非空；重译已完成影片就靠这条通路。
+            query = query.where(Movie.id.in_(list(only_ids)))
+        else:
+            # 批跑只补缺：已有译文的影片不进候选。
+            query = query.where(target_field == "")
+        return query
 
     # -------- prompt / 输出规范化 --------
 
@@ -217,29 +190,6 @@ class MovieFieldTranslationServiceBase:
         if "无有效内容" in normalized_text:
             return ""
         return normalized_text
-
-    # -------- 状态写入 --------
-
-    @classmethod
-    def _mark_translation_started(cls, movie: Movie) -> None:
-        # 翻译状态统一落到资源任务表,避免继续膨胀 movie 主表。
-        ResourceTaskStateService.mark_started(cls.TASK_KEY, movie.id)
-
-    @classmethod
-    def _mark_translation_succeeded(cls, movie: Movie, translated_text: str) -> None:
-        target_field = getattr(Movie, cls.TARGET_ATTR)
-        setattr(movie, cls.TARGET_ATTR, translated_text)
-        movie.save(only=[target_field])
-        ResourceTaskStateService.mark_succeeded(cls.TASK_KEY, movie.id)
-
-    @classmethod
-    def _mark_translation_failed(cls, movie: Movie, detail: str) -> None:
-        ResourceTaskStateService.mark_failed(cls.TASK_KEY, movie.id, detail)
-
-    @classmethod
-    def _mark_translation_pending(cls, movie: Movie, detail: str) -> None:
-        # 任务级中断时把影片恢复为 pending,避免误记为影片本身翻译失败。
-        ResourceTaskStateService.mark_pending(cls.TASK_KEY, movie.id, detail=detail)
 
     # -------- 错误处理 --------
 
@@ -279,53 +229,6 @@ class MovieFieldTranslationServiceBase:
             raise self.ABORT_ERROR_CLASS(
                 self._build_task_abort_message(detail=str(exc))
             ) from exc
-
-    def _handle_task_abort(
-        self,
-        *,
-        movie: Movie,
-        stats: dict[str, int],
-        progress_callback,
-        exc: MovieFieldTranslationTaskAbortError,
-    ) -> None:
-        # 任务级中断要把当前影片退回 pending,让下一轮能从中断点继续处理。
-        self._mark_translation_pending(movie, exc.message)
-        logger.warning(
-            "Movie {} translation aborted movie_number={} detail={}",
-            self.LOG_LABEL,
-            movie.movie_number,
-            exc.message,
-        )
-        self._emit_movie_progress(
-            progress_callback=progress_callback,
-            stats=stats,
-            movie=movie,
-            action_text=f"影片{self.FIELD_LABEL}翻译中断",
-        )
-
-    def _handle_translation_failure(
-        self,
-        *,
-        movie: Movie,
-        stats: dict[str, int],
-        progress_callback,
-        exc: Exception,
-    ) -> None:
-        stats["failed_movies"] += 1
-        error_message = self._normalize_error_message(exc)
-        self._mark_translation_failed(movie, error_message)
-        logger.warning(
-            "Movie {} translation failed movie_number={} detail={}",
-            self.LOG_LABEL,
-            movie.movie_number,
-            error_message,
-        )
-        self._emit_movie_progress(
-            progress_callback=progress_callback,
-            stats=stats,
-            movie=movie,
-            action_text=f"影片{self.FIELD_LABEL}翻译失败",
-        )
 
     # -------- 翻译调用 --------
 
@@ -370,14 +273,53 @@ class MovieFieldTranslationServiceBase:
             error_code=last_exc.error_code if last_exc is not None else None,
         )
 
+    # -------- kernel 钩子 --------
+
+    @classmethod
+    def _apply_translation(cls, movie: Movie, translated_text: str) -> None:
+        target_field = getattr(Movie, cls.TARGET_ATTR)
+        setattr(movie, cls.TARGET_ATTR, translated_text)
+        movie.save(only=[target_field])
+
+    def _setup_run(self, _ctx):
+        # prompt 缺失/为空属于任务级前置失败：中止整轮，不消耗任何影片的预算。
+        try:
+            return self._load_prompt()
+        except Exception as exc:
+            raise TaskAbortError(
+                f"{self.PROMPT_ERROR_PREFIX}_prompt_unavailable", str(exc)
+            ) from exc
+
+    def _process_one(self, ctx, movie: Movie) -> None:
+        latest_movie = Movie.get_by_id(movie.id)
+        source_value = getattr(latest_movie, self.SOURCE_ATTR)
+        target_value = getattr(latest_movie, self.TARGET_ATTR)
+        if target_value:
+            # 候选期后被其他链路补上译文：目标已达成，按成功收口。
+            return
+        if not source_value:
+            raise TaskItemDeferred("source_missing", "原文已被清空，等待下轮重新筛选")
+        try:
+            translated_text = self._translate_with_retry(
+                movie=latest_movie,
+                system_prompt=ctx.shared,
+                source_text=source_value,
+            )
+        except MovieFieldTranslationTaskAbortError as exc:
+            raise TaskAbortError(
+                exc.error_code or "translation_upstream_unavailable", exc.message
+            ) from exc
+        except MovieDescTranslationClientError as exc:
+            raise TaskItemError(
+                exc.error_code or "translation_rejected", exc.message
+            ) from exc
+        self._apply_translation(
+            latest_movie, self._normalize_translated_text(translated_text)
+        )
+
     # -------- 批量入口 --------
 
-    def run(
-        self,
-        *,
-        batch_size: int | None = None,
-        progress_callback=None,
-    ) -> dict[str, int]:
+    def run(self, *, reporter, only_ids: list[int] | None = None) -> dict[str, int]:
         if not settings.movie_info_translation.enabled:
             disabled_stats = {
                 "candidate_movies": 0,
@@ -387,8 +329,7 @@ class MovieFieldTranslationServiceBase:
                 "updated_movies": 0,
                 "skipped_movies": 0,
             }
-            self._emit_progress(
-                progress_callback,
+            reporter.emit(
                 current=0,
                 total=0,
                 text=f"影片{self.FIELD_LABEL}翻译未启用,跳过执行",
@@ -396,81 +337,25 @@ class MovieFieldTranslationServiceBase:
             )
             return disabled_stats
 
-        query = self._candidate_query()
-        if batch_size is not None and int(batch_size) > 0:
-            query = query.limit(int(batch_size))
-        candidates = list(query)
-        stats = {
-            "candidate_movies": len(candidates),
-            "processed_movies": 0,
-            "succeeded_movies": 0,
-            "failed_movies": 0,
-            "updated_movies": 0,
-            "skipped_movies": 0,
-        }
-        self._emit_progress(
-            progress_callback,
-            current=0,
-            total=stats["candidate_movies"],
-            text=f"开始翻译影片{self.FIELD_LABEL}",
-            summary_patch=stats,
+        spec = ResourceTaskSpec(
+            task_key=self.TASK_KEY,
+            resource_type="movie",
+            retry=self.TRANSLATION_RETRY_POLICY,
+            select_candidates=self._select_candidates,
+            process_one=self._process_one,
+            setup_run=self._setup_run,
         )
-
-        if not candidates:
-            return stats
-
-        system_prompt = self._load_prompt_or_abort()
-
-        for movie in candidates:
-            stats["processed_movies"] += 1
-            latest_movie = Movie.get_by_id(movie.id)
-            source_value = getattr(latest_movie, self.SOURCE_ATTR)
-            target_value = getattr(latest_movie, self.TARGET_ATTR)
-            if target_value or not source_value:
-                stats["skipped_movies"] += 1
-                self._emit_movie_progress(
-                    progress_callback=progress_callback,
-                    stats=stats,
-                    movie=latest_movie,
-                    action_text=self.SKIP_ACTION_TEXT,
-                )
-                continue
-
-            try:
-                self._mark_translation_started(latest_movie)
-                translated_text = self._translate_with_retry(
-                    movie=latest_movie,
-                    system_prompt=system_prompt,
-                    source_text=source_value,
-                )
-                normalized_translated_text = self._normalize_translated_text(
-                    translated_text
-                )
-                self._mark_translation_succeeded(
-                    latest_movie, normalized_translated_text
-                )
-                stats["succeeded_movies"] += 1
-                stats["updated_movies"] += 1
-                self._emit_movie_progress(
-                    progress_callback=progress_callback,
-                    stats=stats,
-                    movie=latest_movie,
-                    action_text=f"影片{self.FIELD_LABEL}翻译成功",
-                )
-            except MovieFieldTranslationTaskAbortError as exc:
-                self._handle_task_abort(
-                    movie=latest_movie,
-                    stats=stats,
-                    progress_callback=progress_callback,
-                    exc=exc,
-                )
-                raise
-            except Exception as exc:
-                self._handle_translation_failure(
-                    movie=latest_movie,
-                    stats=stats,
-                    progress_callback=progress_callback,
-                    exc=exc,
-                )
-
-        return stats
+        stats = ResourceTaskRunner.run(spec, reporter, only_ids=only_ids)
+        # 保持旧统计口径（registry format_stats 与日志锚点不变）。
+        return {
+            "candidate_movies": stats["candidate_count"],
+            "processed_movies": stats["candidate_count"] - stats["deferred_count"],
+            "succeeded_movies": stats["succeeded_count"],
+            "failed_movies": (
+                stats["failed_retryable_count"]
+                + stats["failed_terminal_count"]
+                + stats["exhausted_count"]
+            ),
+            "updated_movies": stats["succeeded_count"],
+            "skipped_movies": stats["deferred_count"],
+        }

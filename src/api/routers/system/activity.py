@@ -12,12 +12,14 @@ from src.schema.system.activity import (
     TaskRunResource,
 )
 from src.schema.system.resource_task_state import (
-    MediaThumbnailTaskBatchResetRequest,
-    MediaThumbnailTaskBatchResetResponse,
+    ResourceTaskActionRequest,
+    ResourceTaskActionResponse,
+    ResourceTaskActionSkippedItem,
     ResourceTaskDefinitionResource,
     ResourceTaskRecordResource,
 )
 from src.service.system import ActivityService, SystemEventService
+from src.service.system.resource_task_action_service import ResourceTaskActionService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 
 router = APIRouter(
@@ -101,6 +103,12 @@ def list_task_runs(
     )
 
 
+@router.get("/system/task-runs/{task_run_id}", response_model=TaskRunResource)
+def get_task_run(task_run_id: int):
+    """单条 task_run 详情：202 入队后前端凭 task_run_id 追溯终态与错误信息。"""
+    return ActivityService.get_task_run_resource(task_run_id)
+
+
 @router.get(
     "/system/resource-task-states/definitions",
     response_model=list[ResourceTaskDefinitionResource],
@@ -131,23 +139,26 @@ def list_resource_task_states(
     )
 
 
-@router.post(
-    "/system/resource-task-states/media_thumbnail_generation/reset",
-    response_model=MediaThumbnailTaskBatchResetResponse,
-)
-def reset_failed_media_thumbnail_task_states(
-    payload: MediaThumbnailTaskBatchResetRequest,
-):
-    resource_ids, skipped = ResourceTaskStateService.reset_failed_media_thumbnail_states(
-        payload.resource_ids
+@router.post("/system/resource-task-actions", response_model=ResourceTaskActionResponse)
+def apply_resource_task_action(payload: ResourceTaskActionRequest):
+    """统一资源任务操作（Wave 4）：retry_now / rerun / reset_retry_budget。
+
+    资源级操作的唯一入口。后端判定可执行性并允许部分成功；retry_now / rerun 会入队
+    一个带 only_ids 的可跟踪 run（响应携带 task_run_id），连点由 mutex 去重（409，
+    单资源互斥到资源粒度）。resource_ids 缺省时按 state 圈定整批（仅 reset_retry_budget）。
+    """
+    outcome = ResourceTaskActionService.apply(
+        task_key=payload.task_key,
+        action=payload.action,
+        resource_ids=payload.resource_ids,
+        state=payload.state,
     )
-    return MediaThumbnailTaskBatchResetResponse(
-        task_key="media_thumbnail_generation",
-        state=ResourceTaskStateService.STATE_PENDING,
-        reset_count=len(resource_ids),
-        resource_ids=resource_ids,
-        skipped_count=len(skipped),
-        skipped=skipped,
+    return ResourceTaskActionResponse(
+        task_key=outcome.task_key,
+        action=outcome.action,
+        task_run_id=outcome.task_run_id,
+        accepted_resource_ids=outcome.accepted_resource_ids,
+        skipped=[ResourceTaskActionSkippedItem(**item) for item in outcome.skipped],
     )
 
 

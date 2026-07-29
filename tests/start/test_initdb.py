@@ -25,6 +25,7 @@ from src.model import (
     PLAYLIST_KIND_VR,
     Playlist,
     RankingItem,
+    ResourceTaskAttempt,
     ResourceTaskState,
     SchemaMigration,
     Subtitle,
@@ -289,6 +290,36 @@ def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(cl
         pass
     else:
         raise AssertionError("expected mutex_key unique constraint to reject duplicate rows")
+
+
+def test_create_tables_creates_task_queue_and_attempt_schema(clean_db, monkeypatch):
+    """任务架构 Wave 0：队列扩列、尝试历史表、投影扩列与外键化（存量库走 20260729_01 迁移）。"""
+    create_tables()
+
+    assert ResourceTaskAttempt.table_exists()
+    run_columns = _column_names(clean_db, "background_task_run")
+    assert {"params", "scheduled_at", "lease_expires_at"} <= run_columns
+    state_columns = _column_names(clean_db, "resource_task_state")
+    assert {"next_retry_at", "error_code", "retry_round", "last_attempt_id"} <= state_columns
+
+    # 队列领取与重试调度的两个组合索引。
+    run_indexed_columns = {
+        tuple(index.columns) for index in clean_db.get_indexes("background_task_run")
+    }
+    assert ("state", "scheduled_at") in run_indexed_columns
+    state_indexed_columns = {
+        tuple(index.columns) for index in clean_db.get_indexes("resource_task_state")
+    }
+    assert ("task_key", "state", "next_retry_at") in state_indexed_columns
+
+    # last_task_run_id 外键化：悬空引用必须被数据库拒绝。
+    with pytest.raises(IntegrityError):
+        ResourceTaskState.create(
+            task_key="movie_desc_sync",
+            resource_type="movie",
+            resource_id=42,
+            last_task_run_id=999_999,
+        )
 
 
 def test_create_tables_does_not_patch_existing_legacy_movie_schema(clean_db, monkeypatch):

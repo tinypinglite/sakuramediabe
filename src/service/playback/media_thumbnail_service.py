@@ -33,9 +33,6 @@ class MediaThumbnailService:
     generate_pending_thumbnails = MediaThumbnailTaskService.generate_pending_thumbnails
     list_media_thumbnails = ThumbnailArtifactService.list_media_thumbnails
 
-    _pending_media_ids = MediaThumbnailTaskService.pending_media_ids
-    _cloud115_media_ids = MediaThumbnailTaskService.cloud115_media_ids
-    _process_media = MediaThumbnailTaskService.process_media
     _minimum_acceptable_thumbnail_count = (
         MediaThumbnailTaskService.minimum_acceptable_count
     )

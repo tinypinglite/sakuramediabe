@@ -2,27 +2,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Sequence
+from typing import Callable, Sequence
 
 from peewee import IntegrityError, fn
 
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import resolve_sort, validate_page
 from src.common.runtime_time import utc_now_for_db
-from src.model import Media, ResourceTaskState
+from src.model import ResourceTaskState
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
 from src.schema.system.resource_task_state import (
-    MediaThumbnailTaskResetSkippedItem,
     ResourceTaskDefinitionResource,
     ResourceTaskRecordResource,
     TaskRecordStateCountsResource,
 )
-from src.service.system.activity_service import ActivityService
+from src.service.system.resource_task_actions_registry import (
+    ACTION_RESET_RETRY_BUDGET,
+    ACTION_RETRY_NOW,
+    SUPPORTED_ACTIONS,
+    available_actions_for_state,
+)
 from src.service.system.resource_task_resolvers import (
     MEDIA_TASK_RECORD_RESOLVER,
     MOVIE_TASK_RECORD_RESOLVER,
     ResourceTaskRecordResolver,
+    build_movie_actionable_check,
+    media_actionable_check,
 )
 
 
@@ -33,6 +39,10 @@ class ResourceTaskDefinition:
     display_name: str
     default_sort: str
     resource_resolver: ResourceTaskRecordResolver | None = None
+    # 该任务开放的统一 action 集合：rerun（强制重跑）只有域语义安全的任务声明。
+    supported_actions: tuple[str, ...] = SUPPORTED_ACTIONS
+    # 领域合格性钩子：action 入口先跑它过滤领域上不成立的资源（影片缺字段 / 媒体失效等）。
+    check_actionable: Callable[[list[int]], dict[int, str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -58,12 +68,6 @@ class ResourceTaskStateService:
     STATE_FAILED = "failed"
     # 已达到自动重试上限：调度器不再自动排入，只有用户显式重置才会回到 pending。
     STATE_EXHAUSTED = "exhausted"
-    # 批量重置的跳过原因，前端按 resource_id 标注本次未能重置的选择项。
-    SKIP_REASON_TASK_STATE_NOT_FOUND = "task_state_not_found"
-    SKIP_REASON_MEDIA_NOT_FOUND = "media_not_found"
-    SKIP_REASON_MEDIA_INVALID = "media_invalid"
-    SKIP_REASON_NOT_FAILED = "not_failed"
-    TERMINAL_TRUE_MARKERS = ('"terminal": true', '"terminal":true')
     TASK_STATE_SORT_FIELDS = {
         "last_attempted_at:desc": (ResourceTaskState.last_attempted_at.desc(), ResourceTaskState.id.desc()),
         "last_attempted_at:asc": (ResourceTaskState.last_attempted_at.asc(), ResourceTaskState.id.asc()),
@@ -79,6 +83,7 @@ class ResourceTaskStateService:
             display_name="影片描述回填",
             default_sort="last_attempted_at:desc",
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
+            check_actionable=build_movie_actionable_check(),
         ),
         "movie_interaction_sync": ResourceTaskDefinition(
             task_key="movie_interaction_sync",
@@ -86,6 +91,10 @@ class ResourceTaskStateService:
             display_name="影片互动数同步",
             default_sort="last_attempted_at:desc",
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
+            check_actionable=build_movie_actionable_check(
+                required_attr="javdb_id",
+                missing_reason="movie_javdb_id_missing",
+            ),
         ),
         "movie_desc_translation": ResourceTaskDefinition(
             task_key="movie_desc_translation",
@@ -93,6 +102,10 @@ class ResourceTaskStateService:
             display_name="影片简介翻译",
             default_sort="last_attempted_at:desc",
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
+            check_actionable=build_movie_actionable_check(
+                required_attr="desc",
+                missing_reason="movie_desc_missing",
+            ),
         ),
         "movie_title_translation": ResourceTaskDefinition(
             task_key="movie_title_translation",
@@ -100,6 +113,10 @@ class ResourceTaskStateService:
             display_name="影片标题翻译",
             default_sort="last_attempted_at:desc",
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
+            check_actionable=build_movie_actionable_check(
+                required_attr="title",
+                missing_reason="movie_title_missing",
+            ),
         ),
         "media_thumbnail_generation": ResourceTaskDefinition(
             task_key="media_thumbnail_generation",
@@ -107,13 +124,20 @@ class ResourceTaskStateService:
             display_name="媒体缩略图生成",
             default_sort="last_attempted_at:desc",
             resource_resolver=MEDIA_TASK_RECORD_RESOLVER,
+            # 不开放 rerun：缩略图不支持覆盖再生（已存在即跳过），rerun 只会空转。
+            supported_actions=(ACTION_RETRY_NOW, ACTION_RESET_RETRY_BUDGET),
+            check_actionable=media_actionable_check,
         ),
-        "subscribed_movie_search": ResourceTaskDefinition(
-            task_key="subscribed_movie_search",
+        # Wave 2：task_key 与 job 合并（原 subscribed_movie_search，历史行随迁移清空）。
+        "subscribed_movie_auto_download": ResourceTaskDefinition(
+            task_key="subscribed_movie_auto_download",
             resource_type="movie",
             display_name="订阅影片资源查询",
             default_sort="last_attempted_at:desc",
             resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
+            # 不开放 rerun：强制重搜会绕过"已有媒体 / 已有活跃下载"防护，重复提交下载。
+            supported_actions=(ACTION_RETRY_NOW, ACTION_RESET_RETRY_BUDGET),
+            check_actionable=build_movie_actionable_check(require_subscribed=True),
         ),
     }
 
@@ -174,47 +198,6 @@ class ResourceTaskStateService:
         return merged_extra
 
     @classmethod
-    def build_retryable_extra_condition(cls, extra_field):
-        normalized_extra = fn.COALESCE(extra_field, "")
-        terminal_true_condition = None
-        for marker in cls.TERMINAL_TRUE_MARKERS:
-            marker_condition = normalized_extra.contains(marker)
-            terminal_true_condition = (
-                marker_condition
-                if terminal_true_condition is None
-                else (terminal_true_condition | marker_condition)
-            )
-        # 终态失败统一靠 terminal=true 标记识别；没有该标记的记录继续视为可重试。
-        return (normalized_extra == "") | (~terminal_true_condition)
-
-    @staticmethod
-    def _resolve_task_runtime_context(
-        *,
-        task_key: str,
-        trigger_type: str | None,
-        task_run_id: int | None,
-    ) -> tuple[str | None, int | None]:
-        task_run_context = ActivityService.get_task_run_context()
-        if task_run_context is None or task_run_context.task_key != task_key:
-            return trigger_type, task_run_id
-        resolved_trigger_type = trigger_type if trigger_type is not None else task_run_context.trigger_type
-        resolved_task_run_id = task_run_id if task_run_id is not None else task_run_context.task_run_id
-        return resolved_trigger_type, resolved_task_run_id
-
-    @classmethod
-    def _resolve_sort(cls, task_definition: ResourceTaskDefinition, sort: str | None) -> Sequence:
-        return resolve_sort(
-            sort,
-            cls.TASK_STATE_SORT_FIELDS,
-            default_key=task_definition.default_sort,
-            error_code="invalid_resource_task_state_filter",
-        )
-
-    @staticmethod
-    def _validate_page(page: int, page_size: int) -> None:
-        validate_page(page, page_size, error_code="invalid_resource_task_state_filter")
-
-    @classmethod
     def get_or_create_record(cls, task_key: str, resource_id: int) -> ResourceTaskState:
         """按 (task_key, resource_id) 取状态行，不存在则建。
 
@@ -261,152 +244,6 @@ class ResourceTaskStateService:
         return cls._build_snapshot(record)
 
     @classmethod
-    def mark_started(
-        cls,
-        task_key: str,
-        resource_id: int,
-        trigger_type: str | None = None,
-        task_run_id: int | None = None,
-    ) -> ResourceTaskState:
-        trigger_type, task_run_id = cls._resolve_task_runtime_context(
-            task_key=task_key,
-            trigger_type=trigger_type,
-            task_run_id=task_run_id,
-        )
-        record = cls.get_or_create_record(task_key, resource_id)
-        now = utc_now_for_db()
-        record.state = cls.STATE_RUNNING
-        record.attempt_count += 1
-        record.last_attempted_at = now
-        record.last_error = None
-        record.last_trigger_type = trigger_type
-        record.last_task_run_id = task_run_id
-        record.updated_at = now
-        record.save(
-            only=[
-                ResourceTaskState.state,
-                ResourceTaskState.attempt_count,
-                ResourceTaskState.last_attempted_at,
-                ResourceTaskState.last_error,
-                ResourceTaskState.last_trigger_type,
-                ResourceTaskState.last_task_run_id,
-                ResourceTaskState.updated_at,
-            ]
-        )
-        return record
-
-    @classmethod
-    def mark_succeeded(
-        cls,
-        task_key: str,
-        resource_id: int,
-        trigger_type: str | None = None,
-        task_run_id: int | None = None,
-        extra_patch: dict | None = None,
-    ) -> ResourceTaskState:
-        trigger_type, task_run_id = cls._resolve_task_runtime_context(
-            task_key=task_key,
-            trigger_type=trigger_type,
-            task_run_id=task_run_id,
-        )
-        record = cls.get_or_create_record(task_key, resource_id)
-        now = utc_now_for_db()
-        record.state = cls.STATE_SUCCEEDED
-        record.last_succeeded_at = now
-        record.last_error = None
-        record.last_trigger_type = trigger_type
-        record.last_task_run_id = task_run_id
-        record.extra = cls._merge_extra(record.extra, extra_patch)
-        record.updated_at = now
-        record.save(
-            only=[
-                ResourceTaskState.state,
-                ResourceTaskState.last_succeeded_at,
-                ResourceTaskState.last_error,
-                ResourceTaskState.last_trigger_type,
-                ResourceTaskState.last_task_run_id,
-                ResourceTaskState.extra,
-                ResourceTaskState.updated_at,
-            ]
-        )
-        return record
-
-    @classmethod
-    def mark_failed(
-        cls,
-        task_key: str,
-        resource_id: int,
-        detail: str,
-        trigger_type: str | None = None,
-        task_run_id: int | None = None,
-        extra_patch: dict | None = None,
-    ) -> ResourceTaskState:
-        trigger_type, task_run_id = cls._resolve_task_runtime_context(
-            task_key=task_key,
-            trigger_type=trigger_type,
-            task_run_id=task_run_id,
-        )
-        record = cls.get_or_create_record(task_key, resource_id)
-        now = utc_now_for_db()
-        record.state = cls.STATE_FAILED
-        record.last_error = detail
-        record.last_error_at = now
-        record.last_trigger_type = trigger_type
-        record.last_task_run_id = task_run_id
-        record.extra = cls._merge_extra(record.extra, extra_patch)
-        record.updated_at = now
-        record.save(
-            only=[
-                ResourceTaskState.state,
-                ResourceTaskState.last_error,
-                ResourceTaskState.last_error_at,
-                ResourceTaskState.last_trigger_type,
-                ResourceTaskState.last_task_run_id,
-                ResourceTaskState.extra,
-                ResourceTaskState.updated_at,
-            ]
-        )
-        return record
-
-    @classmethod
-    def mark_pending(
-        cls,
-        task_key: str,
-        resource_id: int,
-        detail: str | None = None,
-        trigger_type: str | None = None,
-        task_run_id: int | None = None,
-    ) -> ResourceTaskState:
-        trigger_type, task_run_id = cls._resolve_task_runtime_context(
-            task_key=task_key,
-            trigger_type=trigger_type,
-            task_run_id=task_run_id,
-        )
-        record = cls.get_or_create_record(task_key, resource_id)
-        now = utc_now_for_db()
-        record.state = cls.STATE_PENDING
-        record.last_trigger_type = trigger_type
-        record.last_task_run_id = task_run_id
-        record.updated_at = now
-        fields = [
-            ResourceTaskState.state,
-            ResourceTaskState.last_trigger_type,
-            ResourceTaskState.last_task_run_id,
-            ResourceTaskState.updated_at,
-        ]
-        if detail is not None:
-            record.last_error = detail
-            record.last_error_at = now
-            fields.extend(
-                [
-                    ResourceTaskState.last_error,
-                    ResourceTaskState.last_error_at,
-                ]
-            )
-        record.save(only=fields)
-        return record
-
-    @classmethod
     def reset_for_requeue(cls, task_key: str, resource_id: int) -> ResourceTaskState:
         record = cls.get_or_create_record(task_key, resource_id)
         now = utc_now_for_db()
@@ -438,104 +275,6 @@ class ResourceTaskStateService:
         return record
 
     @classmethod
-    def reset_failed_media_thumbnail_states(
-        cls, resource_ids: list[int]
-    ) -> tuple[list[int], list[MediaThumbnailTaskResetSkippedItem]]:
-        task_key = "media_thumbnail_generation"
-        task_definition = cls._require_task_definition(task_key)
-        normalized_resource_ids = [int(resource_id) for resource_id in resource_ids]
-
-        skipped: list[MediaThumbnailTaskResetSkippedItem] = []
-        reset_resource_ids: list[int] = []
-
-        database = get_database()
-        with database.atomic():
-            # 锁住所选记录逐条判定：不合格项只记跳过原因，合格项照常重置。
-            records = list(
-                ResourceTaskState.select()
-                .where(
-                    ResourceTaskState.task_key == task_definition.task_key,
-                    ResourceTaskState.resource_type == task_definition.resource_type,
-                    ResourceTaskState.resource_id.in_(normalized_resource_ids),
-                )
-                .for_update()
-            )
-            records_by_resource_id = {record.resource_id: record for record in records}
-            media_by_id = {
-                media.id: media
-                for media in Media.select(Media.id, Media.valid).where(
-                    Media.id.in_(tuple(records_by_resource_id.keys()) or (0,))
-                )
-            }
-
-            for resource_id in normalized_resource_ids:
-                reason = cls._resolve_media_thumbnail_reset_skip_reason(
-                    records_by_resource_id.get(resource_id),
-                    media_by_id.get(resource_id),
-                )
-                if reason is not None:
-                    skipped.append(
-                        MediaThumbnailTaskResetSkippedItem(
-                            resource_id=resource_id,
-                            reason=reason,
-                        )
-                    )
-                    continue
-                reset_resource_ids.append(resource_id)
-
-            now = utc_now_for_db()
-            for resource_id in reset_resource_ids:
-                record = records_by_resource_id[resource_id]
-                if isinstance(record.extra, dict):
-                    extra: dict | list | None = dict(record.extra)
-                    # 清除终态标记，重新开放现有调度器的自动重试预算。
-                    extra.pop("terminal", None)
-                elif isinstance(record.extra, list):
-                    extra = list(record.extra)
-                else:
-                    extra = None
-
-                record.state = cls.STATE_PENDING
-                record.attempt_count = 0
-                record.last_error = None
-                record.last_error_at = None
-                record.last_trigger_type = "manual"
-                record.last_task_run_id = None
-                record.extra = extra or None
-                record.updated_at = now
-                record.save(
-                    only=[
-                        ResourceTaskState.state,
-                        ResourceTaskState.attempt_count,
-                        ResourceTaskState.last_error,
-                        ResourceTaskState.last_error_at,
-                        ResourceTaskState.last_trigger_type,
-                        ResourceTaskState.last_task_run_id,
-                        ResourceTaskState.extra,
-                        ResourceTaskState.updated_at,
-                    ]
-                )
-
-        return reset_resource_ids, skipped
-
-    @classmethod
-    def _resolve_media_thumbnail_reset_skip_reason(
-        cls,
-        record: ResourceTaskState | None,
-        media: Media | None,
-    ) -> str | None:
-        # 判定顺序按“问题的根本程度”排列，一个 resource_id 只回报一个最主要的原因。
-        if record is None:
-            return cls.SKIP_REASON_TASK_STATE_NOT_FOUND
-        if media is None:
-            return cls.SKIP_REASON_MEDIA_NOT_FOUND
-        if not media.valid:
-            return cls.SKIP_REASON_MEDIA_INVALID
-        if record.state != cls.STATE_FAILED:
-            return cls.SKIP_REASON_NOT_FAILED
-        return None
-
-    @classmethod
     def list_definition_resources(cls) -> list[ResourceTaskDefinitionResource]:
         counts_by_task_key = {
             definition.task_key: TaskRecordStateCountsResource()
@@ -561,6 +300,7 @@ class ResourceTaskStateService:
                 resource_type=definition.resource_type,
                 display_name=definition.display_name,
                 default_sort=definition.default_sort,
+                supported_actions=list(definition.supported_actions),
                 state_counts=counts_by_task_key[definition.task_key],
             )
             for definition in cls.list_definitions()
@@ -591,6 +331,9 @@ class ResourceTaskStateService:
                 cls.STATE_RUNNING,
                 cls.STATE_SUCCEEDED,
                 cls.STATE_FAILED,
+                # kernel 记账任务（Wave 2 起）的失败二分状态。
+                "failed_retryable",
+                "failed_terminal",
                 cls.STATE_EXHAUSTED,
             }:
                 raise ApiError(
@@ -647,6 +390,9 @@ class ResourceTaskStateService:
                     created_at=record.created_at,
                     updated_at=record.updated_at,
                     resource=resource_summaries.get(record.resource_id),
+                    available_actions=available_actions_for_state(
+                        record.state, task_definition.supported_actions
+                    ),
                 )
                 for record in records
             ],
@@ -684,30 +430,7 @@ class ResourceTaskStateService:
             created_at=record.created_at,
             updated_at=record.updated_at,
             resource=resource_summary,
-        )
-
-    @classmethod
-    def recover_running_records(
-        cls,
-        task_key: str,
-        error_message: str,
-        trigger_type: str = "startup",
-    ) -> int:
-        task_definition = cls._require_task_definition(task_key)
-        now = utc_now_for_db()
-        # 启动恢复只回收 running 记录，避免误改待处理和已完成状态。
-        return (
-            ResourceTaskState.update(
-                state=cls.STATE_FAILED,
-                last_error=error_message,
-                last_error_at=now,
-                last_trigger_type=trigger_type,
-                updated_at=now,
-            )
-            .where(
-                ResourceTaskState.task_key == task_definition.task_key,
-                ResourceTaskState.resource_type == task_definition.resource_type,
-                ResourceTaskState.state == cls.STATE_RUNNING,
-            )
-            .execute()
+            available_actions=available_actions_for_state(
+                record.state, task_definition.supported_actions
+            ),
         )

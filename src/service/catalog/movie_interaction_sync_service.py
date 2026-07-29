@@ -4,19 +4,34 @@ from datetime import date, datetime, time, timedelta
 
 from loguru import logger
 
+from src.metadata._providers.exceptions import MetadataRequestError
 from src.metadata._providers.javdb import JavdbProvider
+from src.metadata.provider import MetadataNotFoundError
 from src.model import Movie, RankingItem, ResourceTaskState, get_database
 from src.metadata._providers.models import JavdbMovieDetailResource
 from src.service.catalog.movie_heat_service import MovieHeatService
-from src.service.system.resource_task_state_service import ResourceTaskStateService
+from src.service.system.resource_task_runner import (
+    STATE_EXHAUSTED,
+    STATE_FAILED_RETRYABLE,
+    STATE_FAILED_TERMINAL,
+    STATE_RUNNING,
+    ResourceTaskLedger,
+    ResourceTaskRunner,
+    ResourceTaskSpec,
+    RetryPolicy,
+    TaskItemError,
+)
 
 
 class MovieInteractionSyncService:
+    """影片互动数同步（已迁 kernel 记账，任务架构 Wave 2）。
+
+    候选判定是时间分层（succeeded 也会到期重刷），因此不用内核默认状态条件，
+    改在 Python 侧组合：分层 due 判定 ∩ 状态排除（失败退避未到期 / 终态 / 耗尽）。
+    `last_succeeded_at` 是分层的记忆载体，迁移时必须保留（决策 #11 例外）。
+    """
+
     TASK_KEY = "movie_interaction_sync"
-    SYNC_STATUS_PENDING = ResourceTaskStateService.STATE_PENDING
-    SYNC_STATUS_RUNNING = ResourceTaskStateService.STATE_RUNNING
-    SYNC_STATUS_SUCCEEDED = ResourceTaskStateService.STATE_SUCCEEDED
-    SYNC_STATUS_FAILED = ResourceTaskStateService.STATE_FAILED
     INTERRUPTED_SYNC_ERROR_MESSAGE = "影片互动数同步任务中断，等待重试"
     # 分层策略：
     #   1. 从未同步过的影片：seed 一次，之后按下面分层决定是否再刷。
@@ -27,12 +42,15 @@ class MovieInteractionSyncService:
     #   3. 最近 60 天新片：2 天。
     #   4. 60~180 天中间档：7 天。
     #   5. 其它（含 180 天前 / 无 release_date / 只落在静态历史榜里）：不再周期刷。
-    #   6. 订阅补刷：subscribed_at > last_succeeded_at 触发一次性再同步，覆盖首次订阅
-    #      与重新订阅两种场景。走定时任务而不是订阅 API 内联，是为了避免把 PUT 订阅接口
-    #      拖成 1-3s（ActivityService.run_task 目前是同步执行）。
+    #   6. 订阅补刷：subscribed_at > last_succeeded_at 触发一次性再同步。
     RANKING_REFRESH_INTERVAL = timedelta(days=1)
     RECENT_REFRESH_INTERVAL = timedelta(days=2)
     MIDDLE_REFRESH_INTERVAL = timedelta(days=7)
+    # 失败预算：JavDB 请求性失败按小时级退避，5 次/轮后 exhausted；
+    # 番号在 JavDB 已消失判 failed_terminal。
+    RETRY_POLICY = RetryPolicy(
+        max_attempts=5, backoff_base_seconds=3600, backoff_max_seconds=86400
+    )
 
     def __init__(self, provider: JavdbProvider | None = None):
         self.provider = provider or self._build_javdb_provider()
@@ -49,17 +67,10 @@ class MovieInteractionSyncService:
 
         return utc_now_for_db()
 
-    @staticmethod
-    def _emit_progress(progress_callback, **payload) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(payload)
-
     @classmethod
     def recover_interrupted_running_movies(cls, *, error_message: str | None = None) -> int:
         normalized_error = (error_message or "").strip() or cls.INTERRUPTED_SYNC_ERROR_MESSAGE
-        # 仅回收卡在 running 的影片，避免脏状态长期阻塞后续同步。
-        return ResourceTaskStateService.recover_running_records(cls.TASK_KEY, normalized_error)
+        return ResourceTaskLedger.recover_running(cls.TASK_KEY, error_message=normalized_error)
 
     @classmethod
     def _normalize_release_date(cls, value: datetime | date | str | None) -> datetime | None:
@@ -106,24 +117,24 @@ class MovieInteractionSyncService:
         return None
 
     @classmethod
-    def _load_last_succeeded_at_by_movie_ids(cls, movie_ids: list[int]) -> dict[int, datetime]:
+    def _load_state_snapshot_by_movie_ids(
+        cls, movie_ids: list[int]
+    ) -> dict[int, tuple[str, datetime | None, datetime | None]]:
         if not movie_ids:
             return {}
-        query = (
-            ResourceTaskState.select(
-                ResourceTaskState.resource_id,
-                ResourceTaskState.last_succeeded_at,
-            )
-            .where(
-                ResourceTaskState.task_key == cls.TASK_KEY,
-                ResourceTaskState.resource_type == "movie",
-                ResourceTaskState.resource_id.in_(movie_ids),
-            )
+        query = ResourceTaskState.select(
+            ResourceTaskState.resource_id,
+            ResourceTaskState.state,
+            ResourceTaskState.last_succeeded_at,
+            ResourceTaskState.next_retry_at,
+        ).where(
+            ResourceTaskState.task_key == cls.TASK_KEY,
+            ResourceTaskState.resource_type == "movie",
+            ResourceTaskState.resource_id.in_(movie_ids),
         )
         return {
-            int(resource_id): last_succeeded_at
-            for resource_id, last_succeeded_at in query.tuples()
-            if last_succeeded_at is not None
+            int(resource_id): (state, last_succeeded_at, next_retry_at)
+            for resource_id, state, last_succeeded_at, next_retry_at in query.tuples()
         }
 
     @classmethod
@@ -181,23 +192,36 @@ class MovieInteractionSyncService:
             return False
         return last_succeeded_at + refresh_interval <= now
 
-    @classmethod
-    def _candidate_query(cls):
-        # 分层策略里订阅只在"补刷一次"时进入 candidate，不再是独立分层，无需按订阅优先排序。
-        return Movie.select().order_by(Movie.id.asc())
-
-    def _collect_candidates(self, *, now: datetime) -> list[Movie]:
-        movies = list(self._candidate_query())
+    def _select_candidates(self, _state_condition, only_ids=None) -> list[Movie]:
+        now = self._now()
+        query = Movie.select().order_by(Movie.id.asc())
+        if only_ids:
+            query = query.where(Movie.id.in_(list(only_ids)))
+        movies = list(query)
         movie_ids = [movie.id for movie in movies]
-        # 小时级调度下批量预加载状态与在榜集合，避免逐片查询放大数据库压力。
-        last_succeeded_at_by_movie_id = self._load_last_succeeded_at_by_movie_ids(movie_ids)
+        # 批量预加载状态与在榜集合，避免逐片查询放大数据库压力。
+        snapshot_by_id = self._load_state_snapshot_by_movie_ids(movie_ids)
         ranked_movie_ids = self._load_ranked_movie_ids(movie_ids)
         candidates: list[Movie] = []
         for movie in movies:
+            state, last_succeeded_at, next_retry_at = snapshot_by_id.get(
+                movie.id, (None, None, None)
+            )
+            # 状态排除：失败退避未到期 / 终态 / 耗尽 / 在跑，与内核默认条件语义一致。
+            if state in (STATE_RUNNING, STATE_FAILED_TERMINAL, STATE_EXHAUSTED):
+                continue
+            if state == STATE_FAILED_RETRYABLE:
+                if next_retry_at is None or next_retry_at <= now:
+                    candidates.append(movie)
+                continue
+            if only_ids:
+                # 手动指定即强制补刷，不再走分层判定。
+                candidates.append(movie)
+                continue
             if self._is_due_for_sync(
                 movie,
                 now=now,
-                last_succeeded_at=last_succeeded_at_by_movie_id.get(movie.id),
+                last_succeeded_at=last_succeeded_at,
                 ranked_movie_ids=ranked_movie_ids,
             ):
                 candidates.append(movie)
@@ -213,19 +237,18 @@ class MovieInteractionSyncService:
             "comment_count": detail.comment_count,
         }
 
-    def _mark_movie_started(self, movie: Movie) -> None:
-        ResourceTaskStateService.mark_started(self.TASK_KEY, movie.id)
+    def _fetch_and_apply(self, movie: Movie) -> tuple[bool, int]:
+        """抓详情并落库互动数 + 联动热度；失败抛带 error_code 的 TaskItemError。"""
+        try:
+            detail = self.provider.get_movie_by_javdb_id(movie.javdb_id)
+        except MetadataNotFoundError as exc:
+            # 番号在 JavDB 已消失：互动数永远无法再同步，判终态。
+            raise TaskItemError("javdb_movie_not_found", str(exc), retryable=False) from exc
+        except MetadataRequestError as exc:
+            raise TaskItemError("javdb_request_error", str(exc)) from exc
 
-    def _mark_movie_failed(self, movie: Movie, error_message: str) -> None:
-        ResourceTaskStateService.mark_failed(self.TASK_KEY, movie.id, error_message)
-
-    def _sync_movie_interactions(self, movie: Movie) -> tuple[bool, bool, int]:
-        self._mark_movie_started(movie)
-        detail = self.provider.get_movie_by_javdb_id(movie.javdb_id)
         interaction_payload = self._build_interaction_payload(detail)
-
-        updated_fields = [
-        ]
+        updated_fields = []
         interaction_changed = False
         for field_name, target_value in interaction_payload.items():
             if getattr(movie, field_name) == target_value:
@@ -235,93 +258,48 @@ class MovieInteractionSyncService:
             updated_fields.append(Movie._meta.fields[field_name])
 
         heat_updated_count = 0
-        database = get_database()
-        with database.atomic():
-            # 互动数与同步状态统一落库，避免出现“数字已更新但状态仍是 running”。
+        with get_database().atomic():
             if updated_fields:
                 movie.save(only=updated_fields)
-            ResourceTaskStateService.mark_succeeded(self.TASK_KEY, movie.id)
             if interaction_changed:
                 heat_updated_count = MovieHeatService.update_single_movie_heat(movie.id)
+        return interaction_changed, heat_updated_count
 
-        return True, interaction_changed, heat_updated_count
-
-    def sync_movie(self, movie: Movie) -> dict[str, int | str]:
+    def _process_one(self, ctx, movie: Movie) -> None:
         latest_movie = Movie.get_by_id(movie.id)
-        try:
-            _, interaction_changed, heat_updated_count = self._sync_movie_interactions(latest_movie)
-            return {
-                "movie_id": latest_movie.id,
-                "movie_number": latest_movie.movie_number,
-                "updated_movies": 1 if interaction_changed else 0,
-                "unchanged_movies": 0 if interaction_changed else 1,
-                "heat_updated_movies": heat_updated_count,
-            }
-        except Exception as exc:
-            self._mark_movie_failed(latest_movie, str(exc))
-            logger.warning(
-                "Movie interaction sync failed movie_id={} movie_number={} javdb_id={} detail={}",
-                latest_movie.id,
-                latest_movie.movie_number,
-                latest_movie.javdb_id,
-                exc,
-            )
-            raise
+        interaction_changed, heat_updated_count = self._fetch_and_apply(latest_movie)
+        counters = ctx.shared
+        if interaction_changed:
+            counters["updated_movies"] += 1
+        else:
+            counters["unchanged_movies"] += 1
+        counters["heat_updated_movies"] += heat_updated_count
 
-    def run(self, *, progress_callback=None) -> dict[str, int]:
-        now = self._now()
-        candidates = self._collect_candidates(now=now)
-        stats = {
-            "candidate_movies": len(candidates),
-            "processed_movies": 0,
-            "succeeded_movies": 0,
-            "failed_movies": 0,
-            "updated_movies": 0,
-            "unchanged_movies": 0,
-            "heat_updated_movies": 0,
-        }
-        self._emit_progress(
-            progress_callback,
-            current=0,
-            total=stats["candidate_movies"],
-            text="开始同步影片互动数",
-            summary_patch=stats,
+    def run(self, *, reporter, only_ids: list[int] | None = None) -> dict[str, int]:
+        spec = ResourceTaskSpec(
+            task_key=self.TASK_KEY,
+            resource_type="movie",
+            retry=self.RETRY_POLICY,
+            select_candidates=self._select_candidates,
+            process_one=self._process_one,
+            setup_run=lambda _ctx: {
+                "updated_movies": 0,
+                "unchanged_movies": 0,
+                "heat_updated_movies": 0,
+            },
+            # 分层重刷会把 succeeded 行选进候选，领取复核用宽松版。
+            claim_eligible=ResourceTaskLedger.resync_claim_eligible,
         )
-
-        for movie in candidates:
-            stats["processed_movies"] += 1
-            latest_movie = Movie.get_by_id(movie.id)
-            try:
-                _, interaction_changed, heat_updated_count = self._sync_movie_interactions(latest_movie)
-                stats["succeeded_movies"] += 1
-                if interaction_changed:
-                    stats["updated_movies"] += 1
-                else:
-                    stats["unchanged_movies"] += 1
-                stats["heat_updated_movies"] += heat_updated_count
-                self._emit_progress(
-                    progress_callback,
-                    current=stats["processed_movies"],
-                    total=stats["candidate_movies"],
-                    text=f"同步互动数成功 {latest_movie.movie_number}",
-                    summary_patch=stats,
-                )
-            except Exception as exc:
-                stats["failed_movies"] += 1
-                self._mark_movie_failed(latest_movie, str(exc))
-                logger.warning(
-                    "Movie interaction sync failed movie_id={} movie_number={} javdb_id={} detail={}",
-                    latest_movie.id,
-                    latest_movie.movie_number,
-                    latest_movie.javdb_id,
-                    exc,
-                )
-                self._emit_progress(
-                    progress_callback,
-                    current=stats["processed_movies"],
-                    total=stats["candidate_movies"],
-                    text=f"同步互动数失败 {latest_movie.movie_number}",
-                    summary_patch=stats,
-                )
-
-        return stats
+        stats = ResourceTaskRunner.run(spec, reporter, only_ids=only_ids)
+        counters = stats.get("shared") or {}
+        return {
+            "candidate_movies": stats["candidate_count"],
+            "processed_movies": stats["candidate_count"] - stats["deferred_count"],
+            "succeeded_movies": stats["succeeded_count"],
+            "failed_movies": (
+                stats["failed_retryable_count"]
+                + stats["failed_terminal_count"]
+                + stats["exhausted_count"]
+            ),
+            **counters,
+        }

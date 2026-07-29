@@ -22,12 +22,20 @@ class BackgroundTaskRun(TimestampedMixin, BaseModel):
     error_message = peewee.TextField(null=True)
     started_at = peewee.DateTimeField(null=True)
     finished_at = peewee.DateTimeField(null=True)
+    # 队列化扩展列（任务架构 Wave 0，见 docs/development/task-architecture.md）：
+    # pending 行即队列元素；scheduled_at 决定可领取时间；lease_expires_at 是 worker
+    # 租约（过期即可回收，取代 owner_pid 判活）；params 携带运行参数（如 only_ids）。
+    params = JsonTextField(null=True, default=None)
+    scheduled_at = peewee.DateTimeField(null=True)
+    lease_expires_at = peewee.DateTimeField(null=True)
 
     class Meta:
         table_name = "background_task_run"
         indexes = (
             (("task_key", "created_at"), False),
             (("mutex_key",), True),
+            # 队列领取路径：WHERE state='pending' AND scheduled_at <= now ORDER BY id
+            (("state", "scheduled_at"), False),
         )
 
 

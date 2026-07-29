@@ -279,3 +279,95 @@ def test_status_filter_selects_only_import_failed(client):
 
     assert [item.movie_number for item in page.items] == ["FIL-001"]
     assert page.total == 1
+    # movie_id 是统一 action 协议（resource_ids）的操作主键，必须随列表带出。
+    assert page.items[0].movie_id == Movie.get(Movie.movie_number == "FIL-001").id
+
+
+def test_search_state_branches_map_kernel_vocabulary(client):
+    """kernel 记账（Wave 2）后的搜索状态档位：
+    exhausted → 已放弃；failed_retryable 里「查过没找到」归 MISSING、真故障才亮 FAILED；
+    succeeded（提交过、种子后来判死）归 MISSING；无状态行 → PENDING。"""
+    from src.common.runtime_time import utc_now_for_db
+    from src.model import ResourceTaskState
+    from src.service.transfers.subscribed_movie_search_state_service import (
+        ERROR_CODE_NO_CANDIDATE,
+        RESOURCE_TYPE,
+        TASK_KEY,
+    )
+
+    now = utc_now_for_db()
+
+    def _search_state(movie, *, state, error_code=None, attempted=True):
+        return ResourceTaskState.create(
+            task_key=TASK_KEY,
+            resource_type=RESOURCE_TYPE,
+            resource_id=movie.id,
+            state=state,
+            attempt_count=1,
+            last_attempted_at=now if attempted else None,
+            error_code=error_code,
+        )
+
+    exhausted = _subscribe("SRCH-001")
+    _search_state(exhausted, state="exhausted")
+    no_candidate = _subscribe("SRCH-002")
+    _search_state(no_candidate, state="failed_retryable", error_code=ERROR_CODE_NO_CANDIDATE)
+    infra_failed = _subscribe("SRCH-003")
+    _search_state(infra_failed, state="failed_retryable", error_code="indexer_search_failed")
+    submitted_then_dead = _subscribe("SRCH-004")
+    _search_state(submitted_then_dead, state="succeeded")
+    never_searched = _subscribe("SRCH-005")
+
+    assert _status_of("SRCH-001") == MovieSubscriptionStatus.EXHAUSTED.value
+    assert _status_of("SRCH-002") == MovieSubscriptionStatus.MISSING.value
+    assert _status_of("SRCH-003") == MovieSubscriptionStatus.FAILED.value
+    assert _status_of("SRCH-004") == MovieSubscriptionStatus.MISSING.value
+    assert _status_of("SRCH-005") == MovieSubscriptionStatus.PENDING.value
+
+
+def test_import_failed_rows_carry_latest_import_operation(client):
+    """import_failed 档装饰最新导入作业上下文（Wave 3）：
+    有 kind=file 失败项 → retry_failed_files + rerun；completed 零产出 → 仅 rerun。"""
+    import json
+
+    from src.model import ImportJob
+
+    retryable = _subscribe("IOPS-001")
+    retry_task = _task(client, "IOPS-001", download_state="completed", import_status=IMPORT_STATUS_FAILED)
+    ImportJob.create(
+        source_path="/downloads/IOPS-001",
+        library=client.media_library,
+        download_task=retry_task,
+        state="failed",
+        failed_count=2,
+        failed_files=json.dumps(
+            [
+                {"path": "/downloads/IOPS-001/a.mkv", "reason": "movie_number_unrecognized", "kind": "file"},
+                {"path": "/downloads/IOPS-001", "reason": "import_job_crashed", "kind": "job"},
+            ]
+        ),
+    )
+    zero_yield = _subscribe("IOPS-002")
+    zero_task = _task(client, "IOPS-002", download_state="completed", import_status=IMPORT_STATUS_COMPLETED)
+    ImportJob.create(
+        source_path="/downloads/IOPS-002",
+        library=client.media_library,
+        download_task=zero_task,
+        state="completed",
+        skipped_count=3,
+        failed_files="[]",
+    )
+
+    page = MovieSubscriptionService.list_subscriptions(page=1, page_size=50)
+    by_number = {item.movie_number: item for item in page.items}
+
+    retry_op = by_number["IOPS-001"].import_operation
+    assert retry_op is not None
+    assert retry_op.retryable_file_count == 1
+    assert retry_op.available_actions == ["open_import_job", "retry_failed_files", "rerun_import"]
+
+    zero_op = by_number["IOPS-002"].import_operation
+    assert zero_op is not None
+    assert zero_op.retryable_file_count == 0
+    # 零产出没有可重导文件：能做的是整作业重跑，绝不伪造 retry 按钮。
+    assert zero_op.available_actions == ["open_import_job", "rerun_import"]

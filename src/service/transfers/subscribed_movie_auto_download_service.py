@@ -23,10 +23,20 @@ from src.service.transfers.common import (
 from src.service.transfers.download_request_service import DownloadRequestService
 from src.service.transfers.download_search_service import DownloadSearchService
 from src.service.transfers.subscribed_movie_search_state_service import (
+    ERROR_CODE_NO_CANDIDATE,
+    TASK_KEY,
     SubscribedMovieSearchStateService,
     search_state_join_condition,
 )
 from src.service.transfers.tag_rules import SUBTITLE_TAG
+from src.common.runtime_time import utc_now_for_db
+from src.service.system.resource_task_runner import (
+    ResourceTaskLedger,
+    ResourceTaskRunner,
+    ResourceTaskSpec,
+    RetryPolicy,
+    TaskItemError,
+)
 
 MIN_SIZE_BYTES = 1 * 1024 * 1024 * 1024
 MAX_SIZE_BYTES = 40 * 1024 * 1024 * 1024
@@ -67,152 +77,191 @@ class SubscribedMovieAutoDownloadService:
     def _is_cloud115_task(client_id: int | None, cloud115_client_ids: set[int]) -> bool:
         return client_id is not None and client_id in cloud115_client_ids
 
-    def run(self) -> Dict[str, Any]:
-        due_movies = self._collect_due_movies()
-        summary: Dict[str, Any] = {
-            "candidate_movies": len(due_movies),
+    def _setup_run(self, _ctx) -> Dict[str, Any]:
+        return {
+            # cloud115 下载入口 id 集合：判断某次提交是否打了 115，决定要不要为下一个排队等待。
+            "cloud115_client_ids": self._cloud115_client_ids(),
+            "pending_cloud115_rest": False,
             "searched_movies": 0,
             "submitted_movies": 0,
             "no_candidate_movies": 0,
-            "newly_exhausted_movies": 0,
             "skipped_movies": 0,
-            "failed_movies": 0,
             "submitted_movie_numbers": [],
             "no_candidate_movie_numbers": [],
             "failed_items": [],
         }
 
-        # cloud115 下载入口 id 集合：判断某次提交是否打了 115，决定要不要为下一个排队等待。
-        cloud115_client_ids = self._cloud115_client_ids()
-        pending_cloud115_rest = False
-
-        for movie in due_movies:
-            movie_number = movie.movie_number
-            summary["searched_movies"] += 1
-            logger.info("Auto download searching candidates for movie_number={}", movie_number)
-            try:
-                candidates = self.download_search_service.search_candidates(movie_number=movie_number)
-            except Exception as exc:
-                self._record_failure(summary, movie_number, stage="search", detail=str(exc))
-                # 索引器故障不消耗该影片的查询预算，下一轮照常重试。
-                SubscribedMovieSearchStateService.record_search_error(movie, str(exc))
-                logger.exception(
-                    "Auto download candidate search failed movie_number={} detail={}",
-                    movie_number,
-                    exc,
-                )
-                continue
-
-            # 该影片已经试过并判死的种子：重查时必须排除，否则确定性排序会把同一个死种反复选中。
-            excluded_info_hashes = self._list_dead_info_hashes(movie_number)
-            candidate = self._pick_best_candidate(candidates, excluded_info_hashes)
-            if candidate is None:
-                summary["no_candidate_movies"] += 1
-                summary["no_candidate_movie_numbers"].append(movie_number)
-                state = SubscribedMovieSearchStateService.record_attempt(movie, submitted=False)
-                if state.state == SubscribedMovieSearchStateService.STATE_EXHAUSTED:
-                    summary["newly_exhausted_movies"] += 1
-                logger.info(
-                    "Auto download found no usable candidate movie_number={} excluded_dead={} state={}",
-                    movie_number,
-                    len(excluded_info_hashes),
-                    state.state,
-                )
-                continue
-
-            payload = DownloadRequestCreateRequest(
-                movie_number=movie_number,
-                candidate=self._build_candidate_payload(candidate),
+    def _process_one(self, ctx, movie: Movie) -> None:
+        shared = ctx.shared
+        movie_number = movie.movie_number
+        shared["searched_movies"] += 1
+        logger.info("Auto download searching candidates for movie_number={}", movie_number)
+        try:
+            candidates = self.download_search_service.search_candidates(movie_number=movie_number)
+        except Exception as exc:
+            shared["failed_items"].append(
+                {"movie_number": movie_number, "stage": "search", "detail": str(exc)}
             )
-            # 上一次提交打过 115 时，先歇一会儿再发下一个（只在真正要提交前等，
-            # 查不到候选的影片不碰 115，不该白等）。
-            if pending_cloud115_rest:
-                delay = random.uniform(SUBMIT_REST_MIN_SECONDS, SUBMIT_REST_MAX_SECONDS)
-                logger.info(
-                    "Auto download resting before next cloud115 submit "
-                    "movie_number={} delay_seconds={:.1f}",
-                    movie_number,
-                    delay,
-                )
-                time.sleep(delay)
-                pending_cloud115_rest = False
-            try:
-                response = self.download_request_service.create_request(payload)
-            except Exception as exc:
-                # 提交失败时无从判断是否已经打到 115（"建目录成功、离线提交失败" 也走这条路径），
-                # 而 WAF 一旦触发正是最不能连打的时刻，故一律按"打过 115"记账、下一部先休息。
-                # 代价是磁力解析失败这类根本没碰 115 的失败也会多等一轮，换取失败不退化成连打。
-                pending_cloud115_rest = True
-                self._record_failure(summary, movie_number, stage="submit", detail=str(exc))
-                SubscribedMovieSearchStateService.record_search_error(movie, str(exc))
-                logger.exception(
-                    "Auto download submit failed movie_number={} title={} detail={}",
-                    movie_number,
-                    candidate.title,
-                    exc,
-                )
-                continue
-
-            # 只有真正向 115 发过请求才需要为下一个排队等待：qB 提交不碰 115；
-            # created=False 说明本地已有同 (client, info_hash) 的任务、提交直接短路返回，
-            # 同样一个 115 请求都没发（115 侧已存在任务那条分支会新建本地记录，created=True）。
-            pending_cloud115_rest = response.created and self._is_cloud115_task(
-                response.task.client_id, cloud115_client_ids
+            logger.exception(
+                "Auto download candidate search failed movie_number={} detail={}",
+                movie_number,
+                exc,
             )
+            # 索引器故障是运维问题：落错误信息但不消耗该影片的查询预算。
+            raise TaskItemError(
+                "indexer_search_failed", str(exc), consumes_budget=False
+            ) from exc
 
-            SubscribedMovieSearchStateService.record_attempt(movie, submitted=True)
-            if response.created:
-                summary["submitted_movies"] += 1
-                summary["submitted_movie_numbers"].append(movie_number)
-                logger.info(
-                    "Auto download submitted movie_number={} title={} info_hash={}",
-                    movie_number,
-                    response.task.name,
-                    response.task.info_hash,
-                )
-                continue
-
-            summary["skipped_movies"] += 1
+        # 该影片已经试过并判死的种子：重查时必须排除，否则确定性排序会把同一个死种反复选中。
+        excluded_info_hashes = self._list_dead_info_hashes(movie_number)
+        candidate = self._pick_best_candidate(candidates, excluded_info_hashes)
+        if candidate is None:
+            shared["no_candidate_movies"] += 1
+            shared["no_candidate_movie_numbers"].append(movie_number)
             logger.info(
-                "Auto download skipped existing request movie_number={} title={}",
+                "Auto download found no usable candidate movie_number={} excluded_dead={}",
+                movie_number,
+                len(excluded_info_hashes),
+            )
+            # 消耗预算（老片跑满即 exhausted；新片由 RetryPolicy.exempt 豁免不计次）。
+            raise TaskItemError(
+                ERROR_CODE_NO_CANDIDATE,
+                f"未找到可用资源（已排除死种 {len(excluded_info_hashes)} 个）",
+            )
+
+        payload = DownloadRequestCreateRequest(
+            movie_number=movie_number,
+            candidate=self._build_candidate_payload(candidate),
+        )
+        # 上一次提交打过 115 时，先歇一会儿再发下一个（只在真正要提交前等，
+        # 查不到候选的影片不碰 115，不该白等）。
+        if shared["pending_cloud115_rest"]:
+            delay = random.uniform(SUBMIT_REST_MIN_SECONDS, SUBMIT_REST_MAX_SECONDS)
+            logger.info(
+                "Auto download resting before next cloud115 submit "
+                "movie_number={} delay_seconds={:.1f}",
+                movie_number,
+                delay,
+            )
+            time.sleep(delay)
+            shared["pending_cloud115_rest"] = False
+        try:
+            response = self.download_request_service.create_request(payload)
+        except Exception as exc:
+            # 提交失败时无从判断是否已经打到 115（"建目录成功、离线提交失败" 也走这条路径），
+            # 而 WAF 一旦触发正是最不能连打的时刻，故一律按"打过 115"记账、下一部先休息。
+            shared["pending_cloud115_rest"] = True
+            shared["failed_items"].append(
+                {"movie_number": movie_number, "stage": "submit", "detail": str(exc)}
+            )
+            logger.exception(
+                "Auto download submit failed movie_number={} title={} detail={}",
                 movie_number,
                 candidate.title,
+                exc,
             )
+            raise TaskItemError(
+                "download_submit_failed", str(exc), consumes_budget=False
+            ) from exc
 
-        return summary
-
-    @staticmethod
-    def _record_failure(summary: Dict[str, Any], movie_number: str, *, stage: str, detail: str) -> None:
-        summary["failed_movies"] += 1
-        summary["failed_items"].append(
-            {
-                "movie_number": movie_number,
-                "stage": stage,
-                "detail": detail,
-            }
+        # 只有真正向 115 发过请求才需要为下一个排队等待：qB 提交不碰 115；
+        # created=False 说明本地已有同 (client, info_hash) 的任务、提交直接短路返回。
+        shared["pending_cloud115_rest"] = response.created and self._is_cloud115_task(
+            response.task.client_id, shared["cloud115_client_ids"]
         )
+        if response.created:
+            shared["submitted_movies"] += 1
+            shared["submitted_movie_numbers"].append(movie_number)
+            logger.info(
+                "Auto download submitted movie_number={} title={} info_hash={}",
+                movie_number,
+                response.task.name,
+                response.task.info_hash,
+            )
+            return
+        shared["skipped_movies"] += 1
+        logger.info(
+            "Auto download skipped existing request movie_number={} title={}",
+            movie_number,
+            candidate.title,
+        )
+
+    def run(self, *, reporter, only_ids: List[int] | None = None) -> Dict[str, Any]:
+        now = utc_now_for_db()
+        retry_policy = RetryPolicy(
+            max_attempts=SubscribedMovieSearchStateService.stale_attempt_limit(),
+            # 退避为零：failed_retryable 立即到期，复刻旧的"每晚一轮直到预算耗尽"节奏。
+            backoff_base_seconds=0,
+            backoff_max_seconds=0,
+            # 新片不计次数、永不放弃（决策 #10 的豁免钩子）。
+            exempt=lambda movie: SubscribedMovieSearchStateService.is_fresh(movie, now=now),
+        )
+        spec = ResourceTaskSpec(
+            task_key=TASK_KEY,
+            resource_type="movie",
+            retry=retry_policy,
+            select_candidates=self._select_candidates,
+            process_one=self._process_one,
+            setup_run=self._setup_run,
+            # 种子判死后 succeeded 行会重新进候选，领取复核用宽松版。
+            claim_eligible=ResourceTaskLedger.resync_claim_eligible,
+        )
+        stats = ResourceTaskRunner.run(spec, reporter, only_ids=only_ids)
+        shared = stats.get("shared") or {}
+        return {
+            "candidate_movies": stats["candidate_count"],
+            "searched_movies": shared.get("searched_movies", 0),
+            "submitted_movies": shared.get("submitted_movies", 0),
+            "no_candidate_movies": shared.get("no_candidate_movies", 0),
+            "newly_exhausted_movies": stats["exhausted_count"],
+            "skipped_movies": shared.get("skipped_movies", 0),
+            "failed_movies": len(shared.get("failed_items", [])),
+            "submitted_movie_numbers": shared.get("submitted_movie_numbers", []),
+            "no_candidate_movie_numbers": shared.get("no_candidate_movie_numbers", []),
+            "failed_items": shared.get("failed_items", []),
+        }
 
     _media_exists_expression = staticmethod(media_exists_expression)
 
-    @classmethod
-    def _collect_due_movies(cls) -> List[Movie]:
+    def _select_candidates(self, _state_condition, only_ids=None) -> List[Movie]:
         """本轮该发起搜索的订阅影片，一条 SQL 出结果。
 
-        不需要任何 Python 侧的到期筛选：放弃与否在 record_attempt 写入时就落进了 state，
-        所以"还要不要查"退化成一次纯集合判定。没有状态行（LEFT JOIN 出 NULL）= 从未查过 = 要查。
+        succeeded 行必须保留在候选里（提交过的种子判死后，活跃任务条件会把影片放回来），
+        因此不用内核默认状态条件，状态排除在 SQL 里显式表达：
+        exhausted / failed_terminal / running 出局，failed_retryable 看 next_retry_at。
         """
-        return list(
+        now = utc_now_for_db()
+        query = (
             Movie.select(Movie)
             .join(ResourceTaskState, JOIN.LEFT_OUTER, on=search_state_join_condition())
             .where(Movie.is_subscribed == True)
-            .where(~cls._media_exists_expression())
+            .where(~self._media_exists_expression())
             .where(~active_download_task_exists_expression())
             .where(
                 ResourceTaskState.state.is_null(True)
-                | (ResourceTaskState.state != SubscribedMovieSearchStateService.STATE_EXHAUSTED)
+                | (
+                    ResourceTaskState.state.not_in(
+                        (
+                            SubscribedMovieSearchStateService.STATE_EXHAUSTED,
+                            "failed_terminal",
+                            SubscribedMovieSearchStateService.STATE_RUNNING,
+                        )
+                    )
+                    & (
+                        (
+                            ResourceTaskState.state
+                            != SubscribedMovieSearchStateService.STATE_FAILED_RETRYABLE
+                        )
+                        | ResourceTaskState.next_retry_at.is_null(True)
+                        | (ResourceTaskState.next_retry_at <= now)
+                    )
+                )
             )
             .order_by(Movie.subscribed_at.asc(), Movie.id.asc())
         )
+        if only_ids:
+            query = query.where(Movie.id.in_(list(only_ids)))
+        return list(query)
 
     @staticmethod
     def _list_dead_info_hashes(movie_number: str) -> set[str]:

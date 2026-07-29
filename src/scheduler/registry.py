@@ -30,6 +30,7 @@ from src.service.playback import (
     MediaThumbnailService,
 )
 from src.service.system import ActivityCleanupService
+from src.service.system.resource_task_runner import ResourceTaskLedger
 
 from src.service.transfers import (
     Cloud115OfflineSyncService,
@@ -95,7 +96,14 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="auto-download-subscribed-movies",
         cli_help="执行一次已订阅缺失影片自动下载",
         cron_setting="subscribed_movie_auto_download_cron",
-        service_factory=lambda _reporter: SubscribedMovieAutoDownloadService().run(),
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
+        service_factory=lambda reporter: SubscribedMovieAutoDownloadService().run(reporter=reporter),
+        business_recovery=lambda: {
+            "recovered_running_movies": ResourceTaskLedger.recover_running(
+                "subscribed_movie_auto_download",
+                error_message="订阅影片资源查询任务中断，等待重试",
+            )
+        },
         format_stats=_build_stats_formatter(
             "auto download finished:",
             ("candidate_movies", "candidate_movies", 0),
@@ -126,9 +134,8 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="sync-movie-interactions",
         cli_help="执行一次影片互动数同步",
         cron_setting="movie_interaction_sync_cron",
-        service_factory=lambda reporter: MovieInteractionSyncService().run(
-            progress_callback=reporter.progress_callback,
-        ),
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
+        service_factory=lambda reporter: MovieInteractionSyncService().run(reporter=reporter),
         business_recovery=lambda: {
             "recovered_running_movies": MovieInteractionSyncService.recover_interrupted_running_movies(
                 error_message=MovieInteractionSyncService.INTERRUPTED_SYNC_ERROR_MESSAGE,
@@ -277,9 +284,8 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="sync-movie-desc",
         cli_help="执行一次影片描述回填",
         cron_setting="movie_desc_sync_cron",
-        service_factory=lambda reporter: MovieDescSyncService().run(
-            progress_callback=reporter.progress_callback,
-        ),
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
+        service_factory=lambda reporter: MovieDescSyncService().run(reporter=reporter),
         business_recovery=lambda: {
             "recovered_running_movies": MovieDescSyncService.recover_interrupted_running_movies(
                 error_message=MovieDescSyncService.INTERRUPTED_FETCH_ERROR_MESSAGE,
@@ -301,9 +307,8 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="translate-movie-desc",
         cli_help="执行一次影片简介翻译",
         cron_setting="movie_desc_translation_cron",
-        service_factory=lambda reporter: MovieDescTranslationService().run(
-            progress_callback=reporter.progress_callback,
-        ),
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
+        service_factory=lambda reporter: MovieDescTranslationService().run(reporter=reporter),
         business_recovery=lambda: {
             "recovered_running_movies": MovieDescTranslationService.recover_interrupted_running_movies(
                 error_message=MovieDescTranslationService.INTERRUPTED_TRANSLATION_ERROR_MESSAGE,
@@ -325,9 +330,8 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="translate-movie-title",
         cli_help="执行一次影片标题翻译",
         cron_setting="movie_title_translation_cron",
-        service_factory=lambda reporter: MovieTitleTranslationService().run(
-            progress_callback=reporter.progress_callback,
-        ),
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
+        service_factory=lambda reporter: MovieTitleTranslationService().run(reporter=reporter),
         business_recovery=lambda: {
             "recovered_running_movies": MovieTitleTranslationService.recover_interrupted_running_movies(
                 error_message=MovieTitleTranslationService.INTERRUPTED_TRANSLATION_ERROR_MESSAGE,
@@ -349,8 +353,9 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="generate-media-thumbnails",
         cli_help="执行一次媒体缩略图生成",
         cron_setting="media_thumbnail_cron",
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
         service_factory=lambda reporter: MediaThumbnailService.generate_pending_thumbnails(
-            progress_callback=reporter.progress_callback,
+            reporter=reporter,
         ),
         format_stats=_build_stats_formatter(
             "thumbnail generation finished:",
@@ -360,6 +365,7 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
             ("deferred_media", "deferred_media", 0),
             ("retryable_failed_media", "retryable_failed_media", 0),
             ("terminal_failed_media", "terminal_failed_media", 0),
+            ("exhausted_media", "exhausted_media", 0),
         ),
     ),
     JobDefinition(

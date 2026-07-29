@@ -16,9 +16,11 @@
 - `POST /movies/search/javdb/stream`：JavDB 按番号搜索并流式入库
 - `POST /movies/series/{series_id}/javdb/import/stream`：按本地系列 ID 抓取 JavDB 系列影片并流式入库
 - `POST /movies/{movie_number}/metadata-refresh`：严格刷新本地已有影片的远端元数据
-- `POST /movies/{movie_number}/desc-translation`：手动翻译单部影片简介
-- `POST /movies/{movie_number}/interaction-sync`：手动同步单部影片互动数
 - `POST /movies/{movie_number}/heat-recompute`：手动重算单部影片热度
+
+> 单片翻译 / 互动同步端点已删除：统一走 `POST /system/resource-task-actions` 的
+> `rerun`（`resource_ids=[movie_id]`，202 入队语义），见
+> [任务中心文档](../system/task-runs.md)。
 - `GET /movies`：分页查询影片列表
 - `GET /movies/latest`：分页查询最新入库影片
 - `GET /movies/subscribed-actors/latest`：分页查询已订阅演员的最新影片
@@ -180,8 +182,6 @@
 | `POST` | `/movies/search/javdb/stream` | JavDB 按番号搜索并流式入库（SSE） |
 | `POST` | `/movies/series/{series_id}/javdb/import/stream` | JavDB 按本地系列 ID 抓取系列影片并流式入库（SSE） |
 | `POST` | `/movies/{movie_number}/metadata-refresh` | 严格刷新本地已有影片的远端元数据 |
-| `POST` | `/movies/{movie_number}/desc-translation` | 手动翻译单部影片简介 |
-| `POST` | `/movies/{movie_number}/interaction-sync` | 手动同步单部影片互动数 |
 | `POST` | `/movies/{movie_number}/heat-recompute` | 手动重算单部影片热度 |
 | `GET` | `/movies` | 分页查询影片 |
 | `GET` | `/movies/latest` | 分页查询最新入库影片 |
@@ -198,9 +198,10 @@
 > 批量取消订阅就是上表的 `POST /movies/unsubscriptions`，管理页也调它——订阅管理域不另造一套；
 > 要连媒体文件一起删的走 `DELETE /media/{media_id}`。
 >
-> 写入侧的一条联动：影片从「未订阅」变为「订阅」时，会顺带重置（删除）该影片的资源查询状态行
-> （`ResourceTaskState`，`task_key=subscribed_movie_search`）。取消订阅不删这些行，不重置的话
-> 曾被判 `exhausted` 的影片重新订阅后会一直被自动下载跳过。
+> 写入侧的一条联动：影片从「未订阅」变为「订阅」时，会顺带重置该影片的资源查询状态行
+> （`ResourceTaskState`，`task_key=subscribed_movie_auto_download`；重置 = 重开预算而非删行，
+> 尝试历史保留在 `resource_task_attempt`）。取消订阅不重置，不重置的话曾被判 `exhausted`
+> 的影片重新订阅后会一直被自动下载跳过。
 
 ## 详细接口定义
 
@@ -452,35 +453,26 @@ Authorization: Bearer <token>
 }
 ```
 
-### `POST /movies/{movie_number}/desc-translation`
+### 单片翻译 / 互动同步（已并入统一 action 协议）
 
-- 鉴权：需要 Bearer Token
-- 路径参数：
-  - `movie_number`：影片番号
-- 行为：
-  - 按与 `metadata-refresh` 相同的标准化规则匹配本地影片
-  - 只要命中影片，就会重新翻译当前 `desc`，并覆盖已有 `desc_zh`
-  - 翻译请求使用共享配置 `movie_info_translation`
-  - 成功后返回最新 `MovieDetailResource`
-- 错误：
-  - `404 movie_not_found`
-  - `422 movie_desc_missing`
-  - 翻译服务自身返回的错误码会原样透出，例如 `movie_desc_translation_unavailable`
+`POST /movies/{movie_number}/desc-translation` 与
+`POST /movies/{movie_number}/interaction-sync` 已删除。对等调用：
 
-### `POST /movies/{movie_number}/interaction-sync`
+```json
+POST /system/resource-task-actions
+{
+  "task_key": "movie_desc_translation",
+  "action": "rerun",
+  "resource_ids": [movie_id]
+}
+```
 
-- 鉴权：需要 Bearer Token
-- 路径参数：
-  - `movie_number`：影片番号
-- 行为：
-  - 按与 `metadata-refresh` 相同的标准化规则匹配本地影片
-  - 立即拉取该影片最新 JavDB 互动数，不受批量调度刷新窗口限制
-  - 若互动字段发生变化，会同步重算该影片热度
-  - 成功后返回最新 `MovieDetailResource`
-- 错误：
-  - `404 movie_not_found`
-  - `422 movie_javdb_id_missing`
-  - `502 movie_interaction_sync_failed`
+- `rerun` 是强制语义：已翻译影片会重新翻译并覆盖 `desc_zh`；互动同步不受批量调度
+  刷新窗口限制（`task_key` 换 `movie_interaction_sync`）
+- 202 入队语义：执行在 worker，响应携带 `task_run_id`，前端经 SSE / 单条查询跟进后
+  刷新影片详情
+- 影片缺原始简介 / 缺 JavDB ID 由合格性钩子逐条跳过（`movie_desc_missing` /
+  `movie_javdb_id_missing`），不再返回 422
 
 ### `POST /movies/{movie_number}/heat-recompute`
 

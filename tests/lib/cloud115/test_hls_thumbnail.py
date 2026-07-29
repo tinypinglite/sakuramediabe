@@ -232,44 +232,65 @@ def test_hls_segment_decode_limits_network_and_ffmpeg_probe(
 
 
 def test_local_media_are_parallel_while_cloud115_media_remain_serial(
+    test_db,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """kernel 双泳道（Wave 2）：cloud115 泳道先行串行，本地泳道随后按配置并发。"""
+    from src.model import Media, MediaLibrary, Movie
+
     local_barrier = threading.Barrier(2)
     processed_cloud115: list[int] = []
     processed_local: list[int] = []
-    monkeypatch.setattr(
-        MediaThumbnailTaskService,
-        "pending_media_ids",
-        staticmethod(lambda: [1, 2, 3, 4]),
+
+    local_library = MediaLibrary.create(
+        name="thumb-local", backend="local", backend_config={"root_path": "/library"}
     )
+    cloud_library = MediaLibrary.create(
+        name="thumb-cloud", backend="cloud115", backend_config={"cookies": "x"}
+    )
+    media_ids: dict[str, list[int]] = {"local": [], "cloud": []}
+    for index, (lane, library) in enumerate(
+        (("local", local_library), ("cloud", cloud_library)) * 2
+    ):
+        movie = Movie.create(
+            movie_number=f"THB-{index}", javdb_id=f"thb-{index}", title=f"THB-{index}"
+        )
+        media = Media.create(
+            movie=movie,
+            library=library,
+            path=f"/library/thb-{index}.mp4",
+            valid=True,
+            content_fingerprint=f"fp-{index}",
+        )
+        media_ids[lane].append(media.id)
+    cloud_id_set = set(media_ids["cloud"])
+
+    def fake_generate(cls, media) -> int:
+        if media.id in cloud_id_set:
+            processed_cloud115.append(media.id)
+        else:
+            processed_local.append(media.id)
+            # 两条本地媒体必须同时在飞行中才能通过 barrier：验证本地泳道确实并发。
+            local_barrier.wait(timeout=2)
+        return 1
+
     monkeypatch.setattr(
-        MediaThumbnailTaskService,
-        "cloud115_media_ids",
-        staticmethod(lambda media_ids: {2, 4}),
+        MediaThumbnailTaskService, "generate_for_media", classmethod(fake_generate)
     )
     monkeypatch.setattr(
         "src.service.playback.thumbnails.task_service.settings.media.max_thumbnail_process_count",
         2,
     )
 
-    def process_media(media_id: int) -> dict[str, int]:
-        if media_id in {2, 4}:
-            processed_cloud115.append(media_id)
-        else:
-            processed_local.append(media_id)
-            local_barrier.wait(timeout=1)
-        return {"successful_media": 1, "generated_thumbnails": 1}
+    class _StubReporter:
+        def emit(self, **kwargs) -> None:
+            pass
 
-    monkeypatch.setattr(
-        MediaThumbnailTaskService,
-        "process_media",
-        staticmethod(process_media),
-    )
+    stats = MediaThumbnailTaskService.generate_pending_thumbnails(reporter=_StubReporter())
 
-    stats = MediaThumbnailTaskService.generate_pending_thumbnails()
-
-    assert processed_cloud115 == [2, 4]
-    assert set(processed_local) == {1, 3}
+    # cloud115 泳道先跑完（串行、按 id 顺序），本地泳道才开始。
+    assert processed_cloud115 == sorted(cloud_id_set)
+    assert set(processed_local) == set(media_ids["local"])
     assert stats["successful_media"] == 4
     assert stats["generated_thumbnails"] == 4
 

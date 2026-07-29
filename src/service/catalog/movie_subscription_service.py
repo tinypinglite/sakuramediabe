@@ -15,16 +15,14 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from loguru import logger
 from peewee import JOIN, Case, fn
 
-from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import media_exists_expression, validate_page
 from src.model import DownloadTask, Image, Media, Movie, ResourceTaskState
 from src.schema.catalog.subscriptions import (
+    MovieSubscriptionImportOperationResource,
     MovieSubscriptionListItemResource,
-    MovieSubscriptionSearchResetResponse,
     MovieSubscriptionSort,
     MovieSubscriptionStatus,
     MovieSubscriptionStatusCountsResource,
@@ -37,8 +35,7 @@ from src.service.transfers.common import (
     download_task_dead_expression,
 )
 from src.service.transfers.subscribed_movie_search_state_service import (
-    RESOURCE_TYPE as SEARCH_RESOURCE_TYPE,
-    TASK_KEY as SEARCH_TASK_KEY,
+    ERROR_CODE_NO_CANDIDATE,
     SubscribedMovieSearchStateService,
     search_state_join_condition,
 )
@@ -94,7 +91,16 @@ class MovieSubscriptionService:
                     MovieSubscriptionStatus.EXHAUSTED.value,
                 ),
                 (
-                    ResourceTaskState.state == SubscribedMovieSearchStateService.STATE_FAILED,
+                    # kernel 记账后失败落 failed_retryable；「查过没找到」有专属 error_code，
+                    # 仍归 MISSING 档（走下面 last_attempted_at 分支），只有真故障才亮 FAILED。
+                    (
+                        ResourceTaskState.state
+                        == SubscribedMovieSearchStateService.STATE_FAILED_RETRYABLE
+                    )
+                    & (
+                        ResourceTaskState.error_code.is_null(True)
+                        | (ResourceTaskState.error_code != ERROR_CODE_NO_CANDIDATE)
+                    ),
                     MovieSubscriptionStatus.FAILED.value,
                 ),
                 (
@@ -211,12 +217,20 @@ class MovieSubscriptionService:
         )
         dead_task_counts = cls._count_dead_download_tasks(movie_numbers)
         attempt_limit = SubscribedMovieSearchStateService.stale_attempt_limit()
+        # 只为 import_failed 档取导入作业上下文：其余档没有可操作的导入语义。
+        import_failed_numbers = [
+            movie.movie_number
+            for movie in ordered_movies
+            if status_by_movie_id[movie.id] == MovieSubscriptionStatus.IMPORT_FAILED.value
+        ]
+        import_operations = cls._load_latest_import_operations(import_failed_numbers)
 
         items: list[MovieSubscriptionListItemResource] = []
         for movie in ordered_movies:
             record = records.get(movie.id)
             items.append(
                 MovieSubscriptionListItemResource(
+                    movie_id=movie.id,
                     movie_number=movie.movie_number,
                     title=movie.title,
                     title_zh=movie.title_zh or "",
@@ -231,9 +245,74 @@ class MovieSubscriptionService:
                     last_error=record.last_error if record else None,
                     dead_download_task_count=dead_task_counts.get(movie.movie_number, 0),
                     media_count=media_counts.get(movie.movie_number, 0),
+                    import_operation=import_operations.get(movie.movie_number),
                 )
             )
         return items
+
+    @classmethod
+    def _load_latest_import_operations(
+        cls, movie_numbers: list[str]
+    ) -> dict[str, MovieSubscriptionImportOperationResource]:
+        """当页 import_failed 影片的最新导入作业上下文，一次 IN 查询完成。
+
+        通路：Movie.movie_number ==（裸列，双侧索引）== DownloadTask.movie_number
+        → ImportJob.download_task（外键）。「最新」= 影片维度 ImportJob.id 最大。
+        failed_files 的 kind 判定只能在 Python 侧解析（JSON 列），当页 ≤20 条无往返放大；
+        绝不把 ImportJob 引入 _status_expression 的 CASE——状态七态互斥的不变量不许破坏。
+        """
+        if not movie_numbers:
+            return {}
+        import json
+
+        from src.common.media_import_status import TERMINAL_JOB_STATES
+        from src.model import ImportJob
+        from src.service.transfers.base_import_job_service import BaseImportJobService
+
+        rows = (
+            ImportJob.select(
+                ImportJob.id,
+                ImportJob.state,
+                ImportJob.imported_count,
+                ImportJob.skipped_count,
+                ImportJob.failed_count,
+                ImportJob.failed_files,
+                DownloadTask.movie,
+            )
+            .join(DownloadTask, on=(ImportJob.download_task == DownloadTask.id))
+            .where(DownloadTask.movie.in_(movie_numbers))
+            .order_by(DownloadTask.movie, ImportJob.id.desc())
+            .tuples()
+        )
+        operations: dict[str, MovieSubscriptionImportOperationResource] = {}
+        for job_id, state, imported, skipped, failed, failed_files, movie_number in rows:
+            if movie_number in operations:
+                continue
+            try:
+                failure_items = json.loads(failed_files) if failed_files else []
+            except (TypeError, ValueError):
+                failure_items = []
+            retryable_file_count = sum(
+                1
+                for item in failure_items
+                if isinstance(item, dict)
+                and BaseImportJobService._entry_kind(item) == "file"
+            )
+            available_actions = ["open_import_job"]
+            if state in TERMINAL_JOB_STATES:
+                if retryable_file_count:
+                    available_actions.append("retry_failed_files")
+                available_actions.append("rerun_import")
+            operations[movie_number] = MovieSubscriptionImportOperationResource(
+                import_job_id=job_id,
+                state=state,
+                imported_count=imported,
+                skipped_count=skipped,
+                failed_count=failed,
+                retryable_file_count=retryable_file_count,
+                available_actions=available_actions,
+            )
+        return operations
 
     @staticmethod
     def _count_by_key(query) -> dict[str, int]:
@@ -265,67 +344,6 @@ class MovieSubscriptionService:
             for image in Image.select().where(Image.id.in_(list(image_ids)))
         }
 
-    # ------------------------------------------------------------------ 重置
-
-    @classmethod
-    def reset_search_state(
-        cls, *, movie_numbers: list[str], reset_all_exhausted: bool
-    ) -> MovieSubscriptionSearchResetResponse:
-        """重置资源查询状态：删掉状态行，下轮定时任务即会重新查。
-
-        重置不放开选种黑名单——理由见 SubscribedMovieSearchStateService.reset 的说明。
-        """
-        movie_ids = cls._resolve_reset_targets(
-            movie_numbers=movie_numbers, reset_all_exhausted=reset_all_exhausted
-        )
-        reset_count = SubscribedMovieSearchStateService.reset(movie_ids)
-        logger.info(
-            "Subscription search state reset movies={} deleted_rows={}",
-            len(movie_ids),
-            reset_count,
-        )
-        return MovieSubscriptionSearchResetResponse(reset_count=reset_count)
-
-    @classmethod
-    def _resolve_reset_targets(
-        cls, *, movie_numbers: list[str], reset_all_exhausted: bool
-    ) -> list[int]:
-        if reset_all_exhausted:
-            exhausted_ids = ResourceTaskState.select(ResourceTaskState.resource_id).where(
-                ResourceTaskState.task_key == SEARCH_TASK_KEY,
-                ResourceTaskState.resource_type == SEARCH_RESOURCE_TYPE,
-                ResourceTaskState.state == SubscribedMovieSearchStateService.STATE_EXHAUSTED,
-            )
-            return [
-                row[0]
-                for row in Movie.select(Movie.id)
-                .where(Movie.is_subscribed == True, Movie.id.in_(exhausted_ids))
-                .tuples()
-            ]
-
-        deduped_numbers = cls._dedup_movie_numbers(movie_numbers)
-        if not deduped_numbers:
-            raise ApiError(
-                422,
-                "invalid_movie_subscription_reset",
-                "需要指定 movie_numbers 或把 reset_all_exhausted 置为 true",
-            )
-        return [
-            row[0]
-            for row in Movie.select(Movie.id)
-            .where(
-                Movie.is_subscribed == True,
-                Movie.movie_number.in_(deduped_numbers),
-            )
-            .tuples()
-        ]
-
-    @staticmethod
-    def _dedup_movie_numbers(movie_numbers: list[str]) -> list[str]:
-        # 入参来自管理页展示的规范番号，只去空白去重、精确匹配即可，不做归一化改写。
-        deduped_numbers: list[str] = []
-        for movie_number in movie_numbers:
-            stripped = (movie_number or "").strip()
-            if stripped and stripped not in deduped_numbers:
-                deduped_numbers.append(stripped)
-        return deduped_numbers
+    # 资源查询重置已并入统一 action 协议（POST /system/resource-task-actions 的
+    # reset_retry_budget），本域不再提供重置入口；订阅时的状态重开仍走
+    # MovieService._reset_search_state_for_new_subscriptions。

@@ -1285,3 +1285,163 @@ def test_run_pending_migrations_drops_movie_similarity_table(clean_db):
 
     assert not clean_db.table_exists("movie_similarity")
     assert "20260728_02_drop_movie_similarity" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_adds_task_queue_and_attempts(clean_db):
+    """任务架构 Wave 0：存量库补队列列 / attempt 表 / 投影扩列，悬空 last_task_run_id 清零后外键化。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260729_01_add_task_queue_and_attempts",),
+    )
+    # 还原成存量库结构：删新列（依赖它们的索引随列一起消失）、删 attempt 表、删外键约束。
+    clean_db.execute_sql(
+        "ALTER TABLE background_task_run"
+        " DROP COLUMN params, DROP COLUMN scheduled_at, DROP COLUMN lease_expires_at"
+    )
+    clean_db.execute_sql(
+        "ALTER TABLE resource_task_state"
+        " DROP COLUMN next_retry_at, DROP COLUMN error_code,"
+        " DROP COLUMN retry_round, DROP COLUMN last_attempt_id"
+    )
+    clean_db.execute_sql('DROP TABLE "resource_task_attempt"')
+    for legacy_constraint in (
+        "resource_task_state_last_task_run_id_fkey",
+        "resource_task_state_last_task_run_id_fk",
+    ):
+        clean_db.execute_sql(
+            f"ALTER TABLE resource_task_state DROP CONSTRAINT IF EXISTS {legacy_constraint}"
+        )
+
+    # 存量数据：一条指向真实 run，一条悬空（活动清理删 run 后裸整数列的残留）。
+    clean_db.execute_sql(
+        "INSERT INTO background_task_run"
+        " (created_at, updated_at, task_key, task_name, trigger_type, state, result_summary)"
+        " VALUES (now(), now(), 'media_thumbnail_generation', '缩略图', 'scheduled', 'completed', '{}')"
+    )
+    run_id = clean_db.execute_sql("SELECT max(id) FROM background_task_run").fetchone()[0]
+    clean_db.execute_sql(
+        "INSERT INTO resource_task_state"
+        " (created_at, updated_at, task_key, resource_type, resource_id, state,"
+        "  attempt_count, last_task_run_id)"
+        " VALUES"
+        " (now(), now(), 'media_thumbnail_generation', 'media', 1, 'failed', 2, %s),"
+        " (now(), now(), 'media_thumbnail_generation', 'media', 2, 'failed', 2, 999999)",
+        (run_id,),
+    )
+
+    run_pending_migrations(clean_db)
+
+    run_columns = {column.name for column in clean_db.get_columns("background_task_run")}
+    assert {"params", "scheduled_at", "lease_expires_at"} <= run_columns
+    state_columns = {column.name for column in clean_db.get_columns("resource_task_state")}
+    assert {"next_retry_at", "error_code", "retry_round", "last_attempt_id"} <= state_columns
+    assert clean_db.table_exists("resource_task_attempt")
+
+    # 有效引用保留、悬空引用被清零。
+    rows = clean_db.execute_sql(
+        "SELECT resource_id, last_task_run_id FROM resource_task_state ORDER BY resource_id"
+    ).fetchall()
+    assert rows == [(1, run_id), (2, None)]
+
+    # 外键约束与两个调度索引确实补上了。
+    assert clean_db.execute_sql(
+        """
+        SELECT 1
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.constraint_schema = kcu.constraint_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY'
+          AND tc.table_schema = current_schema()
+          AND tc.table_name = 'resource_task_state'
+          AND kcu.column_name = 'last_task_run_id'
+        """
+    ).fetchone() is not None
+    run_indexed_columns = {
+        tuple(index.columns) for index in clean_db.get_indexes("background_task_run")
+    }
+    assert ("state", "scheduled_at") in run_indexed_columns
+    state_indexed_columns = {
+        tuple(index.columns) for index in clean_db.get_indexes("resource_task_state")
+    }
+    assert ("task_key", "state", "next_retry_at") in state_indexed_columns
+    assert "20260729_01_add_task_queue_and_attempts" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_wipes_task_run_history(clean_db):
+    """任务架构 Wave 1 切换：清空 run/event 历史，外键引用自动置空（决策 #11）。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260729_02_wipe_task_run_history",),
+    )
+    clean_db.execute_sql(
+        "INSERT INTO background_task_run"
+        " (created_at, updated_at, task_key, task_name, trigger_type, state, result_summary)"
+        " VALUES (now(), now(), 'ranking_sync', '排行榜', 'scheduled', 'completed', '{}')"
+    )
+    run_id = clean_db.execute_sql("SELECT max(id) FROM background_task_run").fetchone()[0]
+    clean_db.execute_sql(
+        "INSERT INTO system_event (created_at, updated_at, event_type, payload, emitted_at)"
+        " VALUES (now(), now(), 'task_run_updated', '{}', now())"
+    )
+    library = MediaLibrary.create(
+        name="wipe-lib", backend="local", backend_config={"root_path": "/library"}
+    )
+    clean_db.execute_sql(
+        "INSERT INTO import_job (created_at, updated_at, source_path, library_id, task_run_id,"
+        " state, transfer_mode, imported_count, skipped_count, failed_count, failed_files)"
+        " VALUES (now(), now(), '/downloads/x', %s, %s, 'completed', 'copy', 1, 0, 0, '[]')",
+        (library.id, run_id),
+    )
+
+    run_pending_migrations(clean_db)
+
+    assert clean_db.execute_sql("SELECT count(*) FROM background_task_run").fetchone()[0] == 0
+    assert clean_db.execute_sql("SELECT count(*) FROM system_event").fetchone()[0] == 0
+    assert clean_db.execute_sql("SELECT task_run_id FROM import_job").fetchone()[0] is None
+    assert "20260729_02_wipe_task_run_history" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_resets_interaction_sync_states_preserving_memory(clean_db):
+    """互动同步迁 kernel（20260729_05）：保留 last_succeeded_at 记忆、清历史；未成功行删除。
+
+    该时间戳是分层调度的唯一记忆载体，清空等于重放全库 seed（每片一次 JavDB 请求）。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260729_05_reset_movie_interaction_sync_states",),
+    )
+    clean_db.execute_sql(
+        "INSERT INTO resource_task_state"
+        " (created_at, updated_at, task_key, resource_type, resource_id, state,"
+        "  attempt_count, retry_round, last_succeeded_at, last_error, error_code)"
+        " VALUES"
+        " (now(), now(), 'movie_interaction_sync', 'movie', 1, 'failed', 3, 0,"
+        "  '2026-07-01 00:00:00', 'javdb 超时', 'javdb_request_error'),"
+        " (now(), now(), 'movie_interaction_sync', 'movie', 2, 'running', 1, 0,"
+        "  NULL, NULL, NULL)"
+    )
+
+    run_pending_migrations(clean_db)
+
+    rows = clean_db.execute_sql(
+        "SELECT resource_id, state, attempt_count, last_succeeded_at, last_error, error_code"
+        " FROM resource_task_state WHERE task_key = 'movie_interaction_sync'"
+        " ORDER BY resource_id"
+    ).fetchall()
+    assert len(rows) == 1
+    resource_id, state, attempt_count, last_succeeded_at, last_error, error_code = rows[0]
+    assert resource_id == 1
+    assert state == "succeeded"
+    assert attempt_count == 0
+    assert last_succeeded_at is not None
+    assert last_error is None
+    assert error_code is None

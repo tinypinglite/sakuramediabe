@@ -13,7 +13,6 @@ from typing import List
 from loguru import logger
 
 from src.common.media_import_status import (
-    IMPORT_JOB_STATE_FAILED,
     IMPORT_JOB_STATE_PENDING,
     IMPORT_JOB_STATE_RUNNING,
 )
@@ -24,9 +23,7 @@ from src.schema.transfers.media_import import (
     ImportJobResource,
     ImportJobTriggerResponse,
 )
-from src.service.system import ActivityService
 from src.service.transfers.base_import_job_service import BaseImportJobService
-from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
 from src.service.transfers.media_import_service import MediaImportService
 
 
@@ -61,78 +58,66 @@ class MediaImportJobService(BaseImportJobService):
         return cls._do_trigger(library_id, source_path, transfer_mode=transfer_mode)
 
     @classmethod
-    def _create_job(cls, *, library, resolved_source, transfer_mode, **launch_kwargs):
+    def _create_job(cls, *, library, resolved_source, transfer_mode, download_task_id=None, **launch_kwargs):
         return ImportJob.create(
             source_path=str(resolved_source),
             library=library,
             state=IMPORT_JOB_STATE_PENDING,
             transfer_mode=transfer_mode,
+            download_task=download_task_id,
         )
 
     @classmethod
-    def _submit_runner(
-        cls, *, import_job, task_run, library, resolved_source, transfer_mode, only_files, **launch_kwargs
-    ) -> None:
-        DownloadImportRunner.submit(
-            import_job.id,
-            cls._run_import_job,
-            library.id,
-            str(resolved_source),
-            import_job.id,
-            task_run.id,
-            transfer_mode,
-            only_files,
+    def _launch_kwargs_from_retry(cls, job) -> dict:
+        # 重导/重跑必须继承 download_task 关联，否则订阅页「取最新导入作业」会断链。
+        return {"download_task_id": job.download_task_id}
+
+    @classmethod
+    def rerun_job(cls, job_id: int) -> ImportJobTriggerResponse:
+        """整作业重跑：不论上次成败按原源整目录重扫——"completed 零产出"的恢复通路。"""
+        job = cls._require_job(job_id)
+        cls._assert_job_terminal(job)
+        library = cls._require_library(job.library_id)
+        resolved_source = cls._resolve_source_path(job.source_path)
+        return cls._launch_import(
+            library=library,
+            resolved_source=resolved_source,
+            transfer_mode=job.transfer_mode or "auto",
+            mutex_key=f"{cls.MUTEX_PREFIX}:rerun:{library.id}:{job_id}",
+            only_files=None,
+            task_name=f"重跑导入 #{job_id}",
+            **cls._launch_kwargs_from_retry(job),
         )
 
     @classmethod
-    def _run_import_job(
-        cls,
-        library_id: int,
-        source_path: str,
-        import_job_id: int,
-        task_run_id: int,
-        transfer_mode: str,
-        only_files: List[str] | None,
-    ) -> dict:
-        ensure_database_ready()
+    def execute_from_queue(cls, reporter, params: dict) -> dict:
+        job = cls._require_job(int(params["import_job_id"]))
         try:
-            def _run_task(reporter):
-                service = MediaImportService()
-                job = service.import_from_source(
-                    source_path,
-                    library_id,
-                    import_job_id=import_job_id,
-                    progress_callback=reporter.progress_callback,
-                    transfer_mode=transfer_mode,
-                    only_files=only_files,
-                )
-                return {
-                    "import_job_id": job.id,
-                    "imported_count": job.imported_count,
-                    "skipped_count": job.skipped_count,
-                    "failed_count": job.failed_count,
-                    "job_state": job.state,
-                    "new_playable_movies": reporter.summary.get("new_playable_movies", []),
-                }
-
-            return ActivityService.run_task(
-                task_key=cls.TASK_KEY,
-                task_name=None,
-                trigger_type="internal",
-                task_run_id=task_run_id,
-                func=_run_task,
+            service = MediaImportService()
+            result_job = service.import_from_source(
+                job.source_path,
+                job.library_id,
+                import_job_id=job.id,
+                progress_callback=reporter.progress_callback,
+                transfer_mode=job.transfer_mode or "auto",
+                only_files=params.get("only_files"),
             )
         except Exception as exc:
-            cls._mark_import_failed(import_job_id, str(exc))
+            cls._mark_import_failed(job.id, str(exc))
             logger.exception(
                 "Media directory import failed import_job_id={} source_path={}",
-                import_job_id,
-                source_path,
+                job.id,
+                job.source_path,
             )
-            return {
-                "import_job_id": import_job_id,
-                "job_state": IMPORT_JOB_STATE_FAILED,
-            }
+            raise
+        return {
+            "import_job_id": result_job.id,
+            "imported_count": result_job.imported_count,
+            "skipped_count": result_job.skipped_count,
+            "failed_count": result_job.failed_count,
+            "job_state": result_job.state,
+            "new_playable_movies": reporter.summary.get("new_playable_movies", []),
+        }
 
     @classmethod
     def _orphan_jobs_query(cls):

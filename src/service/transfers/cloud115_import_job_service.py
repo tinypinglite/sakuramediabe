@@ -45,7 +45,6 @@ from src.service.transfers.cloud115_import_service import (
     normalize_cloud115_transfer_mode,
 )
 from src.service.transfers.cloud115_import_common import Cloud115TargetDirCache
-from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
 
 
 class Cloud115ImportJobService(BaseImportJobService):
@@ -179,6 +178,7 @@ class Cloud115ImportJobService(BaseImportJobService):
             only_files=resolved_files,
             task_name=f"{cls.RETRY_TASK_NAME_PREFIX}{job_id}",
             managed_download_source=job.download_task_id is not None,
+            **cls._launch_kwargs_from_retry(job),
         )
 
     # ---- 首版不支持的失败文件操作 ----
@@ -202,7 +202,7 @@ class Cloud115ImportJobService(BaseImportJobService):
     # ---- 基类钩子 ----
 
     @classmethod
-    def _create_job(cls, *, library, resolved_source, transfer_mode, **launch_kwargs):
+    def _create_job(cls, *, library, resolved_source, transfer_mode, download_task_id=None, **launch_kwargs):
         transfer_mode = normalize_cloud115_transfer_mode(transfer_mode)
         return ImportJob.create(
             source_path=f"cloud115:{resolved_source}",
@@ -210,77 +210,78 @@ class Cloud115ImportJobService(BaseImportJobService):
             library=library,
             state=IMPORT_JOB_STATE_PENDING,
             transfer_mode=transfer_mode,
+            download_task=download_task_id,
         )
 
     @classmethod
-    def _submit_runner(
-        cls, *, import_job, task_run, library, resolved_source, transfer_mode, only_files, **launch_kwargs
-    ) -> None:
-        DownloadImportRunner.submit(
-            import_job.id,
-            cls._run_import_job,
-            library.id,
-            str(resolved_source),
-            import_job.id,
-            task_run.id,
-            transfer_mode,
-            only_files,
-            bool(launch_kwargs.get("managed_download_source", False)),
-            launch_kwargs.get("target_dir_cache"),
+    def _launch_kwargs_from_retry(cls, job) -> dict:
+        return {"download_task_id": job.download_task_id}
+
+    @classmethod
+    def rerun_job(cls, job_id: int):
+        """整作业重跑（cloud115）：按原 source_cid 整目录重扫。"""
+        job = cls._require_job(job_id)
+        cls._assert_job_terminal(job)
+        if not job.source_cid:
+            raise ApiError(
+                422, "not_cloud115_import_job",
+                "该作业不是 cloud115 导入作业",
+                {cls.JOB_ID_FIELD: job_id},
+            )
+        library = cls._require_library(job.library_id)
+        return cls._launch_import(
+            library=library,
+            resolved_source=job.source_cid,
+            transfer_mode=normalize_cloud115_transfer_mode(
+                job.transfer_mode or CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE
+            ),
+            mutex_key=f"{cls.MUTEX_PREFIX}:rerun:{library.id}:{job_id}",
+            only_files=None,
+            task_name=f"重跑导入 #{job_id}",
+            managed_download_source=job.download_task_id is not None,
+            **cls._launch_kwargs_from_retry(job),
         )
 
     @classmethod
-    def _run_import_job(
-        cls,
-        library_id: int,
-        source_cid: str,
-        import_job_id: int,
-        task_run_id: int,
-        transfer_mode: str,
-        only_files: List[str] | None,
-        managed_download_source: bool = False,
-        target_dir_cache: Cloud115TargetDirCache | None = None,
-    ) -> dict:
-        ensure_database_ready()
+    def _queue_params_from_launch(cls, **launch_kwargs) -> dict:
+        # 受管来源标记必须经 params 跨进程传递：offline sync 在触发返回后才回填
+        # job.download_task，执行侧不能依赖该列判定。target_dir_cache（进程内对象）
+        # 不再跨队列传递，执行侧按需重建目录列表（代价：每批多一两个列目录请求）。
+        return {"managed_download_source": bool(launch_kwargs.get("managed_download_source", False))}
+
+    @classmethod
+    def execute_from_queue(cls, reporter, params: dict) -> dict:
+        job = cls._require_job(int(params["import_job_id"]))
         try:
-            def _run_task(reporter):
-                service = Cloud115ImportService()
-                job = service.import_from_cloud115(
-                    library_id,
-                    source_cid,
-                    import_job_id=import_job_id,
-                    progress_callback=reporter.progress_callback,
-                    transfer_mode=transfer_mode,
-                    only_files=only_files,
-                    managed_download_source=managed_download_source,
-                    target_dir_cache=target_dir_cache,
-                )
-                return {
-                    "import_job_id": job.id,
-                    "imported_count": job.imported_count,
-                    "skipped_count": job.skipped_count,
-                    "failed_count": job.failed_count,
-                    "job_state": job.state,
-                    "new_playable_movies": reporter.summary.get("new_playable_movies", []),
-                }
-
-            return ActivityService.run_task(
-                task_key=cls.TASK_KEY,
-                task_name=None,
-                trigger_type="internal",
-                task_run_id=task_run_id,
-                func=_run_task,
+            service = Cloud115ImportService()
+            result_job = service.import_from_cloud115(
+                job.library_id,
+                job.source_cid,
+                import_job_id=job.id,
+                progress_callback=reporter.progress_callback,
+                transfer_mode=normalize_cloud115_transfer_mode(
+                    job.transfer_mode or CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE
+                ),
+                only_files=params.get("only_files"),
+                managed_download_source=bool(params.get("managed_download_source", False)),
+                target_dir_cache=None,
             )
         except Exception as exc:
-            cls._mark_import_failed(import_job_id, str(exc))
+            cls._mark_import_failed(job.id, str(exc))
             logger.exception(
                 "Cloud115 import failed import_job_id={} source_cid={}",
-                import_job_id, source_cid,
+                job.id,
+                job.source_cid,
             )
-            return {
-                "import_job_id": import_job_id,
-                "job_state": IMPORT_JOB_STATE_FAILED,
-            }
+            raise
+        return {
+            "import_job_id": result_job.id,
+            "imported_count": result_job.imported_count,
+            "skipped_count": result_job.skipped_count,
+            "failed_count": result_job.failed_count,
+            "job_state": result_job.state,
+            "new_playable_movies": reporter.summary.get("new_playable_movies", []),
+        }
 
     @classmethod
     def _orphan_jobs_query(cls):
