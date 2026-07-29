@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Sequence
+from typing import Callable
 
 from peewee import IntegrityError, fn
 
@@ -317,7 +317,7 @@ class ResourceTaskStateService:
         search: str | None = None,
         sort: str | None = None,
     ) -> PageResponse[ResourceTaskRecordResource]:
-        cls._validate_page(page, page_size)
+        validate_page(page, page_size, error_code="invalid_resource_task_state_filter")
         task_definition = cls._require_task_definition(task_key)
         query = ResourceTaskState.select().where(
             ResourceTaskState.task_key == task_definition.task_key,
@@ -366,7 +366,12 @@ class ResourceTaskStateService:
 
         total = query.count()
         start = (page - 1) * page_size
-        order_by = cls._resolve_sort(task_definition, sort)
+        order_by = resolve_sort(
+            sort,
+            cls.TASK_STATE_SORT_FIELDS,
+            default_key=task_definition.default_sort,
+            error_code="invalid_resource_task_state_filter",
+        )
         records = list(query.order_by(*order_by).offset(start).limit(page_size))
         resource_summaries = {}
         if records and task_definition.resource_resolver is not None:

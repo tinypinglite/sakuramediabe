@@ -57,9 +57,11 @@ def _run_download_task_import(reporter, params: dict) -> dict:
 
 
 def _run_media_rapid_upload(reporter, params: dict) -> dict:
-    from src.service.transfers.media_rapid_upload.executor import MediaRapidUploadExecutor
+    # 必须走 facade：executor 内部依赖 state_machine / item_executor 的方法，
+    # 只有多继承组合后的 MediaRapidUploadService 才解析得到。
+    from src.service.transfers.media_rapid_upload.facade import MediaRapidUploadService
 
-    return MediaRapidUploadExecutor.execute_batch_from_queue(reporter, params)
+    return MediaRapidUploadService.execute_batch_from_queue(reporter, params)
 
 
 def _run_movie_desc_translation_subset(reporter, params: dict) -> dict:
