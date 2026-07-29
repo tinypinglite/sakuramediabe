@@ -198,9 +198,10 @@
 > 批量取消订阅就是上表的 `POST /movies/unsubscriptions`，管理页也调它——订阅管理域不另造一套；
 > 要连媒体文件一起删的走 `DELETE /media/{media_id}`。
 >
-> 写入侧的一条联动：影片从「未订阅」变为「订阅」时，会顺带重置（删除）该影片的资源查询状态行
-> （`ResourceTaskState`，`task_key=subscribed_movie_search`）。取消订阅不删这些行，不重置的话
-> 曾被判 `exhausted` 的影片重新订阅后会一直被自动下载跳过。
+> 写入侧的一条联动：影片从「未订阅」变为「订阅」时，会顺带重置该影片的资源查询状态行
+> （`ResourceTaskState`，`task_key=subscribed_movie_auto_download`；重置 = 重开预算而非删行，
+> 尝试历史保留在 `resource_task_attempt`）。取消订阅不重置，不重置的话曾被判 `exhausted`
+> 的影片重新订阅后会一直被自动下载跳过。
 
 ## 详细接口定义
 
