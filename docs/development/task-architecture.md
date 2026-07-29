@@ -315,7 +315,14 @@ CLI 长任务（migrate-jav-layout / migrate-plot-layout / backfill-* / scan-med
       保留（决策 #11 例外），未成功行删除重 seed；JavDB 番号消失判 failed_terminal。
       顺带修内核语义：成功收口本轮（attempt_count 归零），周期任务的历史成功
       不再吃掉失败预算
-- 剩余顺序：缩略图 → 订阅搜索（合并 key）→ 媒体巡检 → 演员同步
+- [x] `media_thumbnail_generation` 迁移完成：内核落地任务内并发
+      （`ResourceTaskSpec.concurrency`，worker 线程自建连接、ctx 显式传参，
+      `wrap_current_task_run_context` ContextVar 链路退役）；双泳道 = cloud115
+      串行先行 + 本地并发两次 Runner 执行；缺指纹判 failed_terminal、生成失败
+      2 次/轮后 exhausted、源未就绪 deferred；重置接口对齐 kernel 语义
+      （接受三种失败态、重开预算 retry_round+1、不再动 extra）；
+      `20260729_06` 清空并按 MediaThumbnail 存在性播种 succeeded
+- 剩余顺序：订阅搜索（合并 key）→ 媒体巡检 → 演员同步
 - **存量状态策略：切换即清空该 task_key 的 `resource_task_state` 行（清空重建，
   不做语义映射迁移），仅两个例外**（决策 #11）：
   - `movie_interaction_sync`：必须保留 `(resource_id, last_succeeded_at)`——

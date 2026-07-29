@@ -31,7 +31,7 @@ def _create_media(movie_number: str, *, valid: bool = True) -> Media:
     )
 
 
-def _create_task_state(media: Media, *, state: str = "failed", terminal: bool = True):
+def _create_task_state(media: Media, *, state: str = "failed_terminal"):
     # last_task_run_id 已外键化（Wave 0），必须指向真实的 task_run 行。
     task_run = BackgroundTaskRun.create(
         task_key=TASK_KEY,
@@ -46,9 +46,9 @@ def _create_task_state(media: Media, *, state: str = "failed", terminal: bool = 
         state=state,
         attempt_count=2,
         last_error="thumbnail_generation_empty",
+        error_code="thumbnail_generation_empty",
         last_trigger_type="scheduled",
         last_task_run_id=task_run.id,
-        extra={"terminal": terminal, "source": "test"},
     )
 
 
@@ -82,9 +82,12 @@ def test_batch_reset_requeues_failed_media_thumbnail_tasks(client, account_user)
         assert record.state == "pending"
         assert record.attempt_count == 0
         assert record.last_error is None
+        assert record.error_code is None
+        assert record.next_retry_at is None
         assert record.last_task_run_id is None
         assert record.last_trigger_type == "manual"
-        assert record.extra == {"source": "test"}
+        # kernel 记账：重置即重开预算，轮次 +1；尝试历史保留在 attempt 表。
+        assert record.retry_round == 1
 
 
 def test_batch_reset_skips_unqualified_media_and_requeues_the_rest(client, account_user):
@@ -94,9 +97,9 @@ def test_batch_reset_skips_unqualified_media_and_requeues_the_rest(client, accou
     invalid_media = _create_media("ABC-005", valid=False)
     deleted_media = _create_media("ABC-006")
     _create_task_state(failed_media)
-    _create_task_state(pending_media, state="pending", terminal=False)
-    _create_task_state(invalid_media)
-    _create_task_state(deleted_media)
+    _create_task_state(pending_media, state="pending")
+    _create_task_state(invalid_media, state="failed_retryable")
+    _create_task_state(deleted_media, state="exhausted")
     # 只删媒体、留下任务记录，复现巡检/外部删除后残留的孤儿记录。
     deleted_media_id = deleted_media.id
     Media.delete().where(Media.id == deleted_media_id).execute()
@@ -142,7 +145,6 @@ def test_batch_reset_skips_unqualified_media_and_requeues_the_rest(client, accou
             ResourceTaskState.task_key == TASK_KEY,
             ResourceTaskState.resource_id == skipped_media.id,
         )
-        assert untouched.state == "failed"
         assert untouched.attempt_count == 2
 
 

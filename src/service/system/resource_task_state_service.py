@@ -486,29 +486,28 @@ class ResourceTaskStateService:
             now = utc_now_for_db()
             for resource_id in reset_resource_ids:
                 record = records_by_resource_id[resource_id]
-                if isinstance(record.extra, dict):
-                    extra: dict | list | None = dict(record.extra)
-                    # 清除终态标记，重新开放现有调度器的自动重试预算。
-                    extra.pop("terminal", None)
-                elif isinstance(record.extra, list):
-                    extra = list(record.extra)
-                else:
-                    extra = None
-
+                # kernel 记账（Wave 2）：重置 = 重开预算（retry_round+1、本轮计数归零），
+                # 尝试历史保留在 attempt 表，投影只清当前错误快照。
                 record.state = cls.STATE_PENDING
                 record.attempt_count = 0
+                record.retry_round = (record.retry_round or 0) + 1
                 record.last_error = None
                 record.last_error_at = None
+                record.error_code = None
+                record.next_retry_at = None
                 record.last_trigger_type = "manual"
                 record.last_task_run_id = None
-                record.extra = extra or None
+                record.extra = None
                 record.updated_at = now
                 record.save(
                     only=[
                         ResourceTaskState.state,
                         ResourceTaskState.attempt_count,
+                        ResourceTaskState.retry_round,
                         ResourceTaskState.last_error,
                         ResourceTaskState.last_error_at,
+                        ResourceTaskState.error_code,
+                        ResourceTaskState.next_retry_at,
                         ResourceTaskState.last_trigger_type,
                         ResourceTaskState.last_task_run_id,
                         ResourceTaskState.extra,
@@ -531,7 +530,8 @@ class ResourceTaskStateService:
             return cls.SKIP_REASON_MEDIA_NOT_FOUND
         if not media.valid:
             return cls.SKIP_REASON_MEDIA_INVALID
-        if record.state != cls.STATE_FAILED:
+        # kernel 记账后失败态三分：可重试 / 终态 / 预算耗尽，三者都允许手动重置。
+        if record.state not in ("failed_retryable", "failed_terminal", cls.STATE_EXHAUSTED, cls.STATE_FAILED):
             return cls.SKIP_REASON_NOT_FAILED
         return None
 

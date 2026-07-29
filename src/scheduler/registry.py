@@ -345,8 +345,9 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="generate-media-thumbnails",
         cli_help="执行一次媒体缩略图生成",
         cron_setting="media_thumbnail_cron",
+        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
         service_factory=lambda reporter: MediaThumbnailService.generate_pending_thumbnails(
-            progress_callback=reporter.progress_callback,
+            reporter=reporter,
         ),
         format_stats=_build_stats_formatter(
             "thumbnail generation finished:",
@@ -356,6 +357,7 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
             ("deferred_media", "deferred_media", 0),
             ("retryable_failed_media", "retryable_failed_media", 0),
             ("terminal_failed_media", "terminal_failed_media", 0),
+            ("exhausted_media", "exhausted_media", 0),
         ),
     ),
     JobDefinition(

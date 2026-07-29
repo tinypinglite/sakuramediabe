@@ -98,6 +98,9 @@ class ResourceTaskSpec:
     # 每 run 一次，产出跨资源共享上下文（provider 会话 / 预载缓存 / 熔断器等）。
     setup_run: Callable[[RunContext], Any] | None = None
     resource_id_of: Callable[[Any], int] = field(default=lambda resource: int(resource.id))
+    # 任务内并发：>1 时内核开线程池逐资源执行（每 worker 自建 DB 连接、ctx 显式传参，
+    # 取代旧的 ContextVar wrap）。并发模式下 TaskAbortError 在收齐已提交项后再抛出。
+    concurrency: int = 1
 
 
 class ResourceTaskLedger:
@@ -309,6 +312,67 @@ class ResourceTaskLedger:
 
 class ResourceTaskRunner:
     @classmethod
+    def _run_single(
+        cls, spec: ResourceTaskSpec, ctx: RunContext, resource: Any
+    ) -> tuple[str, TaskAbortError | None]:
+        """单资源完整生命周期，返回 (统计桶, abort 异常或 None)。线程安全（无共享写）。"""
+        resource_id = spec.resource_id_of(resource)
+        attempt, record, prior_state = ResourceTaskLedger.begin_attempt(
+            task_key=spec.task_key,
+            resource_type=spec.resource_type,
+            resource_id=resource_id,
+            trigger_type=ctx.trigger_type,
+            task_run_id=ctx.task_run_id,
+        )
+        try:
+            spec.process_one(ctx, resource)
+        except TaskItemDeferred as exc:
+            ResourceTaskLedger.finish_non_consuming(
+                attempt,
+                record,
+                prior_state=prior_state,
+                attempt_state="deferred",
+                error_code=exc.error_code,
+                error_message=str(exc),
+            )
+            return "deferred_count", None
+        except TaskAbortError as exc:
+            # 任务级中止：当前资源不耗预算，run 交由上层 run_task 记失败。
+            ResourceTaskLedger.finish_non_consuming(
+                attempt,
+                record,
+                prior_state=prior_state,
+                attempt_state="aborted",
+                error_code=exc.error_code,
+                error_message=str(exc),
+            )
+            logger.warning(
+                "Resource task aborted task_key={} resource_id={} code={}",
+                spec.task_key,
+                resource_id,
+                exc.error_code,
+            )
+            return "aborted", exc
+        except Exception as exc:
+            if isinstance(exc, TaskItemError):
+                error_code, retryable = exc.error_code, exc.retryable
+            else:
+                error_code, retryable = ERROR_CODE_UNHANDLED, True
+            budget_exempt = bool(spec.retry.exempt and spec.retry.exempt(resource))
+            final_state = ResourceTaskLedger.finish_failure(
+                attempt,
+                record,
+                error_code=error_code,
+                error_message=str(exc),
+                retryable=retryable,
+                policy=spec.retry,
+                budget_exempt=budget_exempt,
+            )
+            return f"{final_state}_count", None
+        ResourceTaskLedger.finish_success(attempt, record)
+        return "succeeded_count", None
+
+    @classmethod
     def run(
         cls,
         spec: ResourceTaskSpec,
@@ -316,6 +380,8 @@ class ResourceTaskRunner:
         *,
         only_ids: list[int] | None = None,
     ) -> dict[str, int]:
+        import threading
+
         from src.service.system.activity_service import ActivityService
 
         context = ActivityService.get_task_run_context()
@@ -339,64 +405,50 @@ class ResourceTaskRunner:
             "deferred_count": 0,
         }
         total = len(candidates)
-        for index, resource in enumerate(candidates, start=1):
-            resource_id = spec.resource_id_of(resource)
-            attempt, record, prior_state = ResourceTaskLedger.begin_attempt(
-                task_key=spec.task_key,
-                resource_type=spec.resource_type,
-                resource_id=resource_id,
-                trigger_type=ctx.trigger_type,
-                task_run_id=ctx.task_run_id,
-            )
-            try:
-                spec.process_one(ctx, resource)
-            except TaskItemDeferred as exc:
-                ResourceTaskLedger.finish_non_consuming(
-                    attempt,
-                    record,
-                    prior_state=prior_state,
-                    attempt_state="deferred",
-                    error_code=exc.error_code,
-                    error_message=str(exc),
-                )
-                stats["deferred_count"] += 1
-            except TaskAbortError as exc:
-                # 任务级中止：当前资源不耗预算，run 交由上层 run_task 记失败。
-                ResourceTaskLedger.finish_non_consuming(
-                    attempt,
-                    record,
-                    prior_state=prior_state,
-                    attempt_state="aborted",
-                    error_code=exc.error_code,
-                    error_message=str(exc),
-                )
-                logger.warning(
-                    "Resource task aborted task_key={} resource_id={} code={}",
-                    spec.task_key,
-                    resource_id,
-                    exc.error_code,
-                )
-                raise
-            except Exception as exc:
-                if isinstance(exc, TaskItemError):
-                    error_code, retryable = exc.error_code, exc.retryable
-                else:
-                    error_code, retryable = ERROR_CODE_UNHANDLED, True
-                budget_exempt = bool(spec.retry.exempt and spec.retry.exempt(resource))
-                final_state = ResourceTaskLedger.finish_failure(
-                    attempt,
-                    record,
-                    error_code=error_code,
-                    error_message=str(exc),
-                    retryable=retryable,
-                    policy=spec.retry,
-                    budget_exempt=budget_exempt,
-                )
-                stats[f"{final_state}_count"] += 1
-            else:
-                ResourceTaskLedger.finish_success(attempt, record)
-                stats["succeeded_count"] += 1
-            reporter.emit(current=index, total=total)
+        progress_lock = threading.Lock()
+        completed_count = 0
+
+        def record_outcome(bucket: str) -> None:
+            nonlocal completed_count
+            with progress_lock:
+                if bucket != "aborted":
+                    stats[bucket] += 1
+                completed_count += 1
+                current = completed_count
+            reporter.emit(current=current, total=total)
+
+        concurrency = max(int(spec.concurrency or 1), 1)
+        if concurrency == 1 or len(candidates) <= 1:
+            for resource in candidates:
+                bucket, abort_error = cls._run_single(spec, ctx, resource)
+                record_outcome(bucket)
+                if abort_error is not None:
+                    raise abort_error
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            from src.common.database import ensure_database_ready
+
+            def worker(resource: Any) -> tuple[str, TaskAbortError | None]:
+                # 每 worker 线程自建 DB 连接；ctx 显式传参，不依赖 ContextVar 继承。
+                ensure_database_ready()
+                return cls._run_single(spec, ctx, resource)
+
+            first_abort: TaskAbortError | None = None
+            with ThreadPoolExecutor(
+                max_workers=concurrency,
+                thread_name_prefix=f"resource-task-{spec.task_key}",
+            ) as pool:
+                futures = [pool.submit(worker, resource) for resource in candidates]
+                for future in as_completed(futures):
+                    bucket, abort_error = future.result()
+                    record_outcome(bucket)
+                    if abort_error is not None and first_abort is None:
+                        first_abort = abort_error
+            if first_abort is not None:
+                # 并发模式下无法拦截已提交项：收齐全部结果后再抛出中止。
+                raise first_abort
+
         if isinstance(ctx.shared, dict):
             # setup_run 产出的共享上下文若是 dict，回传给任务侧合并领域计数。
             stats["shared"] = ctx.shared
