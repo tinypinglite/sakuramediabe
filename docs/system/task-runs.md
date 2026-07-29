@@ -90,6 +90,18 @@
 - 这个接口继续用于筛选、分页和加载更多
 - 活动中心首屏不要再并行拼这个接口，改走 `GET /system/activity/bootstrap`
 
+### `GET /system/task-runs/{task_run_id}`
+
+按 id 查询单条任务运行记录，响应结构与列表项一致（`TaskRunResource`）。
+
+说明：
+
+- 主要用途：手动触发接口（影片翻译/互动同步、资源任务 action）返回 202 与 `task_run_id`
+  后，前端在页面刷新、SSE 断连等丢失事件游标的场景下，仅凭 `task_run_id` 追溯终态与
+  `error_message`
+- 记录不存在或已被活动清理任务删除时返回 404（`task_run_not_found`），前端按
+  "记录已过期"处理
+
 ### `GET /system/resource-task-states/definitions`
 
 返回所有已注册资源任务定义，供前端渲染任务切换 Tab。

@@ -292,6 +292,8 @@ GET /system/resource-task-states?task_key=media_thumbnail_generation&state=faile
 说明：
 
 - 当前资源任务接口不直接返回批次任务详情，只提供 `last_task_run_id`
+- 需要批次详情（终态、`error_message`、进度快照）时用 `GET /system/task-runs/{task_run_id}`
+  单条查询，响应结构与任务中心列表项一致
 
 ### `resource-task-states` 只返回已落库记录
 

@@ -365,6 +365,19 @@ class TaskRunService:
         )
 
     @classmethod
+    def get_task_run_resource(cls, task_run_id: int) -> TaskRunResource:
+        """单条详情：202 入队后前端仅凭 task_run_id 追溯终态与错误信息的通路。"""
+        task_run = BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == task_run_id)
+        if task_run is None:
+            raise ApiError(
+                404,
+                "task_run_not_found",
+                "任务运行记录不存在或已被清理",
+                {"task_run_id": task_run_id},
+            )
+        return cls.to_task_run_resource(task_run)
+
+    @classmethod
     def list_active_task_runs(cls) -> list[TaskRunResource]:
         query = (
             BackgroundTaskRun.select()

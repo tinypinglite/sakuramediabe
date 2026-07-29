@@ -105,6 +105,12 @@ def list_task_runs(
     )
 
 
+@router.get("/system/task-runs/{task_run_id}", response_model=TaskRunResource)
+def get_task_run(task_run_id: int):
+    """单条 task_run 详情：202 入队后前端凭 task_run_id 追溯终态与错误信息。"""
+    return ActivityService.get_task_run_resource(task_run_id)
+
+
 @router.get(
     "/system/resource-task-states/definitions",
     response_model=list[ResourceTaskDefinitionResource],
