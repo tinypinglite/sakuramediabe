@@ -16,7 +16,7 @@ from src.model.enums import MediaLibraryBackend
 from src.schema.transfers.rapid_upload import MediaRapidUploadTriggerResponse
 from src.service.cloud115 import require_cloud115_library
 from src.service.system import ActivityService
-from src.service.transfers.import_runner import MediaRapidUploadRunner
+from src.service.system.task_queue_service import TaskQueueService
 from src.service.transfers.media_rapid_upload.states import (
     BATCH_STATE_COMPLETED,
     BATCH_STATE_FAILED,
@@ -150,7 +150,10 @@ class MediaRapidUploadCommandService:
                 if retry_source_item_ids:
                     # 新批次接管失败项后，旧项不再重复参与后续重试或删除保护。
                     cls._mark_items_retried(retry_source_item_ids)
-            MediaRapidUploadRunner.submit(batch.id, cls._run_batch, batch.id, task_run.id)
+            # 入队交 worker 的 rapid_upload 并发道执行（MediaRapidUploadRunner 已退役）。
+            TaskQueueService.publish_run(
+                task_run.id, params={"rapid_upload_batch_id": batch.id}
+            )
         except IntegrityError as exc:
             ActivityService.fail_task_run(
                 task_run.id,

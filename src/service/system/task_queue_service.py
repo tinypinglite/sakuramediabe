@@ -82,21 +82,51 @@ class TaskQueueService:
             ) from None
 
     @classmethod
+    def publish_run(
+        cls,
+        task_run_id: int,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> None:
+        """两阶段发布的第二步：补齐 params 并置 scheduled_at，行自此可被 worker 领取。
+
+        触发方需要先建行占 mutex、再建领域对象（如 ImportJob）拿到 id 回填 params 时，
+        用 scheduled_at 为空的 pending 行做"未发布"状态，避免 worker 抢跑读到半成品。
+        """
+        BackgroundTaskRun.update(
+            params=params,
+            scheduled_at=utc_now_for_db(),
+            updated_at=utc_now_for_db(),
+        ).where(BackgroundTaskRun.id == task_run_id).execute()
+
+    @classmethod
     def claim_next(
-        cls, *, lease_seconds: int = DEFAULT_LEASE_SECONDS
+        cls,
+        *,
+        lease_seconds: int = DEFAULT_LEASE_SECONDS,
+        include_task_keys: set[str] | None = None,
+        exclude_task_keys: set[str] | None = None,
     ) -> BackgroundTaskRun | None:
         """领取最早到期的队列行并置 running + 租约；无可领取行返回 None。
 
         SKIP LOCKED 保证多 worker 并发领取互不阻塞、也不会重复领取同一行。
+        include/exclude 供并发道（lane）按 task_key 划分领取范围。
         """
         current = utc_now_for_db()
+        conditions = [
+            BackgroundTaskRun.state == "pending",
+            BackgroundTaskRun.scheduled_at.is_null(False),
+            BackgroundTaskRun.scheduled_at <= current,
+        ]
+        if include_task_keys:
+            conditions.append(BackgroundTaskRun.task_key.in_(tuple(include_task_keys)))
+        if exclude_task_keys:
+            conditions.append(
+                BackgroundTaskRun.task_key.not_in(tuple(exclude_task_keys))
+            )
         candidate = (
             BackgroundTaskRun.select(BackgroundTaskRun.id)
-            .where(
-                BackgroundTaskRun.state == "pending",
-                BackgroundTaskRun.scheduled_at.is_null(False),
-                BackgroundTaskRun.scheduled_at <= current,
-            )
+            .where(*conditions)
             .order_by(BackgroundTaskRun.id.asc())
             .limit(1)
             .for_update("FOR UPDATE SKIP LOCKED")

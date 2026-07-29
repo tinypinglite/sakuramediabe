@@ -35,7 +35,6 @@ from src.service.transfers.cloud115_import_common import (
     normalize_cloud115_transfer_mode,
     verify_cloud115_renamed_file,
 )
-from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
 from src.service.videos.cloud115_video_import_service import Cloud115VideoImportService
 from src.service.videos.video_import_job_service import VideoImportJobService
 
@@ -178,83 +177,32 @@ class Cloud115VideoImportJobService(BaseImportJobService):
         )
 
     @classmethod
-    def _submit_runner(
-        cls,
-        *,
-        import_job,
-        task_run,
-        library,
-        resolved_source,
-        transfer_mode,
-        only_files,
-        source_cid=None,
-        source_fid=None,
-        collection_id=None,
-        **launch_kwargs,
-    ) -> None:
-        DownloadImportRunner.submit(
-            import_job.id,
-            cls._run_import_job,
-            library.id,
-            source_cid,
-            source_fid,
-            import_job.id,
-            task_run.id,
-            transfer_mode,
-            collection_id,
-            only_files,
-        )
-
-    @classmethod
-    def _run_import_job(
-        cls,
-        library_id: int,
-        source_cid: str | None,
-        source_fid: str | None,
-        video_import_job_id: int,
-        task_run_id: int,
-        transfer_mode: str,
-        collection_id: int | None,
-        only_files: List[str] | None,
-    ) -> dict:
-        ensure_database_ready()
+    def execute_from_queue(cls, reporter, params: dict) -> dict:
+        job = cls._require_job(int(params["video_import_job_id"]))
         try:
-            def _run_task(reporter):
-                job = Cloud115VideoImportService().import_from_cloud115(
-                    library_id,
-                    source_cid=source_cid,
-                    source_fid=source_fid,
-                    video_import_job_id=video_import_job_id,
-                    transfer_mode=transfer_mode,
-                    collection_id=collection_id,
-                    only_files=only_files,
-                    progress_callback=reporter.progress_callback,
-                )
-                return {
-                    "video_import_job_id": job.id,
-                    "imported_count": job.imported_count,
-                    "skipped_count": job.skipped_count,
-                    "failed_count": job.failed_count,
-                    "job_state": job.state,
-                }
-
-            return ActivityService.run_task(
-                task_key=cls.TASK_KEY,
-                task_name=None,
-                trigger_type="internal",
-                task_run_id=task_run_id,
-                func=_run_task,
+            result_job = Cloud115VideoImportService().import_from_cloud115(
+                job.library_id,
+                source_cid=job.source_cid,
+                source_fid=job.source_fid,
+                video_import_job_id=job.id,
+                transfer_mode=job.transfer_mode or "auto",
+                collection_id=job.collection_id,
+                only_files=params.get("only_files"),
+                progress_callback=reporter.progress_callback,
             )
         except Exception as exc:
-            cls._mark_import_failed(video_import_job_id, str(exc))
+            cls._mark_import_failed(job.id, str(exc))
             logger.exception(
-                "Cloud115 video import failed video_import_job_id={}",
-                video_import_job_id,
+                "Cloud115 video import failed video_import_job_id={}", job.id
             )
-            return {
-                "video_import_job_id": video_import_job_id,
-                "job_state": IMPORT_JOB_STATE_FAILED,
-            }
+            raise
+        return {
+            "video_import_job_id": result_job.id,
+            "imported_count": result_job.imported_count,
+            "skipped_count": result_job.skipped_count,
+            "failed_count": result_job.failed_count,
+            "job_state": result_job.state,
+        }
 
     @classmethod
     def retry_failed_files(cls, job_id: int, files: List[str] | None = None):

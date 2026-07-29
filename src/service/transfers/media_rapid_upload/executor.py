@@ -4,7 +4,6 @@ import asyncio
 
 from loguru import logger
 
-from src.common.database import ensure_database_ready
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115RiskControlError
@@ -36,43 +35,30 @@ from src.service.transfers.media_rapid_upload.types import RapidUploadFailure
 
 class MediaRapidUploadExecutor:
     @classmethod
-    def _run_batch(cls, batch_id: int, task_run_id: int) -> dict:
-        ensure_database_ready()
-
-        def _task(reporter):
+    def execute_batch_from_queue(cls, reporter, params: dict) -> dict:
+        """worker 队列执行入口（rapid_upload 并发道）：跑批并保证完成通知幂等发送。"""
+        batch_id = int(params["rapid_upload_batch_id"])
+        task_run_id = reporter.task_run_id
+        try:
             batch = MediaRapidUploadBatch.get_by_id(batch_id)
             cls._mark_batch_running(batch)
             asyncio.run(cls._process_batch(batch, reporter))
             cls._finish_batch(batch)
             batch = MediaRapidUploadBatch.get_by_id(batch_id)
-            return {
+            result = {
                 "rapid_upload_batch_id": batch.id,
                 "total_count": batch.total_count,
                 "succeeded_count": batch.succeeded_count,
                 "failed_count": batch.failed_count,
                 "cleanup_failed_count": batch.cleanup_failed_count,
             }
-
-        try:
-            result = ActivityService.run_task(
-                task_key=TASK_KEY,
-                trigger_type="internal",
-                task_run_id=task_run_id,
-                func=_task,
-                notify_result=False,
-            )
-        except Exception as exc:
+        except Exception:
             logger.exception("Media rapid upload batch crashed batch_id={}", batch_id)
             batch = MediaRapidUploadBatch.get_by_id(batch_id)
-            cls._fail_unfinished_items(batch, detail=str(exc))
+            cls._fail_unfinished_items(batch, detail="批次执行中断")
             cls._finish_batch(batch, force_failed=True)
-            result = {
-                "rapid_upload_batch_id": batch_id,
-                "total_count": batch.total_count,
-                "succeeded_count": batch.succeeded_count,
-                "failed_count": batch.failed_count,
-                "cleanup_failed_count": batch.cleanup_failed_count,
-            }
+            cls._ensure_completion_notification(batch_id, task_run_id)
+            raise
         cls._ensure_completion_notification(batch_id, task_run_id)
         return result
 

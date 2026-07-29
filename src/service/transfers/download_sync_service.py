@@ -4,7 +4,6 @@ from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
-from src.common.process import is_process_alive
 from src.common.movie_numbers import parse_movie_number_from_text
 from src.model import DownloadClient, DownloadTask, ImportJob
 from src.model.enums import DownloadClientKind
@@ -18,7 +17,6 @@ from src.service.transfers.common import (
     require_client,
 )
 from src.service.transfers.download_task_service import DownloadTaskService
-from src.service.transfers.import_runner import DownloadImportRunner
 from src.common.media_import_status import (
     IMPORT_JOB_STATE_FAILED,
     IMPORT_JOB_STATE_PENDING,
@@ -32,13 +30,6 @@ from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorr
 class DownloadSyncService:
     def __init__(self, qbittorrent_client_cls=QBittorrentClient):
         self.qbittorrent_client_cls = qbittorrent_client_cls
-
-    @staticmethod
-    def _has_live_owner_process(job: ImportJob) -> bool:
-        task_run = job.task_run
-        if task_run is None:
-            return False
-        return is_process_alive(task_run.owner_pid)
 
     def sync_client(self, client_id: int) -> DownloadClientSyncResponse:
         client = require_client(client_id)
@@ -269,9 +260,12 @@ class DownloadSyncService:
                 )
                 .order_by(ImportJob.id.asc())
             )
-            if running_jobs and any(DownloadSyncService._has_live_owner_process(job) for job in running_jobs):
-                continue
-            if running_jobs and any(DownloadImportRunner.has_active_job(job.id) for job in running_jobs):
+            # 队列托管后判活看 task_run：排队中或租约未过期即视为仍在执行。
+            from src.service.transfers.base_import_job_service import BaseImportJobService
+
+            if running_jobs and any(
+                BaseImportJobService._task_run_alive(job) for job in running_jobs
+            ):
                 continue
 
             for job in running_jobs:

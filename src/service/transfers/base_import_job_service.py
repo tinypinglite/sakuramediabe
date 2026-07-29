@@ -33,7 +33,6 @@ from src.common.media_import_status import (
     classify_failed_file_kind,
     make_failure_item,
 )
-from src.common.process import is_process_alive
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import MediaLibrary
@@ -41,7 +40,7 @@ from src.model.enums import MediaLibraryBackend
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.media_import import FailedFileResource
 from src.service.system import ActivityService
-from src.service.transfers.import_runner import DownloadImportRunner
+from src.service.system.task_queue_service import TaskQueueService
 
 
 class BaseImportJobService:
@@ -275,14 +274,15 @@ class BaseImportJobService:
             )
             import_job.task_run = task_run
             import_job.save()
-            cls._submit_runner(
-                import_job=import_job,
-                task_run=task_run,
-                library=library,
-                resolved_source=resolved_source,
-                transfer_mode=transfer_mode,
-                only_files=only_files,
-                **launch_kwargs,
+            # 两阶段发布：job id 与执行参数回填后才置 scheduled_at，worker 不会读到半成品。
+            # 执行位置从进程内线程池（DownloadImportRunner，已退役）改为 worker 的 import 并发道。
+            TaskQueueService.publish_run(
+                task_run.id,
+                params={
+                    cls.JOB_ID_FIELD: import_job.id,
+                    "only_files": only_files,
+                    **cls._queue_params_from_launch(**launch_kwargs),
+                },
             )
         except Exception as exc:
             import_job_id = import_job.id if import_job is not None else None
@@ -350,8 +350,8 @@ class BaseImportJobService:
         """
         recovered_count = 0
         for job in cls._orphan_jobs_query():
-            # 仍有存活 owner 进程或活跃后台线程时跳过，避免误杀正在运行的导入。
-            if cls._has_live_owner(job) or DownloadImportRunner.has_active_job(job.id):
+            # task_run 仍在队列排队或租约未过期时跳过，避免误杀正在等待/运行的导入。
+            if cls._task_run_alive(job):
                 continue
             failure_items = cls._parse_failed_files(job)
             failure_items.append(
@@ -381,12 +381,14 @@ class BaseImportJobService:
         raise NotImplementedError
 
     @classmethod
-    def _submit_runner(cls, *, import_job, task_run, library, resolved_source, transfer_mode, only_files, **launch_kwargs) -> None:
+    def execute_from_queue(cls, reporter, params: dict) -> dict:
+        """worker 队列执行入口：从 job 行还原执行参数并跑导入，异常时收口领域终态后 re-raise。"""
         raise NotImplementedError
 
     @classmethod
-    def _run_import_job(cls, *args, **kwargs) -> dict:
-        raise NotImplementedError
+    def _queue_params_from_launch(cls, **launch_kwargs) -> dict:
+        # 需要跨进程带给执行侧、又不在 job 行上的触发参数（如 cloud115 的受管来源标记）。
+        return {}
 
     @classmethod
     def _orphan_jobs_query(cls):
@@ -470,11 +472,20 @@ class BaseImportJobService:
         assert_within_allowed_roots(Path(path), settings.media_import.browse_roots)
 
     @staticmethod
-    def _has_live_owner(job) -> bool:
-        task_run = job.task_run
-        if task_run is None or task_run.owner_pid is None:
+    def _task_run_alive(job) -> bool:
+        """导入是否仍被队列托管：pending 已发布 = 排队中；running 且租约未过期 = 在跑。"""
+        run = job.task_run
+        if run is None:
             return False
-        return is_process_alive(task_run.owner_pid)
+        if run.state == "pending" and run.scheduled_at is not None:
+            return True
+        if (
+            run.state == "running"
+            and run.lease_expires_at is not None
+            and run.lease_expires_at > utc_now_for_db()
+        ):
+            return True
+        return False
 
     @staticmethod
     def _resolve_source_path(source_path: str) -> Path:

@@ -28,7 +28,7 @@ from src.service.transfers.common import (
     resolve_task_sort,
     validate_page,
 )
-from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
+from src.service.system.task_queue_service import TaskQueueService
 from src.common.media_import_status import (
     FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED,
     IMPORT_JOB_STATE_FAILED,
@@ -343,7 +343,11 @@ class DownloadTaskService:
         task.save()
 
         try:
-            DownloadImportRunner.submit(import_job.id, cls._run_import_job, task.id, import_job.id, task_run.id)
+            # 入队交 worker 的 import 并发道执行（DownloadImportRunner 已退役）。
+            TaskQueueService.publish_run(
+                task_run.id,
+                params={"task_id": task.id, "import_job_id": import_job.id},
+            )
         except Exception as exc:
             import_job.state = IMPORT_JOB_STATE_FAILED
             import_job.finished_at = utc_now_for_db()
@@ -373,41 +377,20 @@ class DownloadTaskService:
         )
 
     @classmethod
-    def _run_import_job(
-        cls,
-        task_id: int,
-        import_job_id: int,
-        task_run_id: int | None = None,
-    ) -> dict:
-        ensure_database_ready()
+    def execute_import_from_queue(cls, reporter, params: dict) -> dict:
+        """worker 队列执行入口：跑下载完成后的媒体导入，并在成功后尽力发新片提醒。"""
+        task_id = int(params["task_id"])
+        import_job_id = int(params["import_job_id"])
         try:
-            def _run_task(reporter):
-                task = require_task(task_id)
-                source_path = cls._resolve_import_source_path(task.save_path)
-                service = MediaImportService()
-                job = service.import_from_source(
-                    str(source_path),
-                    task.client.media_library_id,
-                    download_task_id=task.id,
-                    import_job_id=import_job_id,
-                    progress_callback=reporter.progress_callback,
-                )
-                return {
-                    "task_id": task.id,
-                    "import_job_id": job.id,
-                    "imported_count": job.imported_count,
-                    "skipped_count": job.skipped_count,
-                    "failed_count": job.failed_count,
-                    "job_state": job.state,
-                    "new_playable_movies": reporter.summary.get("new_playable_movies", []),
-                }
-
-            summary = ActivityService.run_task(
-                task_key="download_task_import",
-                task_name=None,
-                trigger_type="internal",
-                task_run_id=task_run_id,
-                func=_run_task,
+            task = require_task(task_id)
+            source_path = cls._resolve_import_source_path(task.save_path)
+            service = MediaImportService()
+            job = service.import_from_source(
+                str(source_path),
+                task.client.media_library_id,
+                download_task_id=task.id,
+                import_job_id=import_job_id,
+                progress_callback=reporter.progress_callback,
             )
         except Exception as exc:
             cls._mark_import_failed(task_id, import_job_id, str(exc))
@@ -416,28 +399,30 @@ class DownloadTaskService:
                 task_id,
                 import_job_id,
             )
-            return {
-                "task_id": task_id,
-                "import_job_id": import_job_id,
-                "job_state": "failed",
-            }
+            raise
         # 通知链路不能反向影响导入主流程，因此提醒创建只做尽力而为。
-        task_run = BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == task_run_id)
-        if task_run is not None and task_run.state == "completed":
-            new_playable_movies = (task_run.result_summary or {}).get("new_playable_movies", [])
-            if isinstance(new_playable_movies, list):
-                try:
-                    create_new_media_reminder(
-                        movie_items=new_playable_movies,
-                        related_task_run_id=task_run_id,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Create new media reminder skipped task_run_id={} detail={}",
-                        task_run_id,
-                        exc,
-                    )
-        return summary
+        new_playable_movies = reporter.summary.get("new_playable_movies", [])
+        if isinstance(new_playable_movies, list) and new_playable_movies:
+            try:
+                create_new_media_reminder(
+                    movie_items=new_playable_movies,
+                    related_task_run_id=reporter.task_run_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Create new media reminder skipped task_run_id={} detail={}",
+                    reporter.task_run_id,
+                    exc,
+                )
+        return {
+            "task_id": task.id,
+            "import_job_id": job.id,
+            "imported_count": job.imported_count,
+            "skipped_count": job.skipped_count,
+            "failed_count": job.failed_count,
+            "job_state": job.state,
+            "new_playable_movies": new_playable_movies,
+        }
 
     @staticmethod
     def _resolve_import_source_path(save_path: str) -> Path:

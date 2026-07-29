@@ -47,7 +47,6 @@ from src.service.transfers.cloud115_offline_service import (
 from src.service.transfers.cloud115_offline_notifications import (
     create_cloud115_offline_abandoned_notification,
 )
-from src.service.transfers.import_runner import DownloadImportRunner
 
 # 115 离线任务 status → 本系统下载状态。-1=失败, 0=待办, 1=进行中, 2=完成。
 CLOUD115_OFFLINE_STATE_MAP = {-1: "failed", 0: "queued", 1: "downloading", 2: "completed"}
@@ -286,15 +285,10 @@ class Cloud115OfflineSyncService:
 
     @staticmethod
     def _import_job_is_alive(job: ImportJob) -> bool:
-        if DownloadImportRunner.has_active_job(job.id):
-            return True
-        task_run = job.task_run
-        return bool(
-            task_run is not None
-            and task_run.state in {"pending", "running"}
-            and task_run.owner_pid != os.getpid()
-            and is_process_alive(task_run.owner_pid)
-        )
+        # 队列托管后判活看 task_run：排队中或租约未过期即视为仍在执行。
+        from src.service.transfers.base_import_job_service import BaseImportJobService
+
+        return BaseImportJobService._task_run_alive(job)
 
     @staticmethod
     def _apply_remote_state(task: DownloadTask, remote: OfflineTask) -> bool:

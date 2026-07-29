@@ -1,0 +1,138 @@
+"""队列专属任务注册表（任务架构 Wave 3，见 docs/development/task-architecture.md）。
+
+不走 cron 的执行链路（导入族 / 秒传 / 单资源手动任务）由 API 入队、worker 按本表
+解析执行。handler 签名 ``(reporter, params) -> dict``，运行在 worker 的 run_task 内，
+抛异常即任务失败（领域侧终态由 handler 自己收口后 re-raise）。
+
+lane 划分并发道：``import`` 道复刻旧 ``DownloadImportRunner``（2 并发），
+``rapid_upload`` 道复刻旧 ``MediaRapidUploadRunner``（2 并发），其余 default（4 并发）。
+与 JOB_REGISTRY 同 key 的条目（单资源手动任务）只在运行带 params 时生效，
+否则按 cron 批任务解析。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Callable
+
+LANE_DEFAULT = "default"
+LANE_IMPORT = "import"
+LANE_RAPID_UPLOAD = "rapid_upload"
+
+# 并发道容量：default 复刻 APS ThreadPoolExecutor(4)，两条专属道复刻旧线程池的 2 并发。
+LANE_CONCURRENCY: dict[str, int] = {
+    LANE_DEFAULT: 4,
+    LANE_IMPORT: 2,
+    LANE_RAPID_UPLOAD: 2,
+}
+
+
+@dataclass(frozen=True)
+class QueueTaskDefinition:
+    task_key: str
+    log_name: str
+    handler: Callable[[Any, dict], Any]
+    lane: str = LANE_DEFAULT
+    notify_result: bool = True
+
+
+def _run_media_directory_import(reporter, params: dict) -> dict:
+    from src.service.transfers.media_import_job_service import import_job_service_for
+
+    job_id = int(params["import_job_id"])
+    return import_job_service_for(job_id).execute_from_queue(reporter, params)
+
+
+def _run_video_directory_import(reporter, params: dict) -> dict:
+    from src.service.videos import video_import_job_service_for
+
+    job_id = int(params["video_import_job_id"])
+    return video_import_job_service_for(job_id).execute_from_queue(reporter, params)
+
+
+def _run_download_task_import(reporter, params: dict) -> dict:
+    from src.service.transfers.download_task_service import DownloadTaskService
+
+    return DownloadTaskService.execute_import_from_queue(reporter, params)
+
+
+def _run_media_rapid_upload(reporter, params: dict) -> dict:
+    from src.service.transfers.media_rapid_upload.executor import MediaRapidUploadExecutor
+
+    return MediaRapidUploadExecutor.execute_batch_from_queue(reporter, params)
+
+
+def _run_single_movie_desc_translation(reporter, params: dict) -> dict:
+    from src.model import Movie
+    from src.service.catalog.movie_desc_translation_service import MovieDescTranslationService
+
+    movie = Movie.get_by_id(int(params["movie_id"]))
+    return MovieDescTranslationService().translate_movie(movie)
+
+
+def _run_single_movie_interaction_sync(reporter, params: dict) -> dict:
+    from src.model import Movie
+    from src.service.catalog.movie_interaction_sync_service import MovieInteractionSyncService
+
+    movie = Movie.get_by_id(int(params["movie_id"]))
+    return MovieInteractionSyncService().sync_movie(movie)
+
+
+QUEUE_TASK_REGISTRY: dict[str, QueueTaskDefinition] = {
+    definition.task_key: definition
+    for definition in (
+        QueueTaskDefinition(
+            task_key="media_directory_import",
+            log_name="media-directory-import",
+            handler=_run_media_directory_import,
+            lane=LANE_IMPORT,
+        ),
+        QueueTaskDefinition(
+            task_key="video_directory_import",
+            log_name="video-directory-import",
+            handler=_run_video_directory_import,
+            lane=LANE_IMPORT,
+        ),
+        QueueTaskDefinition(
+            task_key="download_task_import",
+            log_name="download-task-import",
+            handler=_run_download_task_import,
+            lane=LANE_IMPORT,
+        ),
+        QueueTaskDefinition(
+            task_key="media_rapid_upload",
+            log_name="media-rapid-upload",
+            handler=_run_media_rapid_upload,
+            lane=LANE_RAPID_UPLOAD,
+            # 批次完成通知由业务侧幂等发送（含崩溃恢复补发），任务级通知关闭。
+            notify_result=False,
+        ),
+        # 单资源手动任务：与 cron 批任务同 key，仅当运行带 params 时命中。
+        QueueTaskDefinition(
+            task_key="movie_desc_translation",
+            log_name="movie-desc-translation",
+            handler=_run_single_movie_desc_translation,
+        ),
+        QueueTaskDefinition(
+            task_key="movie_interaction_sync",
+            log_name="movie-interaction-sync",
+            handler=_run_single_movie_interaction_sync,
+        ),
+    )
+}
+
+
+def lane_task_keys(lane: str) -> set[str]:
+    return {
+        definition.task_key
+        for definition in QUEUE_TASK_REGISTRY.values()
+        if definition.lane == lane
+    }
+
+
+# default 道领取时排除的 key：专属道任务不允许被 default 道抢走。
+NON_DEFAULT_LANE_TASK_KEYS: set[str] = {
+    definition.task_key
+    for definition in QUEUE_TASK_REGISTRY.values()
+    if definition.lane != LANE_DEFAULT
+}

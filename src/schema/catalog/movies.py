@@ -276,3 +276,13 @@ class MovieSubscriptionBatchResponse(SchemaModel):
     updated_count: int
     skipped_count: int = 0
     skipped: list[MovieSubscriptionSkippedItem] = Field(default_factory=list)
+
+
+class MovieTaskQueuedResponse(SchemaModel):
+    """单影片异步任务已入队（202 语义）：执行在 worker，前端经 task_run 事件跟进。"""
+
+    movie_id: int
+    movie_number: str
+    task_key: str
+    task_run_id: int
+    status: str = "accepted"

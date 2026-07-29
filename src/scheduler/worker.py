@@ -15,6 +15,13 @@ from loguru import logger
 
 from src.common.database import ensure_database_ready
 from src.model import BackgroundTaskRun
+from src.scheduler.queue_tasks import (
+    LANE_CONCURRENCY,
+    LANE_DEFAULT,
+    NON_DEFAULT_LANE_TASK_KEYS,
+    QUEUE_TASK_REGISTRY,
+    lane_task_keys,
+)
 from src.scheduler.registry import JOB_REGISTRY_BY_KEY
 from src.service.system import ActivityService
 from src.service.system.task_queue_service import (
@@ -22,7 +29,6 @@ from src.service.system.task_queue_service import (
     TaskQueueService,
 )
 
-WORKER_CONCURRENCY = 4
 CLAIM_POLL_INTERVAL_SECONDS = 1.0
 LEGACY_RECOVERY_ERROR_MESSAGE = "任务执行进程已退出，任务按中断回收"
 
@@ -31,11 +37,11 @@ class TaskWorker:
     def __init__(
         self,
         *,
-        concurrency: int = WORKER_CONCURRENCY,
+        lanes: dict[str, int] | None = None,
         poll_interval: float = CLAIM_POLL_INTERVAL_SECONDS,
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
     ):
-        self._concurrency = concurrency
+        self._lanes = dict(lanes or LANE_CONCURRENCY)
         self._poll_interval = poll_interval
         self._lease_seconds = lease_seconds
         self._stop = threading.Event()
@@ -44,20 +50,22 @@ class TaskWorker:
         self._in_flight: dict[int, str] = {}
 
     def start(self) -> None:
-        for index in range(self._concurrency):
-            threading.Thread(
-                target=self._claim_loop,
-                name=f"task-worker-{index}",
-                daemon=True,
-            ).start()
+        for lane, concurrency in self._lanes.items():
+            for index in range(concurrency):
+                threading.Thread(
+                    target=self._claim_loop,
+                    args=(lane,),
+                    name=f"task-worker-{lane}-{index}",
+                    daemon=True,
+                ).start()
         threading.Thread(
             target=self._housekeeping_loop,
             name="task-worker-housekeeper",
             daemon=True,
         ).start()
         logger.info(
-            "Task worker started concurrency={} lease_seconds={}",
-            self._concurrency,
+            "Task worker started lanes={} lease_seconds={}",
+            self._lanes,
             self._lease_seconds,
         )
 
@@ -66,11 +74,18 @@ class TaskWorker:
 
     # ------------------------------------------------------------------ claim
 
-    def _claim_loop(self) -> None:
+    def _claim_loop(self, lane: str = LANE_DEFAULT) -> None:
         ensure_database_ready()
+        # default 道排除专属道任务；专属道只领取本道任务。
+        include_task_keys = None if lane == LANE_DEFAULT else lane_task_keys(lane)
+        exclude_task_keys = NON_DEFAULT_LANE_TASK_KEYS if lane == LANE_DEFAULT else None
         while not self._stop.is_set():
             try:
-                task_run = TaskQueueService.claim_next(lease_seconds=self._lease_seconds)
+                task_run = TaskQueueService.claim_next(
+                    lease_seconds=self._lease_seconds,
+                    include_task_keys=include_task_keys,
+                    exclude_task_keys=exclude_task_keys,
+                )
             except Exception:
                 logger.exception("Task worker claim failed")
                 self._stop.wait(self._poll_interval * 5)
@@ -81,8 +96,20 @@ class TaskWorker:
             self._execute(task_run)
 
     def _execute(self, task_run: BackgroundTaskRun) -> None:
+        params = task_run.params if isinstance(task_run.params, dict) else {}
+        queue_def = QUEUE_TASK_REGISTRY.get(task_run.task_key)
         job_def = JOB_REGISTRY_BY_KEY.get(task_run.task_key)
-        if job_def is None:
+        # 解析顺序：队列专属任务（key 不在 cron 注册表，或运行带 params 的单资源任务）
+        # 优先；否则回落 cron 批任务的 service_factory。
+        if queue_def is not None and (job_def is None or params):
+            func = lambda reporter: queue_def.handler(reporter, params)
+            log_name = queue_def.log_name
+            notify_result = queue_def.notify_result
+        elif job_def is not None:
+            func = job_def.service_factory
+            log_name = job_def.log_name
+            notify_result = True
+        else:
             # 队列里出现未注册 key（如插件停用后的残留行）：显式失败，避免无限重领。
             ActivityService.fail_task_run(
                 task_run.id,
@@ -93,12 +120,12 @@ class TaskWorker:
             self._in_flight[task_run.id] = task_run.task_key
         try:
             ActivityService.run_task(
-                task_key=job_def.task_key,
+                task_key=task_run.task_key,
                 trigger_type=task_run.trigger_type,
-                func=job_def.service_factory,
+                func=func,
                 task_run_id=task_run.id,
-                log_task_name=job_def.log_name,
-                mutex_key=TaskQueueService.build_mutex_key(job_def.task_key),
+                log_task_name=log_name,
+                notify_result=notify_result,
             )
         except Exception:
             # run_task 内部已把异常写入 task_run；这里只记 worker 层日志。

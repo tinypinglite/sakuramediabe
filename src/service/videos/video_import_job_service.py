@@ -25,7 +25,6 @@ from src.schema.videos.imports import (
 )
 from src.service.system import ActivityService
 from src.service.transfers.base_import_job_service import BaseImportJobService
-from src.service.transfers.import_runner import DownloadImportRunner, ensure_database_ready
 from src.service.videos.video_import_service import VideoImportService
 
 
@@ -107,81 +106,34 @@ class VideoImportJobService(BaseImportJobService):
         )
 
     @classmethod
-    def _submit_runner(
-        cls,
-        *,
-        import_job,
-        task_run,
-        library,
-        resolved_source,
-        transfer_mode,
-        only_files,
-        collection_id: int | None = None,
-        **launch_kwargs,
-    ) -> None:
-        # collection_id 夹在 transfer_mode 与 only_files 之间，位置序列须与 _run_import_job 形参严格对齐。
-        DownloadImportRunner.submit(
-            import_job.id,
-            cls._run_import_job,
-            library.id,
-            str(resolved_source),
-            import_job.id,
-            task_run.id,
-            transfer_mode,
-            collection_id,
-            only_files,
-        )
-
-    @classmethod
-    def _run_import_job(
-        cls,
-        library_id: int,
-        source_path: str,
-        video_import_job_id: int,
-        task_run_id: int,
-        transfer_mode: str,
-        collection_id: int | None,
-        only_files: List[str] | None = None,
-    ) -> dict:
-        ensure_database_ready()
+    def execute_from_queue(cls, reporter, params: dict) -> dict:
+        job = cls._require_job(int(params["video_import_job_id"]))
         try:
-            def _run_task(reporter):
-                service = VideoImportService()
-                job = service.import_from_source(
-                    source_path,
-                    library_id,
-                    video_import_job_id=video_import_job_id,
-                    transfer_mode=transfer_mode,
-                    collection_id=collection_id,
-                    only_files=only_files,
-                    progress_callback=reporter.progress_callback,
-                )
-                return {
-                    "video_import_job_id": job.id,
-                    "imported_count": job.imported_count,
-                    "skipped_count": job.skipped_count,
-                    "failed_count": job.failed_count,
-                    "job_state": job.state,
-                }
-
-            return ActivityService.run_task(
-                task_key=cls.TASK_KEY,
-                task_name=None,
-                trigger_type="internal",
-                task_run_id=task_run_id,
-                func=_run_task,
+            service = VideoImportService()
+            result_job = service.import_from_source(
+                job.source_path,
+                job.library_id,
+                video_import_job_id=job.id,
+                transfer_mode=job.transfer_mode or "auto",
+                collection_id=job.collection_id,
+                only_files=params.get("only_files"),
+                progress_callback=reporter.progress_callback,
             )
         except Exception as exc:
-            cls._mark_import_failed(video_import_job_id, str(exc))
+            cls._mark_import_failed(job.id, str(exc))
             logger.exception(
                 "Video directory import failed video_import_job_id={} source_path={}",
-                video_import_job_id,
-                source_path,
+                job.id,
+                job.source_path,
             )
-            return {
-                "video_import_job_id": video_import_job_id,
-                "job_state": IMPORT_JOB_STATE_FAILED,
-            }
+            raise
+        return {
+            "video_import_job_id": result_job.id,
+            "imported_count": result_job.imported_count,
+            "skipped_count": result_job.skipped_count,
+            "failed_count": result_job.failed_count,
+            "job_state": result_job.state,
+        }
 
     @classmethod
     def _orphan_jobs_query(cls):

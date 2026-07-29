@@ -10,6 +10,7 @@ from src.api.routers._utils import (
 )
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.catalog.movies import (
+    MovieTaskQueuedResponse,
     MovieCollectionMarkRequest,
     MovieCollectionMarkResponse,
     MovieCollectionStatusResource,
@@ -193,12 +194,12 @@ def refresh_movie_metadata(movie_number: str):
     return MovieMetadataRefreshService.refresh_movie_metadata(movie_number)
 
 
-@router.post("/{movie_number}/desc-translation", response_model=MovieDetailResource)
+@router.post("/{movie_number}/desc-translation", response_model=MovieTaskQueuedResponse, status_code=202)
 def translate_movie_desc(movie_number: str):
     return MovieTaskService.translate_movie_desc(movie_number)
 
 
-@router.post("/{movie_number}/interaction-sync", response_model=MovieDetailResource)
+@router.post("/{movie_number}/interaction-sync", response_model=MovieTaskQueuedResponse, status_code=202)
 def sync_movie_interactions(movie_number: str):
     return MovieTaskService.sync_movie_interactions(movie_number)
 
