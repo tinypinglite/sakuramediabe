@@ -1445,3 +1445,43 @@ def test_run_pending_migrations_resets_interaction_sync_states_preserving_memory
     assert last_succeeded_at is not None
     assert last_error is None
     assert error_code is None
+
+
+def test_run_pending_migrations_adds_resource_task_attempt_finished_at_index(clean_db):
+    """20260731_01：老库补 resource_task_attempt(finished_at) 单列索引；幂等地跳过已存在索引。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    # 模拟老库：抹掉 initdb 建出的 (finished_at,) 单列索引并清 SchemaMigration 记录让 runner 重跑。
+    # 索引名由 peewee 生成，不同版本可能不同，用列匹配定位后按实际名 DROP。
+    stale_indexes = [
+        index.name
+        for index in clean_db.get_indexes("resource_task_attempt")
+        if tuple(index.columns) == ("finished_at",)
+    ]
+    for index_name in stale_indexes:
+        clean_db.execute_sql(f'DROP INDEX IF EXISTS "{index_name}"')
+    with clean_db.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
+        SchemaMigration.delete().where(
+            SchemaMigration.name
+            == "20260731_01_add_resource_task_attempt_finished_at_index"
+        ).execute()
+
+    run_pending_migrations(clean_db)
+
+    indexed_columns = {
+        tuple(index.columns)
+        for index in clean_db.get_indexes("resource_task_attempt")
+    }
+    assert ("finished_at",) in indexed_columns
+    assert (
+        "20260731_01_add_resource_task_attempt_finished_at_index"
+        in _schema_migration_names(clean_db)
+    )
+
+    # 幂等：再跑一次不应重复建索引出错。
+    with clean_db.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
+        SchemaMigration.delete().where(
+            SchemaMigration.name
+            == "20260731_01_add_resource_task_attempt_finished_at_index"
+        ).execute()
+    run_pending_migrations(clean_db)

@@ -37,4 +37,6 @@ class ResourceTaskAttempt(TimestampedMixin, BaseModel):
         table_name = "resource_task_attempt"
         indexes = (
             (("task_key", "resource_type", "resource_id"), False),
+            # 保留期清理按 finished_at < cutoff 扫描，走单列索引避免全表扫。
+            (("finished_at",), False),
         )

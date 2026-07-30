@@ -312,6 +312,12 @@ def test_create_tables_creates_task_queue_and_attempt_schema(clean_db, monkeypat
     }
     assert ("task_key", "state", "next_retry_at") in state_indexed_columns
 
+    # 尝试历史清理走 finished_at 索引定位过期行，缺索引会全表扫。
+    attempt_indexed_columns = {
+        tuple(index.columns) for index in clean_db.get_indexes("resource_task_attempt")
+    }
+    assert ("finished_at",) in attempt_indexed_columns
+
     # last_task_run_id 外键化：悬空引用必须被数据库拒绝。
     with pytest.raises(IntegrityError):
         ResourceTaskState.create(

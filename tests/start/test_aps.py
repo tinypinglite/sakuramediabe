@@ -266,6 +266,15 @@ def test_aps_cleanup_activity_records_command_runs_job(monkeypatch):
     )
 
 
+def test_aps_cleanup_resource_task_attempts_command_runs_job(monkeypatch):
+    _test_cli_command(
+        monkeypatch,
+        "cleanup-resource-task-attempts",
+        {"deleted_attempts": 4200},
+        "resource task attempt cleanup finished: deleted_attempts=4200",
+    )
+
+
 def test_aps_index_image_search_thumbnails_command_runs_job(monkeypatch):
     _test_cli_command(
         monkeypatch,
@@ -423,6 +432,9 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.ranking_sync_cron", "10 1 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.hot_review_sync_cron", "20 1 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.activity_cleanup_cron", "30 5 * * *")
+    monkeypatch.setattr(
+        "src.start.aps.settings.scheduler.resource_task_attempt_cleanup_cron", "0 6 * * *"
+    )
 
     scheduler = build_scheduler()
 
@@ -453,6 +465,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert str(scheduler.get_job("moment_recommendation_generate").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='0']"
     assert str(scheduler.get_job("daily_recommendation_generate").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"
     assert str(scheduler.get_job("activity_record_cleanup").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='30']"
+    assert str(scheduler.get_job("resource_task_attempt_cleanup").trigger) == "cron[month='*', day='*', day_of_week='*', hour='6', minute='0']"
     assert scheduler.timezone.key == "Asia/Shanghai"
 
 

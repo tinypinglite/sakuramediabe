@@ -309,6 +309,8 @@ class Scheduler(BaseModel):
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
     activity_cleanup_cron: str = "30 5 * * *"
+    # resource_task_attempt 保留期清理：每天 6:00 跑一次，避开活动清理窗口。
+    resource_task_attempt_cleanup_cron: str = "0 6 * * *"
     # cloud115 cookies 保活：acw_tc（阿里云 WAF token）30 分钟过期，每 20 分钟探活一次
     # 并把 SDK merge 到的最新快照回写库配置；长效凭据失效时发通知引导重新扫码。
     cloud115_keepalive_cron: str = "*/20 * * * *"

@@ -29,7 +29,7 @@ from src.service.playback import (
     MediaFileScanService,
     MediaThumbnailService,
 )
-from src.service.system import ActivityCleanupService
+from src.service.system import ActivityCleanupService, ResourceTaskAttemptCleanupService
 from src.service.system.resource_task_runner import ResourceTaskLedger
 
 from src.service.transfers import (
@@ -474,6 +474,18 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
             ("deleted_events", "deleted_events", 0),
             ("deleted_task_runs", "deleted_task_runs", 0),
             ("deleted_notifications", "deleted_notifications", 0),
+        ),
+    ),
+    JobDefinition(
+        task_key="resource_task_attempt_cleanup",
+        log_name="resource-task-attempt-cleanup",
+        cli_name="cleanup-resource-task-attempts",
+        cli_help="执行一次资源任务尝试历史保留期清理",
+        cron_setting="resource_task_attempt_cleanup_cron",
+        service_factory=lambda _reporter: ResourceTaskAttemptCleanupService().cleanup(),
+        format_stats=_build_stats_formatter(
+            "resource task attempt cleanup finished:",
+            ("deleted_attempts", "deleted_attempts", 0),
         ),
     ),
     JobDefinition(

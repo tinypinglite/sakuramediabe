@@ -5,6 +5,7 @@ from .auth_service import AuthService
 from .config_service import ConfigService
 from .indexer_settings_service import IndexerSettingsService
 from .movie_desc_translation_settings_service import MovieDescTranslationSettingsService
+from .resource_task_attempt_cleanup_service import ResourceTaskAttemptCleanupService
 from .resource_task_state_service import ResourceTaskStateService
 from .task_queue_service import TaskQueueConflictError, TaskQueueService
 
@@ -16,6 +17,7 @@ __all__ = [
     "ConfigService",
     "IndexerSettingsService",
     "MovieDescTranslationSettingsService",
+    "ResourceTaskAttemptCleanupService",
     "ResourceTaskStateService",
     "SystemEventService",
     "TaskQueueConflictError",
