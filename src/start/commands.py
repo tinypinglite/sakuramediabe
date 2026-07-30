@@ -17,7 +17,7 @@ from src.api.exception.errors import ApiError
 from src.config.config import settings
 from src.metadata.factory import build_dmm_provider, build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
-from src.model import BackgroundTaskRun, ResourceTaskState, init_database
+from src.model import init_database
 from src.model.enums import MediaLibraryBackend
 from src.scheduler.progress import TqdmProgressAdapter
 from src.scheduler.registry import JOB_REGISTRY
@@ -652,29 +652,6 @@ def backfill_movie_thin_cover_images():
         f"updated_movies={stats['updated_movies']} "
         f"skipped_movies={stats['skipped_movies']} "
         f"failed_movies={stats['failed_movies']}"
-    )
-
-
-@main.command(name="cleanup-movie-subtitle-fetch-history")
-def cleanup_movie_subtitle_fetch_history():
-    logger.info("CLI cleanup-movie-subtitle-fetch-history start")
-    _ensure_database_ready()
-    # 只清理废弃任务留下的运行痕迹，不删除任何字幕文件或 Subtitle 记录。
-    deleted_task_runs = BackgroundTaskRun.delete().where(BackgroundTaskRun.task_key == "movie_subtitle_fetch").execute()
-    deleted_resource_task_states = (
-        ResourceTaskState.delete()
-        .where(ResourceTaskState.task_key == "movie_subtitle_fetch")
-        .execute()
-    )
-    logger.info(
-        "CLI cleanup-movie-subtitle-fetch-history finished deleted_task_runs={} deleted_resource_task_states={}",
-        deleted_task_runs,
-        deleted_resource_task_states,
-    )
-    click.echo(
-        "movie subtitle fetch history cleanup finished: "
-        f"deleted_task_runs={deleted_task_runs} "
-        f"deleted_resource_task_states={deleted_resource_task_states}"
     )
 
 

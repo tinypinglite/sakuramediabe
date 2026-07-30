@@ -192,6 +192,19 @@ def _schema_migration_names(clean_db):
         return [item.name for item in SchemaMigration.select().order_by(SchemaMigration.id)]
 
 
+def _pin_migrations_as_applied(clean_db, *names):
+    """把与本用例无关的清理型迁移预先标记为已应用。
+
+    20260730_02/04/05 会整表清空导入作业、秒传、通知历史。老用例从空的
+    SchemaMigration 起跑全量迁移，末尾这些清理会把它们插入的断言样本一并删掉，
+    使断言失去被测迁移的针对性——这里把它们钉成已应用来隔离。
+    """
+    with clean_db.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
+        clean_db.create_tables([SchemaMigration], safe=True)
+        for name in names:
+            SchemaMigration.get_or_create(name=name)
+
+
 def _movie_foreign_keys(clean_db):
     return [
         {
@@ -368,6 +381,7 @@ def test_run_pending_migrations_creates_video_import_job_on_existing_database(cl
 def test_run_pending_migrations_adds_video_import_job_cloud_sources_idempotently(clean_db):
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
     clean_db.create_tables(TEST_MODELS)
+    _pin_migrations_as_applied(clean_db, "20260730_02_wipe_cloud115_download_import_history")
     library = MediaLibrary.create(name="local-videos", backend="local", backend_config={})
     job = VideoImportJob.create(source_path="/mnt/incoming", library=library)
     # 模拟迁移中途只加了一列：重跑时必须只补缺失列，并保留历史作业。
@@ -511,6 +525,7 @@ def _insert_legacy_notification(clean_db, *, category: str, level: str, title: s
 
 def test_run_pending_migrations_merges_notification_category_and_level(clean_db):
     _create_legacy_system_notification_table(clean_db)
+    _pin_migrations_as_applied(clean_db, "20260730_05_wipe_system_notifications")
     _insert_legacy_notification(clean_db, category="exception", level="error", title="任务失败")
     _insert_legacy_notification(clean_db, category="result", level="warning", title="部分失败")
     _insert_legacy_notification(clean_db, category="result", level="info", title="任务完成")
@@ -644,6 +659,7 @@ def _create_legacy_notification_table_with_archived_index(clean_db):
 
 def test_run_pending_migrations_drops_notification_archived_at(clean_db):
     _create_legacy_notification_table_with_archived_index(clean_db)
+    _pin_migrations_as_applied(clean_db, "20260730_05_wipe_system_notifications")
     clean_db.execute_sql(
         """
         INSERT INTO system_notification (
@@ -1054,6 +1070,7 @@ def test_run_pending_migrations_adds_media_rapid_upload_item_failure_reason(clea
     """20260720_01：老库补 failure_reason 列并按 error_message 精确回填。"""
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
     clean_db.create_tables(TEST_MODELS)
+    _pin_migrations_as_applied(clean_db, "20260730_04_wipe_rapid_upload_history")
     # 模拟老库：抹掉本迁移引入的新列，并把 SchemaMigration 里对应记录清掉让 runner 重跑。
     clean_db.execute_sql(
         'ALTER TABLE "media_rapid_upload_item" DROP COLUMN "failure_reason"'
@@ -1447,6 +1464,135 @@ def test_run_pending_migrations_resets_interaction_sync_states_preserving_memory
     assert error_code is None
 
 
+def test_run_pending_migrations_wipes_cloud115_download_import_history(clean_db):
+    """任务架构切换（20260730_02）：清空导入作业台账 + cloud115 下载任务，qB 行原样保留。
+
+    qB 的行删不得——DownloadSyncService.sync_client 是 get_or_create，种子还在就会重建，
+    且 import_status 复位成 pending 触发重新导入。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260730_02_wipe_cloud115_download_import_history",),
+    )
+    library = MediaLibrary.create(
+        name="wipe-dl-lib", backend="local", backend_config={"root_path": "/library"}
+    )
+    clean_db.execute_sql(
+        "INSERT INTO download_client (created_at, updated_at, name, kind, media_library_id)"
+        " VALUES (NOW(), NOW(), 'qb-keep', 'qbittorrent', %s),"
+        "        (NOW(), NOW(), 'cloud-drop', 'cloud115', %s)",
+        (library.id, library.id),
+    )
+    qb_id, cloud_id = (
+        row[0]
+        for row in clean_db.execute_sql(
+            "SELECT id FROM download_client ORDER BY id"
+        ).fetchall()
+    )
+    clean_db.execute_sql(
+        "INSERT INTO download_task (created_at, updated_at, client_id, name, info_hash,"
+        " save_path, progress, download_state, import_status)"
+        " VALUES (NOW(), NOW(), %s, 'QB-001', 'hash-qb', '/downloads/QB-001', 1.0,"
+        "         'completed', 'completed'),"
+        "        (NOW(), NOW(), %s, 'CL-001', 'hash-cl', '/downloads/CL-001', 1.0,"
+        "         'completed', 'failed')",
+        (qb_id, cloud_id),
+    )
+    task_id = clean_db.execute_sql(
+        "SELECT id FROM download_task WHERE client_id = %s", (cloud_id,)
+    ).fetchone()[0]
+    clean_db.execute_sql(
+        "INSERT INTO import_job (created_at, updated_at, source_path, library_id,"
+        " download_task_id, state, transfer_mode, imported_count, skipped_count,"
+        " failed_count, failed_files)"
+        " VALUES (NOW(), NOW(), '/downloads/CL-001', %s, %s, 'failed', 'cleanup-source',"
+        "         0, 0, 1, '[]')",
+        (library.id, task_id),
+    )
+    VideoImportJob.create(
+        source_path="/downloads/video",
+        library=library,
+        state="completed",
+        transfer_mode="copy",
+    )
+
+    run_pending_migrations(clean_db)
+
+    assert clean_db.execute_sql("SELECT count(*) FROM import_job").fetchone()[0] == 0
+    assert clean_db.execute_sql("SELECT count(*) FROM video_import_job").fetchone()[0] == 0
+    remaining = clean_db.execute_sql(
+        "SELECT client_id FROM download_task"
+    ).fetchall()
+    assert remaining == [(qb_id,)]
+    assert (
+        "20260730_02_wipe_cloud115_download_import_history"
+        in _schema_migration_names(clean_db)
+    )
+
+
+def test_run_pending_migrations_drops_movie_subtitle_fetch_states(clean_db):
+    """20260730_03：删除孤儿 task_key movie_subtitle_fetch，其余 task_key 不受影响。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260730_03_drop_movie_subtitle_fetch_states",),
+    )
+    clean_db.execute_sql(
+        "INSERT INTO resource_task_state"
+        " (created_at, updated_at, task_key, resource_type, resource_id, state,"
+        "  attempt_count, retry_round)"
+        " VALUES"
+        " (now(), now(), 'movie_subtitle_fetch', 'movie', 1, 'pending', 0, 0),"
+        " (now(), now(), 'movie_subtitle_fetch', 'movie', 2, 'failed', 3, 0),"
+        " (now(), now(), 'media_thumbnail_generation', 'media', 1, 'succeeded', 1, 0)"
+    )
+
+    run_pending_migrations(clean_db)
+
+    rows = clean_db.execute_sql(
+        "SELECT task_key FROM resource_task_state ORDER BY task_key"
+    ).fetchall()
+    assert rows == [("media_thumbnail_generation",)]
+    assert "20260730_03_drop_movie_subtitle_fetch_states" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_wipes_rapid_upload_history(clean_db):
+    """20260730_04：秒传批次与明细整体清空。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260730_04_wipe_rapid_upload_history",),
+    )
+    library = MediaLibrary.create(
+        name="rapid-lib", backend="cloud115", backend_config={"root_cid": "1"}
+    )
+    clean_db.execute_sql(
+        "INSERT INTO media_rapid_upload_batch (created_at, updated_at, target_library_id,"
+        " state, total_count, succeeded_count, failed_count, cleanup_failed_count)"
+        " VALUES (NOW(), NOW(), %s, 'completed', 1, 1, 0, 0)",
+        (library.id,),
+    )
+    batch_id = clean_db.execute_sql("SELECT id FROM media_rapid_upload_batch").fetchone()[0]
+    clean_db.execute_sql(
+        "INSERT INTO media_rapid_upload_item (created_at, updated_at, batch_id, action,"
+        " state, source_path, source_size_bytes, source_mtime_ns)"
+        " VALUES (NOW(), NOW(), %s, 'rapid_upload', 'succeeded', '/mnt/a.mp4', 1, 1)",
+        (batch_id,),
+    )
+
+    run_pending_migrations(clean_db)
+
+    assert clean_db.execute_sql("SELECT count(*) FROM media_rapid_upload_item").fetchone()[0] == 0
+    assert clean_db.execute_sql("SELECT count(*) FROM media_rapid_upload_batch").fetchone()[0] == 0
+    assert "20260730_04_wipe_rapid_upload_history" in _schema_migration_names(clean_db)
+
+
 def test_run_pending_migrations_adds_resource_task_attempt_finished_at_index(clean_db):
     """20260731_01：老库补 resource_task_attempt(finished_at) 单列索引；幂等地跳过已存在索引。"""
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
@@ -1485,3 +1631,24 @@ def test_run_pending_migrations_adds_resource_task_attempt_finished_at_index(cle
             == "20260731_01_add_resource_task_attempt_finished_at_index"
         ).execute()
     run_pending_migrations(clean_db)
+
+
+def test_run_pending_migrations_wipes_system_notifications(clean_db):
+    """20260730_05：通知历史整体清空。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260730_05_wipe_system_notifications",),
+    )
+    clean_db.execute_sql(
+        "INSERT INTO system_notification (created_at, updated_at, category, title,"
+        " content, is_read)"
+        " VALUES (NOW(), NOW(), 'task', '导入完成', '正文', false)"
+    )
+
+    run_pending_migrations(clean_db)
+
+    assert clean_db.execute_sql("SELECT count(*) FROM system_notification").fetchone()[0] == 0
+    assert "20260730_05_wipe_system_notifications" in _schema_migration_names(clean_db)

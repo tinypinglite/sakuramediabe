@@ -65,39 +65,3 @@ def test_scan_media_files_command_outputs_stats(monkeypatch):
     assert "invalidated_media=1" in result.output
     assert "revived_media=1" in result.output
     assert "cloud115_index_failed_libraries=1" in result.output
-
-
-def test_cleanup_movie_subtitle_fetch_history_command_outputs_stats(monkeypatch):
-    class FakeDeleteQuery:
-        def __init__(self, deleted_count: int):
-            self.deleted_count = deleted_count
-
-        def where(self, *_args, **_kwargs):
-            return self
-
-        def execute(self):
-            return self.deleted_count
-
-    class FakeBackgroundTaskRun:
-        task_key = "movie_subtitle_fetch"
-
-        @staticmethod
-        def delete():
-            return FakeDeleteQuery(3)
-
-    class FakeResourceTaskState:
-        task_key = "movie_subtitle_fetch"
-
-        @staticmethod
-        def delete():
-            return FakeDeleteQuery(5)
-
-    monkeypatch.setattr("src.start.commands.BackgroundTaskRun", FakeBackgroundTaskRun)
-    monkeypatch.setattr("src.start.commands.ResourceTaskState", FakeResourceTaskState)
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["cleanup-movie-subtitle-fetch-history"])
-
-    assert result.exit_code == 0
-    assert "deleted_task_runs=3" in result.output
-    assert "deleted_resource_task_states=5" in result.output
