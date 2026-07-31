@@ -19,6 +19,7 @@ from src.service.transfers.common import (
     validate_non_empty,
 )
 from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
+from src.service.transfers.torrent_content_guard import assert_candidate_content_importable
 
 
 class DownloadRequestService:
@@ -45,6 +46,14 @@ class DownloadRequestService:
                 "invalid_download_request_candidate",
                 "candidate must provide magnet_url or torrent_url",
             )
+
+        # 内容闸门放在分派之前：qB 与 115 共用本入口，自动下载与手动提交也都走这里，
+        # 拦在这一层才能保证"不可导入的资源永远不会被真正提交出去"。
+        assert_candidate_content_importable(
+            title=payload.candidate.title,
+            torrent_url=(payload.candidate.torrent_url or "").strip(),
+            magnet_url=(payload.candidate.magnet_url or "").strip(),
+        )
 
         # 按下载入口种类分派；选中即执行到底，执行失败直接报错、不自动换下载器。
         if client.kind == DownloadClientKind.CLOUD115.value:
