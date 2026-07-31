@@ -1,5 +1,6 @@
 from .file_signatures import (
     build_signed_clip_url,
+    build_signed_cloud115_merged_hls_url,
     build_signed_image_url,
     build_signed_media_url,
     build_signed_merged_media_url,
@@ -35,6 +36,7 @@ from .runtime_time import (
 
 __all__ = [
     "build_signed_clip_url",
+    "build_signed_cloud115_merged_hls_url",
     "build_signed_image_url",
     "build_signed_media_url",
     "build_signed_merged_media_url",

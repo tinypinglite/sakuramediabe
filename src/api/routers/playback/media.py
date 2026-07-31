@@ -31,6 +31,7 @@ from src.schema.playback.media import (
     MediaValidityCheckResponse,
 )
 from src.service.playback import MediaService
+from src.service.playback.cloud115_hls_proxy_service import Cloud115HlsProxyService
 from src.service.playback.merged_playback_service import MergedPlaybackService
 
 router = APIRouter(
@@ -38,6 +39,15 @@ router = APIRouter(
     tags=["media"],
     dependencies=[Depends(db_deps)],
 )
+
+
+def _request_user_agent(request: Request) -> str:
+    """读取请求方 UA；多 UA（libmpv/ffmpeg 覆盖 UA 时可能同时带两条）取第一条。
+
+    与 CDN 侧解析的 UA 保持一致是签名绑定成立的前提，沿用 /stream 既有的取值规则。
+    """
+    ua_list = request.headers.getlist("user-agent")
+    return (ua_list[0] if ua_list else "") or "SakuraMedia-Player/1.0"
 
 
 @router.get("", response_model=PageResponse[MediaListItemResource])
@@ -72,7 +82,7 @@ def resolve_media_play_url(
 ):
     """影片播放链接解析：按播放源（本地/115）与播放模式（单个/合并）返回签名地址。
 
-    本地多分段返回虚拟合并 URL；115 多资源合并暂为占位（``cloud115_merged_pending``）。
+    本地多分段返回虚拟合并 URL；115 多资源合并返回后端 HLS 全量代理的合播 m3u8 地址。
     """
     return MediaService.resolve_movie_play_url(
         movie_number=movie_number,
@@ -150,8 +160,8 @@ async def stream_media_file(
         # 用 getlist 排查"客户端塞了多条 User-Agent"这类隐蔽情况——libmpv/ffmpeg 某些版本
         # 用 -headers 覆盖 UA 时会与默认 UA 同时出现在报文里，Starlette 只取第一条，与
         # CDN 侧解析的 UA 可能是不同一条，进而造成签名不一致。
+        user_agent = _request_user_agent(request)
         ua_list = request.headers.getlist("user-agent")
-        user_agent = (ua_list[0] if ua_list else "") or "SakuraMedia-Player/1.0"
         from loguru import logger
         logger.info(
             "cloud115 stream request media_id={} ua_count={} ua_first={!r} ua_all={!r} sig={} client={}",
@@ -194,6 +204,90 @@ def stream_merged_media_file(
     verify_media_signature(ids[0], expires, signature)
     layout = MergedPlaybackService.build_for_media_ids(ids)
     return merged_range_requests_response(request, layout, "video/mp4")
+
+
+@router.get("/merged-stream.m3u8")
+async def stream_cloud115_merged_hls_playlist(
+    request: Request,
+    media_ids: str | None = Query(default=None),
+    expires: int | None = None,
+    signature: str | None = None,
+):
+    """115 HLS 全量代理的合播 m3u8（http 直出 200，不 302）。
+
+    供外部播放器消费：播放器只面对后端 http 地址，TS 分段地址改写为
+    ``/media/hls-segment/{全局索引}`` 代理路由，UA 绑定由后端统一保证。
+    签名复用 ``media_ids[0]`` 的媒体签名（与本地合并同机制）。
+    """
+    require_signed_params(expires, signature)
+    ids = parse_csv_positive_ints(media_ids, "media_ids", error_code="invalid_media_filter")
+    if not ids:
+        raise ApiError(422, "merged_hls_need_at_least_one", "合并播放至少需要 1 个分段")
+    verify_media_signature(ids[0], expires, signature)
+
+    user_agent = _request_user_agent(request)
+    layout = await Cloud115HlsProxyService.build_merged_layout(ids, user_agent)
+    playlist = Cloud115HlsProxyService.render_playlist(
+        layout,
+        media_ids_param=",".join(str(i) for i in ids),
+        expires=expires,
+        signature=signature,
+    )
+    return Response(content=playlist, media_type="application/vnd.apple.mpegurl")
+
+
+@router.get("/{media_id}/stream.m3u8")
+async def stream_cloud115_single_hls_playlist(
+    request: Request,
+    media_id: int,
+    expires: int | None = None,
+    signature: str | None = None,
+):
+    """115 单个媒体的 HLS 代理 m3u8（http 直出 200，不 302）。
+
+    与 ``/{media_id}/stream`` 共用同一签名载荷（``media:{media_id}:{expires}``），
+    前端外部播放器分支把 ``/stream`` 路径换成 ``/stream.m3u8`` 即可，无需新签名。
+    """
+    require_signed_params(expires, signature)
+    verify_media_signature(media_id, expires, signature)
+
+    user_agent = _request_user_agent(request)
+    layout = await Cloud115HlsProxyService.build_merged_layout([media_id], user_agent)
+    playlist = Cloud115HlsProxyService.render_playlist(
+        layout,
+        media_ids_param=str(media_id),
+        expires=expires,
+        signature=signature,
+    )
+    return Response(content=playlist, media_type="application/vnd.apple.mpegurl")
+
+
+@router.get("/hls-segment/{segment_index}.ts")
+async def stream_cloud115_hls_segment(
+    request: Request,
+    segment_index: int,
+    media_ids: str | None = Query(default=None),
+    expires: int | None = None,
+    signature: str | None = None,
+):
+    """115 HLS 全量代理的分段转发：用绑定 UA 拉 115 CDN 分段并转发字节。
+
+    签名与索引语义和 ``/media/merged-stream.m3u8`` 一致（playlist 里透传的参数）。
+    ``.ts`` 后缀是给 ffmpeg 系 HLS demuxer 的（``allowed_segment_extensions`` 白名单
+    不含无扩展名 URL）；播放器侧无所谓，按 playlist 里的 URL 原样请求。
+    """
+    require_signed_params(expires, signature)
+    ids = parse_csv_positive_ints(media_ids, "media_ids", error_code="invalid_media_filter")
+    if not ids:
+        raise ApiError(422, "merged_hls_need_at_least_one", "合并播放至少需要 1 个分段")
+    verify_media_signature(ids[0], expires, signature)
+
+    user_agent = _request_user_agent(request)
+    layout = await Cloud115HlsProxyService.build_merged_layout(ids, user_agent)
+    if segment_index < 0 or segment_index >= len(layout.segments):
+        raise ApiError(404, "hls_segment_not_found", "分段不存在")
+    segment = layout.segments[segment_index]
+    return await Cloud115HlsProxyService.proxy_segment(segment.url, user_agent)
 
 @router.put("/{media_id}/progress", response_model=MediaProgressResource)
 def update_media_progress(

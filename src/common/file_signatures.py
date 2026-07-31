@@ -139,6 +139,24 @@ def build_signed_merged_media_url(media_ids: list[int]) -> str:
     )
 
 
+def build_signed_cloud115_merged_hls_url(media_ids: list[int]) -> str:
+    """115 HLS 全量代理的合播/单播 m3u8 签名 URL。
+
+    签名复用 ``media_ids[0]`` 的媒体签名（与本地合并同机制），供外部播放器经
+    ``/media/merged-stream.m3u8`` 消费合播 HLS（单播可由前端把 ``/stream`` 路径
+    换成 ``/stream.m3u8`` 复用同一签名，无需本函数）。
+    """
+    if not media_ids:
+        raise ValueError("media_ids must not be empty")
+    expires = build_signature_expires()
+    signature = _build_media_signature(media_ids[0], expires)
+    ids = ",".join(str(i) for i in media_ids)
+    return (
+        f"{MEDIA_STREAM_ROUTE_PREFIX}/merged-stream.m3u8"
+        f"?media_ids={ids}&expires={expires}&signature={signature}"
+    )
+
+
 def verify_media_signature(media_id: int, expires: int, signature: str) -> None:
     if expires <= _now_timestamp():
         raise ApiError(403, "file_signature_expired", "文件签名已过期")

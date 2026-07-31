@@ -29,6 +29,7 @@ from src.model import (
     Actor,
     Image,
     Media,
+    MediaLibrary,
     MediaPoint,
     MediaProgress,
     MediaThumbnail,
@@ -360,8 +361,11 @@ class MovieService:
     @staticmethod
     def _media_items(movie: Movie) -> List[MovieMediaResource]:
         """把媒体、播放进度和打点信息折叠成详情页需要的资源结构。"""
+        from src.service.playback.media_service import MediaService
+
         media_items = list(
-            Media.select(Media)
+            Media.select(Media, MediaLibrary)
+            .join(MediaLibrary, JOIN.LEFT_OUTER)
             .where(Media.movie == movie)
             .order_by(Media.id)
         )
@@ -409,6 +413,11 @@ class MovieService:
                 )
             media.points = points_by_media_id.get(media.id, [])
             media.play_url = build_signed_media_url(media.id)
+            media.library_backend = (
+                "cloud115"
+                if MediaService.is_cloud115_media(media)
+                else ("local" if media.library_id is not None else None)
+            )
             resources.append(MovieMediaResource.from_attributes_model(media))
         return resources
 

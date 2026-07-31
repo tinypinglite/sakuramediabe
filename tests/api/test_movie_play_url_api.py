@@ -1,7 +1,8 @@
 """影片播放链接解析端点（GET /media/play-url）API 测试。
 
 验证：按播放源（本地/115）与播放模式（单个/合并）返回正确的签名链接；
-本地多分段返回合并 URL 且签名锚定首个分段；115 合并返回占位；无媒体/参数缺失的防御行为。
+本地多分段返回合并 URL 且签名锚定首个分段；115 合并返回 HLS 代理 m3u8；
+无媒体/参数缺失的防御行为。
 """
 
 import hmac
@@ -133,11 +134,11 @@ class TestMoviePlayUrlApi:
         assert _query(response, "signature") == _merged_signature(m1.id)
         assert payload["segment_count"] == 1
 
-    def test_cloud115_merged_returns_pending_placeholder(self, client, account_user):
+    def test_cloud115_merged_returns_merged_hls_url(self, client, account_user):
         movie = _create_movie("ABC-004")
         cloud_lib = _create_cloud_library()
-        _create_media(movie, library=cloud_lib, backend_locator={"fid": _unique()})
-        _create_media(movie, library=cloud_lib, backend_locator={"fid": _unique()})
+        m1 = _create_media(movie, library=cloud_lib, backend_locator={"fid": _unique()})
+        m2 = _create_media(movie, library=cloud_lib, backend_locator={"fid": _unique()})
 
         response = client.get(
             PLAY_URL_PATH,
@@ -146,9 +147,15 @@ class TestMoviePlayUrlApi:
         )
         assert response.status_code == 200
         payload = response.json()
-        assert payload["kind"] == "cloud115_merged_pending"
-        assert payload["play_url"] is None
+        assert payload["kind"] == "cloud115_merged"
         assert payload["segment_count"] == 2
+        assert [s["media_id"] for s in payload["segments"]] == [m1.id, m2.id]
+
+        url = payload["play_url"]
+        assert url.startswith("/media/merged-stream.m3u8?media_ids=")
+        assert _query(response, "media_ids") == f"{m1.id},{m2.id}"
+        assert _query(response, "expires") == str(TEST_FILE_SIGNATURE_EXPIRES)
+        assert _query(response, "signature") == _merged_signature(m1.id)
 
     def test_cloud115_single_returns_first_segment(self, client, account_user):
         movie = _create_movie("ABC-005")

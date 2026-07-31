@@ -12,6 +12,7 @@ from src.common.service_helpers import require_record, validate_page
 from src.model import (
     Image,
     Media,
+    MediaLibrary,
     MediaPoint,
     MediaProgress,
     MediaThumbnail,
@@ -274,8 +275,13 @@ class VideoItemService:
     @staticmethod
     def _media_items(video: VideoItem) -> List[MovieMediaResource]:
         """组装视频详情页的媒体列表，复用影片媒体资源结构（进度 + 时刻）。"""
+        from src.service.playback.media_service import MediaService
+
         media_items = list(
-            Media.select(Media).where(Media.video_item == video).order_by(Media.id)
+            Media.select(Media, MediaLibrary)
+            .join(MediaLibrary, JOIN.LEFT_OUTER)
+            .where(Media.video_item == video)
+            .order_by(Media.id)
         )
         if not media_items:
             return []
@@ -315,6 +321,11 @@ class VideoItemService:
             )
             media.points = points_by_media_id.get(media.id, [])
             media.play_url = build_signed_media_url(media.id)
+            media.library_backend = (
+                "cloud115"
+                if MediaService.is_cloud115_media(media)
+                else ("local" if media.library_id is not None else None)
+            )
             resources.append(MovieMediaResource.from_attributes_model(media))
         return resources
 

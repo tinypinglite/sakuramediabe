@@ -158,7 +158,9 @@ class MediaPlayUrlKind(str, Enum):
     MERGED_LOCAL = "merged_local"
     SINGLE_LOCAL = "single_local"
     SINGLE_CLOUD115 = "single_cloud115"
-    # 115 多资源合并播放尚未实现，返回该占位以便前端提前走通链路。
+    # 115 多资源合并播放：返回后端 HLS 全量代理的合播 m3u8 地址。
+    CLOUD115_MERGED = "cloud115_merged"
+    # 历史占位（未实现 115 合并时返回），保留用于兼容既有调用方/测试。
     CLOUD115_MERGED_PENDING = "cloud115_merged_pending"
     NONE = "none"
 

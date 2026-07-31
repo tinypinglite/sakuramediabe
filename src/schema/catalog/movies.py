@@ -149,6 +149,8 @@ class MovieMediaSubtitleResource(SchemaModel):
 class MovieMediaResource(SchemaModel):
     media_id: int = Field(validation_alias="id")
     library_id: int | None = None
+    # 媒体所属库的 backend（local / cloud115），前端据此决定外部播放器是否走 HLS 代理。
+    library_backend: str | None = None
     play_url: str
     storage_mode: str | None = None
     resolution: str | None = None

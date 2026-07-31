@@ -6,7 +6,7 @@ from typing import Sequence
 import peewee
 from loguru import logger
 from src.api.exception.errors import ApiError
-from src.common import build_signed_media_url, build_signed_merged_media_url
+from src.common import build_signed_media_url, build_signed_merged_media_url, build_signed_cloud115_merged_hls_url
 from src.common.service_helpers import (
     require_record,
     resolve_sort,
@@ -92,8 +92,8 @@ class MediaService:
         """解析影片播放链接：按播放源（本地/115）与播放模式（单个/合并）返回签名地址。
 
         合并顺序按 ``Media.id`` 升序（与详情页媒体列表一致）；本地多分段返回虚拟合并
-        URL（真实规格校验在合并流端点进行，本方法只负责链接解析）；115 多资源合并尚未
-        实现，返回 ``cloud115_merged_pending`` 占位。
+        URL（真实规格校验在合并流端点进行，本方法只负责链接解析）；115 多资源合并返回
+        后端 HLS 全量代理的合播 m3u8 地址。
 
         只选取 ``valid`` 媒体，本地候选额外要求 ``path`` 非空——library 被 SET NULL
         的云端孤儿行 path 恒空，不能当成本地源给一个必然 404 的链接。
@@ -132,8 +132,10 @@ class MediaService:
             return MediaPlayUrlResource(kind=MediaPlayUrlKind.NONE)
 
         if not is_local and mode == MediaPlayUrlMode.MERGED:
+            media_ids = [item.id for item in candidates]
             return MediaPlayUrlResource(
-                kind=MediaPlayUrlKind.CLOUD115_MERGED_PENDING,
+                play_url=build_signed_cloud115_merged_hls_url(media_ids),
+                kind=MediaPlayUrlKind.CLOUD115_MERGED,
                 segment_count=len(candidates),
                 segments=_segments(candidates),
             )
