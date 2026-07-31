@@ -298,6 +298,16 @@ def test_create_app_registers_media_clip_routes():
     assert "/clip-collections/{collection_id}/clips/{clip_id}" in paths
 
 
+def test_create_app_registers_playlist_routes():
+    app = create_app()
+    paths = {getattr(route, "path", None) for route in app.routes}
+
+    assert "/playlists" in paths
+    assert "/playlists/{playlist_id}" in paths
+    assert "/playlists/{playlist_id}/movies" in paths
+    assert "/playlists/{playlist_id}/resolutions" in paths
+
+
 def test_create_app_does_not_register_removed_media_hls_streams_routes():
     app = create_app()
     paths = {getattr(route, "path", None) for route in app.routes}

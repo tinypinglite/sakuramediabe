@@ -6,6 +6,7 @@ from src.api.routers.deps import db_deps, get_current_user
 from src.schema.collections.playlists import (
     PlaylistCreateRequest,
     PlaylistMovieListItemResource,
+    PlaylistResolutionOption,
     PlaylistResource,
     PlaylistUpdateRequest,
 )
@@ -54,9 +55,22 @@ def list_playlist_movies(
     playlist_id: int,
     page: int = 1,
     page_size: int = 20,
+    sort: str | None = Query(default=None),
+    resolution: str | None = Query(default=None),
     current_user=Depends(get_current_user),
 ):
-    return PlaylistService.list_playlist_movies(playlist_id=playlist_id, page=page, page_size=page_size)
+    return PlaylistService.list_playlist_movies(
+        playlist_id=playlist_id,
+        page=page,
+        page_size=page_size,
+        sort=sort,
+        resolution=resolution,
+    )
+
+
+@router.get("/{playlist_id}/resolutions", response_model=List[PlaylistResolutionOption])
+def list_playlist_resolutions(playlist_id: int, current_user=Depends(get_current_user)):
+    return PlaylistService.list_playlist_resolutions(playlist_id)
 
 
 @router.put("/{playlist_id}/movies/{movie_number}", status_code=status.HTTP_204_NO_CONTENT)

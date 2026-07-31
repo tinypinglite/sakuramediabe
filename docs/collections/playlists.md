@@ -114,7 +114,8 @@
 | `GET` | `/playlists/{playlist_id}` | 获取播放列表详情 |
 | `PATCH` | `/playlists/{playlist_id}` | 更新自定义播放列表 |
 | `DELETE` | `/playlists/{playlist_id}` | 删除自定义播放列表 |
-| `GET` | `/playlists/{playlist_id}/movies` | 分页获取播放列表中的影片 |
+| `GET` | `/playlists/{playlist_id}/movies` | 分页获取播放列表中的影片（支持排序与分辨率筛选） |
+| `GET` | `/playlists/{playlist_id}/resolutions` | 聚合播放列表内影片覆盖的分辨率档位（供筛选下拉渲染） |
 | `PUT` | `/playlists/{playlist_id}/movies/{movie_number}` | 将影片加入自定义播放列表 |
 | `DELETE` | `/playlists/{playlist_id}/movies/{movie_number}` | 将影片从自定义播放列表移除 |
 
@@ -248,12 +249,20 @@
 - Query：
   - `page`: 页码，默认 `1`
   - `page_size`: 每页数量，默认 `20`
+  - `sort`: 排序表达式，格式 `field:direction`，`direction` 支持 `asc` / `desc`，可取值：
+    - `heat`: 影片热度
+    - `bitrate`: 影片全部有效媒体中的最高码率（缺省数据按 0 兜底）
+    - `added_at`: 影片最近一次媒体入库时间
+    - `release_date`: 影片发布时间（空值统一垫后）
+  - `resolution`: 分辨率筛选档位，可取值 `8K` / `4K` / `2K` / `1080P` / `720P` / `480P` / `360P`
 - 行为：
   - 返回分页影片摘要列表
   - 每项包含 `playlist_item_updated_at`
-  - `recently_played` 列表固定按 `playlist_item_updated_at desc`
-  - 自定义列表默认也按 `playlist_item_updated_at desc`
-  - `vr` / `4k` 虚拟列表按影片最近一次媒体入库时间倒序（`playlist_item_updated_at desc`）
+  - 不传 `sort` 时的默认排序：
+    - `recently_played` / 自定义列表按 `playlist_item_updated_at desc`（最近触达）
+    - `vr` / `4k` 虚拟列表按影片最近一次媒体入库时间倒序（`playlist_item_updated_at desc`）
+  - `resolution` 筛选为精确档位匹配：按影片最高分辨率媒体归入唯一档位（8K 与 4K 互斥，8K 影片不会命中 `4K`）
+  - 非法 `sort` / `resolution` 值返回 `422 invalid_playlist_filter`
 
 示例响应：
 
@@ -287,6 +296,26 @@
   "page_size": 20,
   "total": 1
 }
+```
+
+### `GET /playlists/{playlist_id}/resolutions`
+
+- 鉴权：需要 Bearer Token
+- Path：
+  - `playlist_id`: 播放列表 ID
+- 行为：
+  - 聚合播放列表内影片覆盖的分辨率档位，按档位从高到低返回，每项附命中影片数
+  - 每部影片按其最高分辨率媒体归入唯一档位（8K / 4K 互斥）
+  - 真实列表按 `PlaylistMovie` 归属统计，`vr` / `4k` 虚拟列表按 `special_tags` 派生，口径与 `movies` 接口的分辨率筛选一致
+
+示例响应：
+
+```json
+[
+  { "resolution": "8K", "count": 3 },
+  { "resolution": "4K", "count": 42 },
+  { "resolution": "1080P", "count": 120 }
+]
 ```
 
 ### `PUT /playlists/{playlist_id}/movies/{movie_number}`
@@ -344,6 +373,7 @@
 - `playlist_reserved_name`: 使用了系统保留名称
 - `playlist_managed_by_system`: 系统播放列表不允许手动修改、删除或维护成员
 - `movie_not_found`: 影片不存在
+- `invalid_playlist_filter`: 列表影片接口的 `sort` / `resolution` 参数非法
 
 ## 设计备注
 

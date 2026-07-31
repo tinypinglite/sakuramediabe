@@ -66,3 +66,9 @@ class PlaylistUpdateRequest(SchemaModel):
 
 class PlaylistMovieListItemResource(MovieListItemResource):
     playlist_item_updated_at: datetime
+
+
+class PlaylistResolutionOption(SchemaModel):
+    # 播放列表内影片覆盖的分辨率档位（归一化标签）及命中影片数，供前端渲染筛选下拉。
+    resolution: str
+    count: int
