@@ -602,11 +602,35 @@ def _extract_audio_dsi(esds: bytes) -> bytes:
 
     esds 的 ES/DecoderConfig 描述符含 avgBitrate/maxBitrate 等随时长而异的字段，
     只有 DecoderSpecificInfo 才是真正决定解码兼容性的配置。
+
+    按 ISO/IEC 14496-1 描述符结构解析：ES_Descriptor(0x03) 跳过 ES_ID+flags 及 flags
+    置位的可选字段（streamDependence/URL/OCR），DecoderConfigDescriptor(0x04) 跳过
+    13 字节固定头（objectType+streamType+bufferSizeDB+maxBitrate+avgBitrate），只在
+    这两类容器里递归子描述符找 tag 0x05；其它描述符内容视为裸数据不递归。这样提取
+    结果与 maxBitrate 等随文件变化的字段无关，避免同规格文件被误判为不一致。
     """
     if len(esds) < 12:
         return b""
-    data = esds[8:]  # 跳过 size+type；内容是 version_flags + ES_Descriptor 链
-    pos = 4
+    data = esds[8:]  # 跳过 box 头(size+type)，内容是 version_flags + 描述符链
+    pos = 4  # 跳过 version_flags
+
+    def header_len(tag: int, start: int, end: int) -> int:
+        """返回容器描述符的固定头字节数（跳过后才是子描述符序列）。"""
+        if tag == 0x03:  # ES_Descriptor：ES_ID(2)+flags(1)+按 flags 置位的可选字段
+            if start + 3 > end:
+                return end - start
+            flags = data[start + 2]
+            skip = 3
+            if flags & 0x80 and start + skip < end:  # streamDependenceFlag
+                skip += 2
+            if flags & 0x40 and start + skip < end:  # URL_Flag：URLlength(1)+URLstring
+                skip += 1 + data[start + skip]
+            if flags & 0x20 and start + skip < end:  # OCRstreamFlag
+                skip += 2
+            return min(skip, end - start)
+        if tag == 0x04:  # DecoderConfigDescriptor：objectType/streamType/bufferSizeDB/maxBitrate/avgBitrate
+            return 13
+        return 0
 
     def walk(p: int, end: int) -> bytes | None:
         while p < end:
@@ -621,11 +645,15 @@ def _extract_audio_dsi(esds: bytes) -> bytes:
                     break
             content_start = q
             content_end = min(q + length, end)
-            if tag == 0x05:
+            if tag == 0x05:  # DecoderSpecificInfo 即目标
                 return data[content_start:content_end]
-            nested = walk(content_start, content_end)
-            if nested is not None:
-                return nested
+            if tag in (0x03, 0x04):
+                nested = walk(
+                    content_start + header_len(tag, content_start, content_end),
+                    content_end,
+                )
+                if nested is not None:
+                    return nested
             p = content_end
         return None
 

@@ -57,6 +57,69 @@ def _hand_built(layout):
     return expected
 
 
+def _build_esds(max_bitrate: int, *, es_flags: int = 0x00, url: bytes = b"", include_dsi: bool = True) -> bytes:
+    """构造合法的 esds box：version_flags + ES_Descriptor(0x03) -> DecoderConfig(0x04) -> DSI(0x05)。
+
+    max_bitrate 可调，用于验证 DSI 提取不受码率字段影响；es_flags 控制 ES_Descriptor
+    可选字段（streamDependence/URL/OCR）是否出现。
+    """
+    dsi = b"\x11\x90" if include_dsi else b""
+    dsi_descr = b"\x05\x80\x80\x80\x02" + dsi if include_dsi else b""
+    dec_config = b"\x40\x15\x00\x00\x00" + struct.pack(">II", max_bitrate, 255999) + dsi_descr
+    dec_descr = b"\x04\x80\x80\x80" + bytes([len(dec_config)]) + dec_config
+    sl_descr = b"\x06\x80\x80\x80\x01\x02"
+    es_head = b"\x00\x02" + bytes([es_flags])
+    if es_flags & 0x80:
+        es_head += b"\x00\x03"  # dependsOn_ES_ID
+    if es_flags & 0x40:
+        es_head += bytes([len(url)]) + url
+    if es_flags & 0x20:
+        es_head += b"\x00\x04"  # OCR_ES_Id
+    es_content = es_head + dec_descr + sl_descr
+    es_descr = b"\x03\x80\x80\x80" + bytes([len(es_content)]) + es_content
+    payload = b"\x00\x00\x00\x00" + es_descr  # version_flags + 描述符链
+    return struct.pack(">I4s", 8 + len(payload), b"esds") + payload
+
+
+# SIVR-272 两个分段的真实 esds（仅 maxBitrate 不同，DSI 均为 AAC-LC 48kHz 立体声 11 90）
+ESDS_SEG_MAX_BITRATE_DIFF = (
+    bytes.fromhex(
+        "0000003365736473000000000380808022000200048080801440150000000003f2be0003e7ff05808080021190068080800102"
+    ),
+    bytes.fromhex(
+        "000000336573647300000000038080802200020004808080144015000000000405c90003e7ff05808080021190068080800102"
+    ),
+)
+
+
+class TestExtractAudioDsi:
+    """esds DecoderSpecificInfo 提取回归：必须按描述符结构解析，不能把 DecoderConfig 的
+    码率字段误当描述符 walk（否则同规格分段会因 maxBitrate 差异被判为不一致）。"""
+
+    def test_real_segments_extract_same_dsi(self):
+        a, b = ESDS_SEG_MAX_BITRATE_DIFF
+        assert m._extract_audio_dsi(a) == b"\x11\x90"
+        assert m._extract_audio_dsi(b) == b"\x11\x90"
+
+    def test_dsi_ignores_bitrate_fields(self):
+        a = _build_esds(258750)
+        b = _build_esds(263625)
+        assert m._extract_audio_dsi(a) == m._extract_audio_dsi(b) == b"\x11\x90"
+
+    def test_dsi_with_es_optional_flags(self):
+        # streamDependence + URL + OCR 全置位，仍能挖到 DSI
+        a = _build_esds(258750, es_flags=0xE0, url=b"x")
+        b = _build_esds(263625, es_flags=0xE0, url=b"x")
+        assert m._extract_audio_dsi(a) == m._extract_audio_dsi(b) == b"\x11\x90"
+
+    def test_missing_dsi_returns_empty(self):
+        assert m._extract_audio_dsi(_build_esds(258750, include_dsi=False)) == b""
+
+    def test_short_esds_returns_empty(self):
+        assert m._extract_audio_dsi(b"") == b""
+        assert m._extract_audio_dsi(b"\x00\x00\x00\x10esds") == b""
+
+
 @pytest.mark.skipif(not _have_ffmpeg(), reason="需要 ffmpeg 生成测试 mp4")
 class TestMergedMp4Build:
     def test_layout_materializes_to_logical_file(self, tmp_path):
