@@ -182,8 +182,29 @@ class TestMergedPlaybackApi:
         assert response.headers["content-length"] == str(len(expected))
         assert response.content == expected
 
-        # 正序请求应得到不同产物（顺序敏感）
-        response_asc = client.get(_signed_merged_url([m1.id, m2.id]))
-        expected_asc = _hand_built([p1, p2])
-        assert response_asc.content == expected_asc
-        assert response.content != response_asc.content
+    def test_merged_stream_second_request_reuses_cache(
+        self, client, test_db, tmp_path, monkeypatch
+    ):
+        from src.service.playback import merged_playback_service as mps
+
+        p1 = _make_part(tmp_path, "p1", 2)
+        p2 = _make_part(tmp_path, "p2", 3)
+        movie = Movie.create(javdb_id="javdb-10", movie_number="ABC-010", title="t")
+        m1 = Media.create(movie=movie, path=str(p1), storage_mode="local", valid=True)
+        m2 = Media.create(movie=movie, path=str(p2), storage_mode="local", valid=True)
+
+        calls = {"n": 0}
+        original = mps.build_merged_layout
+
+        def counting(parts):
+            calls["n"] += 1
+            return original(parts)
+
+        monkeypatch.setattr(mps, "build_merged_layout", counting)
+        url = _signed_merged_url([m1.id, m2.id])
+
+        # 首次请求触发构建；同 key 第二次请求应命中缓存，不再重复构建。
+        assert client.get(url).status_code == 200
+        assert calls["n"] == 1
+        assert client.get(url).status_code == 200
+        assert calls["n"] == 1

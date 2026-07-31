@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -19,12 +20,30 @@ from src.service.playback.merged_mp4 import (
 )
 
 
+class _InFlightBuild:
+    """某个 key 正在进行的合并构建记录。
+
+    并发请求见同一 key 有构建在进行时，等待其完成并复用结果（或复现其错误），
+    避免多个线程同时对同一批大文件重复做高耗时构建而占满 API 线程池。
+    """
+
+    __slots__ = ("event", "layout", "error")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.layout: MergedLayout | None = None
+        self.error: BaseException | None = None
+
+
 class MergedPlaybackService:
     """合并播放布局的构建与进程内缓存。"""
 
     _CACHE_TTL_SECONDS = 300
     # key = ((media_id, size, mtime_ns), ...) -> (built_at, layout)
     _cache: dict[tuple[tuple[int, int, int], ...], tuple[float, MergedLayout]] = {}
+    # 正在构建的 key -> 构建记录；与 _cache 同受 _lock 保护。
+    _inflight: dict[tuple[tuple[int, int, int], ...], _InFlightBuild] = {}
+    _lock = threading.Lock()
 
     @classmethod
     def _cache_key(
@@ -94,21 +113,49 @@ class MergedPlaybackService:
             entries.append((media.id, path))
 
         key = cls._cache_key(entries)
-        cls._cleanup_cache()
-        cached = cls._cache.get(key)
-        if cached is not None and time.time() - cached[0] <= cls._CACHE_TTL_SECONDS:
-            return cached[1]
+        with cls._lock:
+            cls._cleanup_cache()
+            cached = cls._cache.get(key)
+            if cached is not None and time.time() - cached[0] <= cls._CACHE_TTL_SECONDS:
+                return cached[1]
+            inflight = cls._inflight.get(key)
+            if inflight is None:
+                inflight = _InFlightBuild()
+                cls._inflight[key] = inflight
+                owner = True
+            else:
+                owner = False
+
+        if not owner:
+            # 同一批分段的构建已在进行，等待其完成并复用结果（或复现其错误）。
+            inflight.event.wait()
+            if inflight.error is not None:
+                raise inflight.error
+            if inflight.layout is not None:
+                return inflight.layout
+            raise ApiError(422, "merged_mp4_unsupported", "合并播放构建状态异常")
 
         try:
-            parts = [parse_file(str(path)) for _media_id, path in entries]
-            layout = build_merged_layout(parts)
-        except Mp4MergeError as exc:
-            raise ApiError(422, exc.error_code, exc.message) from exc
-        except OSError as exc:
-            raise ApiError(422, "merged_mp4_unsupported", "合并播放读取分段失败") from exc
-
-        cls._cache[key] = (time.time(), layout)
-        return layout
+            try:
+                parts = [parse_file(str(path)) for _media_id, path in entries]
+                layout = build_merged_layout(parts)
+            except Mp4MergeError as exc:
+                raise ApiError(422, exc.error_code, exc.message) from exc
+            except OSError as exc:
+                raise ApiError(422, "merged_mp4_unsupported", "合并播放读取分段失败") from exc
+        except BaseException as exc:
+            inflight.error = exc
+            raise
+        else:
+            inflight.layout = layout
+            with cls._lock:
+                cls._cache[key] = (time.time(), layout)
+            return layout
+        finally:
+            # 先唤醒等待者再摘除 inflight 记录，避免等待者 wait 永不返回。
+            inflight.event.set()
+            with cls._lock:
+                cls._inflight.pop(key, None)
 
     @classmethod
     def clear_cache(cls) -> None:

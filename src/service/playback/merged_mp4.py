@@ -321,64 +321,82 @@ class _Mdhd:
         return bytes(self.raw)
 
 
+def _pack_table(fmt: str, header: bytes, rows: list[tuple[int, ...]]) -> bytes:
+    """把定宽行序列化为 box payload。
+
+    ``rows`` 每行按 ``fmt`` 打包进预分配 bytearray；避免 ``bytes +=`` 在循环里
+    造成 O(n²) 拷贝（10 万级样本表下会把合并播放构建拖到几十秒）。
+    """
+    size = struct.calcsize(fmt)
+    buf = bytearray(len(header) + size * len(rows))
+    buf[:len(header)] = header
+    pos = len(header)
+    for row in rows:
+        struct.pack_into(fmt, buf, pos, *row)
+        pos += size
+    return bytes(buf)
+
+
 def _build_stts(entries: list[tuple[int, int]]) -> bytes:
-    payload = struct.pack(">II", 0, len(entries))
-    for sc, sd in entries:
-        payload += struct.pack(">II", sc, sd)
-    return _box("stts", payload)
+    return _box(
+        "stts",
+        _pack_table(">II", struct.pack(">II", 0, len(entries)), entries),
+    )
 
 
 def _build_stsc(entries: list[tuple[int, int, int]]) -> bytes:
-    payload = struct.pack(">II", 0, len(entries))
-    for fc, spc, sdi in entries:
-        payload += struct.pack(">III", fc, spc, sdi)
-    return _box("stsc", payload)
+    return _box(
+        "stsc",
+        _pack_table(">III", struct.pack(">II", 0, len(entries)), entries),
+    )
 
 
 def _build_stsz(sizes: list[int], fixed: int, count: int) -> bytes:
-    payload = struct.pack(">II", 0, fixed)
-    payload += struct.pack(">I", count)
+    header = struct.pack(">III", 0, fixed, count)
     if fixed == 0:
-        for s in sizes:
-            payload += struct.pack(">I", s)
-    return _box("stsz", payload)
+        return _box("stsz", _pack_table(">I", header, [(s,) for s in sizes]))
+    return _box("stsz", header)
 
 
 def _build_stco(offsets: list[int], co64: bool) -> bytes:
-    payload = struct.pack(">II", 0, len(offsets))
     if co64:
-        for o in offsets:
-            payload += struct.pack(">Q", o)
-        return _box("co64", payload)
+        return _box(
+            "co64",
+            _pack_table(">Q", struct.pack(">II", 0, len(offsets)), [(o,) for o in offsets]),
+        )
     if offsets and max(offsets) > _UINT32_MAX:
         # 调用方应已在两遍法之前把 co64 判定好；走到这里说明判定失效，
         # 宁可显式报错也不能写出偏移被截断的 stco。
         raise Mp4MergeError("合并后 chunk 偏移超出 32 位范围，无法写入 stco")
-    for o in offsets:
-        payload += struct.pack(">I", o)
-    return _box("stco", payload)
+    return _box(
+        "stco",
+        _pack_table(">I", struct.pack(">II", 0, len(offsets)), [(o,) for o in offsets]),
+    )
 
 
 def _build_ctts(entries: list[tuple[int, int]]) -> bytes:
-    payload = struct.pack(">II", 0, len(entries))
-    for c, o in entries:
-        payload += struct.pack(">II", c, o)
-    return _box("ctts", payload)
+    return _box(
+        "ctts",
+        _pack_table(">II", struct.pack(">II", 0, len(entries)), entries),
+    )
 
 
 def _build_stss(samples: list[int]) -> bytes:
-    payload = struct.pack(">II", 0, len(samples))
-    for s in samples:
-        payload += struct.pack(">I", s)
-    return _box("stss", payload)
+    return _box(
+        "stss",
+        _pack_table(">I", struct.pack(">II", 0, len(samples)), [(s,) for s in samples]),
+    )
 
 
 def _build_sbgp(grouping: bytes, entries: list[tuple[int, int]]) -> bytes:
-    payload = struct.pack(">II", 0, len(entries))
-    payload += grouping
-    for c, idx in entries:
-        payload += struct.pack(">II", c, idx)
-    return _box("sbgp", payload)
+    return _box(
+        "sbgp",
+        _pack_table(
+            ">II",
+            struct.pack(">II", 0, len(entries)) + grouping,
+            entries,
+        ),
+    )
 
 
 def _serialize_track(t: TrackInfo) -> bytes:
