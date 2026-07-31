@@ -163,6 +163,7 @@ class MediaRapidUploadExecutor:
                     text=f"已处理 {index}/{len(items)} 个媒体",
                     summary_patch=counts,
                 )
+                cls._sync_batch_counts(batch, counts)
 
     @classmethod
     def _ensure_completion_notification(cls, batch_id: int, task_run_id: int) -> None:

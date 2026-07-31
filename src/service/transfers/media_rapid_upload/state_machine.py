@@ -120,6 +120,31 @@ class MediaRapidUploadStateMachine:
         item.updated_at = utc_now_for_db()
         item.save()
 
+    @staticmethod
+    def _sync_batch_counts(
+        batch: MediaRapidUploadBatch,
+        counts: dict[str, int],
+    ) -> None:
+        """运行中把累计计数持久化到批次行，让查询接口实时返回进度。
+
+        此前计数只在 `_finish_batch` 落库，执行期间 `GET /media/rapid-uploads`
+        返回的 succeeded/failed 恒为 0，前端秒传记录 tab 看不到实时进度。
+        仅写计数与 updated_at，避免与 `_mark_item_*` 并发写同一行其它字段；
+        最终值仍由 `_finish_batch` 从 items 重算兜底，本方法只负责"实时可见"。
+        """
+        batch.succeeded_count = counts["succeeded_count"]
+        batch.failed_count = counts["failed_count"]
+        batch.cleanup_failed_count = counts["cleanup_failed_count"]
+        batch.updated_at = utc_now_for_db()
+        batch.save(
+            only=[
+                MediaRapidUploadBatch.succeeded_count,
+                MediaRapidUploadBatch.failed_count,
+                MediaRapidUploadBatch.cleanup_failed_count,
+                MediaRapidUploadBatch.updated_at,
+            ]
+        )
+
     @classmethod
     def _format_error(cls, exc: BaseException, *, fallback: str = GENERIC_ITEM_ERROR) -> str:
         text = str(exc).strip()
