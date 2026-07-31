@@ -5,6 +5,7 @@
 媒体资源代表影片对应的可播放实体。当前播放域已经落地的能力主要包括：
 
 - 视频流访问
+- 多分段虚拟合并播放（同影片本地分段按序合并成一个逻辑 mp4，可 Range seek，不落盘）
 - 115 官方 HLS 智能播放派发
 - 播放进度上报
 - 媒体书签按媒体查询
@@ -141,6 +142,7 @@
 | `POST` | `/media/{media_id}/points` | 为指定媒体添加书签；重复缩略图幂等返回已有书签 |
 | `DELETE` | `/media/{media_id}/points/{point_id}` | 删除指定媒体下的单个书签 |
 | `GET` | `/media/{media_id}/stream` | 获取媒体播放流 |
+| `GET` | `/media/merged-stream` | 多分段虚拟合并播放流（同影片本地分段按序合并成一个逻辑 mp4） |
 | `PUT` | `/media/{media_id}/progress` | 更新播放进度并维护最近播放 |
 | `GET` | `/media/{media_id}/thumbnails` | 获取媒体缩略图列表 |
 | `DELETE` | `/media/{media_id}` | 硬删除媒体并清理关联播放数据 |
@@ -815,6 +817,66 @@ Authorization: Bearer <token>
 
 ```http
 GET /media/100/stream?expires=1700000900&signature=<signature>
+Range: bytes=0-1023
+```
+
+### Endpoint
+
+`GET /media/merged-stream`
+
+### Purpose
+
+把同一部影片拆成多个本地分段文件时，按显式指定的顺序在**不落盘**的前提下把各分段虚拟合并成一个逻辑 mp4：逻辑文件 = `ftyp + 合并 moov + mdat_box`，mdat payload 按 `media_ids` 传入顺序（去重后）连续拼接，源文件全程不动。播放器把它当一个带完整索引的普通 mp4，任意 `Range` 都能映射回某个源文件的精确字节区间，可自由 seek。
+
+### Auth
+
+不需要 Bearer Token，但必须提供文件签名。签名复用 `media_ids` 中**第一个分段**的媒体签名（与 `GET /media/{media_id}/stream` 同机制），前端直接用第一个分段已有的签名地址参数即可。
+
+### Path Params
+
+无。
+
+### Query Params
+
+- `media_ids`: 逗号分隔的正整数媒体 ID 列表，至少 2 个，顺序即合并顺序
+- `expires`: 签名过期时间戳
+- `signature`: 文件签名
+
+### Request Body
+
+无。
+
+### Success Responses
+
+- `200 OK`: 返回完整合并视频流（无 `Range` 时）
+- `206 Partial Content`: 返回分段视频流（携带 `Range` 时）
+
+响应头与单分段串流一致：`Accept-Ranges: bytes`、`Content-Length`（`Range` 时为本段大小）、`Content-Encoding: identity`、`Content-Range`（仅 `206`）。
+
+### Error Responses
+
+- `403 Forbidden`: 缺少签名、签名错误或签名已过期
+- `404 Not Found`: 部分分段不存在，或分段记录存在但文件缺失
+- `416 Requested Range Not Satisfiable`: `Range` 请求头非法
+- `422 Unprocessable Entity`:
+  - `merged_mp4_need_at_least_two`: 分段少于 2 个
+  - `merged_mp4_cross_movie`: 分段不属于同一部影片
+  - `merged_mp4_mismatched_spec`: 分段视频/音频规格不一致（编码、分辨率、帧率、音频配置不同）
+  - `merged_mp4_unsupported`: 包含云端(115)分段，或分段读取/解析失败
+  - `invalid_media_filter`: `media_ids` 含非正整数
+
+### Behavior
+
+- 后端校验：分段全部存在、全部为本地库（cloud115 分段不支持）、文件都在、且全部归属同一部影片；任一分段不符合即报错，不静默跳过。
+- 合并顺序按 `media_ids` 传入顺序（去重后），不按 `Media.id` 重排，因此不同顺序是不同产物。
+- 合并支持要求「规整输入」：每个分段恰好 1 个视频轨 + 0/1 个音频轨，各分段的编码配置（含 avcC/hvcC）、分辨率、帧率与音频 timescale 完全一致；不满足返回 `422`。
+- 合并布局按「分段 ID + 文件大小 + mtime」做进程内缓存（TTL 300 秒），源文件变化会自动失效重建。
+- 签名只绑定 `media_ids[0]`；由于合并被限制在同一部影片内，实际可读集合不超过该影片各分段本身（用户已各自持有独立签名）。
+
+### Example Request
+
+```http
+GET /media/merged-stream?media_ids=100,101,102&expires=1700000900&signature=<signature>
 Range: bytes=0-1023
 ```
 

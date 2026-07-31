@@ -12,6 +12,7 @@ from src.api.routers._utils import (
 )
 from src.api.routers.deps import db_deps, get_current_user
 from src.common import verify_media_signature
+from src.common.range_streaming import merged_range_requests_response
 from src.model import Media
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
@@ -27,6 +28,7 @@ from src.schema.playback.media import (
     MediaValidityCheckResponse,
 )
 from src.service.playback import MediaService
+from src.service.playback.merged_playback_service import MergedPlaybackService
 
 router = APIRouter(
     prefix="/media",
@@ -148,6 +150,27 @@ async def stream_media_file(
     require_existing_file(absolute_path)
 
     return stream_local_file_response(request, absolute_path, "application/octet-stream")
+
+@router.get("/merged-stream")
+def stream_merged_media_file(
+    request: Request,
+    media_ids: str | None = Query(default=None),
+    expires: int | None = None,
+    signature: str | None = None,
+):
+    """影片多分段合并播放流：把显式指定的本地分段虚拟合并成一个逻辑 mp4。
+
+    签名复用 ``media_ids`` 中第一个分段的媒体签名（与 ``/{media_id}/stream`` 同机制）。
+    后端校验：分段全部存在、全部本地库、文件都在、且全部归属同一部影片。
+    """
+    require_signed_params(expires, signature)
+    ids = parse_csv_positive_ints(media_ids, "media_ids", error_code="invalid_media_filter")
+    if not ids:
+        raise ApiError(422, "merged_mp4_need_at_least_two", "合并播放至少需要 2 个分段")
+
+    verify_media_signature(ids[0], expires, signature)
+    layout = MergedPlaybackService.build_for_media_ids(ids)
+    return merged_range_requests_response(request, layout, "video/mp4")
 
 @router.put("/{media_id}/progress", response_model=MediaProgressResource)
 def update_media_progress(
