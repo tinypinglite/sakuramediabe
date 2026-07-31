@@ -352,13 +352,12 @@ class JoyTagOnnxRuntime:
         return "cpu"
 
     def _resolve_infer_chunk_size(self) -> int | None:
-        # 核显(OpenVINO GPU)静态化 batch=1 后，推理端就必须逐张跑。
-        # ORT CPU 同样逐张：ViT-448 的 attention 中间张量按 batch×seq² 增长，
-        # 上游 inference_batch_size=16 整批喂入会把峰值内存推到 GB 量级并触发 OOM。
+        # OpenVINO(核显与 CPU)、ORT CPU 一律逐张：ViT-448 的 attention 中间张量按
+        # batch×seq² 增长，上游 inference_batch_size=16 整批喂入会把峰值内存推到 GB
+        # 量级并触发 OOM，而这两类设备本就跑不满并行，整批也换不到吞吐。
+        # 核显额外静态化了 batch=1，推理端更是只能逐张。
         # 独显(CUDA)显存充裕且整批有吞吐收益，保持不拆。
-        if self.backend == "openvino" and self.settings.openvino_device_type == "GPU":
-            return 1
-        if self.backend == "cpu":
+        if self.backend in ("openvino", "cpu"):
             return 1
         return None
 
