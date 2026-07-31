@@ -122,6 +122,23 @@ def build_signed_media_url(media_id: int) -> str:
     return f"{MEDIA_STREAM_ROUTE_PREFIX}/{media_id}/stream?expires={expires}&signature={signature}"
 
 
+def build_signed_merged_media_url(media_ids: list[int]) -> str:
+    """多分段虚拟合并播放的签名 URL。
+
+    签名复用 ``media_ids[0]`` 的媒体签名（与 ``/{media_id}/stream`` 同机制），
+    合并被限制在同一部影片内，实际可读集合不超过该影片各分段本身。
+    """
+    if not media_ids:
+        raise ValueError("media_ids must not be empty")
+    expires = build_signature_expires()
+    signature = _build_media_signature(media_ids[0], expires)
+    ids = ",".join(str(i) for i in media_ids)
+    return (
+        f"{MEDIA_STREAM_ROUTE_PREFIX}/merged-stream"
+        f"?media_ids={ids}&expires={expires}&signature={signature}"
+    )
+
+
 def verify_media_signature(media_id: int, expires: int, signature: str) -> None:
     if expires <= _now_timestamp():
         raise ApiError(403, "file_signature_expired", "文件签名已过期")

@@ -142,6 +142,7 @@
 | `POST` | `/media/{media_id}/points` | 为指定媒体添加书签；重复缩略图幂等返回已有书签 |
 | `DELETE` | `/media/{media_id}/points/{point_id}` | 删除指定媒体下的单个书签 |
 | `GET` | `/media/{media_id}/stream` | 获取媒体播放流 |
+| `GET` | `/media/play-url` | 解析影片播放链接（按本地/115 源与单个/合并模式，返回签名相对地址） |
 | `GET` | `/media/merged-stream` | 多分段虚拟合并播放流（同影片本地分段按序合并成一个逻辑 mp4） |
 | `PUT` | `/media/{media_id}/progress` | 更新播放进度并维护最近播放 |
 | `GET` | `/media/{media_id}/thumbnails` | 获取媒体缩略图列表 |
@@ -878,6 +879,73 @@ Range: bytes=0-1023
 ```http
 GET /media/merged-stream?media_ids=100,101,102&expires=1700000900&signature=<signature>
 Range: bytes=0-1023
+```
+
+### Endpoint
+
+`GET /media/play-url`
+
+### Purpose
+
+按播放源（本地 / 115）与播放模式（单个 / 合并）解析一部影片的播放链接，返回签名相对地址与分段明细，供前端直接决定播放器地址，不再依赖影片详情页里手工拼第一个分段。
+
+### Auth
+
+需要 Bearer Token。
+
+### Query Params
+
+- `movie_number`: 影片番号（与 `movie_id` 二选一，同时提供时 `movie_number` 优先）
+- `movie_id`: 影片 ID
+- `source`: `local`（默认）| `cloud115`
+- `mode`: `single`（默认）| `merged`
+
+### Request Body
+
+无。
+
+### Success Responses
+
+- `200 OK`: 返回 `MediaPlayUrlResource`：
+
+```json
+{
+  "play_url": "/media/merged-stream?media_ids=100,101&expires=...&signature=...",
+  "kind": "merged_local",
+  "segment_count": 2,
+  "segments": [
+    {"media_id": 100, "duration_seconds": 3600},
+    {"media_id": 101, "duration_seconds": 3600}
+  ]
+}
+```
+
+- `play_url` 是相对路径的签名播放地址，前端使用 `base_url + play_url`。
+- `kind` 取值：
+  - `merged_local`: 本地多分段合并，`play_url` 指向 `/media/merged-stream`
+  - `single_local` / `single_cloud115`: 单段播放，`play_url` 指向 `/media/{media_id}/stream`
+  - `cloud115_merged_pending`: 115 多资源合并尚未实现，`play_url` 为 `null`（占位，前端据此提前走通链路）
+  - `none`: 该源下没有可播放媒体，`play_url` 为 `null`
+- `segments` 按 `Media.id` 升序返回；**只包含 `valid` 媒体**，本地源额外要求 `path` 非空（library 被 SET NULL 的云端孤儿行 path 恒空，直接落 `none` 而不是给出必然 404 的链接）。
+- 本地 `merged` 模式但可用分段少于 2 个时自动回退为 `single_local`。
+
+### Error Responses
+
+- `401 Unauthorized`: 未携带 Bearer Token
+- `404 Not Found`: `movie_not_found`（影片不存在）
+- `422 Unprocessable Entity`: `invalid_movie_filter`（`movie_number` 与 `movie_id` 均未提供）
+
+### Behavior
+
+- `merged_local` 是乐观结果：合并的**真实规格校验发生在 `/media/merged-stream` 端点**（分段编码/分辨率/帧率不一致返回 `merged_mp4_mismatched_spec`）。前端拿到合并 URL 后应实现「合并失败自动回退到单段播放」，不能假设合并一定可播。
+- 合并签名只绑定 `media_ids[0]`，与 `/media/merged-stream` 的验签机制一致。
+- 若前端的用法是「先问 single 再决定是否切合并」：single 模式的 `segments` 只回第一个分段，`segment_count` 恒为 1，需要判断是否有更多可合并分段时应直接请求 `mode=merged` 或在详情页看 `media_items`。
+
+### Example Request
+
+```http
+GET /media/play-url?movie_number=ABC-123&source=local&mode=merged
+Authorization: Bearer <token>
 ```
 
 ### Endpoint

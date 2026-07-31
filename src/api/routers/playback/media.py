@@ -18,6 +18,9 @@ from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
     InvalidMediaResource,
     MediaListItemResource,
+    MediaPlayUrlMode,
+    MediaPlayUrlResource,
+    MediaPlayUrlSource,
     MediaPointCreateRequest,
     MediaPointKind,
     MediaPointResource,
@@ -56,6 +59,26 @@ def list_media(
         sort=sort,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.get("/play-url", response_model=MediaPlayUrlResource)
+def resolve_media_play_url(
+    movie_number: str | None = Query(default=None),
+    movie_id: int | None = Query(default=None),
+    source: MediaPlayUrlSource = Query(default=MediaPlayUrlSource.LOCAL),
+    mode: MediaPlayUrlMode = Query(default=MediaPlayUrlMode.SINGLE),
+    current_user=Depends(get_current_user),
+):
+    """影片播放链接解析：按播放源（本地/115）与播放模式（单个/合并）返回签名地址。
+
+    本地多分段返回虚拟合并 URL；115 多资源合并暂为占位（``cloud115_merged_pending``）。
+    """
+    return MediaService.resolve_movie_play_url(
+        movie_number=movie_number,
+        movie_id=movie_id,
+        source=source,
+        mode=mode,
     )
 
 

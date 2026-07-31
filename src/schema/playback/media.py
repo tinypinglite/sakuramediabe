@@ -139,3 +139,38 @@ class MediaValidityCheckResponse(SchemaModel):
     invalidated: bool
     revived: bool
     checked_at: datetime
+
+
+class MediaPlayUrlSource(str, Enum):
+    # 播放源类型：本地库 / 115 网盘。
+    LOCAL = "local"
+    CLOUD115 = "cloud115"
+
+
+class MediaPlayUrlMode(str, Enum):
+    # 播放模式：单个媒体播放 / 多分段合并播放。
+    SINGLE = "single"
+    MERGED = "merged"
+
+
+class MediaPlayUrlKind(str, Enum):
+    # 解析结果的播放形态，前端据此区分是否可播及占位情况。
+    MERGED_LOCAL = "merged_local"
+    SINGLE_LOCAL = "single_local"
+    SINGLE_CLOUD115 = "single_cloud115"
+    # 115 多资源合并播放尚未实现，返回该占位以便前端提前走通链路。
+    CLOUD115_MERGED_PENDING = "cloud115_merged_pending"
+    NONE = "none"
+
+
+class MediaPlayUrlSegmentResource(SchemaModel):
+    media_id: int
+    duration_seconds: int = 0
+
+
+class MediaPlayUrlResource(SchemaModel):
+    # 相对路径的签名播放地址（合并/单个）；占位或无媒体时为 null。
+    play_url: str | None = None
+    kind: MediaPlayUrlKind
+    segment_count: int = 0
+    segments: list[MediaPlayUrlSegmentResource] = Field(default_factory=list)

@@ -6,6 +6,7 @@ from typing import Sequence
 import peewee
 from loguru import logger
 from src.api.exception.errors import ApiError
+from src.common import build_signed_media_url, build_signed_merged_media_url
 from src.common.service_helpers import (
     require_record,
     resolve_sort,
@@ -31,6 +32,11 @@ from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
     InvalidMediaResource,
     MediaListItemResource,
+    MediaPlayUrlKind,
+    MediaPlayUrlMode,
+    MediaPlayUrlResource,
+    MediaPlayUrlSegmentResource,
+    MediaPlayUrlSource,
     MediaRapidUploadFilterStatus,
     MediaValidityCheckResponse,
     MediaPointCreateRequest,
@@ -75,6 +81,83 @@ class MediaService:
 
         library = media.library
         return library is not None and library.backend == MediaLibraryBackend.CLOUD115.value
+
+    @staticmethod
+    def resolve_movie_play_url(
+        movie_number: str | None,
+        movie_id: int | None,
+        source: MediaPlayUrlSource,
+        mode: MediaPlayUrlMode,
+    ) -> MediaPlayUrlResource:
+        """解析影片播放链接：按播放源（本地/115）与播放模式（单个/合并）返回签名地址。
+
+        合并顺序按 ``Media.id`` 升序（与详情页媒体列表一致）；本地多分段返回虚拟合并
+        URL（真实规格校验在合并流端点进行，本方法只负责链接解析）；115 多资源合并尚未
+        实现，返回 ``cloud115_merged_pending`` 占位。
+
+        只选取 ``valid`` 媒体，本地候选额外要求 ``path`` 非空——library 被 SET NULL
+        的云端孤儿行 path 恒空，不能当成本地源给一个必然 404 的链接。
+        """
+        if movie_number:
+            movie = Movie.get_or_none(Movie.movie_number == movie_number)
+        elif movie_id is not None:
+            movie = Movie.get_or_none(Movie.id == movie_id)
+        else:
+            raise ApiError(422, "invalid_movie_filter", "需要 movie_number 或 movie_id")
+        if movie is None:
+            raise ApiError(404, "movie_not_found", "影片不存在")
+
+        # 联表取 library，避免 is_cloud115_media 逐条懒加载造成 N+1。
+        medias = list(
+            Media.select(Media, MediaLibrary)
+            .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
+            .where(Media.movie == movie.movie_number, Media.valid == True)
+            .order_by(Media.id)
+        )
+        local = [m for m in medias if not MediaService.is_cloud115_media(m) and m.path]
+        cloud115 = [m for m in medias if MediaService.is_cloud115_media(m)]
+
+        def _segments(items: list[Media]) -> list[MediaPlayUrlSegmentResource]:
+            return [
+                MediaPlayUrlSegmentResource(
+                    media_id=item.id,
+                    duration_seconds=item.duration_seconds or 0,
+                )
+                for item in items
+            ]
+
+        is_local = source == MediaPlayUrlSource.LOCAL
+        candidates = local if is_local else cloud115
+        if not candidates:
+            return MediaPlayUrlResource(kind=MediaPlayUrlKind.NONE)
+
+        if not is_local and mode == MediaPlayUrlMode.MERGED:
+            return MediaPlayUrlResource(
+                kind=MediaPlayUrlKind.CLOUD115_MERGED_PENDING,
+                segment_count=len(candidates),
+                segments=_segments(candidates),
+            )
+
+        if mode == MediaPlayUrlMode.MERGED and len(candidates) >= 2:
+            media_ids = [item.id for item in candidates]
+            return MediaPlayUrlResource(
+                play_url=build_signed_merged_media_url(media_ids),
+                kind=MediaPlayUrlKind.MERGED_LOCAL,
+                segment_count=len(candidates),
+                segments=_segments(candidates),
+            )
+
+        first = candidates[0]
+        return MediaPlayUrlResource(
+            play_url=build_signed_media_url(first.id),
+            kind=(
+                MediaPlayUrlKind.SINGLE_LOCAL
+                if is_local
+                else MediaPlayUrlKind.SINGLE_CLOUD115
+            ),
+            segment_count=1,
+            segments=_segments(candidates[:1]),
+        )
 
     # 115 直链进程内缓存：键 (media_id, signature, user_agent)
     # signature 由 /stream 签名 URL 提供，变了说明前端换了会话；UA 变要重取因为 115
