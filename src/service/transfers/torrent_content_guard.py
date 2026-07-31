@@ -1,14 +1,15 @@
 """种子内容闸门：提交下载前先看清种子里到底有没有能导入的视频。
 
-判据完全建立在导入侧既有的两条约束上——受支持的视频后缀（``SUPPORTED_VIDEO_EXTENSIONS``）
+判据建立在导入侧既有的约束上——受支持的视频后缀（``SUPPORTED_VIDEO_EXTENSIONS``）
 与最小视频体积（``allowed_min_video_file_size``）——因此"选种阶段拒绝的"恒等于"导入阶段会
 丢弃的"，两边不会漂移；将来支持新容器格式或调整体积阈值，闸门自动跟随，不需要在这里维护
-任何格式关键词表。
+任何格式关键词表。合集判定额外复用导入侧的番号解析函数（见 ``count_distinct_movie_numbers``）。
 
 拦住的是两类真实存在、且靠标题和体积都判不出来的资源：
 - 蓝光/DVD 原盘：正片是单个 ``.iso``，合格视频数为 0。实测原盘与压制版标题可以逐字相同，
   体积也和 4K 压制重叠（20G 的 mp4 是正片，28G 的 iso 是原盘），只有文件列表能分辨。
-- 演员合集包：几十上百部影片塞进一个种子，导入时会把无关影片全灌进同一个番号目录。
+- 演员合集包：几十上百部影片塞进一个种子，文件名能解析出多个不同番号，靠番号数识别；
+  单部影片的多分卷（VR / FC2 的 A、B、C）解析出的是同一个番号，不受影响。
 """
 
 from __future__ import annotations
@@ -22,10 +23,7 @@ from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.config.config import settings
-
-# 单个种子允许包含的合格视频数上限。多分部资源（VR / FC2 的 A、B、C 分卷）实测不超过 4 个，
-# 超过这个量的基本是演员合集包——它们的最大文件同样是正常 mp4，只能靠数量识别。
-MAX_QUALIFIED_VIDEO_FILES = 6
+from src.service.transfers.media_source_scanner import parse_movie_number_from_scan_path
 
 # 内容确定不合格：换一个候选就能解决，调用方应据此重选。
 ERROR_CODE_CONTENT_REJECTED = "download_candidate_content_rejected"
@@ -76,6 +74,33 @@ def count_qualified_videos(files: Sequence[Tuple[str, int]]) -> int:
         for file_path, file_size in files
         if _suffix(file_path) in SUPPORTED_VIDEO_EXTENSIONS and file_size >= minimum_size
     )
+
+
+def count_distinct_movie_numbers(files: Sequence[Tuple[str, int]]) -> int:
+    """统计合格视频解析出的**不同番号**数，作为合集判定依据。
+
+    与导入侧扫描共用 ``parse_movie_number_from_scan_path``（只看父目录 + 文件名最后两段），
+    并对种子内相对路径垫一个虚拟根段，使解析口径与落盘后的绝对路径完全对齐：
+    - 多文件种子（含无根目录、番号只在目录名的 2 段路径）解析结论与导入侧逐文件一致；
+    - 单文件种子文件名解析不出番号时这里判 0（放行），导入侧却能靠父目录番号兜底成功，放行是安全的。
+
+    去重直接按解析输出原串（解析结果已 upper）比较，**不做** ``normalize_movie_number`` 折叠：
+    一本道 ``072625_001`` 与加勒比 ``072625-001`` 是同字符串形态的两部不同影片，折叠会把它们误并成一部。
+    """
+    minimum_size = settings.media.allowed_min_video_file_size
+    distinct_numbers: set[str] = set()
+    for file_path, file_size in files:
+        if _suffix(file_path) not in SUPPORTED_VIDEO_EXTENSIONS or file_size < minimum_size:
+            continue
+        # 给种子内相对路径垫一个虚拟根段，与落盘后的绝对路径结构对齐：导入侧对
+        # <save_path>/<种子内路径> 解析时路径段数恒 >= 3，走父目录 + 文件名分支；不垫层时
+        # 无根目录的 2 段路径（如 STARS-001/part.mkv）会退化成只看文件名，番号只在目录名时
+        # 闸门漏拦截合集包。垫一层不影响单文件种子：仍只看文件名，解析不出则 0 番号放行，
+        # 导入侧靠番号父目录兜底，放行是安全的。
+        movie_number = parse_movie_number_from_scan_path(f"root/{file_path}")
+        if movie_number:
+            distinct_numbers.add(movie_number)
+    return len(distinct_numbers)
 
 
 def fetch_torrent_files(
@@ -157,6 +182,7 @@ def assert_candidate_content_importable(
 
     files = fetch_torrent_files(normalized_torrent_url, http_client=http_client)
     qualified_count = count_qualified_videos(files)
+    distinct_numbers = count_distinct_movie_numbers(files)
 
     if qualified_count == 0:
         logger.info(
@@ -176,28 +202,38 @@ def assert_candidate_content_importable(
             },
         )
 
-    if qualified_count > MAX_QUALIFIED_VIDEO_FILES:
+    if distinct_numbers > 1:
         logger.info(
-            "Download candidate rejected: too many videos title={} qualified={} limit={}",
+            "Download candidate rejected: too many distinct movie numbers title={} qualified={} distinct={} total_files={}",
             title,
             qualified_count,
-            MAX_QUALIFIED_VIDEO_FILES,
+            distinct_numbers,
+            len(files),
         )
         raise ApiError(
             422,
             ERROR_CODE_CONTENT_REJECTED,
-            "该资源包含过多影片，疑似合集包",
+            "该资源包含多部影片，疑似合集包",
             {
                 "title": title,
                 "total_files": len(files),
                 "qualified_videos": qualified_count,
-                "limit": MAX_QUALIFIED_VIDEO_FILES,
+                "distinct_movie_numbers": distinct_numbers,
             },
         )
 
-    logger.info(
-        "Download candidate content accepted title={} qualified={} total_files={}",
-        title,
-        qualified_count,
-        len(files),
-    )
+    if distinct_numbers == 0:
+        logger.warning(
+            "Download candidate has no parseable movie number title={} qualified={} total_files={} "
+            "import may fail after download",
+            title,
+            qualified_count,
+            len(files),
+        )
+    else:
+        logger.info(
+            "Download candidate content accepted title={} qualified={} total_files={}",
+            title,
+            qualified_count,
+            len(files),
+        )
