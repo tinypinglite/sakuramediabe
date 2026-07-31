@@ -3,8 +3,8 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Tuple
 
+import bcrypt
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import parse_external_datetime, to_db_utc_naive, utc_now_for_db
@@ -13,7 +13,6 @@ from src.model import User, UserRefreshToken
 from src.model.enums import RefreshTokenStatus
 from src.schema.system.auth import AuthUserSummary, TokenResource
 
-PASSWORD_CONTEXT = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 class AuthService:
     @staticmethod
@@ -24,7 +23,9 @@ class AuthService:
         user_agent: str | None = None,
     ) -> TokenResource:
         user = User.get_or_none(User.username == username)
-        if user is None or not PASSWORD_CONTEXT.verify(password, user.password_hash):
+        if user is None or not bcrypt.checkpw(
+            password.encode("utf-8"), user.password_hash.encode("utf-8")
+        ):
             raise ApiError(401, "invalid_credentials", "Username or password is incorrect")
 
         access_expires_at = AuthService._utcnow() + timedelta(

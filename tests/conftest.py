@@ -8,9 +8,9 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote, urlsplit, urlunsplit
 
+import bcrypt
 import pytest
 from fastapi.testclient import TestClient
-from passlib.context import CryptContext
 
 JOYTAG_INFER_APP_PATH = Path(__file__).resolve().parents[1] / "docker/joytag-infer/app"
 if JOYTAG_INFER_APP_PATH.exists():
@@ -71,7 +71,6 @@ from src.model import (
 )
 from src.model.base import create_database, database_proxy, init_database
 
-PASSWORD_CONTEXT = CryptContext(schemes=["bcrypt"], deprecated="auto")
 TEST_FILE_SIGNATURE_SECRET = "test-file-secret"
 TEST_FILE_SIGNATURE_NOW = 1700000000
 # 与 build_signature_expires() 保持同一套窗口对齐算法，避免生产改窗口后测试固定值漂移。
@@ -441,7 +440,7 @@ def client(app):
 def account_user():
     return User.create(
         username="account",
-        password_hash=PASSWORD_CONTEXT.hash("password123"),
+        password_hash=bcrypt.hashpw(b"password123", bcrypt.gensalt()).decode("utf-8"),
     )
 
 
@@ -449,5 +448,5 @@ def account_user():
 def normal_user():
     return User.create(
         username="alice",
-        password_hash=PASSWORD_CONTEXT.hash("password123"),
+        password_hash=bcrypt.hashpw(b"password123", bcrypt.gensalt()).decode("utf-8"),
     )

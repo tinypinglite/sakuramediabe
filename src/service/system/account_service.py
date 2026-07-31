@@ -1,10 +1,8 @@
-from passlib.context import CryptContext
+import bcrypt
 
 from src.api.exception.errors import ApiError
 from src.model import User, UserRefreshToken
 from src.schema.system.account import AccountResource, AccountUpdateRequest
-
-PASSWORD_CONTEXT = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class AccountService:
@@ -27,9 +25,13 @@ class AccountService:
 
     @staticmethod
     def change_password(user: User, current_password: str, new_password: str) -> None:
-        if not PASSWORD_CONTEXT.verify(current_password, user.password_hash):
+        if not bcrypt.checkpw(
+            current_password.encode("utf-8"), user.password_hash.encode("utf-8")
+        ):
             raise ApiError(401, "invalid_credentials", "Current password is incorrect")
 
-        user.password_hash = PASSWORD_CONTEXT.hash(new_password)
+        user.password_hash = bcrypt.hashpw(
+            new_password.encode("utf-8"), bcrypt.gensalt()
+        ).decode("utf-8")
         user.save()
         UserRefreshToken.delete().execute()

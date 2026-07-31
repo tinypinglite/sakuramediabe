@@ -590,7 +590,7 @@ def reset_account(username: str, password: str):
     忘记密码时使用；命令直接覆盖运行时账号，不校验旧密码。所有 refresh token
     一并清空，已登录客户端会立即失效需重新登录。
     """
-    from passlib.context import CryptContext
+    import bcrypt
 
     from src.model import User, UserRefreshToken
     from src.model.base import get_database
@@ -604,8 +604,9 @@ def reset_account(username: str, password: str):
     logger.info("CLI reset-account start username={}", normalized_username)
     _ensure_database_ready()
 
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    password_hash = pwd_context.hash(password)
+    password_hash = bcrypt.hashpw(
+        password.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
 
     # 事务内原子完成：先清空旧账号与所有 refresh token，再落新账号。
     # 中途失败整体回滚，避免出现"旧账号删了新账号没建"导致完全无法登录。

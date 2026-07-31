@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 # -*- encoding: utf-8 -*-
 
+import bcrypt
+
 from loguru import logger
-from passlib.context import CryptContext
 
 from src.config import settings
 from src.model import (
@@ -117,8 +118,11 @@ def create_tables():
 
 
 def init_user() -> bool:
-    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-    hash_password = pwd_context.hash(settings.auth.password)
+    # 直接用 bcrypt 库生成口令哈希（passlib 已移除；bcrypt 默认 rounds=12 与
+    # 既有 passlib 生成的 $2b$ 哈希完全兼容，存量密码可继续校验）。
+    hash_password = bcrypt.hashpw(
+        settings.auth.password.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
     username = settings.auth.username
     if User.select().count():
         logger.info("single account already exists, skip init user")
