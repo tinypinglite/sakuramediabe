@@ -1,4 +1,3 @@
-from typing import List
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.encoders import jsonable_encoder
@@ -37,7 +36,7 @@ router = APIRouter(
 )
 
 
-@router.get("/download-clients", response_model=List[DownloadClientResource])
+@router.get("/download-clients", response_model=list[DownloadClientResource])
 def list_download_clients(current_user=Depends(get_current_user)):
     return DownloadClientService.list_clients()
 
@@ -100,7 +99,7 @@ def test_download_client_storage(client_id: int, current_user=Depends(get_curren
     return DownloadClientService.test_storage(client_id)
 
 
-@router.get("/download-candidates", response_model=List[DownloadCandidateResource])
+@router.get("/download-candidates", response_model=list[DownloadCandidateResource])
 def list_download_candidates(
     query: DownloadCandidatesQuery = Depends(),
     current_user=Depends(get_current_user),

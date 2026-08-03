@@ -1,8 +1,8 @@
 from .downloads import (
     DownloadClientCreateRequest,
     DownloadClientResource,
-    DownloadClientUpdateRequest,
     DownloadClientTransferResource,
+    DownloadClientUpdateRequest,
     DownloadTaskActionResponse,
     DownloadTaskProgressResource,
     DownloadTaskResource,
@@ -29,15 +29,15 @@ from .rapid_upload import (
 )
 
 __all__ = [
+    "DeleteFailedFileRequest",
     "DownloadClientCreateRequest",
     "DownloadClientResource",
-    "DownloadClientUpdateRequest",
     "DownloadClientTransferResource",
+    "DownloadClientUpdateRequest",
     "DownloadTaskActionResponse",
     "DownloadTaskProgressResource",
     "DownloadTaskResource",
     "DownloadTasksQuery",
-    "DeleteFailedFileRequest",
     "FailedFileResource",
     "FilesystemEntryResource",
     "FilesystemListResponse",
@@ -45,11 +45,11 @@ __all__ = [
     "ImportJobListItemResource",
     "ImportJobResource",
     "ImportJobTriggerResponse",
-    "RenameFailedFileRequest",
-    "RetryFailedFilesRequest",
     "MediaRapidUploadBatchListItemResource",
     "MediaRapidUploadBatchResource",
     "MediaRapidUploadCreateRequest",
     "MediaRapidUploadItemResource",
     "MediaRapidUploadTriggerResponse",
+    "RenameFailedFileRequest",
+    "RetryFailedFilesRequest",
 ]

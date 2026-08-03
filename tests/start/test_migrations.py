@@ -6,7 +6,13 @@ import pytest
 from click.testing import CliRunner
 from peewee import IntegrityError
 
-from src.model import BackgroundTaskRun, Image, MediaLibrary, SchemaMigration, VideoImportJob
+from src.model import (
+    BackgroundTaskRun,
+    Image,
+    MediaLibrary,
+    SchemaMigration,
+    VideoImportJob,
+)
 from src.start.commands import main
 from src.start.migrations.runner import (
     MigrationExecution,
@@ -246,7 +252,7 @@ def test_run_pending_migrations_extracts_movie_series_from_supported_legacy_sche
     _insert_legacy_movie(clean_db, "ABP-003", "javdb-003", "   ")
     _insert_legacy_movie(clean_db, "ABP-004", "javdb-004", None)
 
-    summary = run_pending_migrations(clean_db)
+    run_pending_migrations(clean_db)
 
     movie_columns = {column.name for column in clean_db.get_columns("movie")}
     movie_indexes = {index.name for index in clean_db.get_indexes("movie")}
@@ -289,7 +295,7 @@ def test_run_pending_migrations_extracts_movie_series_from_supported_legacy_sche
 def test_run_pending_migrations_is_idempotent(clean_db):
     _create_movie_table_missing_title_zh(clean_db)
 
-    first_summary = run_pending_migrations(clean_db)
+    run_pending_migrations(clean_db)
     second_summary = run_pending_migrations(clean_db)
 
     first_migration_names = _schema_migration_names(clean_db)

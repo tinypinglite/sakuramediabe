@@ -1,6 +1,6 @@
-from enum import Enum
 from datetime import date, datetime
-from typing import Any, List
+from enum import Enum
+from typing import Any
 
 from pydantic import Field, field_validator
 
@@ -160,20 +160,20 @@ class MovieMediaResource(SchemaModel):
     special_tags: str = "普通"
     valid: bool = True
     progress: MovieMediaProgressResource | None = None
-    points: List[MovieMediaPointResource] = Field(default_factory=list)
+    points: list[MovieMediaPointResource] = Field(default_factory=list)
 
 
 class MovieDetailResource(MovieListItemResource):
-    actors: List[MovieActorResource]
-    tags: List[TagResource]
+    actors: list[MovieActorResource]
+    tags: list[TagResource]
     summary: str
     desc: str = ""
     desc_zh: str = ""
     maker_name: str | None = None
     director_name: str | None = None
-    plot_images: List[ImageResource] = Field(default_factory=list)
-    media_items: List[MovieMediaResource] = Field(default_factory=list)
-    playlists: List[PlaylistSummaryResource] = Field(default_factory=list)
+    plot_images: list[ImageResource] = Field(default_factory=list)
+    media_items: list[MovieMediaResource] = Field(default_factory=list)
+    playlists: list[PlaylistSummaryResource] = Field(default_factory=list)
 
 
 class MovieNumberParseRequest(SchemaModel):
@@ -223,9 +223,9 @@ class MovieSeriesJavdbImportStatsResource(SchemaModel):
 
 class MovieSeriesJavdbImportCompletedResource(SchemaModel):
     success: bool
-    movies: List[MovieListItemResource] = Field(default_factory=list)
-    skipped_items: List[dict[str, Any]] = Field(default_factory=list)
-    failed_items: List[dict[str, Any]] = Field(default_factory=list)
+    movies: list[MovieListItemResource] = Field(default_factory=list)
+    skipped_items: list[dict[str, Any]] = Field(default_factory=list)
+    failed_items: list[dict[str, Any]] = Field(default_factory=list)
     stats: MovieSeriesJavdbImportStatsResource | None = None
     reason: str | None = None
 

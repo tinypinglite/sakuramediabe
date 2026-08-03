@@ -4,7 +4,6 @@ from playhouse.migrate import migrate as run_migration
 
 from src.start.migrations import SkipMigration
 
-
 name = "20260609_01_drop_notification_archived_at"
 
 

@@ -14,8 +14,8 @@ httpx.AsyncClient 绑定事件循环，API 进程与 APS 线程（各自 asyncio
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
 
 from loguru import logger
 
@@ -23,9 +23,9 @@ from src.api.exception.errors import ApiError
 from src.config.config import settings
 from src.lib.cloud115 import (
     Cloud115AuthError,
-    Cloud115DuplicateNameError,
     Cloud115Client,
     Cloud115CookieStatus,
+    Cloud115DuplicateNameError,
     Cloud115Error,
     Cloud115NotFoundError,
     Cloud115RateLimitedError,

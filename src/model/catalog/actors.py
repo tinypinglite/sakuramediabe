@@ -1,7 +1,7 @@
 import peewee
 
-from src.model.catalog.images import Image
 from src.model.base import BaseModel, CaseSensitiveCharField
+from src.model.catalog.images import Image
 from src.model.mixins import TimestampedMixin
 
 

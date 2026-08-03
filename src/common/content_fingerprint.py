@@ -6,7 +6,6 @@
 
 import hashlib
 from pathlib import Path
-from typing import List, Tuple
 
 CONTENT_FINGERPRINT_VERSION = "fingerprint-v1"
 FULL_HASH_THRESHOLD_BYTES = 100 * 1024 * 1024
@@ -15,9 +14,9 @@ INTERIOR_SAMPLE_COUNT = 6
 HASH_READ_CHUNK_BYTES = 1024 * 1024
 
 
-def _merge_ranges(ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """合并重叠采样区间，避免重复读取同一段文件。"""
-    merged: List[Tuple[int, int]] = []
+    merged: list[tuple[int, int]] = []
     for start, end in sorted(ranges):
         if not merged or start > merged[-1][1]:
             merged.append((start, end))
@@ -27,9 +26,9 @@ def _merge_ranges(ranges: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
     return merged
 
 
-def _sample_ranges(file_size: int) -> List[Tuple[int, int]]:
+def _sample_ranges(file_size: int) -> list[tuple[int, int]]:
     """为大文件生成首尾加中间若干窗口的抽样区间。"""
-    ranges: List[Tuple[int, int]] = [
+    ranges: list[tuple[int, int]] = [
         (0, min(file_size, SAMPLE_WINDOW_BYTES)),
         (max(0, file_size - SAMPLE_WINDOW_BYTES), file_size),
     ]
@@ -63,9 +62,9 @@ def compute_content_fingerprint(file_path: Path, *, discriminator: str = "") -> 
     resolved_path = file_path.expanduser().resolve()
     file_size = resolved_path.stat().st_size
     hasher = hashlib.sha256()
-    hasher.update(f"{CONTENT_FINGERPRINT_VERSION}\0".encode("utf-8"))
-    hasher.update(f"{file_size}\0".encode("utf-8"))
-    hasher.update(f"{discriminator}\0".encode("utf-8"))
+    hasher.update(f"{CONTENT_FINGERPRINT_VERSION}\0".encode())
+    hasher.update(f"{file_size}\0".encode())
+    hasher.update(f"{discriminator}\0".encode())
 
     if file_size <= FULL_HASH_THRESHOLD_BYTES:
         _update_hash_with_range(hasher, resolved_path, 0, file_size)

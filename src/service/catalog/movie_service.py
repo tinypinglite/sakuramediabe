@@ -5,12 +5,17 @@
 翻译/互动/热度等异步任务见 ``movie_task_service``。
 """
 
+from collections.abc import Sequence
 from datetime import datetime
-from typing import Dict, List, Optional, Sequence
 
 from peewee import JOIN, Ordering, fn
 
 from src.api.exception.errors import ApiError
+from src.common import (
+    build_signed_media_url,
+    parse_movie_number_from_text,
+)
+from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     find_movie_by_number,
     media_special_tag_match_expression,
@@ -18,12 +23,8 @@ from src.common.service_helpers import (
     require_record,
     with_movie_card_relations,
 )
-from src.common import (
-    build_signed_media_url,
-    parse_movie_number_from_text,
-)
-from src.common.runtime_time import utc_now_for_db
 from src.metadata._providers.javdb import JavdbProvider
+from src.metadata._providers.models import JavdbMovieReviewResource
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import (
     Actor,
@@ -47,24 +48,24 @@ from src.schema.catalog.movies import (
     MovieCollectionMarkType,
     MovieCollectionStatusResource,
     MovieCollectionType,
-    MovieMediaPointResource,
-    MovieMediaProgressResource,
-    MovieMediaResource,
     MovieDetailResource,
     MovieListItemResource,
     MovieListStatus,
-    MovieNumberSource,
-    MovieSpecialTagFilter,
-    TagMatchMode,
+    MovieMediaPointResource,
+    MovieMediaProgressResource,
+    MovieMediaResource,
     MovieNumberParseResponse,
+    MovieNumberSource,
     MovieReviewSort,
+    MovieSpecialTagFilter,
     MovieSubscriptionBatchResponse,
     MovieSubscriptionSkippedItem,
+    TagMatchMode,
     TagResource,
 )
 from src.schema.common.pagination import PageResponse
-from src.metadata._providers.models import JavdbMovieReviewResource
 from src.service.collections import PlaylistService
+
 # 从子模块而非 src.service.transfers 包导入，理由见 media_import_service.py 顶部注释。
 from src.service.transfers.subscribed_movie_search_state_service import (
     SubscribedMovieSearchStateService,
@@ -109,7 +110,7 @@ class MovieService:
     @classmethod
     def _filtered_movies(
         cls,
-        actor_id: Optional[int] = None,
+        actor_id: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
         year: int | None = None,
@@ -183,7 +184,7 @@ class MovieService:
         return Media.select(fn.MAX(Media.created_at)).where(Media.movie == Movie.movie_number)
 
     @classmethod
-    def _build_movie_list_sort(cls, sort: Optional[str], status: MovieListStatus = MovieListStatus.ALL) -> Sequence:
+    def _build_movie_list_sort(cls, sort: str | None, status: MovieListStatus = MovieListStatus.ALL) -> Sequence:
         """解析 ``field:direction`` 排序表达式，并补上稳定的次级排序。"""
         if sort is None:
             return [Movie.movie_number.asc()]
@@ -225,14 +226,14 @@ class MovieService:
     @classmethod
     def movie_list_query(
         cls,
-        actor_id: Optional[int] = None,
+        actor_id: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
         year: int | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         special_tag: MovieSpecialTagFilter | None = None,
-        sort: Optional[str] = None,
+        sort: str | None = None,
         series_id: int | None = None,
         director_name: str | None = None,
         maker_name: str | None = None,
@@ -331,7 +332,7 @@ class MovieService:
         return movie, movie.movie_number
 
     @staticmethod
-    def _list_movie_media(movie: Movie) -> List[Media]:
+    def _list_movie_media(movie: Movie) -> list[Media]:
         return list(
             Media.select(Media)
             .where(Media.movie == movie)
@@ -339,7 +340,7 @@ class MovieService:
         )
 
     @staticmethod
-    def _actors(movie: Movie) -> List[Actor]:
+    def _actors(movie: Movie) -> list[Actor]:
         return list(
             Actor.select(Actor, Image)
             .join(Image, JOIN.LEFT_OUTER, on=(Actor.profile_image == Image.id))
@@ -349,7 +350,7 @@ class MovieService:
         )
 
     @staticmethod
-    def _plot_images(movie: Movie) -> List[Image]:
+    def _plot_images(movie: Movie) -> list[Image]:
         query = (
             MoviePlotImage.select(MoviePlotImage, Image)
             .join(Image)
@@ -359,7 +360,7 @@ class MovieService:
         return [link.image for link in query]
 
     @staticmethod
-    def _media_items(movie: Movie) -> List[MovieMediaResource]:
+    def _media_items(movie: Movie) -> list[MovieMediaResource]:
         """把媒体、播放进度和打点信息折叠成详情页需要的资源结构。"""
         from src.service.playback.media_service import MediaService
 
@@ -379,7 +380,7 @@ class MovieService:
             for progress in MediaProgress.select(MediaProgress).where(MediaProgress.media.in_(media_ids))
         }
 
-        points_by_media_id: Dict[int, List[MovieMediaPointResource]] = {}
+        points_by_media_id: dict[int, list[MovieMediaPointResource]] = {}
         point_query = (
             MediaPoint.select(MediaPoint, MediaThumbnail, Image)
             .join(MediaThumbnail)
@@ -400,7 +401,7 @@ class MovieService:
                 )
             )
 
-        resources: List[MovieMediaResource] = []
+        resources: list[MovieMediaResource] = []
         for media in media_items:
             # 详情资源需要把播放进度和精彩时间点挂回各自 media 上。
             progress = progress_items.get(media.id)
@@ -452,7 +453,7 @@ class MovieService:
 
     @staticmethod
     def list_movies(
-        actor_id: Optional[int] = None,
+        actor_id: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
         year: int | None = None,
@@ -460,7 +461,7 @@ class MovieService:
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         special_tag: MovieSpecialTagFilter | None = None,
         number_source: MovieNumberSource = MovieNumberSource.ALL,
-        sort: Optional[str] = None,
+        sort: str | None = None,
         director_name: str | None = None,
         maker_name: str | None = None,
         page: int = 1,
@@ -506,7 +507,7 @@ class MovieService:
     @staticmethod
     def list_movies_by_series(
         series_id: int,
-        sort: Optional[str] = None,
+        sort: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> PageResponse[MovieListItemResource]:
@@ -575,7 +576,7 @@ class MovieService:
         )
 
     @classmethod
-    def search_local_movies(cls, movie_number: str) -> List[MovieListItemResource]:
+    def search_local_movies(cls, movie_number: str) -> list[MovieListItemResource]:
         # 本地搜索只取最匹配的一条，职责是回答“库里有没有这个番号”。
         movie = find_movie_by_number(movie_number)
         if movie is None:
@@ -598,7 +599,7 @@ class MovieService:
     @classmethod
     def mark_movie_collection_type(
         cls,
-        movie_numbers: List[str],
+        movie_numbers: list[str],
         collection_type: MovieCollectionMarkType,
     ) -> MovieCollectionMarkResponse:
         requested_count = len(movie_numbers)
@@ -653,7 +654,7 @@ class MovieService:
         page: int = 1,
         page_size: int = 20,
         sort: MovieReviewSort = MovieReviewSort.RECENTLY,
-    ) -> List[JavdbMovieReviewResource]:
+    ) -> list[JavdbMovieReviewResource]:
         movie = cls._require_movie(movie_number)
         sort_value = sort.value if isinstance(sort, MovieReviewSort) else str(sort)
         try:
@@ -731,7 +732,7 @@ class MovieService:
 
     @staticmethod
     def _dedup_movie_number_keys(
-        movie_numbers: List[str],
+        movie_numbers: list[str],
     ) -> tuple[list[str], dict[str, str]]:
         """批量入参按大小写不敏感的精确 key（strip+upper）去重。
 
@@ -751,7 +752,7 @@ class MovieService:
 
     @classmethod
     def batch_set_subscription(
-        cls, movie_numbers: List[str]
+        cls, movie_numbers: list[str]
     ) -> MovieSubscriptionBatchResponse:
         # 批量订阅：逐条判定、部分成功，未命中番号进 skipped，不整批回滚。
         requested_count = len(movie_numbers)
@@ -776,7 +777,7 @@ class MovieService:
             if key not in matched_keys
         ]
 
-        newly_subscribed_ids: List[int] = []
+        newly_subscribed_ids: list[int] = []
         for movie in matched_movies:
             # 与单条 set_subscription(True) 一致：仅在原本未订阅或订阅时间为空时写入当前时间。
             was_subscribed = bool(movie.is_subscribed)
@@ -797,7 +798,7 @@ class MovieService:
 
     @classmethod
     def batch_unsubscribe_movies(
-        cls, movie_numbers: List[str]
+        cls, movie_numbers: list[str]
     ) -> MovieSubscriptionBatchResponse:
         # 批量取消订阅：存在本地媒体的影片按部分成功语义跳过（has_media），不报错也不回滚。
         requested_count = len(movie_numbers)

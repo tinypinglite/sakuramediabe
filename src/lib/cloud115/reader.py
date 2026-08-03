@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 
 import httpx
+from typing_extensions import Self
 
 from src.lib.cloud115.exceptions import Cloud115RequestError
 
@@ -118,7 +119,7 @@ class Cloud115RangeReader:
         if self._owns_client:
             self._client.close()
 
-    def __enter__(self) -> "Cloud115RangeReader":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc: object) -> None:

@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any
 
 from loguru import logger
 
@@ -28,7 +28,7 @@ class SubscribedActorMovieSyncService:
             return
         progress_callback(payload)
 
-    def sync_subscribed_actor_movies(self, progress_callback=None) -> Dict[str, int]:
+    def sync_subscribed_actor_movies(self, progress_callback=None) -> dict[str, int]:
         actors = list(
             Actor.select()
             .where(Actor.is_subscribed == True)
@@ -71,7 +71,7 @@ class SubscribedActorMovieSyncService:
         logger.info("Subscribed actor sync finished stats={}", stats)
         return stats
 
-    def _sync_actor(self, actor: Actor) -> Dict[str, int]:
+    def _sync_actor(self, actor: Actor) -> dict[str, int]:
         mode = "full" if actor.subscribed_movies_full_synced_at is None else "incremental"
         page = 1
         imported_movies = 0

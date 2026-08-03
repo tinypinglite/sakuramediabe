@@ -30,6 +30,7 @@ from src.service.transfers.media_rapid_upload.states import (
 )
 from src.service.transfers.media_rapid_upload.types import RapidUploadFailure
 
+
 class MediaRapidUploadItemExecutor:
     @staticmethod
     async def _prepare_target_dir_and_name(

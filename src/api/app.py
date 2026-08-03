@@ -1,61 +1,65 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-from contextlib import asynccontextmanager
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from src.common.logging import configure_logging
+from src.api.exception.errors import ApiError
 from src.api.exception.exception import (
     all_exception_handler,
     api_error_handler,
     http_exception_handler,
     validation_exception_handler,
 )
-from src.api.routers.collections.clip_collections import router as clip_collections_router
-from src.api.routers.collections.playlists import router as playlists_router
-from src.api.routers.files.images import router as file_images_router
-from src.api.routers.files.subtitles import router as file_subtitles_router
-from src.api.routers.playback.media import router as media_router
-from src.api.routers.playback.media_clips import router as media_clips_router
-from src.api.routers.playback.media_points import router as media_points_router
-from src.api.routers.playback.cloud115_libraries import router as cloud115_libraries_router
-from src.api.routers.playback.media_libraries import router as media_libraries_router
-from src.api.routers.transfers.downloads import router as downloads_router
-from src.api.routers.transfers.media_import import router as media_import_router
-from src.api.routers.transfers.rapid_uploads import router as rapid_uploads_router
-from src.api.exception.errors import ApiError
 from src.api.routers.catalog.actors import router as actors_router
 from src.api.routers.catalog.movies import router as movies_router
 from src.api.routers.catalog.subscriptions import router as movie_subscriptions_router
 from src.api.routers.catalog.tags import router as tags_router
-from src.api.routers.discovery.daily_recommendations import router as daily_recommendations_router
+from src.api.routers.collections.clip_collections import (
+    router as clip_collections_router,
+)
+from src.api.routers.collections.playlists import router as playlists_router
+from src.api.routers.discovery.daily_recommendations import (
+    router as daily_recommendations_router,
+)
 from src.api.routers.discovery.hot_reviews import router as hot_reviews_router
 from src.api.routers.discovery.image_search import router as image_search_router
-from src.api.routers.discovery.moment_recommendations import router as moment_recommendations_router
+from src.api.routers.discovery.moment_recommendations import (
+    router as moment_recommendations_router,
+)
 from src.api.routers.discovery.ranking_sources import router as ranking_sources_router
+from src.api.routers.files.images import router as file_images_router
+from src.api.routers.files.subtitles import router as file_subtitles_router
+from src.api.routers.playback.cloud115_libraries import (
+    router as cloud115_libraries_router,
+)
+from src.api.routers.playback.media import router as media_router
+from src.api.routers.playback.media_clips import router as media_clips_router
+from src.api.routers.playback.media_libraries import router as media_libraries_router
+from src.api.routers.playback.media_points import router as media_points_router
 from src.api.routers.system.account import router as account_router
-from src.api.routers.system.auth import router as auth_router
 from src.api.routers.system.activity import router as activity_router
+from src.api.routers.system.auth import router as auth_router
 from src.api.routers.system.config import router as config_router
 from src.api.routers.system.indexer_settings import router as indexer_settings_router
 from src.api.routers.system.jobs import router as jobs_router
 from src.api.routers.system.movie_desc_translation_settings import (
     router as movie_desc_translation_settings_router,
 )
-
 from src.api.routers.system.status import router as status_router
+from src.api.routers.transfers.downloads import router as downloads_router
+from src.api.routers.transfers.media_import import router as media_import_router
+from src.api.routers.transfers.rapid_uploads import router as rapid_uploads_router
 from src.api.routers.videos.collections import router as video_collections_router
 from src.api.routers.videos.imports import router as video_imports_router
 from src.api.routers.videos.items import router as videos_router
 from src.common.database import ensure_database_ready
+from src.common.logging import configure_logging
 from src.config.config import ensure_runtime_config, settings
-from src.start.recovery import recover_interrupted_tasks
 from src.service.transfers.download_progress_service import DownloadProgressHub
+from src.start.recovery import recover_interrupted_tasks
 
 
 def _create_lifespan():

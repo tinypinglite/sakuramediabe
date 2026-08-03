@@ -3,7 +3,6 @@ from __future__ import annotations
 from src.model import Media, MediaPoint, MediaThumbnail, MomentRecommendation, Movie
 from src.start.migrations import SkipMigration
 
-
 name = "20260508_02_add_moment_recommendations"
 
 

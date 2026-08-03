@@ -6,7 +6,6 @@
 
 from src.model import BackgroundTaskRun, Media, MediaLibrary, Movie, ResourceTaskState
 
-
 ACTION_PATH = "/system/resource-task-actions"
 THUMBNAIL_TASK_KEY = "media_thumbnail_generation"
 

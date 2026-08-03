@@ -3,9 +3,8 @@
 签名与路由行为在 TestClient 内验证；布局构建与分段转发打桩，不触达真实 115。
 """
 
-import asyncio
-import hmac
 import hashlib
+import hmac
 
 import pytest
 from fastapi.responses import StreamingResponse
@@ -15,14 +14,13 @@ from src.service.playback.cloud115_hls_proxy_service import (
     HlsSegment,
     MergedHlsLayout,
 )
-
 from tests.conftest import TEST_FILE_SIGNATURE_EXPIRES, TEST_FILE_SIGNATURE_SECRET
 
 
 def _sig(media_id: int) -> str:
     return hmac.new(
         TEST_FILE_SIGNATURE_SECRET.encode("utf-8"),
-        f"media:{media_id}:{TEST_FILE_SIGNATURE_EXPIRES}".encode("utf-8"),
+        f"media:{media_id}:{TEST_FILE_SIGNATURE_EXPIRES}".encode(),
         hashlib.sha256,
     ).hexdigest()
 

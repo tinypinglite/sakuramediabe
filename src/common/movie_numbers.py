@@ -1,8 +1,8 @@
 import re
-from typing import List, Pattern, Tuple
+from re import Pattern
 
 # (正则, 捕获组拼接符)。按顺序取第一条命中的规则，输出 = 拼接符 join 各捕获组后大写。
-MOVIE_NUMBER_PATTERNS: List[Tuple[Pattern[str], str]] = [
+MOVIE_NUMBER_PATTERNS: list[tuple[Pattern[str], str]] = [
     (re.compile(r"(DSVR)0(\d{3,4})", re.IGNORECASE), "-"),
     (re.compile(r"(XXX)-(AV)-(\d+)", re.IGNORECASE), "-"),
     (re.compile(r"(N\d{4})", re.IGNORECASE), "-"),
@@ -66,7 +66,7 @@ def normalize_movie_number(value: str) -> str:
     return normalized
 
 
-def movie_number_lookup_values(value: str) -> List[str]:
+def movie_number_lookup_values(value: str) -> list[str]:
     """人工输入 -> 按番号点查的等值候选集（已大写，去重保序）。
 
     列里存的是 provider 规范原样，用户手输的大小写/分隔符未必一致：大小写交给

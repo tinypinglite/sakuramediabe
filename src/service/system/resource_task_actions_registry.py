@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 from src.service.system.resource_task_runner import (
     STATE_EXHAUSTED,

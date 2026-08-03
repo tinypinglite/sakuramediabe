@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Dict, List, Literal, Tuple
+from typing import Literal
 
 from loguru import logger
 from pydantic import BaseModel, ConfigDict
@@ -19,6 +19,7 @@ from src.common import (
 )
 from src.common.content_fingerprint import compute_content_fingerprint
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
+
 # 导入状态/失败原因的取值统一收口到 media_import_status 模块。
 from src.common.media_import_status import (
     FAILURE_REASON_FILE_TOO_SMALL,
@@ -28,7 +29,6 @@ from src.common.media_import_status import (
 from src.config.config import settings
 from src.model import Media, MediaLibrary
 from src.model.enums import MediaLibraryBackend
-
 
 ImportTransferMode = Literal["auto", "cleanup-source"]
 
@@ -50,7 +50,7 @@ class ImportGroup(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     movie_number: str
-    files: List[ScannedSourceFile]
+    files: list[ScannedSourceFile]
 
 
 def parse_movie_number_from_scan_path(file_path: str) -> str:
@@ -129,27 +129,27 @@ def find_media_library_containing_path(source_entry: Path) -> MediaLibrary | Non
     return None
 
 
-def media_library_roots() -> List[Path]:
+def media_library_roots() -> list[Path]:
     """返回当前已配置本地媒体库根目录，供 cleanup-source 扫描排除使用。"""
-    roots: List[Path] = []
+    roots: list[Path] = []
     for media_library in _local_libraries():
         roots.append(Path(media_library.backend_config["root_path"]).expanduser().resolve())
     return roots
 
 
-def is_path_under_any_root(path: Path, roots: List[Path]) -> bool:
+def is_path_under_any_root(path: Path, roots: list[Path]) -> bool:
     resolved_path = path.expanduser().resolve()
     return any(resolved_path == root or resolved_path.is_relative_to(root) for root in roots)
 
 
-def iter_source_paths(source_entry: Path, *, excluded_library_roots: List[Path]) -> List[Path]:
+def iter_source_paths(source_entry: Path, *, excluded_library_roots: list[Path]) -> list[Path]:
     """枚举源文件；cleanup-source 递归扫描时跳过所有媒体库目录树。"""
     if source_entry.is_file():
         return [source_entry]
     if not excluded_library_roots:
         return sorted(source_entry.rglob("*"))
 
-    candidate_paths: List[Path] = []
+    candidate_paths: list[Path] = []
     for root, dirs, files in os.walk(source_entry):
         root_path = Path(root).resolve()
         dirs[:] = sorted(
@@ -185,12 +185,12 @@ def find_sidecar_subtitle(source_video_path: Path, movie_number: str) -> Path | 
 
 def scan_source_files(
     source_entry: Path,
-    failure_items: List[Dict[str, str]],
+    failure_items: list[dict[str, str]],
     *,
     transfer_mode: ImportTransferMode,
     only_file_set: set[str] | None = None,
     on_duplicate_source_paths=None,
-) -> Tuple[Dict[str, ImportGroup], int, int]:
+) -> tuple[dict[str, ImportGroup], int, int]:
     """扫描源目录，过滤无效文件，并按影片编号聚合待导入媒体。
 
     ``only_file_set`` 提供时仅保留命中其中绝对路径的文件，用于子集重导。
@@ -198,7 +198,7 @@ def scan_source_files(
     调用方以此在 cleanup-source 模式下删除源重复文件（保留原语义）。
     """
     minimum_size = settings.media.allowed_min_video_file_size
-    grouped_candidates: Dict[str, List[ScannedSourceFile]] = {}
+    grouped_candidates: dict[str, list[ScannedSourceFile]] = {}
     skipped_count = 0
     failed_count = 0
     scanned_count = 0
@@ -207,7 +207,7 @@ def scan_source_files(
     logger.info(
         "Import scan start source_path={} media_types={} min_size_bytes={}",
         str(source_entry),
-        sorted(list(SUPPORTED_VIDEO_EXTENSIONS)),
+        sorted(SUPPORTED_VIDEO_EXTENSIONS),
         minimum_size,
     )
 
@@ -279,9 +279,9 @@ def scan_source_files(
         )
         logger.info("Import scan grouped file path={} movie_number={}", str(path), movie_number)
 
-    grouped_files: Dict[str, ImportGroup] = {}
+    grouped_files: dict[str, ImportGroup] = {}
     for movie_number, file_entries in grouped_candidates.items():
-        deduplicated_entries: List[ScannedSourceFile] = []
+        deduplicated_entries: list[ScannedSourceFile] = []
         seen_fingerprints: set[str] = set()
         for file_entry in sorted(file_entries, key=lambda item: item.path.name):
             if file_entry.content_fingerprint in seen_fingerprints:

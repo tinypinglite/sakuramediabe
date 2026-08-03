@@ -3,10 +3,12 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.metadata._providers.models import JavdbMovieDetailResource
+from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
+from src.service.catalog.movie_desc_translation_client import (
+    MovieDescTranslationClientError,
+)
 from src.start.commands import main
-from src.service.catalog.movie_desc_translation_client import MovieDescTranslationClientError
 
 
 @pytest.fixture(autouse=True)

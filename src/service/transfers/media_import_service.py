@@ -4,33 +4,18 @@
 再委托 ``media_import_writer`` 完成落库。ImportJob 状态维护与 DownloadTask 状态回写在这里收口。
 """
 
-from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager
 import json
 import time
+from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock, local
-from typing import Any, Callable, Dict, Iterator, List, Literal, Sequence
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel
 
-from src.common.runtime_time import utc_now_for_db
-from src.config.config import settings
-from src.model import DownloadTask, ImportJob, MediaLibrary, Movie, get_database
-from src.model.enums import MediaLibraryBackend
-# 从子模块而非 src.service.catalog 包导入：走包会执行 catalog/__init__.py，而其中的
-# movie_subscription_service 又要导入 transfers 域，形成 catalog <-> transfers 的包级循环，
-# 逼得对面只能把所有 transfers 导入塞进函数体。指到具体文件即可绕开 __init__ 的连锁初始化。
-from src.service.catalog.catalog_import_service import CatalogImportService
-from src.service.catalog.movie_image_service import ImageDownloadError
-from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
-from src.service.transfers.media_import_writer import import_single_scanned_file
-from src.service.transfers.media_source_scanner import (
-    ImportTransferMode,
-    find_media_library_containing_path,
-    scan_source_files,
-)
 # 导入状态/失败原因的取值统一收口到 media_import_status 模块。
 from src.common.media_import_status import (
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED,
@@ -49,12 +34,30 @@ from src.common.media_import_status import (
     IMPORT_STATUS_RUNNING,
     make_failure_item,
 )
+from src.common.runtime_time import utc_now_for_db
+from src.config.config import settings
+from src.model import DownloadTask, ImportJob, MediaLibrary, Movie, get_database
+from src.model.enums import MediaLibraryBackend
+
+# 从子模块而非 src.service.catalog 包导入：走包会执行 catalog/__init__.py，而其中的
+# movie_subscription_service 又要导入 transfers 域，形成 catalog <-> transfers 的包级循环，
+# 逼得对面只能把所有 transfers 导入塞进函数体。指到具体文件即可绕开 __init__ 的连锁初始化。
+from src.service.catalog.catalog_import_service import CatalogImportService
+from src.service.catalog.movie_image_service import ImageDownloadError
+from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
 
 # 为向后兼容旧调用方（例如 videos 域曾借用 MediaImportService 的私有静态方法）保留 re-export。
-from src.service.transfers.file_transfer import delete_source_files as _delete_source_files
+from src.service.transfers.file_transfer import (
+    delete_source_files as _delete_source_files,
+)
+from src.service.transfers.media_import_writer import import_single_scanned_file
+from src.service.transfers.media_source_scanner import (
+    ImportTransferMode,
+    find_media_library_containing_path,
+    scan_source_files,
+)
 
-
-ImportProgressCallback = Callable[[Dict[str, object]], None]
+ImportProgressCallback = Callable[[dict[str, object]], None]
 
 
 class MetadataImportResult(BaseModel):
@@ -189,7 +192,7 @@ class MediaImportService:
         movie_numbers: Sequence[str],
         *,
         thread_name_prefix: str = "import-metadata",
-    ) -> Iterator[Dict[str, Future[MetadataImportResult]]]:
+    ) -> Iterator[dict[str, Future[MetadataImportResult]]]:
         """统一管理元数据并发池，供本地与云端导入复用，调用方按原顺序消费 Future。"""
         if not movie_numbers:
             yield {}
@@ -212,7 +215,7 @@ class MediaImportService:
         import_job_id: int | None = None,
         progress_callback: ImportProgressCallback | None = None,
         transfer_mode: ImportTransferMode = "auto",
-        only_files: List[str] | None = None,
+        only_files: list[str] | None = None,
     ) -> ImportJob:
         """执行一次完整的媒体导入，并把中间状态写回 ImportJob。
 
@@ -296,11 +299,11 @@ class MediaImportService:
             job.finished_at = None
             job.save()
         logger.info("Import job created job_id={} state={}", job.id, job.state)
-        failure_items: List[Dict[str, str]] = []
+        failure_items: list[dict[str, str]] = []
         imported_count = 0
         skipped_count = 0
         failed_count = 0
-        new_playable_movies: Dict[int, Dict[str, object]] = {}
+        new_playable_movies: dict[int, dict[str, object]] = {}
 
         job.state = IMPORT_JOB_STATE_RUNNING
         job.started_at = utc_now_for_db()
@@ -313,7 +316,7 @@ class MediaImportService:
         try:
             # 第一阶段只扫描和分组文件，不碰远端元数据和目标媒体库。
             # scan 命中已入库文件时，cleanup-source 模式下仍需要清理源目录，走 callback 复用共享删源工具。
-            def _cleanup_duplicate_sources(source_paths: List[Path]) -> int:
+            def _cleanup_duplicate_sources(source_paths: list[Path]) -> int:
                 return _delete_source_files(source_paths, failure_items, transfer_mode=transfer_mode)
 
             grouped_files, grouped_skipped_count, grouped_failed_count = scan_source_files(

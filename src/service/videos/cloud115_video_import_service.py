@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Dict, List
 
 from loguru import logger
 
@@ -59,7 +59,7 @@ from src.service.transfers.tag_rules import build_media_special_tags
 from src.service.videos.video_collection_service import VideoCollectionService
 from src.service.videos.video_cover_service import VideoCoverService
 
-ImportProgressCallback = Callable[[Dict[str, object]], None]
+ImportProgressCallback = Callable[[dict[str, object]], None]
 
 
 class Cloud115VideoImportService:
@@ -117,10 +117,10 @@ class Cloud115VideoImportService:
         source_cid: str | None,
         source_fid: str | None,
         root_cid: str,
-        only_files: List[str] | None,
-    ) -> tuple[str, List[CloudSourceFile]]:
+        only_files: list[str] | None,
+    ) -> tuple[str, list[CloudSourceFile]]:
         only_set = set(only_files) if only_files is not None else None
-        sources: List[CloudSourceFile] = []
+        sources: list[CloudSourceFile] = []
         if source_cid is not None:
             # 安全校验已经查过源目录元信息，直接复用，不再重复 dir_info。
             source_meta = await assert_cid_outside_library_root(
@@ -259,7 +259,7 @@ class Cloud115VideoImportService:
         video_import_job_id: int | None = None,
         transfer_mode: str = "copy",
         collection_id: int | None = None,
-        only_files: List[str] | None = None,
+        only_files: list[str] | None = None,
         progress_callback: ImportProgressCallback | None = None,
     ) -> VideoImportJob:
         transfer_mode = normalize_cloud115_transfer_mode(
@@ -286,7 +286,7 @@ class Cloud115VideoImportService:
         job.started_at = utc_now_for_db()
         job.save()
 
-        failure_items: List[dict] = []
+        failure_items: list[dict] = []
         stats = {"imported": 0, "skipped": 0, "failed": 0}
         try:
             asyncio.run(
@@ -327,8 +327,8 @@ class Cloud115VideoImportService:
         source_fid: str | None,
         transfer_mode: str,
         collection_id: int | None,
-        only_files: List[str] | None,
-        failure_items: List[dict],
+        only_files: list[str] | None,
+        failure_items: list[dict],
         stats: dict,
         progress_callback: ImportProgressCallback | None,
         job: VideoImportJob,
@@ -474,7 +474,7 @@ class Cloud115VideoImportService:
         target_dir_resolver: Cloud115TargetDirResolver,
         transfer_mode: str,
         collection_id: int | None,
-        failure_items: List[dict],
+        failure_items: list[dict],
         stats: dict,
     ) -> None:
         """把一个 115 源视频搬进受管结构 ``videos/{video_id}/{版本ms}/{原名}``。
@@ -722,7 +722,7 @@ class Cloud115VideoImportService:
         media: Media,
         source: CloudSourceFile,
         target_dir_resolver: Cloud115TargetDirResolver,
-        failure_items: List[dict],
+        failure_items: list[dict],
         stats: dict,
     ) -> None:
         """已登记但上轮没搬走的源：补建目录并移动即可。
@@ -837,7 +837,7 @@ class Cloud115VideoImportService:
         client: Cloud115Client,
         *,
         source: CloudSourceFile,
-        failure_items: List[dict],
+        failure_items: list[dict],
         stats: dict,
     ) -> None:
         """cleanup-source 模式下遇到已入库内容时，只删远端源文件、不重登。

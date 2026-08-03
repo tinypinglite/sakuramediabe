@@ -6,13 +6,11 @@
 触发防重依赖 ``BackgroundTaskRun.mutex_key`` 唯一约束，与 JAV 目录导入保持一致的形态。
 """
 
-from typing import List
 
 from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common.media_import_status import (
-    IMPORT_JOB_STATE_FAILED,
     IMPORT_JOB_STATE_PENDING,
     IMPORT_JOB_STATE_RUNNING,
 )
@@ -23,7 +21,6 @@ from src.schema.videos.imports import (
     VideoImportJobResource,
     VideoImportTriggerResponse,
 )
-from src.service.system import ActivityService
 from src.service.transfers.base_import_job_service import BaseImportJobService
 from src.service.videos.video_import_service import VideoImportService
 

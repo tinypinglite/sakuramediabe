@@ -1,5 +1,6 @@
+from collections.abc import Sequence
 from functools import lru_cache
-from typing import Any, Sequence
+from typing import Any
 
 from loguru import logger
 from pydantic import BaseModel
@@ -165,9 +166,11 @@ class QdrantThumbnailStore:
                 optimizers_patch["indexing_threshold"] = self.INDEXING_THRESHOLD
 
         hnsw_patch: dict[str, Any] = {}
-        if hnsw_cfg is not None:
-            if getattr(hnsw_cfg, "max_indexing_threads", None) != self.HNSW_MAX_INDEXING_THREADS:
-                hnsw_patch["max_indexing_threads"] = self.HNSW_MAX_INDEXING_THREADS
+        if (
+            hnsw_cfg is not None
+            and getattr(hnsw_cfg, "max_indexing_threads", None) != self.HNSW_MAX_INDEXING_THREADS
+        ):
+            hnsw_patch["max_indexing_threads"] = self.HNSW_MAX_INDEXING_THREADS
 
         if not optimizers_patch and not hnsw_patch:
             return
@@ -247,7 +250,7 @@ class QdrantThumbnailStore:
                     "exists": True,
                     "points_count": int(getattr(info, "points_count", 0) or 0),
                     "vector_size": (
-                        int(getattr(vector_params, "size"))
+                        int(vector_params.size)
                         if vector_params is not None and getattr(vector_params, "size", None) is not None
                         else None
                     ),

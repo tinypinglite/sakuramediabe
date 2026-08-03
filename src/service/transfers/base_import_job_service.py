@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, List
+from typing import Any
 
 from loguru import logger
 from peewee import IntegrityError
@@ -187,7 +187,7 @@ class BaseImportJobService:
         )
 
     @classmethod
-    def retry_failed_files(cls, job_id: int, files: List[str] | None = None):
+    def retry_failed_files(cls, job_id: int, files: list[str] | None = None):
         job = cls._require_job(job_id)
         cls._assert_job_terminal(job)
         library = cls._require_library(job.library_id)
@@ -236,7 +236,7 @@ class BaseImportJobService:
         resolved_source: Path,
         transfer_mode: str,
         mutex_key: str | None,
-        only_files: List[str] | None,
+        only_files: list[str] | None,
         task_name: str,
         **launch_kwargs,
     ):
@@ -479,13 +479,7 @@ class BaseImportJobService:
             return False
         if run.state == "pending" and run.scheduled_at is not None:
             return True
-        if (
-            run.state == "running"
-            and run.lease_expires_at is not None
-            and run.lease_expires_at > utc_now_for_db()
-        ):
-            return True
-        return False
+        return bool(run.state == "running" and run.lease_expires_at is not None and run.lease_expires_at > utc_now_for_db())
 
     @staticmethod
     def _resolve_source_path(source_path: str) -> Path:

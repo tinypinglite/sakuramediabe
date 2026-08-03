@@ -1,7 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
-
 from fastapi import status
 from fastapi.encoders import jsonable_encoder
 from loguru import logger

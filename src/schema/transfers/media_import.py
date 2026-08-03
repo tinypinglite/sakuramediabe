@@ -4,17 +4,17 @@
 """
 
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Literal
 
 from pydantic import computed_field, model_validator
 
-from src.schema.common.base import SchemaModel
 # media_import_status 是零依赖的取值/中文说明集中模块，这里仅用于把原始状态码转换成展示文案。
 from src.common.media_import_status import (
     describe_failed_file_kind,
     describe_failure_reason,
     describe_import_job_state,
 )
+from src.schema.common.base import SchemaModel
 
 
 class FilesystemEntryResource(SchemaModel):
@@ -27,8 +27,8 @@ class FilesystemEntryResource(SchemaModel):
 
 class FilesystemListResponse(SchemaModel):
     path: str
-    parent: Optional[str] = None
-    entries: List[FilesystemEntryResource]
+    parent: str | None = None
+    entries: list[FilesystemEntryResource]
 
 
 class FailedFileResource(SchemaModel):
@@ -59,9 +59,9 @@ class ImportJobCreateRequest(SchemaModel):
     """
 
     library_id: int
-    source_path: Optional[str] = None
-    source_cid: Optional[str] = None
-    transfer_mode: Optional[str] = None
+    source_path: str | None = None
+    source_cid: str | None = None
+    transfer_mode: str | None = None
 
     @model_validator(mode="after")
     def _validate_source(self) -> "ImportJobCreateRequest":
@@ -72,7 +72,7 @@ class ImportJobCreateRequest(SchemaModel):
 
 class RetryFailedFilesRequest(SchemaModel):
     # 为空表示重导该作业全部失败文件，否则只重导交集中的文件。
-    files: Optional[List[str]] = None
+    files: list[str] | None = None
 
 
 class DeleteFailedFileRequest(SchemaModel):
@@ -94,17 +94,17 @@ class ImportJobListItemResource(SchemaModel):
     id: int
     source_path: str
     # cloud115 作业的源目录 cid；本地作业为 None，前端据此区分作业类型。
-    source_cid: Optional[str] = None
+    source_cid: str | None = None
     library_id: int
-    download_task_id: Optional[int] = None
-    task_run_id: Optional[int] = None
+    download_task_id: int | None = None
+    task_run_id: int | None = None
     state: str
     transfer_mode: str = "auto"
     imported_count: int
     skipped_count: int
     failed_count: int
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -121,10 +121,10 @@ class ImportJobListItemResource(SchemaModel):
 
 
 class ImportJobResource(ImportJobListItemResource):
-    failed_files: List[FailedFileResource] = []
+    failed_files: list[FailedFileResource] = []
 
     @classmethod
-    def from_model(cls, job, *, failed_files: List[FailedFileResource]) -> "ImportJobResource":
+    def from_model(cls, job, *, failed_files: list[FailedFileResource]) -> "ImportJobResource":
         payload = ImportJobListItemResource.from_attributes_model(job).model_dump()
         payload["failed_files"] = [item.model_dump() for item in failed_files]
         return cls.model_validate(payload)

@@ -1,4 +1,3 @@
-from typing import List
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
@@ -20,7 +19,7 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=List[PlaylistResource])
+@router.get("", response_model=list[PlaylistResource])
 def list_playlists(include_system: bool = Query(default=True), current_user=Depends(get_current_user)):
     return PlaylistService.list_playlists(include_system=include_system)
 
@@ -68,7 +67,7 @@ def list_playlist_movies(
     )
 
 
-@router.get("/{playlist_id}/resolutions", response_model=List[PlaylistResolutionOption])
+@router.get("/{playlist_id}/resolutions", response_model=list[PlaylistResolutionOption])
 def list_playlist_resolutions(playlist_id: int, current_user=Depends(get_current_user)):
     return PlaylistService.list_playlist_resolutions(playlist_id)
 

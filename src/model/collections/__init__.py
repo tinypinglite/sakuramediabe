@@ -16,8 +16,6 @@ from .playlists import (
 )
 
 __all__ = [
-    "ClipCollection",
-    "ClipCollectionItem",
     "FOUR_K_PLAYLIST_DESCRIPTION",
     "FOUR_K_PLAYLIST_NAME",
     "PLAYLIST_KIND_4K",
@@ -29,6 +27,8 @@ __all__ = [
     "SYSTEM_PLAYLIST_KINDS",
     "VR_PLAYLIST_DESCRIPTION",
     "VR_PLAYLIST_NAME",
+    "ClipCollection",
+    "ClipCollectionItem",
     "Playlist",
     "PlaylistMovie",
 ]

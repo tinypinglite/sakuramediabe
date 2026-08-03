@@ -6,15 +6,14 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
 
 from peewee import IntegrityError
 
 from src.api.exception.errors import ApiError
-from src.lib.cloud115 import Cloud115CookieStatus
-from src.service.cloud115 import Cloud115KeepaliveService
 from src.common.runtime_time import utc_now_for_db
+from src.lib.cloud115 import Cloud115CookieStatus
 from src.model import DownloadClient, DownloadTask, IndexerDownloadClient
+from src.model.enums import DownloadClientKind
 from src.schema.transfers.downloads import (
     DownloadClientCreateRequest,
     DownloadClientProbeStorageTestRequest,
@@ -28,7 +27,7 @@ from src.schema.transfers.downloads import (
     DownloadClientTestResponse,
     DownloadClientUpdateRequest,
 )
-from src.model.enums import DownloadClientKind
+from src.service.cloud115 import Cloud115KeepaliveService
 from src.service.transfers.common import (
     ensure_name_available,
     require_client,
@@ -40,7 +39,10 @@ from src.service.transfers.common import (
     validate_media_library_id,
     validate_non_empty,
 )
-from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
+from src.service.transfers.qbittorrent_client import (
+    QBittorrentClient,
+    QBittorrentClientError,
+)
 
 
 @dataclass
@@ -72,7 +74,7 @@ class DownloadClientService:
     HARDLINK_FILENAME = "sentinel.link"
 
     @classmethod
-    def list_clients(cls) -> List[DownloadClientResource]:
+    def list_clients(cls) -> list[DownloadClientResource]:
         clients = list(
             DownloadClient.select().order_by(
                 DownloadClient.created_at.desc(),
@@ -521,9 +523,9 @@ class DownloadClientService:
     @staticmethod
     def _resolve_probe_password(
         *,
-        password: Optional[str],
-        client_id: Optional[int],
-    ) -> tuple[str, Optional[DownloadClient]]:
+        password: str | None,
+        client_id: int | None,
+    ) -> tuple[str, DownloadClient | None]:
         """合并密码:留空则要求 client_id,从 DB 取原密码;否则密码必填。"""
         normalized = (password or "").strip()
         if normalized:

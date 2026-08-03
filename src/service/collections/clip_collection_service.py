@@ -6,7 +6,6 @@
 """
 
 from datetime import datetime
-from typing import Dict, List
 
 from peewee import IntegrityError, fn
 
@@ -75,7 +74,7 @@ class ClipCollectionService:
         )
 
     @staticmethod
-    def _collection_counts(collection_ids: List[int]) -> Dict[int, int]:
+    def _collection_counts(collection_ids: list[int]) -> dict[int, int]:
         if not collection_ids:
             return {}
         query = (
@@ -117,7 +116,7 @@ class ClipCollectionService:
         )
 
     @classmethod
-    def list_collections(cls) -> List[ClipCollectionResource]:
+    def list_collections(cls) -> list[ClipCollectionResource]:
         collections = list(
             ClipCollection.select().order_by(
                 ClipCollection.updated_at.desc(), ClipCollection.id.desc()
@@ -252,11 +251,11 @@ class ClipCollectionService:
             collection.save(only=[ClipCollection.updated_at])
 
     @classmethod
-    def set_clips(cls, collection_id: int, clip_ids: List[int]) -> None:
+    def set_clips(cls, collection_id: int, clip_ids: list[int]) -> None:
         """幂等地把合集成员设置为给定有序列表，既覆盖重排也覆盖批量设置成员。"""
         collection = cls._require_collection(collection_id)
         # 去重保序：同一片段在合集内只出现一次，以首次出现的位置为准。
-        ordered_ids: List[int] = []
+        ordered_ids: list[int] = []
         seen: set[int] = set()
         for clip_id in clip_ids:
             if clip_id not in seen:

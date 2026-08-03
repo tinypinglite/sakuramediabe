@@ -3,10 +3,10 @@ from .cloud115_import_service import Cloud115ImportService
 from .cloud115_offline_service import Cloud115OfflineDownloadService
 from .cloud115_offline_sync_service import Cloud115OfflineSyncService
 from .download_client_service import DownloadClientService
+from .download_progress_service import DownloadProgressHub
 from .download_request_service import DownloadRequestService
 from .download_search_service import DownloadSearchService
 from .download_small_file_cleanup_service import DownloadSmallFileCleanupService
-from .download_progress_service import DownloadProgressHub
 from .download_sync_service import DownloadSyncService
 from .download_task_service import DownloadTaskService
 from .filesystem_browse_service import FilesystemBrowseService
@@ -21,10 +21,10 @@ __all__ = [
     "Cloud115OfflineDownloadService",
     "Cloud115OfflineSyncService",
     "DownloadClientService",
+    "DownloadProgressHub",
     "DownloadRequestService",
     "DownloadSearchService",
     "DownloadSmallFileCleanupService",
-    "DownloadProgressHub",
     "DownloadSyncService",
     "DownloadTaskService",
     "FilesystemBrowseService",

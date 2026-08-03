@@ -3,7 +3,6 @@ from __future__ import annotations
 from src.model import DailyRecommendationItem, Movie
 from src.start.migrations import SkipMigration
 
-
 name = "20260508_01_add_daily_recommendations"
 
 

@@ -13,8 +13,8 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 import httpx
 import pytest
@@ -540,7 +540,7 @@ async def test_copy_rename_move_delete_lifecycle_real(client: Cloud115Client) ->
             copied = next((e for e in entries if not e.is_dir), None)
             if copied is not None:
                 break
-            time.sleep(1)
+            await asyncio.sleep(1)
         assert copied is not None, "copied file did not appear in target dir within 10s"
         assert copied.sha1 == source.sha1
         assert copied.entry_id != source.entry_id, "copy must produce a NEW fid"
@@ -599,7 +599,7 @@ async def test_cleanup_source_move_real(client: Cloud115Client) -> None:
             temp_source = next((entry for entry in entries if not entry.is_dir), None)
             if temp_source is not None:
                 break
-            time.sleep(1)
+            await asyncio.sleep(1)
         assert temp_source is not None
 
         # cleanup-source：直接移动进目标版本目录，再单文件改名并按 fid 验证。

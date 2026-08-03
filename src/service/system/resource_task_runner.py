@@ -16,9 +16,10 @@ attempt 行保留作为历史。
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from loguru import logger
 from peewee import fn

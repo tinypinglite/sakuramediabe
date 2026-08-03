@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -17,7 +18,10 @@ from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.scheduler.worker import TaskWorker
 from src.service.system import ActivityService
 from src.service.system.activity_service import TaskRunConflictError
-from src.service.system.task_queue_service import TaskQueueConflictError, TaskQueueService
+from src.service.system.task_queue_service import (
+    TaskQueueConflictError,
+    TaskQueueService,
+)
 from src.start.recovery import recover_interrupted_tasks
 
 INTERRUPTED_TASK_RUN_ERROR_MESSAGE = "任务执行中断，等待重试"

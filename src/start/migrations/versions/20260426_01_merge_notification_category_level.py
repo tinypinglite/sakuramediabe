@@ -4,7 +4,6 @@ from playhouse.migrate import migrate as run_migration
 
 from src.start.migrations import SkipMigration
 
-
 name = "20260426_01_merge_notification_category_level"
 
 

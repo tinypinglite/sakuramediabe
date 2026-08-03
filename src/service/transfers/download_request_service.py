@@ -8,7 +8,9 @@ from src.schema.transfers.downloads import (
     DownloadRequestCreateResponse,
     DownloadTaskResource,
 )
-from src.service.transfers.cloud115_offline_service import Cloud115OfflineDownloadService
+from src.service.transfers.cloud115_offline_service import (
+    Cloud115OfflineDownloadService,
+)
 from src.service.transfers.common import (
     build_movie_save_path,
     list_indexer_clients,
@@ -18,8 +20,13 @@ from src.service.transfers.common import (
     resolve_preferred_client,
     validate_non_empty,
 )
-from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
-from src.service.transfers.torrent_content_guard import assert_candidate_content_importable
+from src.service.transfers.qbittorrent_client import (
+    QBittorrentClient,
+    QBittorrentClientError,
+)
+from src.service.transfers.torrent_content_guard import (
+    assert_candidate_content_importable,
+)
 
 
 class DownloadRequestService:

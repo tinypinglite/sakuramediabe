@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- encoding: utf-8 -*-
-
 import json
 import math
 import os
@@ -9,13 +6,20 @@ import re
 import secrets
 from enum import Enum
 from pathlib import Path
-from typing import Any, Literal, Tuple, Type
+from typing import Any
 from urllib.parse import urlparse
 
+import toml
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
-import toml
-from pydantic import AliasChoices, BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -478,7 +482,7 @@ class Settings(BaseSettings):
             return data
         normalized_data = dict(data)
         # 兼容历史遗留的媒体音频识别配置节，读取时直接忽略，避免旧 config.toml 导致启动失败。
-        normalized_data.pop("_".join(("media", "asr")), None)
+        normalized_data.pop("media_asr", None)
         if "movie_info_translation" not in normalized_data and "movie_desc_translation" in normalized_data:
             # 兼容旧配置节名称，统一映射到新的共享翻译配置上。
             normalized_data["movie_info_translation"] = normalized_data["movie_desc_translation"]
@@ -496,12 +500,12 @@ class Settings(BaseSettings):
     @classmethod
     def settings_customise_sources(
         cls,
-        settings_cls: Type[BaseSettings],
+        settings_cls: type[BaseSettings],
         init_settings: PydanticBaseSettingsSource,
         env_settings: PydanticBaseSettingsSource,
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
-    ) -> Tuple[PydanticBaseSettingsSource, ...]:
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (
             init_settings,
             TomlConfigSettingsSource(settings_cls),
@@ -523,8 +527,13 @@ def refresh_runtime_settings(new_settings: Settings) -> None:
         setattr(settings, field_name, getattr(new_settings, field_name))
     # 运行时配置更新后，需要同时清理依赖配置的缓存单例。
     try:
-        from src.service.discovery import get_image_search_service, get_qdrant_thumbnail_store
-        from src.service.discovery.joytag_embedder_client import get_joytag_embedder_client
+        from src.service.discovery import (
+            get_image_search_service,
+            get_qdrant_thumbnail_store,
+        )
+        from src.service.discovery.joytag_embedder_client import (
+            get_joytag_embedder_client,
+        )
 
         get_image_search_service.cache_clear()
         get_qdrant_thumbnail_store.cache_clear()

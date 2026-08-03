@@ -4,7 +4,8 @@
 """
 
 import os
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse

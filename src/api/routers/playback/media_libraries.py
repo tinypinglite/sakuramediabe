@@ -1,4 +1,3 @@
-from typing import List
 
 from fastapi import APIRouter, Depends, Response, status
 
@@ -17,7 +16,7 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=List[MediaLibraryResource])
+@router.get("", response_model=list[MediaLibraryResource])
 def list_media_libraries(current_user=Depends(get_current_user)):
     return MediaLibraryService.list_libraries()
 

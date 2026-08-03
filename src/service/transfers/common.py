@@ -1,15 +1,21 @@
 import base64
 import binascii
 import re
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Sequence, Set
 from urllib.parse import urlparse
 
 from peewee import fn
 
 from src.api.exception.errors import ApiError
-from src.common.service_helpers import require_record, resolve_sort, validate_page as _validate_page
+
+# 导入状态取值统一收口到 media_import_status 模块；此处再导出，兼容历史引用路径。
+from src.common.media_import_status import (
+    UNFINISHED_IMPORT_STATUSES,
+)
+from src.common.service_helpers import require_record, resolve_sort
+from src.common.service_helpers import validate_page as _validate_page
 from src.config.config import settings
 from src.model import (
     DownloadClient,
@@ -20,8 +26,6 @@ from src.model import (
     Movie,
 )
 from src.model.enums import DownloadClientKind, MediaLibraryBackend
-# 导入状态取值统一收口到 media_import_status 模块；此处再导出，兼容历史引用路径。
-from src.common.media_import_status import ALLOWED_IMPORT_STATUSES, UNFINISHED_IMPORT_STATUSES
 
 BTIH_HEX_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 BTIH_BASE32_PATTERN = re.compile(r"^[A-Z2-7a-z]{32}$")
@@ -91,7 +95,7 @@ CLIENT_QB_TAG_PREFIX = "client:"
 QB_ETA_INFINITY = 8_640_000
 
 
-def parse_qb_tags(tags: object) -> Set[str]:
+def parse_qb_tags(tags: object) -> set[str]:
     """把 qB 的 tags 字段（逗号分隔字符串 / None / 属性对象）统一切成集合，去掉空白项。"""
     return {item.strip() for item in str(tags or "").split(",") if item.strip()}
 
@@ -419,7 +423,7 @@ def validate_media_library_id(library_id: int) -> int:
     return library_id
 
 
-def ensure_name_available(name: str, exclude_client_id: Optional[int] = None) -> None:
+def ensure_name_available(name: str, exclude_client_id: int | None = None) -> None:
     query = DownloadClient.select().where(DownloadClient.name == name)
     if exclude_client_id is not None:
         query = query.where(DownloadClient.id != exclude_client_id)
@@ -433,11 +437,11 @@ def ensure_name_available(name: str, exclude_client_id: Optional[int] = None) ->
 
 
 def normalize_state_filter(
-    value: Optional[str],
+    value: str | None,
     *,
     field_name: str,
-    allowed_values: Set[str],
-) -> Optional[str]:
+    allowed_values: set[str],
+) -> str | None:
     if value is None:
         return None
     normalized = value.strip().lower()
@@ -453,7 +457,7 @@ def normalize_state_filter(
     return normalized
 
 
-def resolve_task_sort(value: Optional[str]) -> Sequence:
+def resolve_task_sort(value: str | None) -> Sequence:
     return resolve_sort(
         value, TASK_SORT_FIELDS,
         default_key="created_at:desc", error_code="invalid_download_task_filter",
@@ -464,7 +468,7 @@ def validate_page(page: int, page_size: int) -> None:
     _validate_page(page, page_size, error_code="invalid_download_task_filter")
 
 
-def validate_task_ids(task_ids: Optional[str]) -> list[int]:
+def validate_task_ids(task_ids: str | None) -> list[int]:
     if task_ids is None or not task_ids.strip():
         raise ApiError(
             422,

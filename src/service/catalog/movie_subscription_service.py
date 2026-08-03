@@ -20,6 +20,7 @@ from peewee import JOIN, Case, fn
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import media_exists_expression, validate_page
 from src.model import DownloadTask, Image, Media, Movie, ResourceTaskState
+from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.subscriptions import (
     MovieSubscriptionImportOperationResource,
     MovieSubscriptionListItemResource,
@@ -27,12 +28,11 @@ from src.schema.catalog.subscriptions import (
     MovieSubscriptionStatus,
     MovieSubscriptionStatusCountsResource,
 )
-from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.service.transfers.common import (
     active_download_task_exists_expression,
-    unfinished_import_download_task_exists_expression,
     download_task_dead_expression,
+    unfinished_import_download_task_exists_expression,
 )
 from src.service.transfers.subscribed_movie_search_state_service import (
     ERROR_CODE_NO_CANDIDATE,

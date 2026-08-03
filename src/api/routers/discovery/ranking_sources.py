@@ -1,4 +1,3 @@
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 
@@ -34,10 +33,10 @@ def list_ranking_boards(source_key: str):
 def list_ranking_board_items(
     source_key: str,
     board_key: str,
-    period: Optional[str] = Query(default=None),
+    period: str | None = Query(default=None),
     page: int = 1,
     page_size: int = 20,
-    sort: Optional[str] = Query(
+    sort: str | None = Query(
         default=None,
         description="排序表达式 field:direction，可选字段：rank、heat；direction 为 asc 或 desc",
     ),

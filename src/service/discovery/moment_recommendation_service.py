@@ -1,8 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Callable, Sequence
 
 from loguru import logger
 
@@ -20,16 +19,22 @@ from src.model import (
 )
 from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.movies import MovieListItemResource
-from src.schema.discovery import MomentRecommendationItemResource, MomentRecommendationPageResource
-from src.service.discovery.joytag_embedder_client import JoyTagInferenceClientError, get_joytag_embedder_client
+from src.schema.discovery import (
+    MomentRecommendationItemResource,
+    MomentRecommendationPageResource,
+)
+from src.service.discovery.joytag_embedder_client import (
+    JoyTagInferenceClientError,
+    get_joytag_embedder_client,
+)
+from src.service.discovery.qdrant_movie_similarity_store import (
+    MovieSimilarityIndexError,
+)
 from src.service.discovery.qdrant_thumbnail_store import (
     QdrantThumbnailStore,
-    ThumbnailVectorSearchHit,
     get_qdrant_thumbnail_store,
 )
 from src.service.discovery.recommendation_service import MovieRecommendationService
-from src.service.discovery.qdrant_movie_similarity_store import MovieSimilarityIndexError
-
 
 MOMENT_RECOMMENDATION_LIMIT = 300
 MOMENT_RECOMMENDATION_SEED_LIMIT = 30

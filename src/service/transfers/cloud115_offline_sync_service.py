@@ -12,11 +12,9 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 import time
 from datetime import timedelta
-from typing import Dict
 
 from loguru import logger
 
@@ -31,7 +29,6 @@ from src.common.media_import_status import (
     IMPORT_STATUS_PENDING,
     IMPORT_STATUS_RUNNING,
 )
-from src.common.process import is_process_alive
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115Error, OfflineTask
@@ -40,13 +37,13 @@ from src.model.enums import DownloadClientKind
 from src.service.cloud115 import cloud115_client_for
 from src.service.transfers.cloud115_import_common import Cloud115TargetDirCache
 from src.service.transfers.cloud115_import_job_service import Cloud115ImportJobService
-from src.service.transfers.common import canonicalize_btih
-from src.service.transfers.cloud115_offline_service import (
-    fetch_cloud115_offline_tasks_by_hash,
-)
 from src.service.transfers.cloud115_offline_notifications import (
     create_cloud115_offline_abandoned_notification,
 )
+from src.service.transfers.cloud115_offline_service import (
+    fetch_cloud115_offline_tasks_by_hash,
+)
+from src.service.transfers.common import canonicalize_btih
 
 # 115 离线任务 status → 本系统下载状态。-1=失败, 0=待办, 1=进行中, 2=完成。
 CLOUD115_OFFLINE_STATE_MAP = {-1: "failed", 0: "queued", 1: "downloading", 2: "completed"}
@@ -210,7 +207,7 @@ class Cloud115OfflineSyncService:
                 return job
             time.sleep(cls.IMPORT_POLL_INTERVAL_SECONDS)
 
-    async def _fetch_remote_tasks(self, client: DownloadClient) -> Dict[str, OfflineTask]:
+    async def _fetch_remote_tasks(self, client: DownloadClient) -> dict[str, OfflineTask]:
         """分页拉全量离线任务，按 info_hash 索引。"""
         async with cloud115_client_for(client.media_library) as sdk_client:
             return await fetch_cloud115_offline_tasks_by_hash(

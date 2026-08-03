@@ -5,10 +5,16 @@ from pathlib import Path
 from src.api.exception.errors import ApiError
 from src.common import build_signed_subtitle_url
 from src.common.media_paths import movie_subtitle_dir
-from src.common.subtitle_paths import ensure_movie_subtitle_path, iter_movie_sidecar_roots
 from src.common.service_helpers import require_record
+from src.common.subtitle_paths import (
+    ensure_movie_subtitle_path,
+    iter_movie_sidecar_roots,
+)
 from src.model import Movie, Subtitle
-from src.schema.catalog.subtitles import MovieSubtitleItemResource, MovieSubtitleListResource
+from src.schema.catalog.subtitles import (
+    MovieSubtitleItemResource,
+    MovieSubtitleListResource,
+)
 
 
 class MovieSubtitleService:

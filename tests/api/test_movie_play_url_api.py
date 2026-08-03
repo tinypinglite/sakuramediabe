@@ -5,16 +5,14 @@
 无媒体/参数缺失的防御行为。
 """
 
-import hmac
 import hashlib
+import hmac
 import uuid
 from urllib.parse import parse_qs, urlparse
 
 from src.model import Media, MediaLibrary, Movie
 from src.model.enums import MediaLibraryBackend
-
 from tests.conftest import TEST_FILE_SIGNATURE_EXPIRES, TEST_FILE_SIGNATURE_SECRET
-
 
 PLAY_URL_PATH = "/media/play-url"
 
@@ -68,7 +66,7 @@ def _create_cloud_library() -> MediaLibrary:
 def _merged_signature(first_media_id: int) -> str:
     return hmac.new(
         TEST_FILE_SIGNATURE_SECRET.encode("utf-8"),
-        f"media:{first_media_id}:{TEST_FILE_SIGNATURE_EXPIRES}".encode("utf-8"),
+        f"media:{first_media_id}:{TEST_FILE_SIGNATURE_EXPIRES}".encode(),
         hashlib.sha256,
     ).hexdigest()
 
@@ -119,7 +117,7 @@ class TestMoviePlayUrlApi:
     def test_local_single_returns_first_segment(self, client, account_user):
         movie = _create_movie("ABC-003")
         m1 = _create_media(movie)
-        m2 = _create_media(movie)
+        _create_media(movie)
 
         response = client.get(
             PLAY_URL_PATH,

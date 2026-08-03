@@ -5,9 +5,9 @@ from typing import Any
 
 import peewee
 from loguru import logger
+
 from src.api.exception.errors import ApiError
-from src.common.runtime_time import utc_now_for_db
-from src.common.runtime_time import runtime_now
+from src.common.runtime_time import runtime_now, utc_now_for_db
 from src.common.service_helpers import with_movie_card_relations
 from src.config.config import settings
 from src.metadata._providers.exceptions import JavdbAuthError

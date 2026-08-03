@@ -6,7 +6,6 @@ from playhouse.migrate import migrate as run_migration
 from src.model.base import BaseModel
 from src.start.migrations import SkipMigration
 
-
 name = "20260429_01_add_actor_subscribed_at"
 
 

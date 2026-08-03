@@ -316,7 +316,7 @@ def test_search_state_branches_map_kernel_vocabulary(client):
     _search_state(infra_failed, state="failed_retryable", error_code="indexer_search_failed")
     submitted_then_dead = _subscribe("SRCH-004")
     _search_state(submitted_then_dead, state="succeeded")
-    never_searched = _subscribe("SRCH-005")
+    _subscribe("SRCH-005")
 
     assert _status_of("SRCH-001") == MovieSubscriptionStatus.EXHAUSTED.value
     assert _status_of("SRCH-002") == MovieSubscriptionStatus.MISSING.value
@@ -332,7 +332,7 @@ def test_import_failed_rows_carry_latest_import_operation(client):
 
     from src.model import ImportJob
 
-    retryable = _subscribe("IOPS-001")
+    _subscribe("IOPS-001")
     retry_task = _task(client, "IOPS-001", download_state="completed", import_status=IMPORT_STATUS_FAILED)
     ImportJob.create(
         source_path="/downloads/IOPS-001",
@@ -347,7 +347,7 @@ def test_import_failed_rows_carry_latest_import_operation(client):
             ]
         ),
     )
-    zero_yield = _subscribe("IOPS-002")
+    _subscribe("IOPS-002")
     zero_task = _task(client, "IOPS-002", download_state="completed", import_status=IMPORT_STATUS_COMPLETED)
     ImportJob.create(
         source_path="/downloads/IOPS-002",

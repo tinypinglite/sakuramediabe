@@ -19,7 +19,6 @@ download_sync_service.py、download_task_service.py 中的下列取值统一收�
 ``metadata_fetch_failed`` 等同名 reason 字符串，但那是另一套语义，不在本模块管辖范围内。
 """
 
-from typing import Dict
 
 # ===== DownloadTask.import_status：下载任务的导入阶段状态 =====
 IMPORT_STATUS_PENDING = "pending"
@@ -28,7 +27,7 @@ IMPORT_STATUS_COMPLETED = "completed"
 IMPORT_STATUS_FAILED = "failed"
 IMPORT_STATUS_SKIPPED = "skipped"
 
-IMPORT_STATUS_DESCRIPTIONS: Dict[str, str] = {
+IMPORT_STATUS_DESCRIPTIONS: dict[str, str] = {
     IMPORT_STATUS_PENDING: "待导入：下载已完成，等待自动导入触发",
     IMPORT_STATUS_RUNNING: "导入中：导入作业正在执行",
     IMPORT_STATUS_COMPLETED: "已导入：媒体文件全部成功入库",
@@ -48,7 +47,7 @@ IMPORT_JOB_STATE_RUNNING = "running"
 IMPORT_JOB_STATE_COMPLETED = "completed"
 IMPORT_JOB_STATE_FAILED = "failed"
 
-IMPORT_JOB_STATE_DESCRIPTIONS: Dict[str, str] = {
+IMPORT_JOB_STATE_DESCRIPTIONS: dict[str, str] = {
     IMPORT_JOB_STATE_PENDING: "待执行：作业已创建，尚未开始扫描导入",
     IMPORT_JOB_STATE_RUNNING: "执行中：正在扫描、抓取元数据或导入文件",
     IMPORT_JOB_STATE_COMPLETED: "已完成：本次导入无失败文件",
@@ -64,7 +63,7 @@ FAILED_FILE_KIND_SKIPPED = "skipped"  # 主动跳过（如小文件），仅信�
 FAILED_FILE_KIND_WARNING = "warning"  # 导入后告警（如删源失败/多字幕），不做文件级操作
 FAILED_FILE_KIND_JOB = "job"          # 任务级失败，path 通常为目录，不做文件级操作
 
-FAILED_FILE_KIND_DESCRIPTIONS: Dict[str, str] = {
+FAILED_FILE_KIND_DESCRIPTIONS: dict[str, str] = {
     FAILED_FILE_KIND_FILE: "单文件失败：可重导/删除/重命名",
     FAILED_FILE_KIND_SKIPPED: "主动跳过：仅信息展示，无需处理",
     FAILED_FILE_KIND_WARNING: "导入后告警：媒体已入库，仅提示",
@@ -93,7 +92,7 @@ FAILURE_REASON_CLOUD115_RENAME_FAILED = "cloud115_rename_failed"
 FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED = "cloud115_metadata_probe_failed"
 FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED = "cloud115_subtitle_download_failed"
 
-FAILURE_REASON_DESCRIPTIONS: Dict[str, str] = {
+FAILURE_REASON_DESCRIPTIONS: dict[str, str] = {
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND: "未识别番号：无法从文件名/路径解析出影片番号",
     FAILURE_REASON_METADATA_FETCH_FAILED: "元数据抓取失败：从站点获取影片信息失败",
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED: "图片下载失败：影片封面/海报下载失败",
@@ -119,7 +118,7 @@ FAILURE_REASON_DESCRIPTIONS: Dict[str, str] = {
 }
 
 # 失败原因 -> 条目分类：决定该失败项是否可被用户重导/删除/重命名。
-_FAILED_FILE_KIND_BY_REASON: Dict[str, str] = {
+_FAILED_FILE_KIND_BY_REASON: dict[str, str] = {
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND: FAILED_FILE_KIND_FILE,
     FAILURE_REASON_METADATA_FETCH_FAILED: FAILED_FILE_KIND_FILE,
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED: FAILED_FILE_KIND_FILE,
@@ -152,7 +151,7 @@ def classify_failed_file_kind(reason: str) -> str:
     return _FAILED_FILE_KIND_BY_REASON.get(reason or "", FAILED_FILE_KIND_FILE)
 
 
-def make_failure_item(path, reason: str, detail: str = "") -> Dict[str, str]:
+def make_failure_item(path, reason: str, detail: str = "") -> dict[str, str]:
     """构造带分类的失败条目，作为写入 ``failed_files`` 的唯一来源。"""
     return {
         "path": str(path),

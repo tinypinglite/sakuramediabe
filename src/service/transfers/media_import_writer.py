@@ -6,8 +6,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
 
 from loguru import logger
 
@@ -38,11 +38,11 @@ def import_single_scanned_file(
     file_entry: ScannedSourceFile,
     library: MediaLibrary,
     movie: Movie,
-    failure_items: List[Dict[str, str]],
+    failure_items: list[dict[str, str]],
     transfer_mode: ImportTransferMode,
     now_ms: Callable[[], int],
     media_metadata_probe_service: MediaMetadataProbeService,
-) -> Tuple[bool, int]:
+) -> tuple[bool, int]:
     """把扫描阶段产出的单个文件搬入媒体库并 upsert Media 记录。"""
     existing_media = find_media_by_content_fingerprint(
         file_entry.content_fingerprint,
@@ -112,7 +112,7 @@ def upsert_media(
     storage_mode: str,
     content_fingerprint: str,
     file_size: int,
-    special_tag_source_paths: List[Path],
+    special_tag_source_paths: list[Path],
     has_sidecar_subtitle: bool,
     media_metadata_probe_service: MediaMetadataProbeService,
 ) -> None:
@@ -124,7 +124,7 @@ def upsert_media(
             file_size = 0
     metadata = media_metadata_probe_service.probe_file(target_path)
     resolution = metadata.resolution
-    duration_seconds = metadata.duration_seconds if metadata.duration_seconds > 0 else 0
+    duration_seconds = max(0, metadata.duration_seconds)
     invalid_media = find_media_by_content_fingerprint(
         content_fingerprint,
         valid=False,
@@ -189,7 +189,7 @@ def _import_single_media_file(
     *,
     transfer_mode: ImportTransferMode,
     now_ms: Callable[[], int],
-) -> Tuple[str, Path]:
+) -> tuple[str, Path]:
     """为单个媒体文件创建目标版本目录并完成文件传输。"""
     library_root = Path(library.backend_config["root_path"]).expanduser()
     # 复用共享版本目录工具，JAV 实体目录为“库根/jav/番号”，和 videos 平级。

@@ -7,6 +7,8 @@ from src.api.exception.errors import ApiError
 from src.config.config import (
     Settings,
     settings,
+)
+from src.config.config import (
     update_settings as persist_settings,
 )
 from src.schema.system.config import (
@@ -15,7 +17,6 @@ from src.schema.system.config import (
     ConfigUpdateResource,
     PendingRestartField,
 )
-
 
 # 本 API 不接管的顶层键（节名或顶层字段名统一收敛在一起）：
 # - "auth" 节整体交由专用接口管理：

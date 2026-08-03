@@ -6,9 +6,10 @@ HTTP 会话、请求策略和远端能力已拆分；本类保留原公开方法
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
 
 import httpx
+from typing_extensions import Self
 
 from src.lib.cloud115.capabilities import (
     AuthCapability,
@@ -84,10 +85,10 @@ class Cloud115Client:
     async def close(self) -> None:
         await self.transport.close()
 
-    async def __aenter__(self) -> "Cloud115Client":
+    async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *_exc: Any) -> None:
+    async def __aexit__(self, *_exc: object) -> None:
         await self.close()
 
     async def probe_cookies_status(self, *args, **kwargs):

@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 
-from typing import List, Sequence, Tuple
+from collections.abc import Sequence
 
 import httpx
 import libtorrent as lt
@@ -62,7 +62,7 @@ def _suffix(file_path: str) -> str:
     return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
 
 
-def count_qualified_videos(files: Sequence[Tuple[str, int]]) -> int:
+def count_qualified_videos(files: Sequence[tuple[str, int]]) -> int:
     """统计种子里"导入侧真的会收下"的视频文件数。
 
     与 ``media_source_scanner.scan_source_files`` 的过滤口径逐条对应：后缀命中支持列表，
@@ -76,7 +76,7 @@ def count_qualified_videos(files: Sequence[Tuple[str, int]]) -> int:
     )
 
 
-def count_distinct_movie_numbers(files: Sequence[Tuple[str, int]]) -> int:
+def count_distinct_movie_numbers(files: Sequence[tuple[str, int]]) -> int:
     """统计合格视频解析出的**不同番号**数，作为合集判定依据。
 
     与导入侧扫描共用 ``parse_movie_number_from_scan_path``（只看父目录 + 文件名最后两段），
@@ -107,7 +107,7 @@ def fetch_torrent_files(
     torrent_url: str,
     *,
     http_client: httpx.Client | None = None,
-) -> List[Tuple[str, int]]:
+) -> list[tuple[str, int]]:
     """拉取 .torrent 并解出 (文件相对路径, 字节数) 列表。
 
     只读取 metadata，不加种、不连 DHT、不产生任何下载行为。取不到时抛

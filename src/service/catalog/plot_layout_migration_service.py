@@ -27,15 +27,14 @@ from __future__ import annotations
 import os
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from loguru import logger
 
 from src.config.config import settings
 from src.model import Image
-
 
 # 迁移进度回调：(current, total)
 ProgressCallback = Callable[[int, int], None]

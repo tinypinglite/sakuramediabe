@@ -1,5 +1,4 @@
 import time
-from typing import List, Optional, Set
 from urllib.parse import urlparse
 
 from src.api.exception.errors import ApiError
@@ -9,6 +8,8 @@ from src.config.config import (
     IndexerType,
     Settings,
     settings,
+)
+from src.config.config import (
     update_settings as persist_settings,
 )
 from src.model import DownloadClient, Indexer, IndexerDownloadClient
@@ -17,8 +18,8 @@ from src.schema.system.indexer_settings import (
     IndexerBoundClientResource,
     IndexerConnectionTestError,
     IndexerConnectionTestResponse,
-    IndexerItemUpdatePayload,
     IndexerItemResource,
+    IndexerItemUpdatePayload,
     IndexerSettingsResource,
     IndexerSettingsUpdateRequest,
 )
@@ -96,7 +97,10 @@ class IndexerSettingsService:
     ) -> IndexerConnectionTestResponse:
         """Jackett 连通性检测:用固定番号真实搜一次，而不是单纯 ping,以此验证 apikey 与 indexer 配置整体可用。"""
         # 延迟导入，避免 system service 与 transfers service 顶层依赖链形成循环。
-        from src.service.transfers.jackett_client import JackettClient, JackettClientError
+        from src.service.transfers.jackett_client import (
+            JackettClient,
+            JackettClientError,
+        )
 
         jackett_client_cls = jackett_client_cls or JackettClient
         start_at = time.time()
@@ -140,7 +144,7 @@ class IndexerSettingsService:
         healthy: bool,
         indexers_checked: int,
         result_count: int = 0,
-        error: Optional[IndexerConnectionTestError] = None,
+        error: IndexerConnectionTestError | None = None,
     ) -> IndexerConnectionTestResponse:
         return IndexerConnectionTestResponse(
             healthy=healthy,
@@ -153,7 +157,7 @@ class IndexerSettingsService:
         )
 
     @staticmethod
-    def _validate_api_key(value: Optional[str]) -> str:
+    def _validate_api_key(value: str | None) -> str:
         if value is None:
             raise ApiError(
                 422,
@@ -201,7 +205,7 @@ class IndexerSettingsService:
         return normalized
 
     @staticmethod
-    def _validate_type(value: Optional[str]) -> IndexerType:
+    def _validate_type(value: str | None) -> IndexerType:
         if value is None:
             raise ApiError(
                 422,
@@ -249,16 +253,16 @@ class IndexerSettingsService:
     @classmethod
     def _validate_indexers(
         cls,
-        items: Optional[List[IndexerItemUpdatePayload]],
-    ) -> List[dict]:
+        items: list[IndexerItemUpdatePayload] | None,
+    ) -> list[dict]:
         if items is None:
             raise ApiError(
                 422,
                 "invalid_indexer_settings_indexers",
                 "Indexers must be a list",
             )
-        normalized_names: Set[str] = set()
-        indexers: List[dict] = []
+        normalized_names: set[str] = set()
+        indexers: list[dict] = []
 
         for item in items:
             name = cls._validate_name(item.name)
@@ -289,11 +293,11 @@ class IndexerSettingsService:
 
     @staticmethod
     def _validate_download_client_ids(
-        values: List[int],
+        values: list[int],
         *,
         indexer_kind: IndexerKind,
         indexer_name: str,
-    ) -> List[int]:
+    ) -> list[int]:
         # 每个索引器至少绑一个下载器；重复 id 拒绝，保持绑定顺序（挑选时同 kind 内按此顺序）。
         if not values:
             raise ApiError(
@@ -301,7 +305,7 @@ class IndexerSettingsService:
                 "invalid_indexer_settings_download_client_ids",
                 "download_client_ids must contain at least one client",
             )
-        seen: Set[int] = set()
+        seen: set[int] = set()
         for value in values:
             if value <= 0:
                 raise ApiError(
@@ -342,7 +346,7 @@ class IndexerSettingsService:
         return list(values)
 
     @classmethod
-    def _replace_indexers(cls, items: Optional[List[IndexerItemUpdatePayload]]) -> None:
+    def _replace_indexers(cls, items: list[IndexerItemUpdatePayload] | None) -> None:
         validated_items = cls._validate_indexers(items)
         with Indexer._meta.database.atomic():
             # 中间表挂 CASCADE，删 indexer 会连带清空绑定；显式先删保证语义清晰。

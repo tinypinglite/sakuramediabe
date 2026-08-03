@@ -5,7 +5,6 @@ from playhouse.migrate import migrate as run_migration
 
 from src.start.migrations import SkipMigration
 
-
 name = "20260421_01_add_movie_title_zh"
 
 

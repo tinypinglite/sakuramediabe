@@ -1,4 +1,3 @@
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
@@ -21,10 +20,10 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=List[TagListItemResource], response_model_by_alias=False)
+@router.get("", response_model=list[TagListItemResource], response_model_by_alias=False)
 def list_tags(
     query: str | None = Query(default=None),
-    sort: Optional[str] = Query(default=None),
+    sort: str | None = Query(default=None),
 ):
     return TagService.list_tags(query=query, sort=sort)
 
@@ -41,7 +40,7 @@ def list_tag_movies(
     status: MovieListStatus = MovieListStatus.ALL,
     collection_type: MovieCollectionType = MovieCollectionType.ALL,
     special_tag: MovieSpecialTagFilter | None = None,
-    sort: Optional[str] = Query(default=None),
+    sort: str | None = Query(default=None),
     director_name: str | None = Query(default=None),
     maker_name: str | None = Query(default=None),
     page: int = 1,

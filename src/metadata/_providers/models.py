@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -19,10 +19,10 @@ class JavdbMovieBase(ProviderModel):
     javdb_id: str = Field()
     movie_number: str
     title: str
-    cover_image: Optional[str] = None
-    release_date: Optional[str] = None
+    cover_image: str | None = None
+    release_date: str | None = None
     duration_minutes: int
-    score: Optional[float] = None
+    score: float | None = None
     watched_count: int = 0
     want_watch_count: int = 0
     comment_count: int = 0
@@ -31,7 +31,7 @@ class JavdbMovieBase(ProviderModel):
 
     @field_validator("release_date", mode="before")
     @classmethod
-    def serialize_release_date(cls, value: Any) -> Optional[str]:
+    def serialize_release_date(cls, value: Any) -> str | None:
         if value is None or value == "":
             return None
         if isinstance(value, datetime):
@@ -49,8 +49,8 @@ class JavdbMovieActor(ProviderModel):
     javdb_id: str = Field()
     javdb_type: int = 0
     name: str
-    alias_names: List[str] = Field(default_factory=list)
-    avatar_url: Optional[str] = Field(default=None)
+    alias_names: list[str] = Field(default_factory=list)
+    avatar_url: str | None = Field(default=None)
     gender: int = 0
 
 
@@ -70,10 +70,10 @@ class JavdbReviewMovie(ProviderModel):
     id: str = ""
     number: str = ""
     title: str = ""
-    origin_title: Optional[str] = None
-    score: Optional[float] = None
-    thumb_url: Optional[str] = None
-    release_date: Optional[str] = None
+    origin_title: str | None = None
+    score: float | None = None
+    thumb_url: str | None = None
+    release_date: str | None = None
 
 
 class JavdbMovieReview(ProviderModel):
@@ -84,7 +84,7 @@ class JavdbMovieReview(ProviderModel):
     username: str = ""
     like_count: int = 0
     watch_count: int = 0
-    movie: Optional[JavdbReviewMovie] = None
+    movie: JavdbReviewMovie | None = None
 
     @field_validator("created_at", mode="before")
     @classmethod
@@ -94,13 +94,13 @@ class JavdbMovieReview(ProviderModel):
 
 class JavdbMovieDetail(JavdbMovieBase):
     summary: str
-    series_name: Optional[str] = Field(default=None)
-    maker_name: Optional[str] = Field(default=None)
-    director_name: Optional[str] = Field(default=None)
-    actors: List[JavdbMovieActor]
-    tags: List[JavdbMovieTag]
-    extra: Optional[Dict[str, Any]] = Field(default=None)
-    plot_images: List[str] = Field(default_factory=list)
+    series_name: str | None = Field(default=None)
+    maker_name: str | None = Field(default=None)
+    director_name: str | None = Field(default=None)
+    actors: list[JavdbMovieActor]
+    tags: list[JavdbMovieTag]
+    extra: dict[str, Any] | None = Field(default=None)
+    plot_images: list[str] = Field(default_factory=list)
 
 
 JavdbMovieBaseResource = JavdbMovieBase

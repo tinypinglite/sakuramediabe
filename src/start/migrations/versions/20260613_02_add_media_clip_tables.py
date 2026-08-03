@@ -9,7 +9,6 @@ from src.model import (
 )
 from src.start.migrations import SkipMigration
 
-
 name = "20260613_02_add_media_clip_tables"
 
 

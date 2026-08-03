@@ -4,6 +4,7 @@ from typing import Any
 
 import peewee
 from loguru import logger
+
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import parse_external_datetime, utc_now_for_db
 from src.common.service_helpers import with_movie_card_relations
@@ -166,7 +167,7 @@ class HotReviewSyncService:
 
     def _review_dedup_key(self, review: Any) -> str:
         review_movie = getattr(review, "movie", None)
-        movie_number = ((getattr(review_movie, "number", None) or "")).strip()
+        movie_number = (getattr(review_movie, "number", None) or "").strip()
         review_id = int(getattr(review, "id", 0) or 0)
         if review_id > 0:
             return f"id:{review_id}"
@@ -215,7 +216,7 @@ class HotReviewSyncService:
                 rank_cursor += 1
 
                 review_movie = getattr(review, "movie", None)
-                movie_number = ((getattr(review_movie, "number", None) or "")).strip()
+                movie_number = (getattr(review_movie, "number", None) or "").strip()
                 if not movie_number:
                     skipped_reviews += 1
                     logger.warning(

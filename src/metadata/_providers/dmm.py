@@ -5,9 +5,9 @@ import json
 import re
 from urllib.parse import quote
 
-from .utils import normalize_movie_number, parse_movie_number_from_text
 from .exceptions import MetadataNotFoundError
 from .http_client import MetadataRequestClient
+from .utils import normalize_movie_number, parse_movie_number_from_text
 
 
 class DmmMovieNumberNotFoundError(MetadataNotFoundError):
@@ -180,7 +180,7 @@ class DmmProvider(MetadataRequestClient):
 
     @staticmethod
     def _normalize_description(value: str | None) -> str:
-        return html.unescape((value or "")).strip()
+        return html.unescape(value or "").strip()
 
     @classmethod
     def _strip_html(cls, value: str | None) -> str:

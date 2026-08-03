@@ -3,10 +3,10 @@ from typing import Any
 from urllib.parse import parse_qsl, urlparse
 
 from peewee import (
+    CharField,
     DatabaseProxy,
     Model,
     PostgresqlDatabase,
-    CharField,
     TextField,
 )
 

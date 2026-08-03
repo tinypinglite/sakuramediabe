@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import random
 import time
-from typing import Any, Dict, List, NoReturn, Sequence
+from collections.abc import Sequence
+from typing import Any, NoReturn
 
 from loguru import logger
 from peewee import JOIN
 
 from src.api.exception.errors import ApiError
+from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import media_exists_expression
 from src.model import DownloadTask, Movie, ResourceTaskState
 from src.model.enums import DownloadClientKind
@@ -15,6 +17,13 @@ from src.schema.transfers.downloads import (
     DownloadCandidateCreatePayload,
     DownloadCandidateResource,
     DownloadRequestCreateRequest,
+)
+from src.service.system.resource_task_runner import (
+    ResourceTaskLedger,
+    ResourceTaskRunner,
+    ResourceTaskSpec,
+    RetryPolicy,
+    TaskItemError,
 )
 from src.service.transfers.common import (
     active_download_task_exists_expression,
@@ -33,14 +42,6 @@ from src.service.transfers.tag_rules import SUBTITLE_TAG
 from src.service.transfers.torrent_content_guard import (
     ERROR_CODE_CONTENT_REJECTED,
     ERROR_CODE_CONTENT_UNVERIFIABLE,
-)
-from src.common.runtime_time import utc_now_for_db
-from src.service.system.resource_task_runner import (
-    ResourceTaskLedger,
-    ResourceTaskRunner,
-    ResourceTaskSpec,
-    RetryPolicy,
-    TaskItemError,
 )
 
 MIN_SIZE_BYTES = 1 * 1024 * 1024 * 1024
@@ -89,7 +90,7 @@ class SubscribedMovieAutoDownloadService:
     def _is_cloud115_task(client_id: int | None, cloud115_client_ids: set[int]) -> bool:
         return client_id is not None and client_id in cloud115_client_ids
 
-    def _setup_run(self, _ctx) -> Dict[str, Any]:
+    def _setup_run(self, _ctx) -> dict[str, Any]:
         return {
             # cloud115 下载入口 id 集合：判断某次提交是否打了 115，决定要不要为下一个排队等待。
             "cloud115_client_ids": self._cloud115_client_ids(),
@@ -226,7 +227,7 @@ class SubscribedMovieAutoDownloadService:
             candidate.title,
         )
 
-    def run(self, *, reporter, only_ids: List[int] | None = None) -> Dict[str, Any]:
+    def run(self, *, reporter, only_ids: list[int] | None = None) -> dict[str, Any]:
         now = utc_now_for_db()
         retry_policy = RetryPolicy(
             max_attempts=SubscribedMovieSearchStateService.stale_attempt_limit(),
@@ -264,7 +265,7 @@ class SubscribedMovieAutoDownloadService:
 
     _media_exists_expression = staticmethod(media_exists_expression)
 
-    def _select_candidates(self, _state_condition, only_ids=None) -> List[Movie]:
+    def _select_candidates(self, _state_condition, only_ids=None) -> list[Movie]:
         """本轮该发起搜索的订阅影片，一条 SQL 出结果。
 
         succeeded 行必须保留在候选里（提交过的种子判死后，活跃任务条件会把影片放回来），

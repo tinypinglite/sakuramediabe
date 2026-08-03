@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import time
 from collections import defaultdict
-from typing import Iterator, Sequence
+from collections.abc import Iterator, Sequence
 
 from loguru import logger
 from peewee import fn
@@ -26,7 +26,6 @@ from src.service.discovery.qdrant_movie_similarity_store import (
     QdrantMovieSimilarityStore,
     get_qdrant_movie_similarity_store,
 )
-
 
 SIM_WEIGHT_ACTOR = 0.6
 SIM_WEIGHT_TAG = 0.4

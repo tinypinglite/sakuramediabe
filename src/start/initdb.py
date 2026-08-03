@@ -1,12 +1,17 @@
-#!/usr/bin/env python
-# -*- encoding: utf-8 -*-
-
 import bcrypt
-
 from loguru import logger
 
 from src.config import settings
 from src.model import (
+    FOUR_K_PLAYLIST_DESCRIPTION,
+    FOUR_K_PLAYLIST_NAME,
+    PLAYLIST_KIND_4K,
+    PLAYLIST_KIND_RECENTLY_PLAYED,
+    PLAYLIST_KIND_VR,
+    RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
+    RECENTLY_PLAYED_PLAYLIST_NAME,
+    VR_PLAYLIST_DESCRIPTION,
+    VR_PLAYLIST_NAME,
     Actor,
     BackgroundTaskRun,
     ClipCollection,
@@ -44,21 +49,12 @@ from src.model import (
     SystemEvent,
     SystemNotification,
     Tag,
+    User,
+    UserRefreshToken,
     VideoCollection,
     VideoCollectionItem,
     VideoImportJob,
     VideoItem,
-    User,
-    UserRefreshToken,
-    FOUR_K_PLAYLIST_DESCRIPTION,
-    FOUR_K_PLAYLIST_NAME,
-    PLAYLIST_KIND_4K,
-    PLAYLIST_KIND_RECENTLY_PLAYED,
-    PLAYLIST_KIND_VR,
-    RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
-    RECENTLY_PLAYED_PLAYLIST_NAME,
-    VR_PLAYLIST_DESCRIPTION,
-    VR_PLAYLIST_NAME,
     init_database,
 )
 

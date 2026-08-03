@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from contextlib import nullcontext
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field
 from peewee import IntegrityError
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.model import BackgroundTaskRun
 from src.service.system.activity.filters import (

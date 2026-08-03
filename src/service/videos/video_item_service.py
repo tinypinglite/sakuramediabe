@@ -1,9 +1,8 @@
 """视频条目（VideoItem）service：非 JAV 视频的条目增删改查与详情组装。"""
 
 from datetime import datetime
-from typing import Dict, List
 
-from peewee import Case, JOIN, fn
+from peewee import JOIN, Case, fn
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
@@ -35,6 +34,7 @@ from src.schema.videos.items import (
     VideoItemListItemResource,
     VideoItemUpdateRequest,
 )
+
 
 class VideoItemService:
     @staticmethod
@@ -138,7 +138,7 @@ class VideoItemService:
         return video_query
 
     @staticmethod
-    def _media_stats(video_ids: List[int]) -> Dict[int, tuple[int, bool]]:
+    def _media_stats(video_ids: list[int]) -> dict[int, tuple[int, bool]]:
         """批量统计每个视频的媒体数量与是否存在可播放媒体。"""
         if not video_ids:
             return {}
@@ -153,13 +153,13 @@ class VideoItemService:
             .where(Media.video_item.in_(video_ids))
             .group_by(Media.video_item)
         )
-        stats: Dict[int, tuple[int, bool]] = {}
+        stats: dict[int, tuple[int, bool]] = {}
         for row in rows:
             stats[row.video_item_id] = (row.media_count, bool(row.valid_count))
         return stats
 
     @staticmethod
-    def _collections_map(video_ids: List[int]) -> Dict[int, List[VideoCollectionRef]]:
+    def _collections_map(video_ids: list[int]) -> dict[int, list[VideoCollectionRef]]:
         """批量拉每个视频归属的合集列表，按合集名称升序返回 {video_item_id: [Ref, ...]}。
 
         用于列表/详情共用的合集引用填充，避免逐条懒加载导致 N+1。
@@ -176,7 +176,7 @@ class VideoItemService:
             .where(VideoCollectionItem.video_item.in_(video_ids))
             .order_by(VideoCollection.name.asc(), VideoCollection.id.asc())
         )
-        result: Dict[int, List[VideoCollectionRef]] = {}
+        result: dict[int, list[VideoCollectionRef]] = {}
         for row in rows:
             result.setdefault(row.video_item_id, []).append(
                 VideoCollectionRef(id=row.collection.id, name=row.collection.name)
@@ -194,7 +194,7 @@ class VideoItemService:
         file_size_bytes: int = 0,
         cover_width: int | None = None,
         cover_height: int | None = None,
-        collections: List[VideoCollectionRef] | None = None,
+        collections: list[VideoCollectionRef] | None = None,
     ) -> VideoItemListItemResource:
         return VideoItemListItemResource(
             id=video.id,
@@ -273,7 +273,7 @@ class VideoItemService:
         )
 
     @staticmethod
-    def _media_items(video: VideoItem) -> List[MovieMediaResource]:
+    def _media_items(video: VideoItem) -> list[MovieMediaResource]:
         """组装视频详情页的媒体列表，复用影片媒体资源结构（进度 + 时刻）。"""
         from src.service.playback.media_service import MediaService
 
@@ -290,7 +290,7 @@ class VideoItemService:
             progress.media_id: progress
             for progress in MediaProgress.select(MediaProgress).where(MediaProgress.media.in_(media_ids))
         }
-        points_by_media_id: Dict[int, List[MovieMediaPointResource]] = {}
+        points_by_media_id: dict[int, list[MovieMediaPointResource]] = {}
         point_query = (
             MediaPoint.select(MediaPoint, MediaThumbnail, Image)
             .join(MediaThumbnail)
@@ -308,7 +308,7 @@ class VideoItemService:
                     image=ImageResource.from_attributes_model(point.thumbnail.image),
                 )
             )
-        resources: List[MovieMediaResource] = []
+        resources: list[MovieMediaResource] = []
         for media in media_items:
             progress = progress_items.get(media.id)
             media.progress = (

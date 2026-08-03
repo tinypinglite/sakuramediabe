@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import os
 import struct
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 # mp4 box 解析用；大端。
 _BOX_HEADER = struct.Struct(">I4s")
@@ -411,8 +411,7 @@ def _serialize_track(t: TrackInfo) -> bytes:
         stbl_parts.append(t.sgpd)
     if t.sbgp and t.sbgp_grouping:
         stbl_parts.append(_build_sbgp(t.sbgp_grouping, t.sbgp))
-    for raw in t.stbl_extras:
-        stbl_parts.append(raw)
+    stbl_parts.extend(t.stbl_extras)
     stbl = _box("stbl", b"".join(stbl_parts))
     minf_extras = b"".join(t.minf_extras)
     minf = _box("minf", minf_extras + stbl)

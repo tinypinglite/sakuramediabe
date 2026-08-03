@@ -1,13 +1,12 @@
 from pathlib import Path
-from typing import Dict, Tuple
 
 from loguru import logger
 
 from src.common.logging import get_logging_level_name
 from src.config.config import settings
 
-_TASK_SINKS: Dict[Tuple[str, str], int] = {}
-_TASK_LEVELS: Dict[Tuple[str, str], str] = {}
+_TASK_SINKS: dict[tuple[str, str], int] = {}
+_TASK_LEVELS: dict[tuple[str, str], str] = {}
 
 
 def get_task_logger(task_name: str):

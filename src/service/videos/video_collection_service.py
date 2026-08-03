@@ -1,9 +1,8 @@
 """视频合集（VideoCollection）service：合集增删改查、成员管理与顺序维护。"""
 
 from datetime import datetime
-from typing import Dict, List
 
-from peewee import IntegrityError, JOIN, fn
+from peewee import JOIN, IntegrityError, fn
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
@@ -61,7 +60,7 @@ class VideoCollectionService:
             )
 
     @staticmethod
-    def _item_counts(collection_ids: List[int]) -> Dict[int, int]:
+    def _item_counts(collection_ids: list[int]) -> dict[int, int]:
         if not collection_ids:
             return {}
         query = (
@@ -95,7 +94,7 @@ class VideoCollectionService:
         collection.save(only=[VideoCollection.updated_at])
 
     @classmethod
-    def list_collections(cls) -> List[VideoCollectionResource]:
+    def list_collections(cls) -> list[VideoCollectionResource]:
         collections = list(
             VideoCollection.select().order_by(
                 VideoCollection.updated_at.desc(), VideoCollection.id.desc()
@@ -197,7 +196,7 @@ class VideoCollectionService:
         include_play_url: bool = False,
         offset: int | None = None,
         limit: int | None = None,
-    ) -> List[VideoCollectionItemResource]:
+    ) -> list[VideoCollectionItemResource]:
         """查询并组装成员资源列表。[offset]/[limit] 为 None 时返回全部（供 reorder 用）。"""
         first_media, first_media_id = VideoItemService._first_media_alias()
         # 默认 position 升序（合集手动顺序，前端据此顺序播放）；另支持入库时间/标题/时长/文件大小排序。
@@ -236,7 +235,7 @@ class VideoCollectionService:
             query = query.limit(limit)
         links = list(query)
         stats = VideoItemService._media_stats([link.video_item_id for link in links])
-        items: List[VideoCollectionItemResource] = []
+        items: list[VideoCollectionItemResource] = []
         for link in links:
             media_count, can_play = stats.get(link.video_item_id, (0, False))
             play_url = (
@@ -317,7 +316,7 @@ class VideoCollectionService:
             cls._touch_collection(collection, cls._current_time())
 
     @classmethod
-    def reorder_items(cls, collection_id: int, ordered_item_ids: List[int]) -> List[VideoCollectionItemResource]:
+    def reorder_items(cls, collection_id: int, ordered_item_ids: list[int]) -> list[VideoCollectionItemResource]:
         collection = cls._require_collection(collection_id)
         existing_ids = {
             link.id

@@ -1,35 +1,33 @@
-from fastapi.testclient import TestClient
-from starlette.requests import Request
-from unittest.mock import AsyncMock, Mock
 import logging
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
-from src.api.routers import deps
-from src.api.routers.catalog import subscriptions as movie_subscriptions
-from src.api.routers.catalog import tags
-from src.api.routers.files import images
-from src.api.routers.discovery import hot_reviews
-from src.api.routers.discovery import image_search
-from src.api.routers.discovery import ranking_sources
-from src.api.routers.playback import media as media_router
-from src.api.routers.playback import media_libraries
-from src.api.routers.system import account
-from src.api.routers.system import activity
-from src.api.routers.system import auth
-from src.api.routers.system import config as system_config
-from src.api.routers.system import indexer_settings
-from src.api.routers.system import movie_desc_translation_settings
-from src.api.routers.system import status
-from src.api.routers.transfers import downloads
-from src.api.routers.transfers import media_import
-from src.api.routers.transfers import rapid_uploads
-from src.api.routers.videos import collections as video_collections
-from src.api.routers.videos import imports as video_imports
-from src.api.routers.videos import items as video_items
+from fastapi.testclient import TestClient
+from starlette.requests import Request
+
 from src.api.app import create_app
 from src.api.exception.errors import ApiError
 from src.api.exception.exception import api_error_handler
-from src.config.config import settings
+from src.api.routers import deps
+from src.api.routers.catalog import subscriptions as movie_subscriptions
+from src.api.routers.catalog import tags
+from src.api.routers.discovery import hot_reviews, image_search, ranking_sources
+from src.api.routers.files import images
+from src.api.routers.playback import media as media_router
+from src.api.routers.playback import media_libraries
+from src.api.routers.system import (
+    account,
+    activity,
+    auth,
+    indexer_settings,
+    movie_desc_translation_settings,
+    status,
+)
+from src.api.routers.system import config as system_config
+from src.api.routers.transfers import downloads, media_import, rapid_uploads
+from src.api.routers.videos import collections as video_collections
+from src.api.routers.videos import imports as video_imports
+from src.api.routers.videos import items as video_items
 from src.service.playback.cloud115_hls_service import Cloud115HlsService
 from src.service.playback.media_service import MediaService
 

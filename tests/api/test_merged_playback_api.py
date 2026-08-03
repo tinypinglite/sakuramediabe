@@ -6,12 +6,10 @@
 import hashlib
 import hmac
 import shutil
-import struct
 import subprocess
 
 import pytest
 
-from src.config.config import settings
 from src.model import Media, MediaLibrary, Movie
 from src.model.enums import MediaLibraryBackend
 
@@ -44,7 +42,7 @@ def _signed_merged_url(
 ) -> str:
     signature = hmac.new(
         TEST_FILE_SIGNATURE_SECRET.encode("utf-8"),
-        f"media:{media_ids[0]}:{expires}".encode("utf-8"),
+        f"media:{media_ids[0]}:{expires}".encode(),
         hashlib.sha256,
     ).hexdigest()
     ids = ",".join(str(i) for i in media_ids)
@@ -110,7 +108,7 @@ class TestMergedPlaybackApi:
         expected = _hand_built([p1, p2])
 
         response = client.get(
-            _signed_merged_url([m1.id, m2.id]), headers={"Range": f"bytes=-500"}
+            _signed_merged_url([m1.id, m2.id]), headers={"Range": "bytes=-500"}
         )
         assert response.status_code == 206
         assert response.content == expected[-500:]

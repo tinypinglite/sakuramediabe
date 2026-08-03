@@ -4,18 +4,18 @@
 阅读入口建议从 ``list_actors``、``get_actor_movie_ids``、``stream_search_and_upsert_actor_from_javdb`` 开始。
 """
 
-from typing import Iterator, Sequence
+from collections.abc import Iterator, Sequence
 
 from loguru import logger
 from peewee import JOIN, Ordering, fn
 
 from src.api.exception.errors import ApiError
+from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     require_record,
 )
-from src.common.runtime_time import utc_now_for_db
-from src.config.config import settings
 from src.metadata._providers.javdb import JavdbProvider
+from src.metadata._providers.models import JavdbMovieActorResource
 from src.metadata.provider import MetadataNotFoundError
 from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag
 from src.model.expressions import year_expression
@@ -29,8 +29,10 @@ from src.schema.catalog.actors import (
 )
 from src.schema.catalog.movies import TagResource
 from src.schema.common.pagination import PageResponse
-from src.metadata._providers.models import JavdbMovieActorResource
-from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
+from src.service.catalog.catalog_import_service import (
+    CatalogImportService,
+    ImageDownloadError,
+)
 
 
 class ActorService:

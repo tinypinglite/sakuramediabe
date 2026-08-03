@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import Dict
 from uuid import uuid4
 
 from loguru import logger
@@ -26,7 +25,7 @@ class DownloadSmallFileCleanupService:
     def __init__(self, qbittorrent_client_cls=QBittorrentClient):
         self.qbittorrent_client_cls = qbittorrent_client_cls
 
-    def cleanup_small_files(self) -> Dict[str, int]:
+    def cleanup_small_files(self) -> dict[str, int]:
         threshold_bytes = settings.downloads.small_file_cleanup_threshold_mb * 1024 * 1024
         total_clients = 0
         scanned_torrents = 0

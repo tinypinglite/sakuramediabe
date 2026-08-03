@@ -70,7 +70,7 @@ def run_pending_migrations(database: Database) -> MigrationRunSummary:
             if not migration_name:
                 raise ValueError(f"migration_name_missing: {module.__name__}")
             if not callable(migrate_callable):
-                raise ValueError(f"migration_callable_missing: {migration_name}")
+                raise TypeError(f"migration_callable_missing: {migration_name}")
             if migration_name in applied_names:
                 executed.append(MigrationExecution(name=migration_name, applied=False))
                 continue

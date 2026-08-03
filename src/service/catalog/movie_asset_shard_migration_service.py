@@ -27,20 +27,19 @@ Ctrl+C / 掉电后重跑即收敛：Phase 1 只处理剩下没搬完的，Phase 
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable
 
 from loguru import logger
 
 from src.common.media_paths import (
-    MOVIE_ASSETS_SUBDIR,
     MOVIE_ASSET_SHARD_NAMES,
+    MOVIE_ASSETS_SUBDIR,
     media_image_root_path,
     movie_asset_shard,
 )
 from src.model import Image
-
 
 # 迁移进度回调：(phase, current, total)；total 为 -1 表示总量未知（文件系统阶段边扫边搬）。
 ProgressCallback = Callable[[str, int, int], None]

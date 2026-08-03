@@ -33,16 +33,15 @@ from __future__ import annotations
 import errno
 import os
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from loguru import logger
 
 from src.model import Media, MediaLibrary
 from src.model.enums import MediaLibraryBackend
 from src.service.transfers.file_transfer import JAV_LIBRARY_SUBDIR
-
 
 ProgressCallback = Callable[[int, int, int], None]  # (current, total, library_id)
 

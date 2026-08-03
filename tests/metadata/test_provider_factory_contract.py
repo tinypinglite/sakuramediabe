@@ -1,11 +1,14 @@
 from dataclasses import dataclass, field
 
 import pytest
-from src.metadata._providers.models import JavdbMovieActorResource, JavdbMovieDetailResource
-from src.metadata._providers.dmm import DmmProvider
 
 from src.config.config import settings
 from src.metadata import factory as factory_module
+from src.metadata._providers.dmm import DmmProvider
+from src.metadata._providers.models import (
+    JavdbMovieActorResource,
+    JavdbMovieDetailResource,
+)
 from src.metadata.factory import (
     GfriendsAvatarJavdbProvider,
     build_dmm_provider,

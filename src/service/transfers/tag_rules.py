@@ -1,4 +1,5 @@
-from typing import Any, Iterable, List
+from collections.abc import Iterable
+from typing import Any
 
 from src.config.config import settings
 
@@ -15,10 +16,10 @@ def detect_special_tags(
     *,
     size_bytes: int | None = None,
     suffix: str | None = None,
-) -> List[str]:
+) -> list[str]:
     lower_text = text.lower()
     movie_number_upper = movie_number.upper()
-    ordered_tags: List[str] = []
+    ordered_tags: list[str] = []
 
     if _contains_any(lower_text, settings.media.inner_sub_tags):
         ordered_tags.append(SUBTITLE_TAG)
@@ -38,11 +39,11 @@ def detect_media_special_tags(
     *,
     video_info: dict[str, Any] | None,
     has_subtitle: bool = False,
-) -> List[str]:
+) -> list[str]:
     merged_text = " ".join(texts)
     lower_text = merged_text.lower()
     movie_number_upper = movie_number.upper()
-    ordered_tags: List[str] = []
+    ordered_tags: list[str] = []
 
     if has_subtitle or _contains_any(lower_text, settings.media.inner_sub_tags):
         ordered_tags.append(SUBTITLE_TAG)
@@ -74,7 +75,7 @@ def build_media_special_tags(
     return " ".join(tags)
 
 
-def detect_candidate_tags(title: str, movie_number: str, size_bytes: int) -> List[str]:
+def detect_candidate_tags(title: str, movie_number: str, size_bytes: int) -> list[str]:
     return detect_special_tags(title, movie_number, size_bytes=size_bytes)
 
 

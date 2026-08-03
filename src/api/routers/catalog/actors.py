@@ -1,4 +1,3 @@
-from typing import List
 
 from fastapi import APIRouter, Depends, Response, status
 
@@ -70,16 +69,16 @@ def unsubscribe_actor(actor_id: int):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/{actor_id}/movie-ids", response_model=List[int], response_model_by_alias=False)
+@router.get("/{actor_id}/movie-ids", response_model=list[int], response_model_by_alias=False)
 def get_actor_movie_ids(actor_id: int):
     return ActorService.get_actor_movie_ids(actor_id)
 
 
-@router.get("/{actor_id}/tags", response_model=List[TagResource], response_model_by_alias=False)
+@router.get("/{actor_id}/tags", response_model=list[TagResource], response_model_by_alias=False)
 def get_actor_tags(actor_id: int):
     return ActorService.get_actor_tags(actor_id)
 
 
-@router.get("/{actor_id}/years", response_model=List[YearResource], response_model_by_alias=False)
+@router.get("/{actor_id}/years", response_model=list[YearResource], response_model_by_alias=False)
 def get_actor_years(actor_id: int):
     return ActorService.get_actor_years(actor_id)

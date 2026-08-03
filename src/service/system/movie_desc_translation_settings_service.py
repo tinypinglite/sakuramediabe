@@ -10,8 +10,9 @@ from src.service.catalog.movie_desc_translation_client import (
     MovieDescTranslationClient,
     MovieDescTranslationClientError,
 )
-from src.service.catalog.movie_desc_translation_service import MovieDescTranslationService
-
+from src.service.catalog.movie_desc_translation_service import (
+    MovieDescTranslationService,
+)
 
 DEFAULT_API_TEST_TRANSLATION_TEXT = "hi"
 

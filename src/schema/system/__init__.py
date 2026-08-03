@@ -23,10 +23,10 @@ from .resource_task_state import (
 
 __all__ = [
     "ActivityBootstrapResource",
-    "NotificationReadResponse",
-    "NotificationResource",
     "MovieDescTranslationSettingsTestRequest",
     "MovieDescTranslationSettingsTestResource",
+    "NotificationReadResponse",
+    "NotificationResource",
     "ResourceTaskActionRequest",
     "ResourceTaskActionResponse",
     "ResourceTaskActionSkippedItem",

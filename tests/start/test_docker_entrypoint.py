@@ -93,7 +93,8 @@ def _run_entrypoint(
     if chown_log:
         env["CHOWN_LOG_PATH"] = str(chown_log_path)
     command = ["bash", str(script_path), *(args or ["start"])]
-    result = subprocess.run(command, capture_output=True, text=True, env=env)
+    # 入口脚本的退出码由各用例自行断言，这里显式 check=False 不抛异常。
+    result = subprocess.run(command, capture_output=True, text=True, env=env, check=False)
     lines = log_path.read_text(encoding="utf-8").splitlines() if log_path.exists() else []
     return result, lines
 

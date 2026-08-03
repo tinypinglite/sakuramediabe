@@ -23,6 +23,7 @@ from src.service.transfers.media_rapid_upload.states import (
     ITEM_STATE_SUCCEEDED,
 )
 
+
 class MediaRapidUploadStateMachine:
     _ERROR_MESSAGE_MAX_LEN = 500
 

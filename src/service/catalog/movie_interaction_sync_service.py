@@ -6,9 +6,9 @@ from loguru import logger
 
 from src.metadata._providers.exceptions import MetadataRequestError
 from src.metadata._providers.javdb import JavdbProvider
+from src.metadata._providers.models import JavdbMovieDetailResource
 from src.metadata.provider import MetadataNotFoundError
 from src.model import Movie, RankingItem, ResourceTaskState, get_database
-from src.metadata._providers.models import JavdbMovieDetailResource
 from src.service.catalog.movie_heat_service import MovieHeatService
 from src.service.system.resource_task_runner import (
     STATE_EXHAUSTED,

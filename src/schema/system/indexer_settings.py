@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import List, Optional
 
 from src.config.config import IndexerKind, IndexerType
 from src.schema.common.base import SchemaModel
@@ -18,13 +17,13 @@ class IndexerItemResource(SchemaModel):
     url: str
     kind: IndexerKind
     # 多对多绑定：按绑定顺序列出；提交下载时按全局 kind 偏好从中挑选。
-    download_clients: List[IndexerBoundClientResource]
+    download_clients: list[IndexerBoundClientResource]
 
 
 class IndexerSettingsResource(SchemaModel):
     type: IndexerType
     api_key: str
-    indexers: List[IndexerItemResource]
+    indexers: list[IndexerItemResource]
 
 
 class IndexerItemUpdatePayload(SchemaModel):
@@ -32,13 +31,13 @@ class IndexerItemUpdatePayload(SchemaModel):
     url: str
     kind: str
     # 至少绑定一个下载器；重复 id 会被拒绝；PT 索引器不能绑定 cloud115。
-    download_client_ids: List[int]
+    download_client_ids: list[int]
 
 
 class IndexerSettingsUpdateRequest(SchemaModel):
-    type: Optional[str] = None
-    api_key: Optional[str] = None
-    indexers: Optional[List[IndexerItemUpdatePayload]] = None
+    type: str | None = None
+    api_key: str | None = None
+    indexers: list[IndexerItemUpdatePayload] | None = None
 
 
 class IndexerConnectionTestError(SchemaModel):
@@ -53,4 +52,4 @@ class IndexerConnectionTestResponse(SchemaModel):
     indexers_checked: int
     result_count: int
     elapsed_ms: int
-    error: Optional[IndexerConnectionTestError] = None
+    error: IndexerConnectionTestError | None = None

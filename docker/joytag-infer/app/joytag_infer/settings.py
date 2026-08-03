@@ -21,12 +21,11 @@ class JoyTagInferSettings:
         self.api_key = (str(self.api_key).strip() if self.api_key is not None else "") or None
 
         raw_device_type = str(self.openvino_device_type or "GPU").strip().upper()
-        if self.backend == "openvino":
-            if raw_device_type not in {"CPU", "GPU"}:
-                raise ValueError(
-                    "JOYTAG_INFER_OPENVINO_DEVICE_TYPE must be CPU or GPU when "
-                    "JOYTAG_INFER_BACKEND=openvino"
-                )
+        if self.backend == "openvino" and raw_device_type not in {"CPU", "GPU"}:
+            raise ValueError(
+                "JOYTAG_INFER_OPENVINO_DEVICE_TYPE must be CPU or GPU when "
+                "JOYTAG_INFER_BACKEND=openvino"
+            )
         self.openvino_device_type = raw_device_type or "GPU"
 
     @classmethod

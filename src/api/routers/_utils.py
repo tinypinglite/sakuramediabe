@@ -5,9 +5,9 @@
 
 import json
 import mimetypes
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
 
 from fastapi import Request
 from fastapi.encoders import jsonable_encoder

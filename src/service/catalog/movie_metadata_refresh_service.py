@@ -6,7 +6,7 @@
 - ``stream_import_series_movies_from_javdb``：按系列批量拉详情并落库（SSE）。
 """
 
-from typing import Dict, Iterator, List
+from collections.abc import Iterator
 
 from loguru import logger
 
@@ -17,7 +17,10 @@ from src.metadata._providers.models import JavdbMovieDetailResource
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Movie, MovieSeries
 from src.schema.catalog.movies import MovieDetailResource, MovieListItemResource
-from src.service.catalog.catalog_import_service import CatalogImportService, ImageDownloadError
+from src.service.catalog.catalog_import_service import (
+    CatalogImportService,
+    ImageDownloadError,
+)
 from src.service.catalog.movie_service import MovieService
 
 
@@ -244,8 +247,8 @@ class MovieMetadataRefreshService:
         created_count = 0
         already_exists_count = 0
         failed_count = 0
-        failed_items: List[Dict[str, str]] = []
-        imported_movies: List[MovieListItemResource] = []
+        failed_items: list[dict[str, str]] = []
+        imported_movies: list[MovieListItemResource] = []
         stats = {
             "total": 1,
             "created_count": created_count,
@@ -402,9 +405,9 @@ class MovieMetadataRefreshService:
         created_count = 0
         already_exists_count = 0
         failed_count = 0
-        skipped_items: List[Dict[str, str]] = []
-        failed_items: List[Dict[str, str]] = []
-        imported_movies: List[MovieListItemResource] = []
+        skipped_items: list[dict[str, str]] = []
+        failed_items: list[dict[str, str]] = []
+        imported_movies: list[MovieListItemResource] = []
         import_service = cls._build_catalog_import_service()
 
         for index, movie_item in enumerate(deduplicated_movies, start=1):

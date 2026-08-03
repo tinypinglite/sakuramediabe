@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from src.config.config import settings
 from src.metadata.factory import refresh_gfriends_filetree
@@ -9,8 +10,8 @@ from src.plugins.loader import load_enabled_plugins
 from src.scheduler.contracts import JobDefinition
 from src.service.catalog import (
     MovieCollectionService,
-    MovieDescTranslationService,
     MovieDescSyncService,
+    MovieDescTranslationService,
     MovieHeatService,
     MovieInteractionSyncService,
     MovieTitleTranslationService,
@@ -31,7 +32,6 @@ from src.service.playback import (
 )
 from src.service.system import ActivityCleanupService, ResourceTaskAttemptCleanupService
 from src.service.system.resource_task_runner import ResourceTaskLedger
-
 from src.service.transfers import (
     Cloud115OfflineSyncService,
     DownloadSmallFileCleanupService,

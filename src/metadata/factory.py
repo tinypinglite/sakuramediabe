@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from loguru import logger
 

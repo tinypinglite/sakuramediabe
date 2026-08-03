@@ -1,6 +1,6 @@
 """跨服务共享的查询与验证工具函数。"""
 
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 from peewee import Model, ModelSelect
 
@@ -12,9 +12,9 @@ def require_record(
     *conditions,
     error_code: str,
     error_message: str,
-    error_details: Optional[dict] = None,
+    error_details: dict | None = None,
     status_code: int = 404,
-    query: Optional[ModelSelect] = None,
+    query: ModelSelect | None = None,
 ):
     """从数据库查询单条记录，不存在则抛出 ApiError。
 
@@ -40,7 +40,7 @@ def validate_page(page: int, page_size: int, *, error_code: str) -> None:
 
 
 def resolve_sort(
-    value: Optional[str],
+    value: str | None,
     allowed_sorts: dict[str, Sequence],
     *,
     default_key: str,
@@ -59,9 +59,9 @@ def resolve_sort(
 
 def playable_exists_expression():
     """返回"影片是否存在可播放媒体"的子查询表达式。"""
-    from src.model import Media, Movie
-
     from peewee import fn
+
+    from src.model import Media, Movie
 
     playable_media = Media.select(Media.id).where(
         Media.valid == True,
@@ -72,9 +72,9 @@ def playable_exists_expression():
 
 def media_exists_expression():
     """返回"影片是否存在任何 media 行"的子查询表达式（不区分 valid）。"""
-    from src.model import Media, Movie
-
     from peewee import fn
+
+    from src.model import Media, Movie
 
     media_query = Media.select(Media.id).where(Media.movie == Movie.movie_number)
     return fn.EXISTS(media_query)

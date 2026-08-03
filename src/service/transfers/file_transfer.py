@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, List
 
 from loguru import logger
 
@@ -18,7 +17,6 @@ from src.common.media_import_status import (
     FAILURE_REASON_SOURCE_DELETE_FAILED,
     make_failure_item,
 )
-
 
 # 媒体库根下按内容分类的子目录名，两者平级：库根/jav/番号/... 和 库根/videos/<id>/...
 # 新增此类子目录时也在此处集中声明，避免字符串字面量散落。
@@ -72,8 +70,8 @@ def create_version_directory(entity_directory: Path, *, now_ms: int) -> Path:
 
 
 def delete_source_files(
-    source_paths: List[Path],
-    failure_items: List[Dict[str, str]],
+    source_paths: list[Path],
+    failure_items: list[dict[str, str]],
     *,
     transfer_mode: str,
 ) -> int:

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from loguru import logger
 
 from src.service.catalog import (
-    MovieDescTranslationService,
     MovieDescSyncService,
+    MovieDescTranslationService,
     MovieInteractionSyncService,
     MovieTitleTranslationService,
 )
@@ -20,6 +20,7 @@ from src.service.transfers import (
     MediaRapidUploadService,
 )
 from src.service.videos import VideoImportJobService
+
 
 # 注册表: task_key -> 业务层回收 callable。
 # 启动恢复在任务层 (BackgroundTaskRun) 回收之后，按 task_key 查表联动清理业务状态。

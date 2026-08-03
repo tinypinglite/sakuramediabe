@@ -1,4 +1,3 @@
-from typing import List
 
 from fastapi import APIRouter, Depends, Response, status
 
@@ -20,7 +19,7 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=List[ClipCollectionResource])
+@router.get("", response_model=list[ClipCollectionResource])
 def list_clip_collections(current_user=Depends(get_current_user)):
     return ClipCollectionService.list_collections()
 

@@ -9,13 +9,13 @@ from src.service.transfers.cloud115_import_common import (
     Cloud115TargetDirResolver,
     collect_cloud115_source_files,
 )
+from src.service.transfers.cloud115_import_job_service import (
+    Cloud115ImportJobService,
+)
 from src.service.transfers.cloud115_import_service import (
     Cloud115ImportService,
     CloudImportGroup,
     CloudSourceFile,
-)
-from src.service.transfers.cloud115_import_job_service import (
-    Cloud115ImportJobService,
 )
 from src.service.transfers.cloud115_offline_sync_service import (
     Cloud115OfflineSyncService,
@@ -963,7 +963,7 @@ def test_move_failure_keeps_source_and_stays_retryable(monkeypatch):
 def test_rename_failure_after_move_is_warning_and_restores_locator_name(monkeypatch):
     """改名失败时文件已在库、源已消失：降级为告警项，并把 locator.name 回写成实际名。"""
     client = _FakeCloudClient(fail_on="rename_file")
-    _client, _resolver, stats, failure_items, registered = _run_move_group(
+    _client, _resolver, stats, failure_items, _registered = _run_move_group(
         monkeypatch, files=[_source_file()], client=client
     )
 
@@ -1324,9 +1324,10 @@ def test_offline_task_dir_falls_back_to_lookup_on_duplicate_name():
 
 def test_offline_task_dir_does_not_swallow_risk_control():
     """webapi 域的裸 HTTP 400 是 WAF 签名（transport 映射为风控），绝不能当成重名去兜底重试。"""
+    import pytest as _pytest
+
     from src.lib.cloud115 import Cloud115RiskControlError
     from src.service.transfers.cloud115_offline_service import _create_task_dir
-    import pytest as _pytest
 
     class FakeClient:
         def __init__(self):
@@ -1369,13 +1370,13 @@ def test_subscription_submits_rest_only_between_cloud115_submissions(monkeypatch
 
 def test_subscription_rest_window_matches_import_side():
     """与导入侧番号间休息保持同一量级，避免两套不一致的节奏常量。"""
-    from src.service.transfers.subscribed_movie_auto_download_service import (
-        SUBMIT_REST_MAX_SECONDS,
-        SUBMIT_REST_MIN_SECONDS,
-    )
     from src.service.transfers.cloud115_import_service import (
         MANUAL_GROUP_REST_MAX_SECONDS,
         MANUAL_GROUP_REST_MIN_SECONDS,
+    )
+    from src.service.transfers.subscribed_movie_auto_download_service import (
+        SUBMIT_REST_MAX_SECONDS,
+        SUBMIT_REST_MIN_SECONDS,
     )
 
     assert (SUBMIT_REST_MIN_SECONDS, SUBMIT_REST_MAX_SECONDS) == (
@@ -1420,9 +1421,10 @@ def test_find_or_create_subdir_reuses_concurrently_created_dir():
 
 def test_find_or_create_subdir_raises_when_duplicate_but_not_findable():
     """115 说重名、重扫又找不到：状态自相矛盾，不静默吞。"""
+    import pytest as _pytest
+
     from src.lib.cloud115 import Cloud115DuplicateNameError
     from src.service.cloud115 import find_or_create_subdir
-    import pytest as _pytest
 
     class FakeClient:
         async def list_dir(self, cid, *, offset, limit):

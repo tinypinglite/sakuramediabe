@@ -2,7 +2,11 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from src.api.routers.deps import db_deps, get_current_user
-from src.schema.system.auth import TokenCreateRequest, TokenRefreshRequest, TokenResource
+from src.schema.system.auth import (
+    TokenCreateRequest,
+    TokenRefreshRequest,
+    TokenResource,
+)
 from src.service.system.auth_service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"], dependencies=[Depends(db_deps)])

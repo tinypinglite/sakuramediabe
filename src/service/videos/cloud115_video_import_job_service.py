@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import PurePosixPath
-from typing import List
 
 from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.common.media_import_status import (
-    IMPORT_JOB_STATE_FAILED,
     IMPORT_JOB_STATE_PENDING,
 )
 from src.lib.cloud115 import Cloud115Error, Cloud115NotFoundError
@@ -28,7 +26,6 @@ from src.service.cloud115 import (
     map_cloud115_error,
     require_cloud115_library,
 )
-from src.service.system import ActivityService
 from src.service.transfers.base_import_job_service import BaseImportJobService
 from src.service.transfers.cloud115_import_common import (
     collect_cloud115_source_files,
@@ -205,7 +202,7 @@ class Cloud115VideoImportJobService(BaseImportJobService):
         }
 
     @classmethod
-    def retry_failed_files(cls, job_id: int, files: List[str] | None = None):
+    def retry_failed_files(cls, job_id: int, files: list[str] | None = None):
         job = cls._require_job(job_id)
         cls._assert_job_terminal(job)
         if not job.source_cid and not job.source_fid:
@@ -293,7 +290,7 @@ class Cloud115VideoImportJobService(BaseImportJobService):
                                     "root_cid": config["root_cid"],
                                 },
                             ) from exc
-                    fid = getattr(entry, "entry_id", None) or getattr(entry, "file_id")
+                    fid = getattr(entry, "entry_id", None) or entry.file_id
                     await client.delete_files([fid])
 
         try:
@@ -330,7 +327,7 @@ class Cloud115VideoImportJobService(BaseImportJobService):
                         "失败源文件已不存在",
                         {"path": path},
                     )
-                fid = getattr(entry, "entry_id", None) or getattr(entry, "file_id")
+                fid = getattr(entry, "entry_id", None) or entry.file_id
                 await client.rename_file(fid, normalized)
                 await verify_cloud115_renamed_file(client, fid, normalized)
 

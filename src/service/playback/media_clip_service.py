@@ -6,8 +6,9 @@
 
 import asyncio
 import subprocess
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from loguru import logger
 from peewee import IntegrityError
@@ -93,19 +94,19 @@ class MediaClipService:
     @classmethod
     def clip_resource_fields(cls, clip: MediaClip, cover_image: ImageResource | None = None) -> dict:
         """片段资源公共字段，供片段接口与合集接口复用，内联签名串流 URL。"""
-        return dict(
-            clip_id=clip.id,
-            media_id=clip.media_id,
-            movie_number=clip.movie_number,
-            start_offset_seconds=clip.start_offset_seconds,
-            end_offset_seconds=clip.end_offset_seconds,
-            title=clip.title,
-            duration_seconds=clip.duration_seconds,
-            file_size_bytes=clip.file_size_bytes,
-            cover_image=cover_image,
-            stream_url=build_signed_clip_url(clip.id),
-            created_at=clip.created_at,
-        )
+        return {
+            "clip_id": clip.id,
+            "media_id": clip.media_id,
+            "movie_number": clip.movie_number,
+            "start_offset_seconds": clip.start_offset_seconds,
+            "end_offset_seconds": clip.end_offset_seconds,
+            "title": clip.title,
+            "duration_seconds": clip.duration_seconds,
+            "file_size_bytes": clip.file_size_bytes,
+            "cover_image": cover_image,
+            "stream_url": build_signed_clip_url(clip.id),
+            "created_at": clip.created_at,
+        }
 
     @classmethod
     def build_clip_resource(cls, clip: MediaClip, cover_image: ImageResource | None = None) -> MediaClipResource:
@@ -167,8 +168,7 @@ class MediaClipService:
         try:
             subprocess.run(
                 command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                capture_output=True,
                 timeout=settings.media.media_clip_ffmpeg_timeout_seconds,
                 check=True,
             )
@@ -286,7 +286,7 @@ class MediaClipService:
                     if packet_seconds >= end:
                         break
 
-                    timestamp_shift = int(round(origin_seconds / float(packet.time_base)))
+                    timestamp_shift = round(origin_seconds / float(packet.time_base))
                     if packet.pts is not None:
                         packet.pts -= timestamp_shift
                     packet.dts -= timestamp_shift

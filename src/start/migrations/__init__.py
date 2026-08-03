@@ -1,4 +1,9 @@
-from .runner import MigrationExecution, MigrationRunSummary, SkipMigration, run_pending_migrations
+from .runner import (
+    MigrationExecution,
+    MigrationRunSummary,
+    SkipMigration,
+    run_pending_migrations,
+)
 
 __all__ = [
     "MigrationExecution",

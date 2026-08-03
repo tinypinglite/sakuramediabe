@@ -1,6 +1,6 @@
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from loguru import logger
 
@@ -10,7 +10,6 @@ from src.model import Image, Media, MediaThumbnail, Movie
 from src.service.discovery.joytag_embedder_client import (
     JoyTagEmbeddingItemError,
     JoyTagEmbeddingResult,
-    JoyTagInferenceClientError,
     get_joytag_embedder_client,
 )
 from src.service.discovery.qdrant_thumbnail_store import (
@@ -225,11 +224,8 @@ class ImageSearchIndexService:
             valid_thumbnails.append(thumbnail)
         if not valid_thumbnails:
             return [], failures
-        try:
-            inference_results = self.embedder.infer_image_batch(image_payloads)
-        except JoyTagInferenceClientError:
-            # 远端整批失败时由上层中止任务，未处理缩略图保持 PENDING。
-            raise
+        # 远端整批失败（JoyTagInferenceClientError）时异常向上层传播中止任务，未处理缩略图保持 PENDING。
+        inference_results = self.embedder.infer_image_batch(image_payloads)
         if len(inference_results) != len(valid_thumbnails):
             raise RuntimeError("JoyTag inference batch result count mismatch")
         records: list[tuple[int, ThumbnailVectorRecord]] = []

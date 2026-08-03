@@ -5,8 +5,8 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 from src.api.exception.errors import ApiError
-from src.config.config import settings
 from src.common.subtitle_paths import ensure_movie_subtitle_path
+from src.config.config import settings
 
 IMAGE_FILE_ROUTE_PREFIX = "/files/images"
 MEDIA_STREAM_ROUTE_PREFIX = "/media"

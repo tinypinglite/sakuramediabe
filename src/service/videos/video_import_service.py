@@ -11,8 +11,8 @@
 
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable, Dict, List, Tuple
 
 from loguru import logger
 
@@ -49,12 +49,14 @@ from src.service.transfers.file_transfer import (
     delete_source_files,
     transfer_file,
 )
-from src.service.transfers.media_source_scanner import find_media_library_containing_path
+from src.service.transfers.media_source_scanner import (
+    find_media_library_containing_path,
+)
 from src.service.transfers.tag_rules import build_media_special_tags
 from src.service.videos.video_collection_service import VideoCollectionService
 from src.service.videos.video_cover_service import VideoCoverService
 
-ImportProgressCallback = Callable[[Dict[str, object]], None]
+ImportProgressCallback = Callable[[dict[str, object]], None]
 SUPPORTED_TRANSFER_MODES = ("auto", "cleanup-source")
 
 
@@ -73,7 +75,7 @@ class VideoImportService:
     def _collect_video_files(
         source_path: str,
         only_file_set: set[str] | None = None,
-    ) -> List[Path]:
+    ) -> list[Path]:
         """扫描源路径下的视频文件。
 
         ``only_file_set`` 提供时仅保留命中其中绝对路径的文件，用于失败文件的子集重导。
@@ -130,7 +132,7 @@ class VideoImportService:
             )
 
     @staticmethod
-    def _resolve_dedupe(file_path: Path) -> Tuple[str | None, str | None]:
+    def _resolve_dedupe(file_path: Path) -> tuple[str | None, str | None]:
         """两级去重判定，返回 (skip_reason, fingerprint)。
 
         命中去重时 skip_reason 非空、fingerprint 为 None；未命中时 skip_reason 为 None、
@@ -167,8 +169,8 @@ class VideoImportService:
         transfer_mode: str,
         collection_id: int | None,
         fingerprint: str,
-        failure_items: List[Dict[str, str]],
-    ) -> Tuple[int, int]:
+        failure_items: list[dict[str, str]],
+    ) -> tuple[int, int]:
         """搬运单个视频文件并登记 VideoItem + Media，返回 (video_id, 删源失败数)。"""
         probe = self.media_metadata_probe_service.probe_file(file_path)
         special_tags = build_media_special_tags(
@@ -286,7 +288,7 @@ class VideoImportService:
         video_import_job_id: int | None = None,
         transfer_mode: str = "auto",
         collection_id: int | None = None,
-        only_files: List[str] | None = None,
+        only_files: list[str] | None = None,
         progress_callback: ImportProgressCallback | None = None,
     ) -> VideoImportJob:
         """执行一次完整的视频导入，并把中间状态写回 VideoImportJob。
@@ -320,13 +322,13 @@ class VideoImportService:
         job.started_at = utc_now_for_db()
         job.save()
 
-        failure_items: List[Dict[str, str]] = []
-        created_ids: List[int] = []
+        failure_items: list[dict[str, str]] = []
+        created_ids: list[int] = []
         imported = 0
         skipped = 0
         failed = 0
 
-        def _summary() -> Dict[str, object]:
+        def _summary() -> dict[str, object]:
             return {
                 "imported_count": imported,
                 "skipped_count": skipped,
@@ -436,7 +438,7 @@ class VideoImportService:
         imported: int,
         skipped: int,
         failed: int,
-        failure_items: List[Dict[str, str]],
+        failure_items: list[dict[str, str]],
         force_failed: bool = False,
     ) -> None:
         job.imported_count = imported

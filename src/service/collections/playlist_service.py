@@ -5,30 +5,29 @@
 """
 
 from datetime import datetime
-from typing import Dict, List
 
-from peewee import JOIN, Case, Ordering, fn
+from peewee import Case, Ordering, fn
 
 from src.api.exception.errors import ApiError
+from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     playable_exists_expression,
     require_record,
     with_movie_card_relations,
 )
-from src.common.runtime_time import utc_now_for_db
 from src.model import (
     FOUR_K_PLAYLIST_NAME,
-    Media,
-    Movie,
     PLAYLIST_KIND_4K,
     PLAYLIST_KIND_RECENTLY_PLAYED,
     PLAYLIST_KIND_VR,
-    Playlist,
-    PlaylistMovie,
     RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
     RECENTLY_PLAYED_PLAYLIST_NAME,
     SYSTEM_PLAYLIST_KINDS,
     VR_PLAYLIST_NAME,
+    Media,
+    Movie,
+    Playlist,
+    PlaylistMovie,
 )
 from src.schema.catalog.movies import MovieSpecialTagFilter
 from src.schema.collections.playlists import (
@@ -286,7 +285,7 @@ class PlaylistService:
         playlist.save(only=[Playlist.updated_at])
 
     @classmethod
-    def _playlist_counts(cls, playlist_ids: List[int]) -> Dict[int, int]:
+    def _playlist_counts(cls, playlist_ids: list[int]) -> dict[int, int]:
         if not playlist_ids:
             return {}
         query = (
@@ -366,7 +365,7 @@ class PlaylistService:
         )
 
     @classmethod
-    def list_playlists(cls, include_system: bool = True) -> List[PlaylistResource]:
+    def list_playlists(cls, include_system: bool = True) -> list[PlaylistResource]:
         """列出播放列表，并补上每个列表的影片数量。"""
         query = Playlist.select().order_by(
             cls._playlist_system_order().asc(),
@@ -381,7 +380,7 @@ class PlaylistService:
             playlist.id for playlist in playlists if playlist.kind not in cls.VIRTUAL_KINDS
         ]
         counts = cls._playlist_counts(materialized_ids)
-        resources: List[PlaylistResource] = []
+        resources: list[PlaylistResource] = []
         for playlist in playlists:
             if playlist.kind in cls.VIRTUAL_KINDS:
                 movie_count = cls._virtual_playlist_count(playlist.kind)
@@ -489,7 +488,7 @@ class PlaylistService:
         if order_by is None:
             order_by = [PlaylistMovie.updated_at.desc(), PlaylistMovie.id.desc()]
         links = list(query.order_by(*order_by).offset(start).limit(page_size))
-        items: List[PlaylistMovieListItemResource] = []
+        items: list[PlaylistMovieListItemResource] = []
         for link in links:
             # schema 读取的是 Movie 对象，所以把列表关系上的附加信息临时挂回 movie 实例。
             link.movie.playlist_item_updated_at = link.updated_at
@@ -513,7 +512,7 @@ class PlaylistService:
         return None
 
     @classmethod
-    def list_playlist_resolutions(cls, playlist_id: int) -> List[PlaylistResolutionOption]:
+    def list_playlist_resolutions(cls, playlist_id: int) -> list[PlaylistResolutionOption]:
         """聚合播放列表内影片覆盖的分辨率档位（去重、按档位从高到低），供前端渲染筛选项。
 
         每部影片按其最高分辨率媒体归入唯一档位（8K/4K 互斥），与筛选语义一致；
@@ -540,12 +539,12 @@ class PlaylistService:
             .where(Media.valid == True, Media.resolution.regexp(r"^\d+x\d+$"))
             .group_by(Movie.id)
         )
-        counts: Dict[str, int] = {}
+        counts: dict[str, int] = {}
         for row in query:
             label = cls._bucket_for_height(row.max_height)
             if label is not None:
                 counts[label] = counts.get(label, 0) + 1
-        options: List[PlaylistResolutionOption] = []
+        options: list[PlaylistResolutionOption] = []
         for label, _threshold in RESOLUTION_LEVELS:
             count = counts.get(label, 0)
             if count > 0:
@@ -613,7 +612,7 @@ class PlaylistService:
         cls._touch_playlist(playlist, touched_at)
 
     @classmethod
-    def list_movie_playlists(cls, movie: Movie) -> List[PlaylistSummaryResource]:
+    def list_movie_playlists(cls, movie: Movie) -> list[PlaylistSummaryResource]:
         playlists = list(
             Playlist.select()
             .join(PlaylistMovie)

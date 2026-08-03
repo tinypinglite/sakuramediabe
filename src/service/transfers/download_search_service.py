@@ -1,4 +1,3 @@
-from typing import List, Optional
 
 from src.api.exception.errors import ApiError
 from src.config.config import IndexerKind
@@ -15,8 +14,8 @@ class DownloadSearchService:
         self,
         *,
         movie_number: str,
-        indexer_kind: Optional[str] = None,
-    ) -> List[DownloadCandidateResource]:
+        indexer_kind: str | None = None,
+    ) -> list[DownloadCandidateResource]:
         normalized_movie_number = validate_non_empty(
             movie_number,
             "invalid_download_candidate_movie_number",
@@ -34,7 +33,7 @@ class DownloadSearchService:
             ) from exc
 
     @staticmethod
-    def _validate_indexer_kind(indexer_kind: Optional[str]) -> Optional[str]:
+    def _validate_indexer_kind(indexer_kind: str | None) -> str | None:
         if indexer_kind is None:
             return None
         normalized = indexer_kind.strip().lower()

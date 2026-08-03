@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Literal
 
 from pydantic import computed_field, field_validator, model_validator
 
@@ -44,18 +44,18 @@ class VideoImportTriggerResponse(SchemaModel):
 class VideoImportJobListItemResource(SchemaModel):
     id: int
     source_path: str
-    source_cid: Optional[str] = None
-    source_fid: Optional[str] = None
+    source_cid: str | None = None
+    source_fid: str | None = None
     library_id: int
-    task_run_id: Optional[int] = None
-    collection_id: Optional[int] = None
+    task_run_id: int | None = None
+    collection_id: int | None = None
     state: str
     transfer_mode: str = "auto"
     imported_count: int
     skipped_count: int
     failed_count: int
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -71,10 +71,10 @@ class VideoImportJobListItemResource(SchemaModel):
 
 
 class VideoImportJobResource(VideoImportJobListItemResource):
-    failed_files: List[FailedFileResource] = []
+    failed_files: list[FailedFileResource] = []
 
     @classmethod
-    def from_model(cls, job, *, failed_files: List[FailedFileResource]) -> "VideoImportJobResource":
+    def from_model(cls, job, *, failed_files: list[FailedFileResource]) -> "VideoImportJobResource":
         payload = VideoImportJobListItemResource.from_attributes_model(job).model_dump()
         payload["failed_files"] = [item.model_dump() for item in failed_files]
         return cls.model_validate(payload)

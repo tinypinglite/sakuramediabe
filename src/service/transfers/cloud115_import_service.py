@@ -26,14 +26,17 @@ import asyncio
 import json
 import random
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, NamedTuple
+from typing import NamedTuple
 
 from loguru import logger
 
 from src.common import subtitle_matches_movie_number
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.common.media_import_status import (
+    FAILED_FILE_KIND_FILE,
+    FAILED_FILE_KIND_WARNING,
     FAILURE_REASON_CLOUD115_FILE_CENSORED,
     FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED,
     FAILURE_REASON_CLOUD115_RENAME_FAILED,
@@ -45,16 +48,14 @@ from src.common.media_import_status import (
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
     FAILURE_REASON_RETRY_SOURCES_MISSING,
     FAILURE_REASON_SOURCE_DELETE_FAILED,
-    FAILED_FILE_KIND_FILE,
-    FAILED_FILE_KIND_WARNING,
     IMPORT_JOB_STATE_COMPLETED,
     IMPORT_JOB_STATE_FAILED,
     IMPORT_JOB_STATE_PENDING,
     IMPORT_JOB_STATE_RUNNING,
     make_failure_item,
 )
-from src.common.runtime_time import utc_now_for_db
 from src.common.media_paths import allocate_next_movie_subtitle_path, movie_subtitle_dir
+from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115Client, DirEntry
 from src.model import ImportJob, Media, MediaLibrary, Movie, Subtitle, get_database
@@ -67,13 +68,9 @@ from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeResult,
     MediaMetadataProbeService,
 )
-from src.service.transfers.media_source_scanner import parse_movie_number_from_scan_path
 from src.service.transfers.cloud115_import_common import (
     CLOUD115_METADATA_PROBE_MAX_BYTES,
-    CLOUD115_METADATA_PROBE_UA,
     CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
-    CLOUD115_TRANSFER_MODE_COPY,
-    CLOUD115_TRANSFER_MODE_LEGACY_MOVE,
     Cloud115TargetDirCache,
     Cloud115TargetDirResolver,
     collect_cloud115_source_files,
@@ -87,8 +84,8 @@ from src.service.transfers.cloud115_import_common import (
 )
 from src.service.transfers.cloud115_media_registrar import Cloud115MediaRegistrar
 from src.service.transfers.media_import_service import MediaImportService
+from src.service.transfers.media_source_scanner import parse_movie_number_from_scan_path
 from src.service.transfers.tag_rules import build_media_special_tags
-
 
 # 直链下载字幕的 UA（拿链接与 GET 由 SDK 保证同 UA）。
 SUBTITLE_DOWNLOAD_UA = "Mozilla/5.0 SakuraMedia-Cloud115-Import/1.0"
@@ -138,7 +135,7 @@ class CloudImportGroup:
     """按番号聚合后的一组待导入云端文件（不合并，逐文件登记）。"""
 
     movie_number: str
-    files: List[CloudSourceFile] = field(default_factory=list)
+    files: list[CloudSourceFile] = field(default_factory=list)
 
 
 class _ResolvedFile(NamedTuple):
@@ -181,7 +178,7 @@ class Cloud115ImportService:
         import_job_id: int | None = None,
         progress_callback: ImportProgressCallback | None = None,
         transfer_mode: str = CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
-        only_files: List[str] | None = None,
+        only_files: list[str] | None = None,
         managed_download_source: bool = False,
         target_dir_cache: Cloud115TargetDirCache | None = None,
     ) -> ImportJob:
@@ -206,9 +203,9 @@ class Cloud115ImportService:
             import_job_id=import_job_id,
         )
 
-        failure_items: List[dict] = []
+        failure_items: list[dict] = []
         stats = {"imported": 0, "skipped": 0, "failed": 0}
-        new_playable_movies: Dict[int, dict] = {}
+        new_playable_movies: dict[int, dict] = {}
 
         job.state = IMPORT_JOB_STATE_RUNNING
         job.started_at = utc_now_for_db()
@@ -314,10 +311,10 @@ class Cloud115ImportService:
         library: MediaLibrary,
         source_cid: str,
         transfer_mode: str,
-        only_files: List[str] | None,
-        failure_items: List[dict],
+        only_files: list[str] | None,
+        failure_items: list[dict],
         stats: dict,
-        new_playable_movies: Dict[int, dict],
+        new_playable_movies: dict[int, dict],
         progress_callback: ImportProgressCallback | None,
         job: ImportJob,
         managed_download_source: bool = False,
@@ -552,7 +549,7 @@ class Cloud115ImportService:
         config: dict,
         source_cid: str,
         managed_download_source: bool,
-        failure_items: List[dict],
+        failure_items: list[dict],
         stats: dict,
     ) -> None:
         """自动离线导入完成后，把来源任务目录整个删掉（进 115 回收站）。
@@ -611,10 +608,10 @@ class Cloud115ImportService:
         source_cid: str,
         source_name: str,
         transfer_mode: str,
-        only_files: List[str] | None,
-        failure_items: List[dict],
+        only_files: list[str] | None,
+        failure_items: list[dict],
         progress_callback: ImportProgressCallback | None = None,
-    ) -> tuple[List[CloudImportGroup], int, int]:
+    ) -> tuple[list[CloudImportGroup], int, int]:
         """枚举源目录树 → 分拣视频/字幕 → 番号识别 → sha1 去重，产出按番号聚合的分组。"""
         minimum_size = settings.media.allowed_min_video_file_size
         skipped_count = 0
@@ -639,8 +636,8 @@ class Cloud115ImportService:
             text=f"已枚举 {len(source_files)} 个文件，正在分拣",
         )
 
-        videos: List[CloudSourceFile] = []
-        subtitles_by_dir: Dict[str, List[CloudSubtitleFile]] = {}
+        videos: list[CloudSourceFile] = []
+        subtitles_by_dir: dict[str, list[CloudSubtitleFile]] = {}
         for entry in source_files:
             suffix = self._entry_suffix(entry.name)
             if suffix == ".srt":
@@ -689,7 +686,7 @@ class Cloud115ImportService:
         # 喂「源目录名/相对路径」，与本地扫描共用同一截断策略（取最后两级，覆盖番号在目录名的情形）。
         for video in videos:
             video.movie_number = parse_movie_number_from_scan_path(
-                "/".join([source_name, video.rel_path])
+                f"{source_name}/{video.rel_path}"
             )
 
         # 字幕 sidecar 配对：同父目录 + 字幕文件名解析番号与视频番号一致才算配对。
@@ -709,7 +706,7 @@ class Cloud115ImportService:
                     break
 
         # 分组：复用上面识别好的番号，番号解析不出的计入失败清单。
-        grouped: Dict[str, CloudImportGroup] = {}
+        grouped: dict[str, CloudImportGroup] = {}
         seen_sha1: set[str] = set()
         for video in videos:
             movie_number = video.movie_number
@@ -763,9 +760,9 @@ class Cloud115ImportService:
         group: CloudImportGroup,
         target_dir_resolver: Cloud115TargetDirResolver,
         transfer_mode: str,
-        failure_items: List[dict],
+        failure_items: list[dict],
         stats: dict,
-        new_playable_movies: Dict[int, dict],
+        new_playable_movies: dict[int, dict],
     ) -> None:
         """按模式分派：cleanup-source 真正移动源文件，copy 复制并保留源。"""
         handler = (
@@ -792,9 +789,9 @@ class Cloud115ImportService:
         movie: Movie,
         group: CloudImportGroup,
         target_dir_resolver: Cloud115TargetDirResolver,
-        failure_items: List[dict],
+        failure_items: list[dict],
         stats: dict,
-        new_playable_movies: Dict[int, dict],
+        new_playable_movies: dict[int, dict],
     ) -> None:
         """复制并登记一个番号组；任一改名失败时整组不入库。源文件始终保留。
 
@@ -866,7 +863,7 @@ class Cloud115ImportService:
                 )
 
         # 2) 逐文件处理：sha1 已在实体下则复用；否则新建版本目录 + 复制。
-        resolved: List[_ResolvedFile] = []
+        resolved: list[_ResolvedFile] = []
         for cloud_file in group.files:
             target_name = normalize_jav_media_filename(
                 group.movie_number, cloud_file.name
@@ -966,7 +963,7 @@ class Cloud115ImportService:
 
         # 4) 在数据库事务外探测最终受管文件。有效媒体必须带完整技术元数据入库；
         # 已登记且已有 video_info 的清源重试直接复用，避免重复读取远端文件。
-        probe_results: Dict[str, MediaMetadataProbeResult | None] = {}
+        probe_results: dict[str, MediaMetadataProbeResult | None] = {}
         for r in resolved:
             existing_valid = Cloud115MediaRegistrar.find_library_media(library, r.cloud_file.sha1, valid=True)
             if r.cloud_file.censored or (
@@ -995,7 +992,7 @@ class Cloud115ImportService:
                 return
 
         # 5) 整组 Media 在同一事务登记；任一失败回滚整组。
-        registration_results: List[tuple[CloudSourceFile, bool]] = []
+        registration_results: list[tuple[CloudSourceFile, bool]] = []
         try:
             with get_database().atomic():
                 for r in resolved:
@@ -1075,9 +1072,9 @@ class Cloud115ImportService:
         movie: Movie,
         group: CloudImportGroup,
         target_dir_resolver: Cloud115TargetDirResolver,
-        failure_items: List[dict],
+        failure_items: list[dict],
         stats: dict,
-        new_playable_movies: Dict[int, dict],
+        new_playable_movies: dict[int, dict],
     ) -> None:
         """把源文件真正移动进 ``jav/{番号}/{版本ms}/{番号}{ext}``，不复制也不删源。
 
@@ -1090,7 +1087,7 @@ class Cloud115ImportService:
         """
         # 1) 按库内已有记录分流。fid 相同说明登记的就是这个源文件本身（上一轮登记
         # 成功但搬运没走完），必须继续搬运；只有 fid 不同才是真正多余的副本，删源。
-        pending: List[CloudSourceFile] = []
+        pending: list[CloudSourceFile] = []
         # 续做搬运的文件：Media 不是新建的，但本轮确实把它搬进了库，统计上算导入成功，
         # 否则用户重导后会看到"跳过"，与他刚刚完成的重试动作对不上。
         resuming_fids: set[str] = set()
@@ -1128,7 +1125,7 @@ class Cloud115ImportService:
             return
 
         # 2) 探测用源 pickcode：move 不改 pickcode，与搬运后探测等价，但失败时源未动。
-        probe_results: Dict[str, MediaMetadataProbeResult | None] = {}
+        probe_results: dict[str, MediaMetadataProbeResult | None] = {}
         for cloud_file in pending:
             existing_valid = Cloud115MediaRegistrar.find_library_media(
                 library, cloud_file.sha1, valid=True
@@ -1206,7 +1203,7 @@ class Cloud115ImportService:
             )
             return
 
-        version_cids: Dict[str, str] = {}
+        version_cids: dict[str, str] = {}
         try:
             for cloud_file in pending:
                 version_cids[cloud_file.fid] = (
@@ -1235,7 +1232,7 @@ class Cloud115ImportService:
             return
 
         # 5) 整组 Media 在同一事务登记，locator 直接用源 fid/pickcode（move 不改这两个值）。
-        registered: List[tuple[CloudSourceFile, Media, bool]] = []
+        registered: list[tuple[CloudSourceFile, Media, bool]] = []
         try:
             with get_database().atomic():
                 for cloud_file in pending:
@@ -1270,7 +1267,7 @@ class Cloud115ImportService:
 
         # 6) 搬运。失败时源原地未动、Media 已登记且可播，失败项可重导——重导会命中
         # 步骤 1 的 fid 相同分支，补完搬运即收敛。
-        moved: List[tuple[CloudSourceFile, Media, bool]] = []
+        moved: list[tuple[CloudSourceFile, Media, bool]] = []
         for cloud_file, media, is_new in registered:
             try:
                 await client.move_files(
@@ -1369,7 +1366,7 @@ class Cloud115ImportService:
         *,
         movie: Movie,
         cloud_file: CloudSourceFile,
-        failure_items: List[dict],
+        failure_items: list[dict],
         stats: dict,
     ) -> None:
         """库内已有该内容的独立副本时，只清掉这一份多余的源（含配对字幕）。
@@ -1468,11 +1465,11 @@ class Cloud115ImportService:
 
     @staticmethod
     def _record_files_failure(
-        files: List[CloudSourceFile],
+        files: list[CloudSourceFile],
         *,
         reason: str,
         detail: str,
-        failure_items: List[dict],
+        failure_items: list[dict],
         stats: dict,
         kind: str | None = None,
     ) -> None:
@@ -1491,7 +1488,7 @@ class Cloud115ImportService:
         *,
         reason: str,
         detail: str,
-        failure_items: List[dict],
+        failure_items: list[dict],
         stats: dict,
     ) -> None:
         cls._record_files_failure(
@@ -1503,7 +1500,7 @@ class Cloud115ImportService:
         )
 
     @staticmethod
-    def _resolve_registered_entry(candidates: List[DirEntry], media: Media) -> DirEntry | None:
+    def _resolve_registered_entry(candidates: list[DirEntry], media: Media) -> DirEntry | None:
         """优先按数据库已有 fid/pickcode 找回受管目标，避免同 SHA 条目之间误切换。"""
         locator = media.backend_locator or {}
         fid = str(locator.get("fid") or "")
@@ -1651,7 +1648,7 @@ class Cloud115ImportService:
     # ---- 进度 ----
 
     @staticmethod
-    def _summary(stats: dict, new_playable_movies: Dict[int, dict]) -> dict:
+    def _summary(stats: dict, new_playable_movies: dict[int, dict]) -> dict:
         return {
             "imported_count": stats["imported"],
             "skipped_count": stats["skipped"],

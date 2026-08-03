@@ -1,4 +1,3 @@
-from typing import Optional
 
 from peewee import JOIN, fn
 
@@ -86,7 +85,7 @@ class TagService:
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         special_tag: MovieSpecialTagFilter | None = None,
-        sort: Optional[str] = None,
+        sort: str | None = None,
         director_name: str | None = None,
         maker_name: str | None = None,
         page: int = 1,

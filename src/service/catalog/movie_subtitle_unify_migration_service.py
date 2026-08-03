@@ -36,9 +36,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from loguru import logger
 
@@ -49,7 +49,6 @@ from src.common.media_paths import (
 )
 from src.model import Movie, Subtitle
 from src.service.transfers.file_transfer import transfer_file
-
 
 # 迁移进度回调：(current, total)
 ProgressCallback = Callable[[int, int], None]
@@ -111,7 +110,7 @@ class MovieSubtitleUnifyMigrationService:
             by_movie.setdefault(subtitle.movie_id, []).append(subtitle)
 
         processed = 0
-        for movie_id, subtitles in by_movie.items():
+        for subtitles in by_movie.values():
             movie_number = subtitles[0].movie.movie_number
             # reserved_names 累计本 movie 已分配（DB 已 UPDATE 或本轮 dry-run 计划中的）新文件名，
             # 保证同一 movie 的多条字幕拿到不同 seq。

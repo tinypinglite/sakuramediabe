@@ -11,22 +11,15 @@ from src.metadata.factory import build_dmm_provider, build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Actor, Media, MediaLibrary, MediaThumbnail, Movie
 from src.model.enums import MediaLibraryBackend
-from src.service.discovery.joytag_embedder_client import (
-    JoyTagInferenceClientError,
-    get_joytag_embedder_client,
-)
-from src.service.discovery.qdrant_thumbnail_store import get_qdrant_thumbnail_store
-from src.service.cloud115 import Cloud115KeepaliveService
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.schema.system.status import (
     StatusActorSummary,
-    StatusCloud115CookieSummary,
     StatusCloud115CookiesResource,
+    StatusCloud115CookieSummary,
     StatusCloud115LibraryCookieResource,
     StatusImageSearchIndexingSummary,
     StatusImageSearchResource,
-    StatusJoyTagSummary,
     StatusImageSearchVectorStoreSummary,
+    StatusJoyTagSummary,
     StatusMediaFileSummary,
     StatusMediaLibrarySummary,
     StatusMetadataProviderTestError,
@@ -35,6 +28,13 @@ from src.schema.system.status import (
     StatusResource,
     StatusThumbnailSummary,
 )
+from src.service.cloud115 import Cloud115KeepaliveService
+from src.service.discovery.joytag_embedder_client import (
+    JoyTagInferenceClientError,
+    get_joytag_embedder_client,
+)
+from src.service.discovery.qdrant_thumbnail_store import get_qdrant_thumbnail_store
+from src.service.playback.media_thumbnail_service import MediaThumbnailService
 
 
 class StatusService:

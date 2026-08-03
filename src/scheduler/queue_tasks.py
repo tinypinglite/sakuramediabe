@@ -12,8 +12,9 @@ lane 划分并发道：``import`` 道复刻旧 ``DownloadImportRunner``（2 并�
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 LANE_DEFAULT = "default"
 LANE_IMPORT = "import"
@@ -65,19 +66,25 @@ def _run_media_rapid_upload(reporter, params: dict) -> dict:
 
 
 def _run_movie_desc_translation_subset(reporter, params: dict) -> dict:
-    from src.service.catalog.movie_desc_translation_service import MovieDescTranslationService
+    from src.service.catalog.movie_desc_translation_service import (
+        MovieDescTranslationService,
+    )
 
     return MovieDescTranslationService().run(reporter=reporter, only_ids=params.get("only_ids"))
 
 
 def _run_movie_interaction_sync_subset(reporter, params: dict) -> dict:
-    from src.service.catalog.movie_interaction_sync_service import MovieInteractionSyncService
+    from src.service.catalog.movie_interaction_sync_service import (
+        MovieInteractionSyncService,
+    )
 
     return MovieInteractionSyncService().run(reporter=reporter, only_ids=params.get("only_ids"))
 
 
 def _run_movie_title_translation_subset(reporter, params: dict) -> dict:
-    from src.service.catalog.movie_title_translation_service import MovieTitleTranslationService
+    from src.service.catalog.movie_title_translation_service import (
+        MovieTitleTranslationService,
+    )
 
     return MovieTitleTranslationService().run(reporter=reporter, only_ids=params.get("only_ids"))
 

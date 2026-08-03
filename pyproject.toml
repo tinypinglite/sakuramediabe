@@ -34,6 +34,8 @@ dependencies = [
     "numpy>=1.26,<3",
     "pycurl>=7.47,<8",
     "certifi>=2026.4.22",
+    # Python 3.10 无 typing.Self，代码里直接 import typing_extensions，显式声明而非依赖 pydantic 传递引入。
+    "typing-extensions>=4.6.0",
 ]
 
 [dependency-groups]
@@ -43,6 +45,7 @@ dev = [
     "pytest-testmon>=2.1.0,<3.0.0",
     "pytest-asyncio>=0.23.0,<0.24.0",
     "pylint>=3.3.7,<4.0.0",
+    "ruff>=0.16.1,<0.17.0",
 ]
 
 [tool.pytest.ini_options]
@@ -58,6 +61,22 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = [
     "cloud115_integration: hits real 115 API using COOKIE_115 env var; skip by default",
+]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# 在 ruff 默认规则集基础上豁免与本项目技术栈/既有约定冲突的规则：
+ignore = [
+    "B008",    # FastAPI 在参数默认值里调用 Depends()/Query() 是框架标准写法
+    "BLE001",  # 后台任务/同步链路大量有意的宽泛 except Exception，逐处收窄属行为改动
+    "S110",    # 同上，try-except-pass 属有意静默的既有模式
+    "RUF012",  # Peewee Meta / provider 类属性使用可变容器是既有模式，不逐个标 ClassVar
+    "DTZ",     # 全项目统一使用 naive datetime 与数据库交互
+    "PLE1205", # 项目日志用 loguru（{} 占位符），该规则按 stdlib logging 的 % 风格误判
+    "ASYNC230", # cloud115 CLI 调试工具在 async 中同步 open，属有意为之
+    "ASYNC240", # async 接口中的 pathlib 轻量元数据操作可接受，不引入 anyio.Path
 ]
 
 [tool.uv]

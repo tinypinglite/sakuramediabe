@@ -1,13 +1,16 @@
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Tuple
 
 import bcrypt
 from jose import JWTError, jwt
 
 from src.api.exception.errors import ApiError
-from src.common.runtime_time import parse_external_datetime, to_db_utc_naive, utc_now_for_db
+from src.common.runtime_time import (
+    parse_external_datetime,
+    to_db_utc_naive,
+    utc_now_for_db,
+)
 from src.config.config import settings
 from src.model import User, UserRefreshToken
 from src.model.enums import RefreshTokenStatus
@@ -138,7 +141,7 @@ class AuthService:
         )
 
     @staticmethod
-    def _create_refresh_token() -> Tuple[str, str, str]:
+    def _create_refresh_token() -> tuple[str, str, str]:
         plain_token = secrets.token_urlsafe(32)
         token_id = secrets.token_hex(16)
         token_hash = AuthService._hash_token(plain_token)

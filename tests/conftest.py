@@ -35,10 +35,9 @@ from src.model import (
     HotReviewItem,
     Image,
     ImageSearchSession,
-    RankingItem,
+    ImportJob,
     Indexer,
     IndexerDownloadClient,
-    ImportJob,
     Media,
     MediaClip,
     MediaLibrary,
@@ -53,21 +52,22 @@ from src.model import (
     MoviePlotImage,
     MovieSeries,
     MovieTag,
-    Subtitle,
     Playlist,
     PlaylistMovie,
+    RankingItem,
+    ResourceTaskAttempt,
+    ResourceTaskState,
+    SchemaMigration,
+    Subtitle,
+    SystemEvent,
+    SystemNotification,
+    Tag,
+    User,
+    UserRefreshToken,
     VideoCollection,
     VideoCollectionItem,
     VideoImportJob,
     VideoItem,
-    ResourceTaskAttempt,
-    ResourceTaskState,
-    SchemaMigration,
-    Tag,
-    SystemEvent,
-    SystemNotification,
-    User,
-    UserRefreshToken,
 )
 from src.model.base import create_database, database_proxy, init_database
 
@@ -235,8 +235,8 @@ def _worker_test_database_url():
         _run_maintenance_statements(
             base_url,
             [
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                f"WHERE datname = '{database_name}' AND pid <> pg_backend_pid()",
+                ("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                f"WHERE datname = '{database_name}' AND pid <> pg_backend_pid()"),
                 f"DROP DATABASE IF EXISTS {quoted_name}",
             ],
         )

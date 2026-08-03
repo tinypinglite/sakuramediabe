@@ -14,15 +14,14 @@
 from __future__ import annotations
 
 import asyncio
-from typing import List
 
 from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common.media_import_status import (
-    IMPORT_JOB_STATE_FAILED,
     IMPORT_JOB_STATE_PENDING,
 )
+from src.lib.cloud115 import Cloud115Error
 from src.model import ImportJob, MediaLibrary
 from src.model.enums import MediaLibraryBackend
 from src.schema.transfers.media_import import (
@@ -36,15 +35,13 @@ from src.service.cloud115 import (
     map_cloud115_error,
     require_cloud115_library,
 )
-from src.lib.cloud115 import Cloud115Error
-from src.service.system import ActivityService
 from src.service.transfers.base_import_job_service import BaseImportJobService
+from src.service.transfers.cloud115_import_common import Cloud115TargetDirCache
 from src.service.transfers.cloud115_import_service import (
     CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
     Cloud115ImportService,
     normalize_cloud115_transfer_mode,
 )
-from src.service.transfers.cloud115_import_common import Cloud115TargetDirCache
 
 
 class Cloud115ImportJobService(BaseImportJobService):
@@ -142,7 +139,7 @@ class Cloud115ImportJobService(BaseImportJobService):
     # ---- 重导（唯一支持的失败文件操作） ----
 
     @classmethod
-    def retry_failed_files(cls, job_id: int, files: List[str] | None = None):
+    def retry_failed_files(cls, job_id: int, files: list[str] | None = None):
         job = cls._require_job(job_id)
         cls._assert_job_terminal(job)
         if not job.source_cid:

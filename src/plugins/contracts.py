@@ -4,7 +4,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.scheduler.contracts import JobDefinition
 
-
 HOST_API_VERSION = 1
 
 

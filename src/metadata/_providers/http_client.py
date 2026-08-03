@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 from loguru import logger
@@ -16,12 +16,12 @@ class MetadataRequestClient:
 
     def __init__(
         self,
-        proxy: Optional[str] = None,
+        proxy: str | None = None,
         *,
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
     ):
-        client_kwargs: Dict[str, Any] = {"trust_env": False}
+        client_kwargs: dict[str, Any] = {"trust_env": False}
         if proxy:
             client_kwargs["proxy"] = proxy
         self.proxy = proxy
@@ -35,13 +35,13 @@ class MetadataRequestClient:
             bool(proxy),
         )
 
-    def request_json(self, method: str, url: str, *, data: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    def request_json(self, method: str, url: str, *, data: dict[str, Any] | None = None, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> dict[str, Any]:
         return self._request(method, url, data=data, params=params, headers=headers).json()
 
-    def request_text(self, method: str, url: str, *, data: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> str:
+    def request_text(self, method: str, url: str, *, data: dict[str, Any] | None = None, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> str:
         return self._request(method, url, data=data, params=params, headers=headers).text
 
-    def _request(self, method: str, url: str, *, data: Optional[Dict[str, Any]] = None, params: Optional[Dict[str, Any]] = None, headers: Optional[Dict[str, str]] = None) -> httpx.Response:
+    def _request(self, method: str, url: str, *, data: dict[str, Any] | None = None, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> httpx.Response:
         request_headers = self.build_request_headers()
         if headers:
             request_headers.update(headers)
@@ -71,5 +71,5 @@ class MetadataRequestClient:
         logger.error("Metadata request failed after retries method={} url={} detail={}", method.upper(), url, last_exception)
         raise MetadataRequestError(method, url, str(last_exception)) from last_exception
 
-    def build_request_headers(self) -> Dict[str, str]:
+    def build_request_headers(self) -> dict[str, str]:
         return {}

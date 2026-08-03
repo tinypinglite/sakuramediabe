@@ -17,12 +17,12 @@ from .rankings import (
 
 __all__ = [
     "DailyRecommendationMovieResource",
+    "HotReviewListItemResource",
+    "HotReviewListResource",
     "ImageSearchResultItemResource",
     "ImageSearchSessionPageResource",
     "MomentRecommendationItemResource",
     "MomentRecommendationPageResource",
-    "HotReviewListItemResource",
-    "HotReviewListResource",
     "RankedMovieListItemResource",
     "RankingBoardItemsResource",
     "RankingBoardResource",

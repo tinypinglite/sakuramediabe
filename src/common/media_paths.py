@@ -4,7 +4,6 @@ from pathlib import Path, PurePosixPath
 
 from src.config.config import settings
 
-
 # 影片资产在图片根下的一级目录名，与 videos/、actors/ 平级。
 MOVIE_ASSETS_SUBDIR = "movies"
 # 番号目录内部的保留子目录名：缩略图按 media/<内容指纹>/thumbnails 归档，字幕平铺在 subtitles/。
@@ -93,8 +92,7 @@ def _current_max_subtitle_sequence(subtitle_dir: Path, movie_number: str) -> int
         if not is_movie_subtitle_target_name(movie_number, entry.name):
             continue
         seq = int(entry.stem[len(f"{movie_number}-"):])
-        if seq > max_seq:
-            max_seq = seq
+        max_seq = max(max_seq, seq)
     return max_seq
 
 
@@ -117,6 +115,5 @@ def allocate_next_movie_subtitle_path(
             if not is_movie_subtitle_target_name(movie_number, name):
                 continue
             seq = int(Path(name).stem[len(f"{movie_number}-"):])
-            if seq > max_seq:
-                max_seq = seq
+            max_seq = max(max_seq, seq)
     return subtitle_dir / f"{movie_number}-{max_seq + 1}{MOVIE_SUBTITLE_EXTENSION}"

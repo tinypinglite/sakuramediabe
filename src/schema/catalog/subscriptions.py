@@ -7,7 +7,7 @@
 from datetime import date, datetime
 from enum import Enum
 
-from pydantic import Field, field_validator
+from pydantic import field_validator
 
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel

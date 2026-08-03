@@ -1,4 +1,4 @@
-from typing import Generic, List, TypeVar
+from typing import Generic, TypeVar
 
 from pydantic import Field
 
@@ -8,7 +8,7 @@ T = TypeVar("T")
 
 
 class PageResponse(SchemaModel, Generic[T]):
-    items: List[T]
+    items: list[T]
     page: int
     page_size: int = Field()
     total: int

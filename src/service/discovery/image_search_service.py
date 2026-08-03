@@ -1,9 +1,9 @@
 import base64
 import json
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Sequence
 
 from loguru import logger
 from peewee import JOIN

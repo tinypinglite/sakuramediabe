@@ -8,20 +8,21 @@
 薄封面解析（``resolve_thin_cover_*``）和入库 helper（``persist_*``）。
 """
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 import os
 import shutil
 import tempfile
 import time
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 import httpx
 from loguru import logger
 from peewee import EXCLUDED
-from PIL import Image as PillowImage, UnidentifiedImageError
+from PIL import Image as PillowImage
+from PIL import UnidentifiedImageError
 
 from src.common.media_paths import (
     media_image_root_path,
@@ -29,8 +30,8 @@ from src.common.media_paths import (
     normalize_asset_dir_name,
 )
 from src.common.runtime_time import utc_now_for_db
-from src.model import Image, Movie, MoviePlotImage
 from src.metadata._providers.models import JavdbMovieActorResource
+from src.model import Image, Movie, MoviePlotImage
 from src.service.catalog.image_cleanup_service import ImageCleanupService
 
 
@@ -44,7 +45,7 @@ class ImagePersistTask:
     image_url: str
     relative_path: str
     absolute_path: Path
-    plot_index: Optional[int] = None
+    plot_index: int | None = None
 
 
 @dataclass
@@ -222,7 +223,7 @@ class MovieImageService:
             pass
         return None
 
-    def _select_portrait_plot_index(self, plot_items: List[tuple[int, Path]]) -> int | None:
+    def _select_portrait_plot_index(self, plot_items: list[tuple[int, Path]]) -> int | None:
         # 业务约定只允许前两张剧情图参与竖封面回退，后续剧情图不再参与判定。
         for plot_index, plot_path in plot_items[:2]:
             if self._is_portrait_image(plot_path):
@@ -233,7 +234,7 @@ class MovieImageService:
         self,
         movie_number: str,
         cover_task: ImagePersistTask | None,
-        plot_tasks: List[ImagePersistTask],
+        plot_tasks: list[ImagePersistTask],
     ) -> ThinCoverResolution:
         if cover_task is not None and cover_task.absolute_path.exists():
             thin_cover_task = self._generate_thin_cover_task_from_cover(
@@ -256,8 +257,8 @@ class MovieImageService:
         self,
         movie_number: str,
         cover_task: ImagePersistTask | None,
-        plot_tasks: List[ImagePersistTask],
-        prepared_files: List[PreparedImageFile],
+        plot_tasks: list[ImagePersistTask],
+        prepared_files: list[PreparedImageFile],
     ) -> ThinCoverResolution:
         prepared_by_relative_path = {prepared_file.image_task.relative_path: prepared_file for prepared_file in prepared_files}
         if cover_task is not None:
@@ -287,7 +288,7 @@ class MovieImageService:
     def resolve_thin_cover_from_existing_movie(
         self,
         movie: Movie,
-        plot_links: List[MoviePlotImage],
+        plot_links: list[MoviePlotImage],
     ) -> ThinCoverResolution:
         cover_image = movie.cover_image
         if cover_image is not None:
@@ -310,7 +311,7 @@ class MovieImageService:
     def resolve_persisted_thin_cover_image(
         self,
         resolution: ThinCoverResolution,
-        plot_images_by_index: Dict[int, Image],
+        plot_images_by_index: dict[int, Image],
         *,
         refreshed: bool,
     ) -> Image | None:
@@ -329,11 +330,11 @@ class MovieImageService:
         self,
         movie_number: str,
         cover_image_url: str | None,
-        plot_urls: List[str],
-        actors: List[JavdbMovieActorResource],
-    ) -> Tuple[Optional[ImagePersistTask], List[ImagePersistTask], Dict[str, ImagePersistTask]]:
+        plot_urls: list[str],
+        actors: list[JavdbMovieActorResource],
+    ) -> tuple[ImagePersistTask | None, list[ImagePersistTask], dict[str, ImagePersistTask]]:
         cover_task, plot_tasks = self._build_movie_image_tasks(movie_number, cover_image_url, plot_urls)
-        actor_image_tasks_by_javdb_id: Dict[str, ImagePersistTask] = {}
+        actor_image_tasks_by_javdb_id: dict[str, ImagePersistTask] = {}
         for actor_resource in actors:
             if actor_resource.javdb_id in actor_image_tasks_by_javdb_id:
                 continue
@@ -348,15 +349,15 @@ class MovieImageService:
         return cover_task, plot_tasks, actor_image_tasks_by_javdb_id
 
     def _build_movie_image_tasks(
-        self, movie_number: str, cover_image_url: str | None, plot_urls: List[str]
-    ) -> Tuple[Optional[ImagePersistTask], List[ImagePersistTask]]:
+        self, movie_number: str, cover_image_url: str | None, plot_urls: list[str]
+    ) -> tuple[ImagePersistTask | None, list[ImagePersistTask]]:
         """统一生成影片封面和剧照的本地落盘任务。"""
         cover_task = self._build_image_task(
             owner_type="movie_cover",
             owner_key=movie_number,
             image_url=cover_image_url,
         )
-        plot_tasks: List[ImagePersistTask] = []
+        plot_tasks: list[ImagePersistTask] = []
         for image_index, plot_url in enumerate(plot_urls):
             image_task = self._build_image_task(
                 owner_type="movie_plot",
@@ -373,8 +374,8 @@ class MovieImageService:
         owner_type: str,
         owner_key: str,
         image_url: str | None,
-        plot_index: Optional[int] = None,
-    ) -> Optional[ImagePersistTask]:
+        plot_index: int | None = None,
+    ) -> ImagePersistTask | None:
         """把远端图片 URL 解析成稳定的本地相对路径和绝对路径。"""
         if not image_url:
             logger.debug(
@@ -417,11 +418,11 @@ class MovieImageService:
 
     def collect_image_tasks(
         self,
-        cover_task: Optional[ImagePersistTask],
-        plot_tasks: List[ImagePersistTask],
-        actor_image_tasks_by_javdb_id: Dict[str, ImagePersistTask],
-    ) -> List[ImagePersistTask]:
-        tasks: List[ImagePersistTask] = []
+        cover_task: ImagePersistTask | None,
+        plot_tasks: list[ImagePersistTask],
+        actor_image_tasks_by_javdb_id: dict[str, ImagePersistTask],
+    ) -> list[ImagePersistTask]:
+        tasks: list[ImagePersistTask] = []
         seen_relative_paths: set[str] = set()
         for image_task in [cover_task, *plot_tasks, *actor_image_tasks_by_javdb_id.values()]:
             if image_task is None or image_task.relative_path in seen_relative_paths:
@@ -430,9 +431,9 @@ class MovieImageService:
             tasks.append(image_task)
         return tasks
 
-    def download_image_tasks(self, image_tasks: List[ImagePersistTask]) -> None:
+    def download_image_tasks(self, image_tasks: list[ImagePersistTask]) -> None:
         """并发下载一批图片；封面失败会中断导入，剧情图/头像失败仅告警跳过。"""
-        tasks_to_download: List[ImagePersistTask] = []
+        tasks_to_download: list[ImagePersistTask] = []
         for image_task in image_tasks:
             image_task.absolute_path.parent.mkdir(parents=True, exist_ok=True)
             if image_task.absolute_path.exists():
@@ -447,7 +448,7 @@ class MovieImageService:
         if not tasks_to_download:
             return
 
-        cover_download_errors: List[ImageDownloadError] = []
+        cover_download_errors: list[ImageDownloadError] = []
         with ThreadPoolExecutor(max_workers=len(tasks_to_download), thread_name_prefix="catalog-image") as executor:
             future_map = {executor.submit(self._download_movie_image_task, task): task for task in tasks_to_download}
             for future in as_completed(future_map):
@@ -491,8 +492,8 @@ class MovieImageService:
 
     def download_image_tasks_to_temporary_files(
         self,
-        image_tasks: List[ImagePersistTask],
-    ) -> List[PreparedImageFile]:
+        image_tasks: list[ImagePersistTask],
+    ) -> list[PreparedImageFile]:
         if not image_tasks:
             return []
 
@@ -526,11 +527,11 @@ class MovieImageService:
         self.image_downloader(prepared_file.image_task.image_url, prepared_file.temp_path)
 
     @staticmethod
-    def cleanup_prepared_image_files(prepared_files: List[PreparedImageFile]) -> None:
+    def cleanup_prepared_image_files(prepared_files: list[PreparedImageFile]) -> None:
         for temp_root in {prepared_file.temp_root for prepared_file in prepared_files}:
             shutil.rmtree(temp_root, ignore_errors=True)
 
-    def finalize_prepared_image_files(self, prepared_files: List[PreparedImageFile]) -> None:
+    def finalize_prepared_image_files(self, prepared_files: list[PreparedImageFile]) -> None:
         for prepared_file in prepared_files:
             final_path = prepared_file.image_task.absolute_path
             final_path.parent.mkdir(parents=True, exist_ok=True)
@@ -544,7 +545,7 @@ class MovieImageService:
         owner_type: str,
         owner_key: str,
         image_url: str | None,
-        plot_index: Optional[int] = None,
+        plot_index: int | None = None,
     ) -> Image | None:
         """为单张图片执行“准备路径 -> 下载文件 -> upsert 图片记录”三步。"""
         image_task = self._build_image_task(
@@ -565,7 +566,7 @@ class MovieImageService:
 
         return self.persist_prepared_image(image_task)
 
-    def persist_prepared_image(self, image_task: Optional[ImagePersistTask]) -> Image | None:
+    def persist_prepared_image(self, image_task: ImagePersistTask | None) -> Image | None:
         if image_task is None:
             return None
         # 非致命图片下载失败时不会落地文件，这里直接跳过数据库记录，避免脏路径。
@@ -581,14 +582,14 @@ class MovieImageService:
 
     def persist_prepared_images(
         self,
-        image_tasks: Iterable[Optional[ImagePersistTask]],
-    ) -> Dict[str, Image]:
+        image_tasks: Iterable[ImagePersistTask | None],
+    ) -> dict[str, Image]:
         """``persist_prepared_image`` 的批量版：一次 upsert 落库整批已下载图片。
 
         返回 ``relative_path -> Image``；本地文件缺失的任务与单张版一样跳过并告警，
         因此调用方需按 ``relative_path`` 取值并处理 None。
         """
-        persistable_paths: List[str] = []
+        persistable_paths: list[str] = []
         for image_task in image_tasks:
             if image_task is None:
                 continue
@@ -603,7 +604,7 @@ class MovieImageService:
             persistable_paths.append(image_task.relative_path)
         return self._upsert_image_records(persistable_paths)
 
-    def persist_refreshed_image_record(self, image_task: Optional[ImagePersistTask]) -> Image | None:
+    def persist_refreshed_image_record(self, image_task: ImagePersistTask | None) -> Image | None:
         if image_task is None:
             return None
         # 严格刷新场景的新图片还在临时目录中，事务内只需要先切换到目标相对路径。
@@ -611,8 +612,8 @@ class MovieImageService:
 
     def persist_refreshed_image_records(
         self,
-        image_tasks: Iterable[Optional[ImagePersistTask]],
-    ) -> Dict[str, Image]:
+        image_tasks: Iterable[ImagePersistTask | None],
+    ) -> dict[str, Image]:
         """``persist_refreshed_image_record`` 的批量版，返回 ``relative_path -> Image``。
 
         严格刷新场景文件还在临时目录，不做落地校验，直接整批切换到目标相对路径。
@@ -626,7 +627,7 @@ class MovieImageService:
         return self._upsert_image_records([relative_path])[relative_path]
 
     @staticmethod
-    def _upsert_image_records(relative_paths: Sequence[str]) -> Dict[str, Image]:
+    def _upsert_image_records(relative_paths: Sequence[str]) -> dict[str, Image]:
         """批量 upsert 图片记录，返回 ``relative_path -> Image`` 映射。
 
         单条 ``INSERT ... ON CONFLICT (origin) DO UPDATE ... RETURNING`` 覆盖全部路径：

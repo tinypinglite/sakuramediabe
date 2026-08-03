@@ -6,7 +6,6 @@ import asyncio
 from dataclasses import dataclass, field
 from queue import Empty, Queue
 from threading import Event, RLock, Thread
-from typing import Dict, Optional
 
 from loguru import logger
 
@@ -30,7 +29,10 @@ from src.service.transfers.common import (
     is_qb_managed_torrent,
     resolve_qbittorrent_download_state,
 )
-from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
+from src.service.transfers.qbittorrent_client import (
+    QBittorrentClient,
+    QBittorrentClientError,
+)
 
 
 @dataclass
@@ -236,7 +238,7 @@ class DownloadProgressHub:
         while not poller.stop_event.is_set() and self._has_subscribers(poller.client_id):
             try:
                 ensure_database_ready()
-                remote_by_hash: Dict[str, OfflineTask] = {}
+                remote_by_hash: dict[str, OfflineTask] = {}
                 if self._has_active_cloud115_tasks(poller.client_id):
                     remote_by_hash = asyncio.run(
                         Cloud115OfflineSyncService()._fetch_remote_tasks(client)
@@ -398,7 +400,7 @@ class DownloadProgressHub:
             self._dispatch(broadcast_subscriptions, "download_client_status", transfer_payload)
 
     def _consume_cloud115_tasks(
-        self, client_id: int, remote_by_hash: Dict[str, OfflineTask]
+        self, client_id: int, remote_by_hash: dict[str, OfflineTask]
     ) -> None:
         """把 115 离线任务全量快照 diff 后扇出给订阅者。
 
@@ -517,7 +519,7 @@ class DownloadProgressHub:
         info_hash: str,
         torrent: dict,
         task_index: dict[str, dict],
-    ) -> Optional[DownloadTaskProgressResource]:
+    ) -> DownloadTaskProgressResource | None:
         task_info = task_index.get(info_hash)
         if task_info is None:
             # 未在本地任务表登记的种子即使打了标签，也不向客户端泄露。
@@ -551,7 +553,7 @@ class DownloadProgressHub:
         client_id: int,
         info_hash: str,
         task_index: dict[str, dict],
-    ) -> Optional[dict]:
+    ) -> dict | None:
         task_info = task_index.get(info_hash)
         if task_info is None:
             return None

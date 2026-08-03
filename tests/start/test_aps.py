@@ -1,7 +1,7 @@
+from zoneinfo import ZoneInfo
+
 import pytest
 from click.testing import CliRunner
-from loguru import logger
-from zoneinfo import ZoneInfo
 
 from src.scheduler.logging import _TASK_LEVELS, _TASK_SINKS, get_task_logger
 from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
@@ -1138,14 +1138,14 @@ def test_task_worker_single_movie_params_beats_cron_factory(test_db, monkeypatch
     )
     monkeypatch.setitem(JOB_REGISTRY_BY_KEY, "movie_desc_translation", fake_def)
 
-    with_params = ActivityService.create_task_run(
+    ActivityService.create_task_run(
         task_key="movie_desc_translation",
         trigger_type="manual",
         params={"movie_id": 42},
         scheduled_at=utc_now_for_db(),
     )
     TaskWorker()._execute(TaskQueueService.claim_next())
-    without_params = ActivityService.create_task_run(
+    ActivityService.create_task_run(
         task_key="movie_desc_translation",
         trigger_type="scheduled",
         scheduled_at=utc_now_for_db(),

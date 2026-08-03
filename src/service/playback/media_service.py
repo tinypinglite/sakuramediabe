@@ -1,19 +1,24 @@
 import time
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
 
 import peewee
 from loguru import logger
+
 from src.api.exception.errors import ApiError
-from src.common import build_signed_media_url, build_signed_merged_media_url, build_signed_cloud115_merged_hls_url
+from src.common import (
+    build_signed_cloud115_merged_hls_url,
+    build_signed_media_url,
+    build_signed_merged_media_url,
+)
+from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     require_record,
     resolve_sort,
     validate_page,
     with_movie_card_relations,
 )
-from src.common.runtime_time import utc_now_for_db
 from src.model import (
     Image,
     Media,
@@ -37,18 +42,21 @@ from src.schema.playback.media import (
     MediaPlayUrlResource,
     MediaPlayUrlSegmentResource,
     MediaPlayUrlSource,
-    MediaRapidUploadFilterStatus,
-    MediaValidityCheckResponse,
     MediaPointCreateRequest,
     MediaPointKind,
     MediaPointListItemResource,
     MediaPointResource,
     MediaProgressResource,
     MediaProgressUpdateRequest,
+    MediaRapidUploadFilterStatus,
     MediaThumbnailResource,
+    MediaValidityCheckResponse,
 )
 from src.service.catalog.image_cleanup_service import ImageCleanupService
-from src.service.collections import PlaylistService
+
+# 直接从子模块导入：collections/__init__ 会引入 clip_collection_service -> playback 形成循环，
+# 绕开包级 __init__ 的初始化顺序依赖。
+from src.service.collections.playlist_service import PlaylistService
 from src.service.discovery import get_qdrant_thumbnail_store
 from src.service.playback.media_file_scan_service import MediaFileScanService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService

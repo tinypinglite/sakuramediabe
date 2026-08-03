@@ -1,10 +1,9 @@
+from src.metadata._providers.dmm import DmmProvider
 from src.metadata._providers.exceptions import (
     MetadataProviderError,
     MetadataProviderUnavailable,
 )
-from src.metadata._providers.dmm import DmmProvider
 from src.metadata._providers.javdb import JavdbProvider
-
 from src.metadata.gfriends import GfriendsActorImageResolver
 from src.metadata.provider import (
     MetadataError,
@@ -14,8 +13,8 @@ from src.metadata.provider import (
 )
 
 __all__ = [
-    "GfriendsActorImageResolver",
     "DmmProvider",
+    "GfriendsActorImageResolver",
     "JavdbProvider",
     "MetadataError",
     "MetadataNotFoundError",

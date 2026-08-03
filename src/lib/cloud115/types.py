@@ -117,7 +117,7 @@ class DirMeta:
     play_long_seconds: int                     # 目录内视频总时长秒（115 服务端聚合）；无视频则 0
     mtime: int                                 # 目录最后修改 unix 秒；根目录哨兵为 0
     ctime: int                                 # 目录创建 unix 秒；根目录哨兵为 0
-    paths: tuple["DirBreadcrumb", ...]         # 面包屑链：从根目录到父级（不含当前目录）；根目录哨兵为 ()
+    paths: tuple[DirBreadcrumb, ...]         # 面包屑链：从根目录到父级（不含当前目录）；根目录哨兵为 ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,7 +219,7 @@ class OfflineTaskPage:
     page_count: int                    # 总页数
     page_size: int                     # 每页大小
     total_tasks: int                   # 任务总数（跨页）
-    tasks: list["OfflineTask"]
+    tasks: list[OfflineTask]
 
 
 @dataclass(frozen=True, slots=True)

@@ -6,8 +6,8 @@
 视频后缀集合在这里作为唯一来源，导入 service 直接复用，避免重复定义。
 """
 
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List
 
 from src.api.exception.errors import ApiError
 
@@ -55,9 +55,9 @@ def normalize_abs_path(raw: str) -> Path:
     return resolved
 
 
-def resolve_allowed_roots(roots: Iterable[str]) -> List[Path]:
+def resolve_allowed_roots(roots: Iterable[str]) -> list[Path]:
     """把配置的白名单根目录归一化为去重后的绝对路径列表。"""
-    resolved_roots: List[Path] = []
+    resolved_roots: list[Path] = []
     seen: set[str] = set()
     for raw_root in roots:
         normalized_root = (raw_root or "").strip()

@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import List
 
 from pydantic import Field, field_validator
 
@@ -30,13 +29,13 @@ class VideoItemListItemResource(SchemaModel):
     media_count: int = 0
     can_play: bool = False
     # 该视频归属的全部合集（0..N），按合集名称升序。列表/详情共享同一字段。
-    collections: List[VideoCollectionRef] = Field(default_factory=list)
+    collections: list[VideoCollectionRef] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
 
 class VideoItemDetailResource(VideoItemListItemResource):
-    media_items: List[MovieMediaResource] = Field(default_factory=list)
+    media_items: list[MovieMediaResource] = Field(default_factory=list)
 
 
 class VideoItemCreateRequest(SchemaModel):

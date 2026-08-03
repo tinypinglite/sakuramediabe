@@ -1,34 +1,10 @@
 import json
 from pathlib import Path
-from typing import Dict, Optional, Set
 
 from loguru import logger
 from peewee import JOIN
 
 from src.api.exception.errors import ApiError
-from src.common.runtime_time import utc_now_for_db
-from src.model import BackgroundTaskRun, DownloadTask, Image, ImportJob, Movie
-from src.model.enums import DownloadClientKind
-from src.schema.common.pagination import PageResponse
-from src.schema.transfers.downloads import (
-    DownloadTaskActionResponse,
-    DownloadTaskImportResponse,
-    DownloadTaskResource,
-)
-from src.service.system import ActivityService
-from src.service.transfers.common import (
-    ALLOWED_DOWNLOAD_STATES,
-    DOWNLOAD_COMPLETE_STATES,
-    build_task_movie_filter,
-    canonicalize_btih,
-    is_download_complete,
-    normalize_state_filter,
-    require_task,
-    require_client,
-    resolve_task_sort,
-    validate_page,
-)
-from src.service.system.task_queue_service import TaskQueueService
 from src.common.media_import_status import (
     FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED,
     IMPORT_JOB_STATE_FAILED,
@@ -39,8 +15,30 @@ from src.common.media_import_status import (
     IMPORT_STATUS_SKIPPED,
     make_failure_item,
 )
-from src.service.transfers.media_import_service import MediaImportService
+from src.common.runtime_time import utc_now_for_db
+from src.model import DownloadTask, Image, ImportJob, Movie
+from src.model.enums import DownloadClientKind
+from src.schema.common.pagination import PageResponse
+from src.schema.transfers.downloads import (
+    DownloadTaskActionResponse,
+    DownloadTaskImportResponse,
+    DownloadTaskResource,
+)
+from src.service.system import ActivityService
+from src.service.system.task_queue_service import TaskQueueService
+from src.service.transfers.common import (
+    ALLOWED_DOWNLOAD_STATES,
+    build_task_movie_filter,
+    canonicalize_btih,
+    is_download_complete,
+    normalize_state_filter,
+    require_client,
+    require_task,
+    resolve_task_sort,
+    validate_page,
+)
 from src.service.transfers.import_notifications import create_new_media_reminder
+from src.service.transfers.media_import_service import MediaImportService
 from src.service.transfers.qbittorrent_client import (
     QBittorrentClient,
     QBittorrentClientError,
@@ -91,7 +89,7 @@ class DownloadTaskService:
         )
 
     @staticmethod
-    def _load_movies_for_tasks(tasks) -> Dict[str, Movie]:
+    def _load_movies_for_tasks(tasks) -> dict[str, Movie]:
         """按番号批量 JOIN 影片元数据（标题 + 封面），保证列表接口只做一趟 JOIN 而非 N+1。"""
         numbers = list({task.movie for task in tasks if task.movie})
         if not numbers:
@@ -289,7 +287,7 @@ class DownloadTaskService:
         cls,
         task_id: int,
         *,
-        allowed_statuses: Optional[Set[str]] = None,
+        allowed_statuses: set[str] | None = None,
         trigger_type: str = "manual",
     ) -> DownloadTaskImportResponse:
         task = require_task(task_id)

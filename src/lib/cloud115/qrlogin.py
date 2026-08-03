@@ -19,6 +19,7 @@ app 决定 cookie 落在哪个"登录槽"。默认 **alipaymini**（支付宝小
 from __future__ import annotations
 
 import httpx
+from typing_extensions import Self
 
 from src.lib.cloud115.exceptions import (
     Cloud115AuthError,
@@ -77,7 +78,7 @@ class Cloud115QrLogin:
             headers={"User-Agent": user_agent or self._DEFAULT_UA},
         )
 
-    async def __aenter__(self) -> "Cloud115QrLogin":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc: object) -> None:

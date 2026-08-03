@@ -1,22 +1,7 @@
-from typing import Dict
 
 from loguru import logger
 
 from src.api.exception.errors import ApiError
-from src.common.runtime_time import utc_now_for_db
-from src.common.movie_numbers import parse_movie_number_from_text
-from src.model import DownloadClient, DownloadTask, ImportJob
-from src.model.enums import DownloadClientKind
-from src.schema.transfers.downloads import DownloadClientSyncResponse
-from src.service.system import ActivityService
-from src.service.transfers.common import (
-    ALLOWED_DOWNLOAD_STATES,
-    DOWNLOAD_COMPLETE_STATES,
-    resolve_qbittorrent_download_state,
-    map_remote_path,
-    require_client,
-)
-from src.service.transfers.download_task_service import DownloadTaskService
 from src.common.media_import_status import (
     IMPORT_JOB_STATE_FAILED,
     IMPORT_JOB_STATE_PENDING,
@@ -24,7 +9,23 @@ from src.common.media_import_status import (
     IMPORT_STATUS_PENDING,
     IMPORT_STATUS_RUNNING,
 )
-from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
+from src.common.movie_numbers import parse_movie_number_from_text
+from src.common.runtime_time import utc_now_for_db
+from src.model import DownloadClient, DownloadTask, ImportJob
+from src.model.enums import DownloadClientKind
+from src.schema.transfers.downloads import DownloadClientSyncResponse
+from src.service.system import ActivityService
+from src.service.transfers.common import (
+    DOWNLOAD_COMPLETE_STATES,
+    map_remote_path,
+    require_client,
+    resolve_qbittorrent_download_state,
+)
+from src.service.transfers.download_task_service import DownloadTaskService
+from src.service.transfers.qbittorrent_client import (
+    QBittorrentClient,
+    QBittorrentClientError,
+)
 
 
 class DownloadSyncService:
@@ -163,7 +164,7 @@ class DownloadSyncService:
             )
         return removed_count
 
-    def sync_all_clients(self) -> Dict[str, int]:
+    def sync_all_clients(self) -> dict[str, int]:
         total_scanned = 0
         total_created = 0
         total_updated = 0
@@ -204,7 +205,7 @@ class DownloadSyncService:
             "failed_client_ids": failed_client_ids,
         }
 
-    def enqueue_auto_imports(self) -> Dict[str, int]:
+    def enqueue_auto_imports(self) -> dict[str, int]:
         recovered_count = self._recover_orphaned_imports()
         queued_count = 0
         # 只排 qb 任务：cloud115 任务的落地是云端 cid，本地路径导入语义不适用，
@@ -233,7 +234,7 @@ class DownloadSyncService:
                 )
         return {"queued_count": queued_count, "recovered_count": recovered_count}
 
-    def recover_orphaned_imports_only(self) -> Dict[str, int]:
+    def recover_orphaned_imports_only(self) -> dict[str, int]:
         # 启动恢复场景只做状态回收，不触发新的自动导入排队。
         recovered_count = self._recover_orphaned_imports()
         return {"recovered_count": recovered_count}
@@ -261,7 +262,9 @@ class DownloadSyncService:
                 .order_by(ImportJob.id.asc())
             )
             # 队列托管后判活看 task_run：排队中或租约未过期即视为仍在执行。
-            from src.service.transfers.base_import_job_service import BaseImportJobService
+            from src.service.transfers.base_import_job_service import (
+                BaseImportJobService,
+            )
 
             if running_jobs and any(
                 BaseImportJobService._task_run_alive(job) for job in running_jobs

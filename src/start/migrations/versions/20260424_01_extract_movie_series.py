@@ -7,7 +7,6 @@ from src.model import MovieSeries
 from src.model.base import BaseModel
 from src.start.migrations import SkipMigration
 
-
 name = "20260424_01_extract_movie_series"
 
 

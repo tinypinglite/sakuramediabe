@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import httpx
+from typing_extensions import Self
 
 from src.lib.cloud115.exceptions import Cloud115RequestError
-
 
 # MPEG-TS 包长 188 字节；网络块无需按包对齐，PyAV 会在内部完成拼包。
 DEFAULT_HLS_STREAM_CHUNK_SIZE = 64 * 1024
@@ -103,7 +103,7 @@ class Cloud115HlsSegmentReader:
             if self._owns_client:
                 self._client.close()
 
-    def __enter__(self) -> "Cloud115HlsSegmentReader":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_exc: object) -> None:

@@ -1,4 +1,3 @@
-from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
@@ -9,6 +8,7 @@ from src.api.routers._utils import (
     to_sse_event,
 )
 from src.api.routers.deps import db_deps, get_current_user
+from src.metadata._providers.models import JavdbMovieReviewResource
 from src.schema.catalog.movies import (
     MovieCollectionMarkRequest,
     MovieCollectionMarkResponse,
@@ -31,7 +31,6 @@ from src.schema.catalog.movies import (
 )
 from src.schema.catalog.subtitles import MovieSubtitleListResource
 from src.schema.common.pagination import PageResponse
-from src.metadata._providers.models import JavdbMovieReviewResource
 from src.service.catalog import (
     MovieMetadataRefreshService,
     MovieService,
@@ -49,7 +48,7 @@ router = APIRouter(
 
 @router.get("", response_model=PageResponse[MovieListItemResource])
 def list_movies(
-    actor_id: Optional[int] = None,
+    actor_id: int | None = None,
     tag_ids: str | None = Query(default=None),
     tag_match: TagMatchMode = Query(default=TagMatchMode.OR),
     year: int | None = Query(default=None, ge=1),
@@ -57,7 +56,7 @@ def list_movies(
     collection_type: MovieCollectionType = MovieCollectionType.ALL,
     special_tag: MovieSpecialTagFilter | None = None,
     number_source: MovieNumberSource = MovieNumberSource.ALL,
-    sort: Optional[str] = Query(default=None),
+    sort: str | None = Query(default=None),
     director_name: str | None = Query(default=None),
     maker_name: str | None = Query(default=None),
     page: int = 1,
@@ -118,7 +117,7 @@ def parse_movie_number(payload: MovieNumberParseRequest):
     return MovieService.parse_movie_number_query(payload.query)
 
 
-@router.get("/search/local", response_model=List[MovieListItemResource])
+@router.get("/search/local", response_model=list[MovieListItemResource])
 def search_local_movies(movie_number: str = Query(..., min_length=1)):
     return MovieService.search_local_movies(movie_number=movie_number)
 
@@ -146,7 +145,7 @@ def batch_unsubscribe_movies(payload: MovieSubscriptionBatchRequest):
     return MovieService.batch_unsubscribe_movies(payload.movie_numbers)
 
 
-@router.get("/{movie_number}/reviews", response_model=List[JavdbMovieReviewResource])
+@router.get("/{movie_number}/reviews", response_model=list[JavdbMovieReviewResource])
 def get_movie_reviews(
     movie_number: str,
     page: int = Query(default=1, ge=1),
@@ -166,7 +165,7 @@ def get_movie_subtitles(movie_number: str):
     return MovieSubtitleService.get_movie_subtitles(movie_number)
 
 
-@router.get("/{movie_number}/similar", response_model=List[SimilarMovieListItemResource])
+@router.get("/{movie_number}/similar", response_model=list[SimilarMovieListItemResource])
 def list_similar_movies(
     movie_number: str,
     limit: int = Query(default=20, ge=0, le=100),

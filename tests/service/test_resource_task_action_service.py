@@ -8,7 +8,9 @@ import pytest
 from src.api.exception.errors import ApiError
 from src.model import BackgroundTaskRun, Movie, ResourceTaskState
 from src.service.system.resource_task_action_service import ResourceTaskActionService
-from src.service.system.resource_task_actions_registry import available_actions_for_state
+from src.service.system.resource_task_actions_registry import (
+    available_actions_for_state,
+)
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 
 TASK_KEY = "movie_desc_translation"

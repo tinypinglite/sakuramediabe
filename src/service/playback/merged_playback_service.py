@@ -27,7 +27,7 @@ class _InFlightBuild:
     避免多个线程同时对同一批大文件重复做高耗时构建而占满 API 线程池。
     """
 
-    __slots__ = ("event", "layout", "error")
+    __slots__ = ("error", "event", "layout")
 
     def __init__(self) -> None:
         self.event = threading.Event()

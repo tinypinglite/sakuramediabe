@@ -15,8 +15,9 @@ pending 的 BackgroundTaskRun 行即队列元素，四个原语：
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import Any, Iterable
+from typing import Any
 
 from peewee import IntegrityError, fn
 

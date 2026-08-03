@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from collections.abc import Callable, Sequence
 from datetime import date, datetime, time
-from typing import Callable, Sequence
 
 from loguru import logger
 from peewee import JOIN
@@ -11,6 +11,7 @@ from peewee import JOIN
 from src.common.runtime_time import runtime_now, utc_now_for_db
 from src.common.service_helpers import validate_page, with_movie_card_relations
 from src.model import (
+    PLAYLIST_KIND_RECENTLY_PLAYED,
     Actor,
     DailyRecommendationItem,
     HotReviewItem,
@@ -20,14 +21,14 @@ from src.model import (
     PlaylistMovie,
     RankingItem,
     get_database,
-    PLAYLIST_KIND_RECENTLY_PLAYED,
 )
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.common.pagination import PageResponse
 from src.schema.discovery import DailyRecommendationMovieResource
+from src.service.discovery.qdrant_movie_similarity_store import (
+    MovieSimilarityIndexError,
+)
 from src.service.discovery.recommendation_service import MovieRecommendationService
-from src.service.discovery.qdrant_movie_similarity_store import MovieSimilarityIndexError
-
 
 DAILY_RECOMMENDATION_LIMIT = 200
 RECENT_SEED_LIMIT = 30

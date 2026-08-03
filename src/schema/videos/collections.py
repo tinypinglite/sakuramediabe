@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import List
 
 from pydantic import Field, field_validator
 
@@ -75,4 +74,4 @@ class VideoCollectionItemAddRequest(SchemaModel):
 
 class VideoCollectionReorderRequest(SchemaModel):
     # 按目标顺序给出合集成员 item_id 列表，service 据此重写 position。
-    ordered_item_ids: List[int] = Field(min_length=1)
+    ordered_item_ids: list[int] = Field(min_length=1)

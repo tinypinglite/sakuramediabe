@@ -9,7 +9,6 @@
 
 from src.model import Media, MediaLibrary, Movie
 
-
 SUBSCRIPTIONS_PATH = "/movies/subscriptions"
 UNSUBSCRIPTIONS_PATH = "/movies/unsubscriptions"
 

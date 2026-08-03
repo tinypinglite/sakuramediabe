@@ -12,12 +12,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Dict
 
 import httpx
 from loguru import logger
 
 from src.api.exception.errors import ApiError
+from src.common.media_import_status import IMPORT_STATUS_PENDING
 from src.lib.cloud115 import (
     Cloud115DuplicateNameError,
     Cloud115Error,
@@ -26,7 +26,6 @@ from src.lib.cloud115 import (
     OfflineTask,
 )
 from src.model import DownloadClient, DownloadTask
-from src.common.media_import_status import IMPORT_STATUS_PENDING
 from src.service.cloud115 import (
     CLOUD115_DOWNLOADS_ROOT_NAME,
     cloud115_client_for,
@@ -35,7 +34,10 @@ from src.service.cloud115 import (
     map_cloud115_error,
 )
 from src.service.transfers.common import canonicalize_btih
-from src.service.transfers.qbittorrent_client import QBittorrentClient, QBittorrentClientError
+from src.service.transfers.qbittorrent_client import (
+    QBittorrentClient,
+    QBittorrentClientError,
+)
 
 
 async def _create_task_dir(
@@ -75,9 +77,9 @@ async def fetch_cloud115_offline_tasks_by_hash(
     *,
     page_size: int = 50,
     max_pages: int = 20,
-) -> Dict[str, OfflineTask]:
+) -> dict[str, OfflineTask]:
     """分页拉取远端离线任务，并按 canonical BTIH 建索引。"""
-    results: Dict[str, OfflineTask] = {}
+    results: dict[str, OfflineTask] = {}
     page = 1
     while page <= max_pages:
         task_page = await client.list_offline_tasks(page=page, page_size=page_size)

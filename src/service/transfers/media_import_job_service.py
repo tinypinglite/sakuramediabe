@@ -8,7 +8,6 @@
 - 删除/重命名/重导只允许作用于该作业失败列表中 ``kind=file`` 的单文件失败项，且作业须处于终态。
 """
 
-from typing import List
 
 from loguru import logger
 
@@ -138,7 +137,9 @@ def import_job_service_for(job_id: int):
 
     作业不存在时返回本地侧 service，由其统一抛 404，保持错误形状一致。
     """
-    from src.service.transfers.cloud115_import_job_service import Cloud115ImportJobService
+    from src.service.transfers.cloud115_import_job_service import (
+        Cloud115ImportJobService,
+    )
 
     job = ImportJob.get_or_none(ImportJob.id == job_id)
     if job is not None and job.source_cid:

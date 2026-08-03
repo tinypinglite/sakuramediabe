@@ -1,12 +1,11 @@
 import re
-from typing import List, Optional
 
 import httpx
 import xmltodict
 from loguru import logger
 
-from src.config.config import settings
 from src.common.movie_numbers import normalize_movie_number
+from src.config.config import settings
 from src.model import DownloadClient, Indexer, IndexerDownloadClient
 from src.schema.transfers.downloads import (
     DownloadCandidateClientResource,
@@ -33,8 +32,8 @@ class JackettClient:
         self.api_key = api_key if api_key is not None else settings.indexer_settings.api_key
         self.client = client or httpx.Client(timeout=30.0, trust_env=False)
 
-    def search(self, movie_number: str, indexer_kind: Optional[str] = None) -> List[DownloadCandidateResource]:
-        candidates: List[DownloadCandidateResource] = []
+    def search(self, movie_number: str, indexer_kind: str | None = None) -> list[DownloadCandidateResource]:
+        candidates: list[DownloadCandidateResource] = []
         normalized_kind = (indexer_kind or "").strip().lower() or None
         search_query = self._build_search_query(movie_number)
         # 一趟 JOIN 取全部索引器绑定关系，候选卡片的 resolved_client 按全局 kind 偏好预解析。

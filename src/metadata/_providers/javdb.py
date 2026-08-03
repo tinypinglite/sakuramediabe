@@ -5,12 +5,11 @@ import json
 import time
 import uuid
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import quote, urlencode
 
 from loguru import logger
 
-from .utils import normalize_movie_number
 from .exceptions import JavdbAuthError, MetadataNotFoundError, MetadataRequestError
 from .http_client import MetadataRequestClient
 from .models import (
@@ -22,9 +21,10 @@ from .models import (
     JavdbReviewMovieResource,
     JavdbSeriesResource,
 )
+from .utils import normalize_movie_number
 
 
-def _parse_date(value: Optional[str]) -> Optional[date]:
+def _parse_date(value: str | None) -> date | None:
     if not value:
         return None
     return date.fromisoformat(value)
@@ -112,9 +112,9 @@ class JavdbProvider(MetadataRequestClient):
         self,
         host: str,
         *,
-        proxy: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
+        proxy: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
     ):
         MetadataRequestClient.__init__(
             self,
@@ -124,7 +124,7 @@ class JavdbProvider(MetadataRequestClient):
         self.username = username
         self.password = password
         # 登录态懒加载：token 在首次抓需登录榜单时获取，本实例只登录一次。
-        self._token: Optional[str] = None
+        self._token: str | None = None
         self._login_failed = False
         logger.info(
             "JavdbProvider initialized host={} proxy_enabled={} account_configured={}",
@@ -133,7 +133,7 @@ class JavdbProvider(MetadataRequestClient):
             bool(username and password),
         )
 
-    def _normalize_image_url(self, url: Optional[str]) -> Optional[str]:
+    def _normalize_image_url(self, url: str | None) -> str | None:
         if not url:
             return None
         if "covers" in url:
@@ -148,8 +148,8 @@ class JavdbProvider(MetadataRequestClient):
         self,
         *,
         path: str,
-        path_params: Optional[Dict[str, Any]] = None,
-        query_params: Optional[Dict[str, Any]] = None,
+        path_params: dict[str, Any] | None = None,
+        query_params: dict[str, Any] | None = None,
     ) -> str:
         resolved_path = path.format(**(path_params or {}))
         base_url = f"https://{self.host}{resolved_path}"
@@ -174,7 +174,7 @@ class JavdbProvider(MetadataRequestClient):
         actor_javdb_id: str,
         actor_type: int = 0,
         page: int = 1,
-    ) -> List[JavdbMovieListItemResource]:
+    ) -> list[JavdbMovieListItemResource]:
         logger.debug(
             "Javdb get_actor_movies_by_javdb start actor_javdb_id={} actor_type={} page={}",
             actor_javdb_id,
@@ -207,7 +207,7 @@ class JavdbProvider(MetadataRequestClient):
         self,
         series_id: str,
         series_type: int = 0,
-    ) -> List[JavdbMovieListItemResource]:
+    ) -> list[JavdbMovieListItemResource]:
         page = 1
         movies = []
         while True:
@@ -241,7 +241,7 @@ class JavdbProvider(MetadataRequestClient):
         self,
         series_name: str,
         page: int = 1,
-    ) -> List[JavdbSeriesResource]:
+    ) -> list[JavdbSeriesResource]:
         query_params = {
             "q": series_name,
             **self.API_PARAMS_SERIES_SEARCH,
@@ -259,7 +259,7 @@ class JavdbProvider(MetadataRequestClient):
             series_name,
             len(series_list),
         )
-        resources: List[JavdbSeriesResource] = []
+        resources: list[JavdbSeriesResource] = []
         for series in series_list:
             series_id = series.get("id")
             if not series_id:
@@ -338,7 +338,7 @@ class JavdbProvider(MetadataRequestClient):
             "Javdb actor not matched in candidate list actor_name={}", actor_name)
         raise MetadataNotFoundError("actor", actor_name)
 
-    def search_actors(self, actor_name: str) -> List[JavdbMovieActorResource]:
+    def search_actors(self, actor_name: str) -> list[JavdbMovieActorResource]:
         query_params = {
             "q": actor_name,
             **self.API_PARAMS_ACTOR_SEARCH,
@@ -356,7 +356,7 @@ class JavdbProvider(MetadataRequestClient):
             logger.warning("Javdb actors not found actor_name={}", actor_name)
             raise MetadataNotFoundError("actor", actor_name)
 
-        resources: List[JavdbMovieActorResource] = []
+        resources: list[JavdbMovieActorResource] = []
         seen_actor_ids: set[str] = set()
         for actor in actors:
             actor_id = actor.get("id")
@@ -399,7 +399,7 @@ class JavdbProvider(MetadataRequestClient):
             }
         )
 
-    def _search_movie(self, movie_number: str) -> Dict[str, Any]:
+    def _search_movie(self, movie_number: str) -> dict[str, Any]:
         normalized_number = normalize_movie_number(movie_number)
         query_params = {
             "q": normalized_number,
@@ -463,7 +463,7 @@ class JavdbProvider(MetadataRequestClient):
         page: int = 1,
         limit: int = 20,
         sort_by: str = "recently",
-    ) -> List[JavdbMovieReviewResource]:
+    ) -> list[JavdbMovieReviewResource]:
         logger.debug(
             "Javdb get_movie_reviews_by_javdb_id start javdb_id={} page={} limit={} sort_by={}",
             javdb_id,
@@ -478,7 +478,7 @@ class JavdbProvider(MetadataRequestClient):
             sort_by=sort_by,
         )
         reviews = self._extract_movie_reviews(payload, url=url)
-        resources: List[JavdbMovieReviewResource] = []
+        resources: list[JavdbMovieReviewResource] = []
         for review in reviews:
             if not isinstance(review, dict):
                 logger.warning(
@@ -501,7 +501,7 @@ class JavdbProvider(MetadataRequestClient):
         period: str = "weekly",
         page: int = 1,
         limit: int = 24,
-    ) -> List[JavdbMovieReviewResource]:
+    ) -> list[JavdbMovieReviewResource]:
         if period not in self.SUPPORTED_HOT_REVIEW_PERIODS:
             raise ValueError(f"unsupported period: {period}")
         if page < 1:
@@ -521,7 +521,7 @@ class JavdbProvider(MetadataRequestClient):
             limit=limit,
         )
         reviews = self._extract_movie_reviews(payload, url=url)
-        resources: List[JavdbMovieReviewResource] = []
+        resources: list[JavdbMovieReviewResource] = []
         for review in reviews:
             if not isinstance(review, dict):
                 logger.warning(
@@ -538,14 +538,14 @@ class JavdbProvider(MetadataRequestClient):
         )
         return resources
 
-    def get_rank_numbers(self, video_type: str, period: str = "daily") -> List[str]:
+    def get_rank_numbers(self, video_type: str, period: str = "daily") -> list[str]:
         if video_type not in self.SUPPORTED_RANK_VIDEO_TYPES:
             raise ValueError(f"unsupported video_type: {video_type}")
         if period not in self.SUPPORTED_RANK_PERIODS:
             raise ValueError(f"unsupported period: {period}")
 
         movies = self._fetch_rank_movies(video_type=video_type, period=period)
-        numbers: List[str] = []
+        numbers: list[str] = []
         for movie in movies:
             number = movie.get("number")
             if number:
@@ -558,7 +558,7 @@ class JavdbProvider(MetadataRequestClient):
         )
         return numbers
 
-    def _device_payload(self) -> Dict[str, str]:
+    def _device_payload(self) -> dict[str, str]:
         # device_uuid 按账号确定性派生：同账号每次登录一致，不同账号互不相同。
         device_uuid = str(uuid.uuid5(self.DEVICE_UUID_NAMESPACE, self.username or ""))
         return {"device_uuid": device_uuid, **self.DEVICE}
@@ -605,15 +605,15 @@ class JavdbProvider(MetadataRequestClient):
         self,
         top_type: str,
         type_value: str = "",
-        max_pages: Optional[int] = None,
-    ) -> List[str]:
+        max_pages: int | None = None,
+    ) -> list[str]:
         # 需登录的 TOP250 榜：type=all/year/video_type，分页抓取最多 max_pages 页。
         if top_type not in self.SUPPORTED_TOP_TYPES:
             raise ValueError(f"unsupported top_type: {top_type}")
         page_count = self.TOP250_MAX_PAGES if max_pages is None else max_pages
 
         token = self._ensure_logged_in()
-        numbers: List[str] = []
+        numbers: list[str] = []
         for page in range(1, page_count + 1):
             url = self._build_api_url(
                 path=self.API_PATH_MOVIES_TOP,
@@ -666,7 +666,7 @@ class JavdbProvider(MetadataRequestClient):
         )
         return numbers
 
-    def get_playback_rank_numbers(self, filter_by: str = "all", period: str = "daily") -> List[str]:
+    def get_playback_rank_numbers(self, filter_by: str = "all", period: str = "daily") -> list[str]:
         # 播放榜：filter_by=all(热播)/high_score(高评分)。
         if filter_by not in self.SUPPORTED_PLAYBACK_FILTERS:
             raise ValueError(f"unsupported filter_by: {filter_by}")
@@ -703,7 +703,7 @@ class JavdbProvider(MetadataRequestClient):
             )
             raise MetadataRequestError("GET", url, detail)
 
-        numbers: List[str] = []
+        numbers: list[str] = []
         for movie in movies:
             number = movie.get("number")
             if number:
@@ -716,7 +716,7 @@ class JavdbProvider(MetadataRequestClient):
         )
         return numbers
 
-    def build_request_headers(self) -> Dict[str, str]:
+    def build_request_headers(self) -> dict[str, str]:
         return {
             "connection": "keep-alive",
             "accept-language": "zh-TW",
@@ -733,7 +733,7 @@ class JavdbProvider(MetadataRequestClient):
         sign = hashlib.md5(secret.encode()).hexdigest()
         return f"{current_timestamp}.lpw6vgqzsp.{sign}"
 
-    def _build_movie_list_item(self, movie: Dict[str, Any]) -> JavdbMovieListItemResource:
+    def _build_movie_list_item(self, movie: dict[str, Any]) -> JavdbMovieListItemResource:
         movie_id = movie["id"]
         release_date = _parse_date(movie.get("release_date"))
         cover_url = movie.get("cover_url")
@@ -754,7 +754,7 @@ class JavdbProvider(MetadataRequestClient):
             }
         )
 
-    def _get_movie_detail_payload(self, javdb_id: str) -> Dict[str, Any]:
+    def _get_movie_detail_payload(self, javdb_id: str) -> dict[str, Any]:
         url = self._build_api_url(
             path=self.API_PATH_MOVIE_DETAIL,
             path_params={"javdb_id": javdb_id},
@@ -786,8 +786,8 @@ class JavdbProvider(MetadataRequestClient):
         page: int,
         limit: int,
         sort_by: str | None,
-    ) -> tuple[Dict[str, Any], str]:
-        params: Dict[str, Any] = {
+    ) -> tuple[dict[str, Any], str]:
+        params: dict[str, Any] = {
             **self.API_PARAMS_MOVIE_REVIEWS,
         }
         params["page"] = page
@@ -825,8 +825,8 @@ class JavdbProvider(MetadataRequestClient):
         period: str,
         page: int,
         limit: int,
-    ) -> tuple[Dict[str, Any], str]:
-        params: Dict[str, Any] = {
+    ) -> tuple[dict[str, Any], str]:
+        params: dict[str, Any] = {
             **self.API_PARAMS_HOT_REVIEWS,
         }
         params["period"] = period
@@ -855,7 +855,7 @@ class JavdbProvider(MetadataRequestClient):
             raise MetadataRequestError("GET", url, detail)
         return payload, url
 
-    def _extract_movie_reviews(self, payload: Dict[str, Any], *, url: str) -> List[Any]:
+    def _extract_movie_reviews(self, payload: dict[str, Any], *, url: str) -> list[Any]:
         data = payload.get("data")
         reviews = data.get("reviews") if isinstance(data, dict) else None
         if isinstance(reviews, list):
@@ -893,7 +893,7 @@ class JavdbProvider(MetadataRequestClient):
         }
         return JavdbReviewMovieResource.model_validate(mapped_payload)
 
-    def _build_movie_review(self, review: Dict[str, Any]) -> JavdbMovieReviewResource:
+    def _build_movie_review(self, review: dict[str, Any]) -> JavdbMovieReviewResource:
         mapped_payload = {
             "id": self._safe_int(review.get("id"), 0),
             "score": self._safe_int(review.get("score"), 0),
@@ -906,7 +906,7 @@ class JavdbProvider(MetadataRequestClient):
         }
         return JavdbMovieReviewResource.model_validate(mapped_payload)
 
-    def _fetch_rank_movies(self, video_type: str, period: str) -> List[Dict[str, Any]]:
+    def _fetch_rank_movies(self, video_type: str, period: str) -> list[dict[str, Any]]:
         url = self._build_api_url(
             path=self.API_PATH_RANKINGS,
             query_params={"type": video_type, "period": period},
@@ -943,7 +943,7 @@ class JavdbProvider(MetadataRequestClient):
         *,
         field_name: str,
         javdb_id: str,
-    ) -> List[Any]:
+    ) -> list[Any]:
         if value is None:
             logger.debug(
                 "Javdb movie detail field is null javdb_id={} field={}",
@@ -961,7 +961,7 @@ class JavdbProvider(MetadataRequestClient):
         )
         return []
 
-    def _build_movie_detail(self, payload: Dict[str, Any]) -> JavdbMovieDetailResource:
+    def _build_movie_detail(self, payload: dict[str, Any]) -> JavdbMovieDetailResource:
         movie = payload.get("data", {}).get("movie", {})
         movie_id = movie["id"]
         actors = self._normalize_movie_list_field(
@@ -1015,8 +1015,8 @@ class JavdbProvider(MetadataRequestClient):
         )
         return detail
 
-    def _build_movie_actors(self, actors: List[Any]) -> List[JavdbMovieActorResource]:
-        resources: List[JavdbMovieActorResource] = []
+    def _build_movie_actors(self, actors: list[Any]) -> list[JavdbMovieActorResource]:
+        resources: list[JavdbMovieActorResource] = []
         for actor in actors:
             if not isinstance(actor, dict):
                 logger.warning(
@@ -1042,8 +1042,8 @@ class JavdbProvider(MetadataRequestClient):
         logger.debug("Javdb actor resources built count={}", len(resources))
         return resources
 
-    def _collect_actor_candidate_names(self, actor: Dict[str, Any]) -> List[str]:
-        candidate_names: List[str] = []
+    def _collect_actor_candidate_names(self, actor: dict[str, Any]) -> list[str]:
+        candidate_names: list[str] = []
         seen_names: set[str] = set()
         primary_names = [
             actor.get("name") or "",
@@ -1071,11 +1071,11 @@ class JavdbProvider(MetadataRequestClient):
             candidate_names.append(candidate_name)
         return candidate_names
 
-    def _resolve_actor_avatar_url(self, actor: Dict[str, Any]) -> Optional[str]:
+    def _resolve_actor_avatar_url(self, actor: dict[str, Any]) -> str | None:
         return self._normalize_image_url(actor.get("avatar_url"))
 
-    def _build_movie_tags(self, tags: List[Any]) -> List[JavdbMovieTagResource]:
-        resources: List[JavdbMovieTagResource] = []
+    def _build_movie_tags(self, tags: list[Any]) -> list[JavdbMovieTagResource]:
+        resources: list[JavdbMovieTagResource] = []
         for tag in tags:
             if not isinstance(tag, dict):
                 logger.warning(
@@ -1095,9 +1095,9 @@ class JavdbProvider(MetadataRequestClient):
         return resources
 
     def _build_preview_images(
-        self, preview_images: List[Any]
-    ) -> List[str]:
-        resources: List[str] = []
+        self, preview_images: list[Any]
+    ) -> list[str]:
+        resources: list[str] = []
         for image in preview_images:
             if not isinstance(image, dict):
                 logger.warning(

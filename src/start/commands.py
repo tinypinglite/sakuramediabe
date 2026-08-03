@@ -1,7 +1,3 @@
-#!/usr/bin/env python
-# -*- encoding: utf-8 -*-
-# here put the import lib
-
 import json
 import logging
 import sys
@@ -12,8 +8,8 @@ import click
 from loguru import logger
 
 import src.common.logging as app_logging
-from src.common.logging import configure_logging
 from src.api.exception.errors import ApiError
+from src.common.logging import configure_logging
 from src.config.config import settings
 from src.metadata.factory import build_dmm_provider, build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
@@ -26,10 +22,6 @@ from src.service.catalog import MovieThinCoverBackfillService
 from src.service.catalog.movie_asset_shard_migration_service import (
     MovieAssetShardMigrationService,
 )
-from src.service.catalog.movie_subtitle_unify_migration_service import (
-    MovieSubtitleUnifyMigrationService,
-)
-from src.service.catalog.plot_layout_migration_service import PlotLayoutMigrationService
 from src.service.catalog.movie_desc_translation_client import (
     MovieDescTranslationClient,
     MovieDescTranslationClientError,
@@ -37,6 +29,10 @@ from src.service.catalog.movie_desc_translation_client import (
 from src.service.catalog.movie_desc_translation_test_support import (
     DEFAULT_TEST_TRANSLATION_PROMPT,
 )
+from src.service.catalog.movie_subtitle_unify_migration_service import (
+    MovieSubtitleUnifyMigrationService,
+)
+from src.service.catalog.plot_layout_migration_service import PlotLayoutMigrationService
 from src.service.playback import MediaFileScanService, MediaLibraryService
 from src.service.playback.jav_layout_migration_service import JavLayoutMigrationService
 from src.service.system import TaskRunConflictError
@@ -82,7 +78,6 @@ def _suppress_logs_for_json_output(enabled: bool):
 
 @click.group()
 def main():
-    """ """
     configure_logging()
 
 

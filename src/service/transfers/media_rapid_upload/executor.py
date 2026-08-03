@@ -14,7 +14,6 @@ from src.model import (
     get_database,
 )
 from src.service.cloud115 import cloud115_client_for, require_cloud115_library
-from src.service.system import ActivityService
 from src.service.transfers.cloud115_import_common import Cloud115TargetDirResolver
 from src.service.transfers.media_rapid_upload.notifications import (
     create_media_rapid_upload_notification,
@@ -29,9 +28,9 @@ from src.service.transfers.media_rapid_upload.states import (
     ITEM_STATE_CLEANUP_FAILED,
     ITEM_STATE_FAILED,
     ITEM_STATE_SUCCEEDED,
-    TASK_KEY,
 )
 from src.service.transfers.media_rapid_upload.types import RapidUploadFailure
+
 
 class MediaRapidUploadExecutor:
     @classmethod

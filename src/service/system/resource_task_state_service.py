@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable
 
 from peewee import IntegrityError, fn
 
 from src.api.exception.errors import ApiError
-from src.common.service_helpers import resolve_sort, validate_page
 from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import resolve_sort, validate_page
 from src.model import ResourceTaskState
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse

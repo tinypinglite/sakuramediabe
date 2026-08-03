@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any
 
 from src.lib.cloud115 import (
     Cloud115Client,
@@ -70,12 +71,12 @@ def normalize_jav_media_filename(movie_number: str, source_name: str) -> str:
 
 async def _list_subdir_cids_by_name(
     client: Cloud115Client, parent_cid: str
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """列 parent_cid 下所有子目录，返回 ``{目录名: cid}``。
 
     同名目录只保留首个命中，语义对齐 ``find_or_create_subdir``（命中即返回第一个）。
     """
-    result: Dict[str, str] = {}
+    result: dict[str, str] = {}
     offset = 0
     while True:
         entries, total = await client.list_dir(parent_cid, offset=offset, limit=1150)
@@ -92,8 +93,8 @@ async def _list_subdir_cids_by_name(
 class Cloud115TargetDirCache:
     """自动导入批次或单次手动作业内共享的目标目录缓存。"""
 
-    section_cids: Dict[str, str] = field(default_factory=dict)
-    entities: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    section_cids: dict[str, str] = field(default_factory=dict)
+    entities: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 class Cloud115TargetDirResolver:
@@ -130,7 +131,7 @@ class Cloud115TargetDirResolver:
             self._cache.section_cids[section] = cid
         return cid
 
-    async def _entity_map_for(self, section: str) -> Dict[str, str]:
+    async def _entity_map_for(self, section: str) -> dict[str, str]:
         entities = self._cache.entities.get(section)
         if entities is None:
             section_cid = await self._section_cid_for(section)
@@ -205,13 +206,13 @@ class Cloud115TargetDirResolver:
 
 async def list_cloud115_entity_target_files(
     client: Cloud115Client, entity_cid: str
-) -> Dict[str, List[DirEntry]]:
+) -> dict[str, list[DirEntry]]:
     """递归列实体目录（jav/番号 或 videos/id）下所有版本目录里的文件，按 SHA1 索引。
 
     用于按番号/视频粒度做中断恢复对账：一个实体的多次导入分散在多个版本子目录里，
     需要跨版本聚合。
     """
-    by_sha1: Dict[str, List[DirEntry]] = {}
+    by_sha1: dict[str, list[DirEntry]] = {}
     async for entry in client.iter_files_recursive(entity_cid):
         if not entry.is_dir and entry.sha1:
             by_sha1.setdefault(entry.sha1.upper(), []).append(entry)
@@ -224,7 +225,7 @@ def _rel_parts_from_dir_meta(meta: DirMeta, source_cid: str) -> tuple[str, ...]:
     ``DirMeta.paths`` 是从 115 根目录到该目录**父级**的完整面包屑，因此一次 dir_info
     就能还原整条链，不需要逐级回溯。
     """
-    names: List[str] = []
+    names: list[str] = []
     seen_source = False
     for crumb in meta.paths:
         if seen_source:
@@ -244,7 +245,7 @@ async def collect_cloud115_source_files(
     source_cid: str,
     *,
     needs_rel_path: Callable[[DirEntry], bool],
-) -> tuple[List[DirEntry], Dict[str, tuple[str, ...]]]:
+) -> tuple[list[DirEntry], dict[str, tuple[str, ...]]]:
     """枚举源目录树下的全部文件，并**只**为需要的文件解析父目录相对链。
 
     返回 ``(files, {parent_cid: 相对 source_cid 的目录名链})``。
@@ -258,10 +259,10 @@ async def collect_cloud115_source_files(
     按整个下载缓冲区导入时，历史任务目录只增不减，旧的逐目录 BFS 成本正来自这里
     （实测 158+ 个残留目录 → 200~400 次 list_dir，连续打满即触发 WAF 405）。
     """
-    files: List[DirEntry] = [
+    files: list[DirEntry] = [
         entry async for entry in client.iter_files_recursive(source_cid)
     ]
-    rel_dirs: Dict[str, tuple[str, ...]] = {source_cid: ()}
+    rel_dirs: dict[str, tuple[str, ...]] = {source_cid: ()}
     pending = {
         entry.parent_id
         for entry in files
@@ -291,9 +292,9 @@ async def collect_cloud115_source_files(
 
 async def list_cloud115_target_files(
     client: Cloud115Client, target_cid: str
-) -> Dict[str, List[DirEntry]]:
+) -> dict[str, list[DirEntry]]:
     """列扁平目标目录并按大写 SHA1 建索引。"""
-    by_sha1: Dict[str, List[DirEntry]] = {}
+    by_sha1: dict[str, list[DirEntry]] = {}
     offset = 0
     while True:
         entries, total = await client.list_dir(target_cid, offset=offset, limit=1150)
@@ -307,7 +308,7 @@ async def list_cloud115_target_files(
 
 
 def resolve_cloud115_copied_entry(
-    target_entries_by_sha1: Dict[str, List[DirEntry]],
+    target_entries_by_sha1: dict[str, list[DirEntry]],
     source_file: Any,
     encoded_name: str,
 ) -> DirEntry | None:

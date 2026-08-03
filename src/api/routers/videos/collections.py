@@ -1,4 +1,3 @@
-from typing import List
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
@@ -21,7 +20,7 @@ router = APIRouter(
 )
 
 
-@router.get("", response_model=List[VideoCollectionResource])
+@router.get("", response_model=list[VideoCollectionResource])
 def list_collections():
     return VideoCollectionService.list_collections()
 
@@ -76,6 +75,6 @@ def remove_collection_item(collection_id: int, item_id: int):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/{collection_id}/items/reorder", response_model=List[VideoCollectionItemResource])
+@router.post("/{collection_id}/items/reorder", response_model=list[VideoCollectionItemResource])
 def reorder_collection_items(collection_id: int, payload: VideoCollectionReorderRequest):
     return VideoCollectionService.reorder_items(collection_id, payload.ordered_item_ids)

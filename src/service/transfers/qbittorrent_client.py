@@ -1,6 +1,5 @@
 import re
 import time
-from typing import List, Optional
 
 import httpx
 import libtorrent as lt
@@ -112,7 +111,7 @@ class QBittorrentClient:
             }
         return torrent
 
-    def list_torrents(self, *, client_id: Optional[int] = None) -> List[dict]:
+    def list_torrents(self, *, client_id: int | None = None) -> list[dict]:
         self._login()
         try:
             torrents = list(self.client.torrents_info(tag=SYSTEM_QB_TAG))
@@ -144,7 +143,7 @@ class QBittorrentClient:
             "web_api_version": str(web_api_version) if web_api_version is not None else None,
         }
 
-    def list_directory_names(self, directory_path: str) -> List[str]:
+    def list_directory_names(self, directory_path: str) -> list[str]:
         """读取 qBittorrent 视角下的目录内容，并归一化为条目名称列表。"""
         self._login()
         try:
@@ -158,7 +157,7 @@ class QBittorrentClient:
                 names.append(name)
         return names
 
-    def list_torrent_files(self, info_hash: str) -> List[dict]:
+    def list_torrent_files(self, info_hash: str) -> list[dict]:
         # 取单个种子的文件列表，归一化成业务侧需要的字段，屏蔽 qbittorrentapi 的对象结构。
         self._login()
         try:
@@ -181,7 +180,7 @@ class QBittorrentClient:
             )
         return result
 
-    def set_files_not_download(self, info_hash: str, file_indexes: List[int]) -> None:
+    def set_files_not_download(self, info_hash: str, file_indexes: list[int]) -> None:
         # 把指定文件优先级设为 0（不下载），让 qBittorrent 跳过这些文件。
         if not file_indexes:
             return
@@ -211,7 +210,7 @@ class QBittorrentClient:
         except Exception as exc:
             raise QBittorrentClientError(str(exc)) from exc
 
-    def get_torrent(self, info_hash: str, *, allow_missing: bool = False) -> Optional[dict]:
+    def get_torrent(self, info_hash: str, *, allow_missing: bool = False) -> dict | None:
         self._login()
         for _ in range(5):
             try:
@@ -334,7 +333,7 @@ class QBittorrentClient:
         except Exception as exc:
             raise QBittorrentClientError(str(exc)) from exc
 
-    def _submit_torrent(self, *, info_hash: str, tags: List[str], **add_kwargs) -> None:
+    def _submit_torrent(self, *, info_hash: str, tags: list[str], **add_kwargs) -> None:
         tag_string = ",".join(tags)
         try:
             response = self.client.torrents_add(tags=tag_string, **add_kwargs)

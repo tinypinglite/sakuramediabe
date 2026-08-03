@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from copy import deepcopy
 from importlib import import_module
 from types import MappingProxyType
-from typing import Callable
 
 from apscheduler.triggers.cron import CronTrigger
 
 from src.config.config import Plugins
-from src.plugins.contracts import HOST_API_VERSION, PluginRegistration
 from src.plugins.context import PluginContext
+from src.plugins.contracts import HOST_API_VERSION, PluginRegistration
 from src.scheduler.contracts import JobDefinition
 
 PLUGIN_MODULE_PREFIX = "src.plugins.extensions"
