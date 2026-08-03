@@ -264,8 +264,11 @@ def test_managed_import_uses_one_source_metadata_request(monkeypatch):
             "download_root_cid": "download-root",
         },
     )
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.service.scan_cloud115_source",
+        AsyncMock(return_value=([], 0, 0)),
+    )
     service = Cloud115ImportService()
-    service._scan_source = AsyncMock(return_value=([], 0, 0))
     job = SimpleNamespace(source_path="", save=lambda: None)
 
     asyncio.run(
@@ -409,12 +412,15 @@ def _run_import_groups(
         sleep_mock,
     )
 
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.service.scan_cloud115_source",
+        AsyncMock(return_value=(groups, 0, 0)),
+    )
     service = Cloud115ImportService(
         media_import_service=SimpleNamespace(
             metadata_import_batch=metadata_import_batch,
         )
     )
-    service._scan_source = AsyncMock(return_value=(groups, 0, 0))
     service._import_group = AsyncMock()
     events = []
     job = SimpleNamespace(id=42, source_path="", save=lambda: None)

@@ -27,13 +27,9 @@ import json
 import random
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import NamedTuple
 
 from loguru import logger
 
-from src.common import subtitle_matches_movie_number
-from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.common.media_import_status import (
     FAILED_FILE_KIND_FILE,
     FAILED_FILE_KIND_WARNING,
@@ -43,9 +39,7 @@ from src.common.media_import_status import (
     FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED,
     FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
     FAILURE_REASON_DUPLICATE_FINGERPRINT,
-    FAILURE_REASON_FILE_TOO_SMALL,
     FAILURE_REASON_IMPORT_JOB_CRASHED,
-    FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
     FAILURE_REASON_RETRY_SOURCES_MISSING,
     FAILURE_REASON_SOURCE_DELETE_FAILED,
     IMPORT_JOB_STATE_COMPLETED,
@@ -56,7 +50,6 @@ from src.common.media_import_status import (
 )
 from src.common.media_paths import allocate_next_movie_subtitle_path, movie_subtitle_dir
 from src.common.runtime_time import utc_now_for_db
-from src.config.config import settings
 from src.lib.cloud115 import Cloud115Client, DirEntry
 from src.model import ImportJob, Media, MediaLibrary, Movie, Subtitle, get_database
 from src.service.cloud115 import (
@@ -73,7 +66,6 @@ from src.service.transfers.cloud115.importer.common import (
     CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
     Cloud115TargetDirCache,
     Cloud115TargetDirResolver,
-    collect_cloud115_source_files,
     list_cloud115_entity_target_files,
     list_cloud115_target_files,
     normalize_cloud115_transfer_mode,
@@ -83,9 +75,15 @@ from src.service.transfers.cloud115.importer.common import (
     verify_cloud115_renamed_file,
 )
 from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
-from src.service.transfers.imports.import_service import MediaImportService
-from src.service.transfers.imports.source_scanner import parse_movie_number_from_scan_path
+from src.service.transfers.cloud115.importer.scanner import scan_cloud115_source
+from src.service.transfers.cloud115.importer.types import (
+    CloudImportGroup,
+    CloudSourceFile,
+    CloudSubtitleFile,
+    ResolvedFile as _ResolvedFile,
+)
 from src.service.transfers.downloads.guards.tag_rules import build_media_special_tags
+from src.service.transfers.imports.import_service import MediaImportService
 
 # 直链下载字幕的 UA（拿链接与 GET 由 SDK 保证同 UA）。
 SUBTITLE_DOWNLOAD_UA = "Mozilla/5.0 SakuraMedia-Cloud115-Import/1.0"
@@ -95,57 +93,6 @@ SUBTITLE_MAX_BYTES = 10 * 1024 * 1024
 MANUAL_GROUP_REST_MIN_SECONDS = 10.0
 MANUAL_GROUP_REST_MAX_SECONDS = 30.0
 ImportProgressCallback = Callable[[dict], None]
-
-
-@dataclass
-class CloudSubtitleFile:
-    """源目录里与视频配对的 .srt sidecar。"""
-
-    fid: str
-    pickcode: str
-    name: str
-
-
-@dataclass
-class CloudSourceFile:
-    """枚举 + 分拣后的单个待导入云端视频。"""
-
-    fid: str
-    pickcode: str
-    name: str
-    sha1: str
-    size: int
-    play_long: int | None
-    censored: bool
-    rel_dir_parts: tuple[str, ...]
-    # 所在父目录 cid：字幕 sidecar 配对按同目录匹配。
-    parent_cid: str = ""
-    # 番号识别结果：配对与分组共用，避免重复解析（videos 域复用本 dataclass 时保持空串）。
-    movie_number: str = ""
-    subtitle: CloudSubtitleFile | None = None
-
-    @property
-    def rel_path(self) -> str:
-        """源目录内相对路径（人可读，用于失败清单与重导匹配）。"""
-        return "/".join([*self.rel_dir_parts, self.name])
-
-
-@dataclass
-class CloudImportGroup:
-    """按番号聚合后的一组待导入云端文件（不合并，逐文件登记）。"""
-
-    movie_number: str
-    files: list[CloudSourceFile] = field(default_factory=list)
-
-
-class _ResolvedFile(NamedTuple):
-    """_import_group 中 copy + 对账后的单个待登记条目。"""
-
-    cloud_file: CloudSourceFile
-    target_fid: str
-    target_pickcode: str
-    current_name: str
-    target_name: str
 
 
 class Cloud115ImportService:
@@ -162,8 +109,8 @@ class Cloud115ImportService:
             media_metadata_probe_service or MediaMetadataProbeService()
         )
 
-    # 兼容现有调用与测试；实现统一下沉到无 JAV 业务归属的公共模块。
-    _collect_source_files = staticmethod(collect_cloud115_source_files)
+    # 兼容现有调用；实现统一下沉到无 JAV 业务归属的公共模块。
+    # copy / move 策略拆出去后可以直接改成 import，本类内的这几处别名一并去掉。
     _list_target_files = staticmethod(list_cloud115_target_files)
     _resolve_copied_entry = staticmethod(resolve_cloud115_copied_entry)
     _verify_renamed_file = staticmethod(verify_cloud115_renamed_file)
@@ -374,7 +321,7 @@ class Cloud115ImportService:
             )
 
             # 1) 枚举 + 分拣 + 去重
-            groups, scan_skipped, scan_failed = await self._scan_source(
+            groups, scan_skipped, scan_failed = await scan_cloud115_source(
                 client,
                 library=library,
                 source_cid=source_cid,
@@ -589,165 +536,6 @@ class Cloud115ImportService:
         logger.info(
             "Cloud115 managed source dir cleaned up source_cid={}", source_cid
         )
-
-    # ---- 枚举 / 分拣 ----
-
-    @staticmethod
-    def _entry_suffix(name: str) -> str:
-        return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
-
-    @classmethod
-    def _entry_is_video(cls, entry: DirEntry) -> bool:
-        return cls._entry_suffix(entry.name) in SUPPORTED_VIDEO_EXTENSIONS
-
-    async def _scan_source(
-        self,
-        client: Cloud115Client,
-        *,
-        library: MediaLibrary,
-        source_cid: str,
-        source_name: str,
-        transfer_mode: str,
-        only_files: list[str] | None,
-        failure_items: list[dict],
-        progress_callback: ImportProgressCallback | None = None,
-    ) -> tuple[list[CloudImportGroup], int, int]:
-        """枚举源目录树 → 分拣视频/字幕 → 番号识别 → sha1 去重，产出按番号聚合的分组。"""
-        minimum_size = settings.media.allowed_min_video_file_size
-        skipped_count = 0
-        failed_count = 0
-        only_set = set(only_files) if only_files is not None else None
-
-        self._emit(
-            progress_callback,
-            event="scan_started",
-            stage="scan",
-            text="正在枚举 115 源目录",
-        )
-        # 整树枚举 + 只为视频文件解析父目录名：请求数与源目录树的目录总数解耦，
-        # 空目录（已导入完成的历史任务目录）完全不会被访问。
-        source_files, rel_dirs = await self._collect_source_files(
-            client, source_cid, needs_rel_path=self._entry_is_video
-        )
-        self._emit(
-            progress_callback,
-            event="scan_progress",
-            stage="scan",
-            text=f"已枚举 {len(source_files)} 个文件，正在分拣",
-        )
-
-        videos: list[CloudSourceFile] = []
-        subtitles_by_dir: dict[str, list[CloudSubtitleFile]] = {}
-        for entry in source_files:
-            suffix = self._entry_suffix(entry.name)
-            if suffix == ".srt":
-                subtitles_by_dir.setdefault(entry.parent_id, []).append(
-                    CloudSubtitleFile(fid=entry.entry_id, pickcode=entry.pickcode, name=entry.name)
-                )
-                continue
-            if suffix not in SUPPORTED_VIDEO_EXTENSIONS:
-                continue
-            rel_dir_parts = rel_dirs[entry.parent_id]
-            rel_path = "/".join([*rel_dir_parts, entry.name])
-            # 失败重导先按相对路径收窄，再做体积/SHA/番号校验；未选择文件不能污染本次统计。
-            if only_set is not None and rel_path not in only_set:
-                continue
-            if entry.size < minimum_size:
-                skipped_count += 1
-                failure_items.append(
-                    make_failure_item(rel_path, FAILURE_REASON_FILE_TOO_SMALL)
-                )
-                continue
-            if not entry.sha1:
-                # sha1 是去重与 copy 对账的锚点，缺失时无法安全导入（可重导）。
-                failed_count += 1
-                failure_items.append(
-                    make_failure_item(
-                        rel_path, FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
-                        "115 未返回文件 sha1，无法对账",
-                    )
-                )
-                continue
-            videos.append(
-                CloudSourceFile(
-                    fid=entry.entry_id,
-                    pickcode=entry.pickcode,
-                    name=entry.name,
-                    sha1=entry.sha1.upper(),
-                    size=entry.size,
-                    play_long=entry.play_long,
-                    censored=entry.ic == 1,
-                    rel_dir_parts=rel_dir_parts,
-                    parent_cid=entry.parent_id,
-                )
-            )
-
-        # 番号识别前置：配对与分组共用识别结果，避免重复解析。
-        # 喂「源目录名/相对路径」，与本地扫描共用同一截断策略（取最后两级，覆盖番号在目录名的情形）。
-        for video in videos:
-            video.movie_number = parse_movie_number_from_scan_path(
-                f"{source_name}/{video.rel_path}"
-            )
-
-        # 字幕 sidecar 配对：同父目录 + 字幕文件名解析番号与视频番号一致才算配对。
-        # 与本地扫描统一到纯番号匹配；番号识别不出的视频无从比对，跳过配对。
-        # 同目录多份字幕命中同一番号（如 .chs/.cht）时，按文件名小写排序取第一份，
-        # 与本地 find_sidecar_subtitle 保持一致的确定性，不依赖 115 列目录顺序。
-        for video in videos:
-            if not video.movie_number:
-                continue
-            candidates = sorted(
-                subtitles_by_dir.get(video.parent_cid, []),
-                key=lambda item: item.name.lower(),
-            )
-            for candidate in candidates:
-                if subtitle_matches_movie_number(candidate.name, video.movie_number):
-                    video.subtitle = candidate
-                    break
-
-        # 分组：复用上面识别好的番号，番号解析不出的计入失败清单。
-        grouped: dict[str, CloudImportGroup] = {}
-        seen_sha1: set[str] = set()
-        for video in videos:
-            movie_number = video.movie_number
-            if not movie_number:
-                failed_count += 1
-                failure_items.append(
-                    make_failure_item(video.rel_path, FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND)
-                )
-                continue
-            # 批内同 sha1 只导第一个。
-            if video.sha1 in seen_sha1:
-                skipped_count += 1
-                failure_items.append(
-                    make_failure_item(
-                        video.rel_path, FAILURE_REASON_DUPLICATE_FINGERPRINT,
-                        "同批次存在相同内容文件",
-                    )
-                )
-                continue
-            # 库内去重（限本库；sha1: 前缀与本地 sha256 裸 hex 值域天然不相交）。
-            existing = Cloud115MediaRegistrar.find_library_media(library, video.sha1, valid=True)
-            if (
-                existing is not None
-                and transfer_mode != CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE
-            ):
-                skipped_count += 1
-                failure_items.append(
-                    make_failure_item(
-                        video.rel_path, FAILURE_REASON_DUPLICATE_FINGERPRINT,
-                        f"库中已存在相同内容（media_id={existing.id}）",
-                    )
-                )
-                continue
-            seen_sha1.add(video.sha1)
-            grouped.setdefault(movie_number, CloudImportGroup(movie_number=movie_number)).files.append(video)
-
-        logger.info(
-            "Cloud115 import scan summary source_cid={} videos={} grouped_numbers={} skipped={} failed={}",
-            source_cid, len(videos), len(grouped), skipped_count, failed_count,
-        )
-        return list(grouped.values()), skipped_count, failed_count
 
     # ---- 搬运 / 对账 / 登记 ----
 
