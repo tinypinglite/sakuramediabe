@@ -515,7 +515,7 @@ def test_new_entity_skips_reconciliation_but_existing_entity_keeps_it(
     # 目标目录 sha1 对账只属于 copy 模式：cleanup-source 已改为直接移动，不读目标目录。
     entity_scan = AsyncMock(return_value={})
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.list_cloud115_entity_target_files",
+        "src.service.transfers.cloud115.importer.strategies.copy.list_cloud115_entity_target_files",
         entity_scan,
     )
     service = Cloud115ImportService()
@@ -1000,9 +1000,13 @@ def test_rename_failure_after_move_is_warning_and_restores_locator_name(monkeypa
 
 
 def test_import_group_dispatches_by_transfer_mode(monkeypatch):
+    copy_mock = AsyncMock()
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.service.import_group_by_copy",
+        copy_mock,
+    )
     service = Cloud115ImportService()
     service._import_group_by_move = AsyncMock()
-    service._import_group_by_copy = AsyncMock()
     common = {
         "library": object(),
         "movie": object(),
@@ -1015,10 +1019,10 @@ def test_import_group_dispatches_by_transfer_mode(monkeypatch):
 
     asyncio.run(service._import_group(object(), transfer_mode="cleanup-source", **common))
     service._import_group_by_move.assert_awaited_once()
-    service._import_group_by_copy.assert_not_awaited()
+    copy_mock.assert_not_awaited()
 
     asyncio.run(service._import_group(object(), transfer_mode="copy", **common))
-    service._import_group_by_copy.assert_awaited_once()
+    copy_mock.assert_awaited_once()
     service._import_group_by_move.assert_awaited_once()
 
 
