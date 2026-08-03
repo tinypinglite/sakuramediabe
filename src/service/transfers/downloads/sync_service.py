@@ -15,7 +15,7 @@ from src.model import DownloadClient, DownloadTask, ImportJob
 from src.model.enums import DownloadClientKind
 from src.schema.transfers.downloads import DownloadClientSyncResponse
 from src.service.system import ActivityService
-from src.service.transfers.shared.common import (
+from src.service.transfers.downloads.common import (
     DOWNLOAD_COMPLETE_STATES,
     map_remote_path,
     require_client,

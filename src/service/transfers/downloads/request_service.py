@@ -11,7 +11,7 @@ from src.schema.transfers.downloads import (
 from src.service.transfers.cloud115.offline.service import (
     Cloud115OfflineDownloadService,
 )
-from src.service.transfers.shared.common import (
+from src.service.transfers.downloads.common import (
     build_movie_save_path,
     list_indexer_clients,
     map_remote_path,

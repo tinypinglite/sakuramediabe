@@ -23,7 +23,7 @@ from src.service.transfers.cloud115.offline.sync_service import (
     CLOUD115_OFFLINE_STATE_MAP,
     Cloud115OfflineSyncService,
 )
-from src.service.transfers.shared.common import (
+from src.service.transfers.downloads.common import (
     QB_ETA_INFINITY,
     build_task_movie_filter,
     is_qb_managed_torrent,

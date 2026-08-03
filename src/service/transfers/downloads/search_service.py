@@ -2,7 +2,7 @@
 from src.api.exception.errors import ApiError
 from src.config.config import IndexerKind
 from src.schema.transfers.downloads import DownloadCandidateResource
-from src.service.transfers.shared.common import validate_non_empty
+from src.service.transfers.downloads.common import validate_non_empty
 from src.service.transfers.downloads.clients.jackett import JackettClient, JackettClientError
 
 

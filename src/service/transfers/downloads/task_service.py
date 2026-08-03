@@ -26,10 +26,9 @@ from src.schema.transfers.downloads import (
 )
 from src.service.system import ActivityService
 from src.service.system.task_queue_service import TaskQueueService
-from src.service.transfers.shared.common import (
+from src.service.transfers.downloads.common import (
     ALLOWED_DOWNLOAD_STATES,
     build_task_movie_filter,
-    canonicalize_btih,
     is_download_complete,
     normalize_state_filter,
     require_client,
@@ -37,6 +36,7 @@ from src.service.transfers.shared.common import (
     resolve_task_sort,
     validate_page,
 )
+from src.service.transfers.shared.common import canonicalize_btih
 from src.service.transfers.shared.import_notifications import create_new_media_reminder
 from src.service.transfers.imports.import_service import MediaImportService
 from src.service.transfers.downloads.clients.qbittorrent import (

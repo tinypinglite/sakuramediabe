@@ -11,7 +11,8 @@ from src.schema.transfers.downloads import (
     DownloadCandidateClientResource,
     DownloadCandidateResource,
 )
-from src.service.transfers.shared.common import canonicalize_btih, resolve_preferred_client
+from src.service.transfers.downloads.common import resolve_preferred_client
+from src.service.transfers.shared.common import canonicalize_btih
 from src.service.transfers.downloads.guards.tag_rules import detect_candidate_tags
 
 

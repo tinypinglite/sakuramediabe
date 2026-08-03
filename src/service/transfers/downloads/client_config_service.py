@@ -28,7 +28,7 @@ from src.schema.transfers.downloads import (
     DownloadClientUpdateRequest,
 )
 from src.service.cloud115 import Cloud115KeepaliveService
-from src.service.transfers.shared.common import (
+from src.service.transfers.downloads.common import (
     ensure_name_available,
     require_client,
     require_cloud115_media_library,

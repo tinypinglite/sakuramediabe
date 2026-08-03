@@ -6,7 +6,7 @@ import libtorrent as lt
 import qbittorrentapi
 
 from src.model import DownloadClient
-from src.service.transfers.shared.common import (
+from src.service.transfers.downloads.common import (
     CLIENT_QB_TAG_PREFIX,
     SYSTEM_QB_TAG,
     is_qb_managed_torrent,
