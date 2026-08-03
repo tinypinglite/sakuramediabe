@@ -37,11 +37,11 @@ from src.service.cloud115 import (
 )
 from src.service.transfers.shared.base_import_job_service import BaseImportJobService
 from src.service.transfers.cloud115.importer.common import Cloud115TargetDirCache
-from src.service.transfers.cloud115.importer.service import (
+from src.service.transfers.cloud115.importer.common import (
     CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
-    Cloud115ImportService,
     normalize_cloud115_transfer_mode,
 )
+from src.service.transfers.cloud115.importer.service import Cloud115ImportService
 
 
 class Cloud115ImportJobService(BaseImportJobService):

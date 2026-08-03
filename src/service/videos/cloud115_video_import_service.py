@@ -51,9 +51,7 @@ from src.service.transfers.cloud115.importer.common import (
     resolve_cloud115_copied_entry,
     verify_cloud115_renamed_file,
 )
-from src.service.transfers.cloud115.importer.service import (
-    CloudSourceFile,
-)
+from src.service.transfers.cloud115.importer.types import CloudSourceFile
 from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
 from src.service.transfers.downloads.guards.tag_rules import build_media_special_tags
 from src.service.videos.video_collection_service import VideoCollectionService

@@ -12,8 +12,9 @@ from src.service.transfers.cloud115.importer.common import (
 from src.service.transfers.cloud115.importer.job_service import (
     Cloud115ImportJobService,
 )
-from src.service.transfers.cloud115.importer.service import (
-    Cloud115ImportService,
+from src.service.transfers.cloud115.importer.service import Cloud115ImportService
+from src.service.transfers.cloud115.importer.strategies.move import import_group_by_move
+from src.service.transfers.cloud115.importer.types import (
     CloudImportGroup,
     CloudSourceFile,
 )
@@ -780,17 +781,17 @@ def _run_move_group(
     """跑一遍 cleanup-source 分支，返回 (client, resolver, stats, failure_items, 登记记录)。"""
     existing_by_sha1 = existing_by_sha1 or {}
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.Cloud115MediaRegistrar"
+        "src.service.transfers.cloud115.importer.strategies.move.Cloud115MediaRegistrar"
         ".find_library_media",
         lambda library, sha1, *, valid=None: existing_by_sha1.get(sha1),
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.get_database",
+        "src.service.transfers.cloud115.importer.strategies.move.get_database",
         lambda: SimpleNamespace(atomic=_noop_atomic),
     )
 
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.probe_cloud115_media",
+        "src.service.transfers.cloud115.importer.strategies.move.probe_cloud115_media",
         AsyncMock(
             return_value=SimpleNamespace(
                 video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
@@ -798,7 +799,7 @@ def _run_move_group(
         ),
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.import_subtitle",
+        "src.service.transfers.cloud115.importer.strategies.move.import_subtitle",
         AsyncMock(),
     )
     service = Cloud115ImportService()
@@ -824,7 +825,7 @@ def _run_move_group(
         )
 
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.register_media",
+        "src.service.transfers.cloud115.importer.strategies.move.register_media",
         fake_register,
     )
 
@@ -834,7 +835,7 @@ def _run_move_group(
     failure_items: list[dict] = []
 
     asyncio.run(
-        service._import_group_by_move(
+        import_group_by_move(
             client,
             library=object(),
             movie=SimpleNamespace(id=7, movie_number="ABC-001", title="t"),
@@ -843,6 +844,7 @@ def _run_move_group(
             failure_items=failure_items,
             stats=stats,
             new_playable_movies={},
+            probe_service=service._media_metadata_probe_service,
         )
     )
     return client, resolver, stats, failure_items, registered
@@ -881,16 +883,16 @@ def test_cleanup_source_registers_before_moving(monkeypatch):
             await super().move_files(fids, pid=pid)
 
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.Cloud115MediaRegistrar"
+        "src.service.transfers.cloud115.importer.strategies.move.Cloud115MediaRegistrar"
         ".find_library_media",
         lambda library, sha1, *, valid=None: None,
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.get_database",
+        "src.service.transfers.cloud115.importer.strategies.move.get_database",
         lambda: SimpleNamespace(atomic=_noop_atomic),
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.probe_cloud115_media",
+        "src.service.transfers.cloud115.importer.strategies.move.probe_cloud115_media",
         AsyncMock(
             return_value=SimpleNamespace(
                 video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
@@ -898,7 +900,7 @@ def test_cleanup_source_registers_before_moving(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.import_subtitle",
+        "src.service.transfers.cloud115.importer.strategies.move.import_subtitle",
         AsyncMock(),
     )
     service = Cloud115ImportService()
@@ -908,12 +910,12 @@ def test_cleanup_source_registers_before_moving(monkeypatch):
         return SimpleNamespace(id=1, backend_locator={}, save=lambda: None), True
 
     monkeypatch.setattr(
-        "src.service.transfers.cloud115.importer.service.register_media",
+        "src.service.transfers.cloud115.importer.strategies.move.register_media",
         fake_register,
     )
 
     asyncio.run(
-        service._import_group_by_move(
+        import_group_by_move(
             _OrderedClient(),
             library=object(),
             movie=SimpleNamespace(id=7, movie_number="ABC-001", title="t"),
@@ -922,6 +924,7 @@ def test_cleanup_source_registers_before_moving(monkeypatch):
             failure_items=[],
             stats={"imported": 0, "skipped": 0, "failed": 0},
             new_playable_movies={},
+            probe_service=service._media_metadata_probe_service,
         )
     )
 
@@ -1001,12 +1004,16 @@ def test_rename_failure_after_move_is_warning_and_restores_locator_name(monkeypa
 
 def test_import_group_dispatches_by_transfer_mode(monkeypatch):
     copy_mock = AsyncMock()
+    move_mock = AsyncMock()
     monkeypatch.setattr(
         "src.service.transfers.cloud115.importer.service.import_group_by_copy",
         copy_mock,
     )
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.service.import_group_by_move",
+        move_mock,
+    )
     service = Cloud115ImportService()
-    service._import_group_by_move = AsyncMock()
     common = {
         "library": object(),
         "movie": object(),
@@ -1018,12 +1025,12 @@ def test_import_group_dispatches_by_transfer_mode(monkeypatch):
     }
 
     asyncio.run(service._import_group(object(), transfer_mode="cleanup-source", **common))
-    service._import_group_by_move.assert_awaited_once()
+    move_mock.assert_awaited_once()
     copy_mock.assert_not_awaited()
 
     asyncio.run(service._import_group(object(), transfer_mode="copy", **common))
     copy_mock.assert_awaited_once()
-    service._import_group_by_move.assert_awaited_once()
+    move_mock.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
