@@ -60,7 +60,7 @@ from src.service.collections.playlist_service import PlaylistService
 from src.service.discovery import get_qdrant_thumbnail_store
 from src.service.playback.media_file_scan_service import MediaFileScanService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
-from src.service.transfers.media_rapid_upload.query_service import (
+from src.service.transfers.rapid_upload.query_service import (
     MediaRapidUploadQueryService,
 )
 

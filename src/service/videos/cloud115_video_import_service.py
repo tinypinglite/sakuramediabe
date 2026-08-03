@@ -39,7 +39,7 @@ from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeResult,
     MediaMetadataProbeService,
 )
-from src.service.transfers.cloud115_import_common import (
+from src.service.transfers.cloud115.importer.common import (
     CLOUD115_COVER_UA,
     CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
     Cloud115TargetDirResolver,
@@ -51,11 +51,11 @@ from src.service.transfers.cloud115_import_common import (
     resolve_cloud115_copied_entry,
     verify_cloud115_renamed_file,
 )
-from src.service.transfers.cloud115_import_service import (
+from src.service.transfers.cloud115.importer.service import (
     CloudSourceFile,
 )
-from src.service.transfers.cloud115_media_registrar import Cloud115MediaRegistrar
-from src.service.transfers.tag_rules import build_media_special_tags
+from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
+from src.service.transfers.downloads.guards.tag_rules import build_media_special_tags
 from src.service.videos.video_collection_service import VideoCollectionService
 from src.service.videos.video_cover_service import VideoCoverService
 

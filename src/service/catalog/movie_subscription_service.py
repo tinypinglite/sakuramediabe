@@ -29,20 +29,20 @@ from src.schema.catalog.subscriptions import (
     MovieSubscriptionStatusCountsResource,
 )
 from src.schema.common.pagination import PageResponse
-from src.service.transfers.common import (
+from src.service.transfers.shared.common import (
     active_download_task_exists_expression,
     download_task_dead_expression,
     unfinished_import_download_task_exists_expression,
 )
-from src.service.transfers.subscribed_movie_search_state_service import (
+from src.service.transfers.downloads.auto_subscribed.search_state_service import (
     ERROR_CODE_NO_CANDIDATE,
     SubscribedMovieSearchStateService,
     search_state_join_condition,
 )
 
 # 这些 transfers 域导入可以写在模块级，前提是 transfers 侧一律**从子模块而非 src.service.catalog
-# 包**反向导入（见 media_import_service.py 顶部注释）。一旦哪天有人把那边改回 `from
-# src.service.catalog import X`，catalog <-> transfers 的包级循环就会立刻在这里炸成
+# 包**反向导入。一旦哪天有人把那边改回 `from src.service.catalog import X`，
+# catalog <-> transfers 的包级循环就会立刻在这里炸成
 # ImportError: cannot import name ... from partially initialized module。
 
 
@@ -267,7 +267,7 @@ class MovieSubscriptionService:
 
         from src.common.media_import_status import TERMINAL_JOB_STATES
         from src.model import ImportJob
-        from src.service.transfers.base_import_job_service import BaseImportJobService
+        from src.service.transfers.shared.base_import_job_service import BaseImportJobService
 
         rows = (
             ImportJob.select(

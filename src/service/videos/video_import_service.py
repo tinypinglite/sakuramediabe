@@ -43,16 +43,16 @@ from src.model.enums import MediaLibraryBackend
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
-from src.service.transfers.file_transfer import (
+from src.service.transfers.shared.file_transfer import (
     VIDEOS_LIBRARY_SUBDIR,
     create_version_directory,
     delete_source_files,
     transfer_file,
 )
-from src.service.transfers.media_source_scanner import (
+from src.service.transfers.imports.source_scanner import (
     find_media_library_containing_path,
 )
-from src.service.transfers.tag_rules import build_media_special_tags
+from src.service.transfers.downloads.guards.tag_rules import build_media_special_tags
 from src.service.videos.video_collection_service import VideoCollectionService
 from src.service.videos.video_cover_service import VideoCoverService
 

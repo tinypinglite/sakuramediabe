@@ -38,7 +38,7 @@ class QueueTaskDefinition:
 
 
 def _run_media_directory_import(reporter, params: dict) -> dict:
-    from src.service.transfers.media_import_job_service import import_job_service_for
+    from src.service.transfers.imports.job_service import import_job_service_for
 
     job_id = int(params["import_job_id"])
     return import_job_service_for(job_id).execute_from_queue(reporter, params)
@@ -52,7 +52,7 @@ def _run_video_directory_import(reporter, params: dict) -> dict:
 
 
 def _run_download_task_import(reporter, params: dict) -> dict:
-    from src.service.transfers.download_task_service import DownloadTaskService
+    from src.service.transfers.downloads.task_service import DownloadTaskService
 
     return DownloadTaskService.execute_import_from_queue(reporter, params)
 
@@ -60,7 +60,7 @@ def _run_download_task_import(reporter, params: dict) -> dict:
 def _run_media_rapid_upload(reporter, params: dict) -> dict:
     # 必须走 facade：executor 内部依赖 state_machine / item_executor 的方法，
     # 只有多继承组合后的 MediaRapidUploadService 才解析得到。
-    from src.service.transfers.media_rapid_upload.facade import MediaRapidUploadService
+    from src.service.transfers.rapid_upload.facade import MediaRapidUploadService
 
     return MediaRapidUploadService.execute_batch_from_queue(reporter, params)
 
@@ -104,7 +104,7 @@ def _run_media_thumbnail_generation_subset(reporter, params: dict) -> dict:
 
 
 def _run_subscribed_movie_auto_download_subset(reporter, params: dict) -> dict:
-    from src.service.transfers.subscribed_movie_auto_download_service import (
+    from src.service.transfers.downloads.auto_subscribed.auto_download_service import (
         SubscribedMovieAutoDownloadService,
     )
 

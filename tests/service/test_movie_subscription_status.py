@@ -289,7 +289,7 @@ def test_search_state_branches_map_kernel_vocabulary(client):
     succeeded（提交过、种子后来判死）归 MISSING；无状态行 → PENDING。"""
     from src.common.runtime_time import utc_now_for_db
     from src.model import ResourceTaskState
-    from src.service.transfers.subscribed_movie_search_state_service import (
+    from src.service.transfers.downloads.auto_subscribed.search_state_service import (
         ERROR_CODE_NO_CANDIDATE,
         RESOURCE_TYPE,
         TASK_KEY,

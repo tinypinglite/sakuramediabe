@@ -13,7 +13,7 @@ from src.common.movie_numbers import (
     normalize_movie_number,
     parse_movie_number_from_text,
 )
-from src.service.transfers.media_source_scanner import parse_movie_number_from_scan_path
+from src.service.transfers.imports.source_scanner import parse_movie_number_from_scan_path
 
 
 class TestParseMovieNumberFromText:

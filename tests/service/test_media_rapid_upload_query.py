@@ -5,10 +5,10 @@ from src.model import (
     MediaRapidUploadItem,
     Movie,
 )
-from src.service.transfers.media_rapid_upload.query_service import (
+from src.service.transfers.rapid_upload.query_service import (
     MediaRapidUploadQueryService,
 )
-from src.service.transfers.media_rapid_upload.states import (
+from src.service.transfers.rapid_upload.states import (
     FAILURE_REASON_FILE_CHANGED,
     FAILURE_REASON_NOT_HIT,
     ITEM_STATE_FAILED,

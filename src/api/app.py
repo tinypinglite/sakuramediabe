@@ -58,7 +58,7 @@ from src.api.routers.videos.items import router as videos_router
 from src.common.database import ensure_database_ready
 from src.common.logging import configure_logging
 from src.config.config import ensure_runtime_config, settings
-from src.service.transfers.download_progress_service import DownloadProgressHub
+from src.service.transfers.downloads.progress_service import DownloadProgressHub
 from src.start.recovery import recover_interrupted_tasks
 
 

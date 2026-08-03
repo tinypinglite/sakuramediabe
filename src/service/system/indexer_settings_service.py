@@ -97,7 +97,7 @@ class IndexerSettingsService:
     ) -> IndexerConnectionTestResponse:
         """Jackett 连通性检测:用固定番号真实搜一次，而不是单纯 ping,以此验证 apikey 与 indexer 配置整体可用。"""
         # 延迟导入，避免 system service 与 transfers service 顶层依赖链形成循环。
-        from src.service.transfers.jackett_client import (
+        from src.service.transfers.downloads.clients.jackett import (
             JackettClient,
             JackettClientError,
         )

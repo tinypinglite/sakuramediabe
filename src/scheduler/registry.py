@@ -32,12 +32,14 @@ from src.service.playback import (
 )
 from src.service.system import ActivityCleanupService, ResourceTaskAttemptCleanupService
 from src.service.system.resource_task_runner import ResourceTaskLedger
-from src.service.transfers import (
-    Cloud115OfflineSyncService,
-    DownloadSmallFileCleanupService,
-    DownloadSyncService,
+from src.service.transfers.cloud115.offline.sync_service import Cloud115OfflineSyncService
+from src.service.transfers.downloads.auto_subscribed.auto_download_service import (
     SubscribedMovieAutoDownloadService,
 )
+from src.service.transfers.downloads.small_file_cleanup_service import (
+    DownloadSmallFileCleanupService,
+)
+from src.service.transfers.downloads.sync_service import DownloadSyncService
 
 
 def _resolve_stat_value(

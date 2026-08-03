@@ -41,7 +41,7 @@ from loguru import logger
 
 from src.model import Media, MediaLibrary
 from src.model.enums import MediaLibraryBackend
-from src.service.transfers.file_transfer import JAV_LIBRARY_SUBDIR
+from src.service.transfers.shared.file_transfer import JAV_LIBRARY_SUBDIR
 
 ProgressCallback = Callable[[int, int, int], None]  # (current, total, library_id)
 

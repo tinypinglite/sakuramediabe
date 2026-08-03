@@ -34,7 +34,7 @@ from src.service.cloud115 import (
     require_cloud115_library,
 )
 from src.service.playback.cloud115_qrlogin_service import Cloud115QrLoginService
-from src.service.transfers.media_rapid_upload.query_service import (
+from src.service.transfers.rapid_upload.query_service import (
     MediaRapidUploadQueryService,
 )
 

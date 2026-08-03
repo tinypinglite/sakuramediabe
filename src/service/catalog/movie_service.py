@@ -66,8 +66,7 @@ from src.schema.catalog.movies import (
 from src.schema.common.pagination import PageResponse
 from src.service.collections import PlaylistService
 
-# 从子模块而非 src.service.transfers 包导入，理由见 media_import_service.py 顶部注释。
-from src.service.transfers.subscribed_movie_search_state_service import (
+from src.service.transfers.downloads.auto_subscribed.search_state_service import (
     SubscribedMovieSearchStateService,
 )
 

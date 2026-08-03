@@ -1,7 +1,7 @@
 import json
 
 from src.model import DownloadClient, DownloadTask, MediaLibrary
-from src.service.transfers.media_import_service import MediaImportService
+from src.service.transfers.imports.import_service import MediaImportService
 
 
 def test_download_import_with_no_media_files_is_failed(test_db, tmp_path):

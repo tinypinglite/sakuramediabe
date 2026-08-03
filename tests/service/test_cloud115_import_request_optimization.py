@@ -4,20 +4,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
 from src.lib.cloud115 import DirBreadcrumb, DirEntry, DirMeta
-from src.service.transfers.cloud115_import_common import (
+from src.service.transfers.cloud115.importer.common import (
     Cloud115TargetDirCache,
     Cloud115TargetDirResolver,
     collect_cloud115_source_files,
 )
-from src.service.transfers.cloud115_import_job_service import (
+from src.service.transfers.cloud115.importer.job_service import (
     Cloud115ImportJobService,
 )
-from src.service.transfers.cloud115_import_service import (
+from src.service.transfers.cloud115.importer.service import (
     Cloud115ImportService,
     CloudImportGroup,
     CloudSourceFile,
 )
-from src.service.transfers.cloud115_offline_sync_service import (
+from src.service.transfers.cloud115.offline.sync_service import (
     Cloud115OfflineSyncService,
 )
 from src.service.videos.cloud115_video_import_service import (
@@ -254,11 +254,11 @@ def test_managed_import_uses_one_source_metadata_request(monkeypatch):
         yield client
 
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.cloud115_client_for",
+        "src.service.transfers.cloud115.importer.service.cloud115_client_for",
         fake_client_for,
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.require_cloud115_library",
+        "src.service.transfers.cloud115.importer.service.require_cloud115_library",
         lambda _library: {
             "root_cid": "library-root",
             "download_root_cid": "download-root",
@@ -298,15 +298,15 @@ def test_manual_trigger_reuses_source_metadata_from_safety_check(monkeypatch):
         yield client
 
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_job_service.cloud115_client_for",
+        "src.service.transfers.cloud115.importer.job_service.cloud115_client_for",
         fake_client_for,
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_job_service.require_cloud115_library",
+        "src.service.transfers.cloud115.importer.job_service.require_cloud115_library",
         lambda _library: {"root_cid": "library-root"},
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_job_service.assert_cid_outside_library_root",
+        "src.service.transfers.cloud115.importer.job_service.assert_cid_outside_library_root",
         safety_check,
     )
 
@@ -375,22 +375,22 @@ def _run_import_groups(
         }
 
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.cloud115_client_for",
+        "src.service.transfers.cloud115.importer.service.cloud115_client_for",
         fake_client_for,
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.require_cloud115_library",
+        "src.service.transfers.cloud115.importer.service.require_cloud115_library",
         lambda _library: {
             "root_cid": "library-root",
             "download_root_cid": "download-root",
         },
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.assert_cid_outside_library_root",
+        "src.service.transfers.cloud115.importer.service.assert_cid_outside_library_root",
         safety_check,
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.Movie.get_by_id",
+        "src.service.transfers.cloud115.importer.service.Movie.get_by_id",
         lambda movie_id: SimpleNamespace(
             id=movie_id,
             movie_number=f"TEST-{movie_id:03d}",
@@ -400,12 +400,12 @@ def _run_import_groups(
 
     delays = iter((11.0, 29.0))
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.random.uniform",
+        "src.service.transfers.cloud115.importer.service.random.uniform",
         lambda minimum, maximum: next(delays),
     )
     sleep_mock = AsyncMock()
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.asyncio.sleep",
+        "src.service.transfers.cloud115.importer.service.asyncio.sleep",
         sleep_mock,
     )
 
@@ -509,7 +509,7 @@ def test_new_entity_skips_reconciliation_but_existing_entity_keeps_it(
     # 目标目录 sha1 对账只属于 copy 模式：cleanup-source 已改为直接移动，不读目标目录。
     entity_scan = AsyncMock(return_value={})
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.list_cloud115_entity_target_files",
+        "src.service.transfers.cloud115.importer.service.list_cloud115_entity_target_files",
         entity_scan,
     )
     service = Cloud115ImportService()
@@ -602,11 +602,11 @@ def test_auto_import_queue_rests_only_between_successful_jobs(monkeypatch):
         staticmethod(reconcile),
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_offline_sync_service.random.uniform",
+        "src.service.transfers.cloud115.offline.sync_service.random.uniform",
         lambda minimum, maximum: 17.5,
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_offline_sync_service.time.sleep",
+        "src.service.transfers.cloud115.offline.sync_service.time.sleep",
         sleeps.append,
     )
 
@@ -667,7 +667,7 @@ def test_auto_import_queue_stops_without_rest_after_failure(monkeypatch):
         staticmethod(reconcile),
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_offline_sync_service.time.sleep",
+        "src.service.transfers.cloud115.offline.sync_service.time.sleep",
         sleeps.append,
     )
 
@@ -774,12 +774,12 @@ def _run_move_group(
     """跑一遍 cleanup-source 分支，返回 (client, resolver, stats, failure_items, 登记记录)。"""
     existing_by_sha1 = existing_by_sha1 or {}
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.Cloud115MediaRegistrar"
+        "src.service.transfers.cloud115.importer.service.Cloud115MediaRegistrar"
         ".find_library_media",
         lambda library, sha1, *, valid=None: existing_by_sha1.get(sha1),
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.get_database",
+        "src.service.transfers.cloud115.importer.service.get_database",
         lambda: SimpleNamespace(atomic=_noop_atomic),
     )
 
@@ -866,12 +866,12 @@ def test_cleanup_source_registers_before_moving(monkeypatch):
             await super().move_files(fids, pid=pid)
 
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.Cloud115MediaRegistrar"
+        "src.service.transfers.cloud115.importer.service.Cloud115MediaRegistrar"
         ".find_library_media",
         lambda library, sha1, *, valid=None: None,
     )
     monkeypatch.setattr(
-        "src.service.transfers.cloud115_import_service.get_database",
+        "src.service.transfers.cloud115.importer.service.get_database",
         lambda: SimpleNamespace(atomic=_noop_atomic),
     )
     service = Cloud115ImportService()
@@ -1269,7 +1269,7 @@ def test_source_dir_cleanup_failure_is_warning_only():
 
 def test_offline_task_dir_is_created_without_scanning():
     """info_hash 全局唯一，旧实现那次全量翻页必然扫不中——现在直接 mkdir。"""
-    from src.service.transfers.cloud115_offline_service import _create_task_dir
+    from src.service.transfers.cloud115.offline.service import _create_task_dir
 
     class FakeClient:
         def __init__(self):
@@ -1297,7 +1297,7 @@ def test_offline_task_dir_is_created_without_scanning():
 def test_offline_task_dir_falls_back_to_lookup_on_duplicate_name():
     """上一轮中断留下孤儿目录时，115 回 errno=20004，此时才分页定位复用。"""
     from src.lib.cloud115 import Cloud115DuplicateNameError
-    from src.service.transfers.cloud115_offline_service import _create_task_dir
+    from src.service.transfers.cloud115.offline.service import _create_task_dir
 
     class FakeClient:
         def __init__(self):
@@ -1327,7 +1327,7 @@ def test_offline_task_dir_does_not_swallow_risk_control():
     import pytest as _pytest
 
     from src.lib.cloud115 import Cloud115RiskControlError
-    from src.service.transfers.cloud115_offline_service import _create_task_dir
+    from src.service.transfers.cloud115.offline.service import _create_task_dir
 
     class FakeClient:
         def __init__(self):
@@ -1357,7 +1357,9 @@ def test_offline_task_dir_does_not_swallow_risk_control():
 
 def test_subscription_submits_rest_only_between_cloud115_submissions(monkeypatch):
     """qB 提交不碰 115，不该白等；cloud115 提交之间才需要排队。"""
-    from src.service.transfers import subscribed_movie_auto_download_service as mod
+    from src.service.transfers.downloads.auto_subscribed import (
+        auto_download_service as mod,
+    )
 
     svc = mod.SubscribedMovieAutoDownloadService.__new__(
         mod.SubscribedMovieAutoDownloadService
@@ -1370,11 +1372,11 @@ def test_subscription_submits_rest_only_between_cloud115_submissions(monkeypatch
 
 def test_subscription_rest_window_matches_import_side():
     """与导入侧番号间休息保持同一量级，避免两套不一致的节奏常量。"""
-    from src.service.transfers.cloud115_import_service import (
+    from src.service.transfers.cloud115.importer.service import (
         MANUAL_GROUP_REST_MAX_SECONDS,
         MANUAL_GROUP_REST_MIN_SECONDS,
     )
-    from src.service.transfers.subscribed_movie_auto_download_service import (
+    from src.service.transfers.downloads.auto_subscribed.auto_download_service import (
         SUBMIT_REST_MAX_SECONDS,
         SUBMIT_REST_MIN_SECONDS,
     )

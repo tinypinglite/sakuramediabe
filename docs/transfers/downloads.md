@@ -126,7 +126,7 @@
 
 `POST /download-requests` 对应的 `DownloadRequestService.create_request` 在分派下载器**之前**，
 先拉取候选的 `.torrent` 并解析文件列表，内容不可导入时直接拒绝提交。实现在
-`src/service/transfers/torrent_content_guard.py`。qB 与 115 共用这个入口，自动下载与手动提交
+`src/service/transfers/downloads/guards/torrent_content_guard.py`。qB 与 115 共用这个入口，自动下载与手动提交
 也都走它，因此这是唯一需要维护的拦截点。
 
 判据：统计种子里的**合格视频文件数** = 后缀命中 `SUPPORTED_VIDEO_EXTENSIONS` **且**体积不低于
@@ -215,7 +215,7 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 所以选种时照常放行而不是跳过：它可能压根不是死种，为一个不确定的判断牺牲一个可用候选不划算；真是死种
 的话，下一轮它带着 `DownloadTask` 行回来，那时身份就是确定的了。
 
-`info_hash` 的规范化统一走 `src/service/transfers/common.py` 的 `canonicalize_btih()`（hex/Base32 →
+`info_hash` 的规范化统一走 `src/service/transfers/shared/common.py` 的 `canonicalize_btih()`（hex/Base32 →
 40 位小写 hex）。它放在 transfers 公共模块而不是某个下载器模块里：选种、115 离线对账、任务删除、索引器
 候选四条链路都要用，且必须是同一个实现，否则「这两个是不是同一个种子」在不同链路上会给出不同答案。
 实测同一个种子在 knaben（大写 hex）和 sukebei（小写 hex）上会收敛到同一个字符串。

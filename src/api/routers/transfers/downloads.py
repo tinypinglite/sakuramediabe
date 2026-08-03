@@ -23,12 +23,10 @@ from src.schema.transfers.downloads import (
     DownloadTaskResource,
     DownloadTasksQuery,
 )
-from src.service.transfers import (
-    DownloadClientService,
-    DownloadRequestService,
-    DownloadSearchService,
-    DownloadTaskService,
-)
+from src.service.transfers.downloads.client_config_service import DownloadClientService
+from src.service.transfers.downloads.request_service import DownloadRequestService
+from src.service.transfers.downloads.search_service import DownloadSearchService
+from src.service.transfers.downloads.task_service import DownloadTaskService
 
 router = APIRouter(
     tags=["downloads"],

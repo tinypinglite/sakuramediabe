@@ -13,12 +13,10 @@ from src.service.catalog import (
 from src.service.playback import MediaThumbnailService
 from src.service.system import ActivityService
 from src.service.system.resource_task_runner import ResourceTaskLedger
-from src.service.transfers import (
-    Cloud115OfflineSyncService,
-    DownloadSyncService,
-    MediaImportJobService,
-    MediaRapidUploadService,
-)
+from src.service.transfers.cloud115.offline.sync_service import Cloud115OfflineSyncService
+from src.service.transfers.downloads.sync_service import DownloadSyncService
+from src.service.transfers.imports.job_service import MediaImportJobService
+from src.service.transfers.rapid_upload.facade import MediaRapidUploadService
 from src.service.videos import VideoImportJobService
 
 

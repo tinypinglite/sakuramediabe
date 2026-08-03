@@ -48,7 +48,7 @@ from src.common.media_paths import (
     movie_subtitle_dir,
 )
 from src.model import Movie, Subtitle
-from src.service.transfers.file_transfer import transfer_file
+from src.service.transfers.shared.file_transfer import transfer_file
 
 # 迁移进度回调：(current, total)
 ProgressCallback = Callable[[int, int], None]

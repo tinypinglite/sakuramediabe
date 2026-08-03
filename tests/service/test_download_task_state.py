@@ -1,6 +1,6 @@
 import pytest
 
-from src.service.transfers.common import is_download_complete, map_download_state
+from src.service.transfers.shared.common import is_download_complete, map_download_state
 
 
 # 已下完但停止做种的 *UP：归到 completed，且下游判"已完成"应通过，才能继续走自动导入。

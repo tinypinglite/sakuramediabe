@@ -12,9 +12,9 @@ from src.schema.transfers.media_import import (
     RenameFailedFileRequest,
     RetryFailedFilesRequest,
 )
-from src.service.transfers import (
-    Cloud115ImportJobService,
-    FilesystemBrowseService,
+from src.service.transfers.cloud115.importer.job_service import Cloud115ImportJobService
+from src.service.transfers.imports.browse_service import FilesystemBrowseService
+from src.service.transfers.imports.job_service import (
     MediaImportJobService,
     import_job_service_for,
 )

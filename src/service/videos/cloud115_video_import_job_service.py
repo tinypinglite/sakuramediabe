@@ -26,8 +26,8 @@ from src.service.cloud115 import (
     map_cloud115_error,
     require_cloud115_library,
 )
-from src.service.transfers.base_import_job_service import BaseImportJobService
-from src.service.transfers.cloud115_import_common import (
+from src.service.transfers.shared.base_import_job_service import BaseImportJobService
+from src.service.transfers.cloud115.importer.common import (
     collect_cloud115_source_files,
     normalize_cloud115_transfer_mode,
     verify_cloud115_renamed_file,

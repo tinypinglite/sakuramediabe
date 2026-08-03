@@ -8,7 +8,7 @@ from src.schema.transfers.rapid_upload import (
     MediaRapidUploadCreateRequest,
     MediaRapidUploadTriggerResponse,
 )
-from src.service.transfers import MediaRapidUploadService
+from src.service.transfers.rapid_upload.facade import MediaRapidUploadService
 
 router = APIRouter(
     prefix="/media/rapid-uploads",

@@ -21,7 +21,7 @@ from src.schema.videos.imports import (
     VideoImportJobResource,
     VideoImportTriggerResponse,
 )
-from src.service.transfers.base_import_job_service import BaseImportJobService
+from src.service.transfers.shared.base_import_job_service import BaseImportJobService
 from src.service.videos.video_import_service import VideoImportService
 
 
