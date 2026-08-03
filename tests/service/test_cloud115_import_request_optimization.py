@@ -789,13 +789,19 @@ def _run_move_group(
         lambda: SimpleNamespace(atomic=_noop_atomic),
     )
 
-    service = Cloud115ImportService()
-    service._probe_cloud115_media = AsyncMock(
-        return_value=SimpleNamespace(
-            video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
-        )
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.service.probe_cloud115_media",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
+            )
+        ),
     )
-    service._import_subtitle = AsyncMock()
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.service.import_subtitle",
+        AsyncMock(),
+    )
+    service = Cloud115ImportService()
 
     registered: list[dict] = []
 
@@ -817,7 +823,10 @@ def _run_move_group(
             is_new,
         )
 
-    service._register_media = fake_register
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.service.register_media",
+        fake_register,
+    )
 
     client = client or _FakeCloudClient()
     resolver = _FakeTargetDirResolver()
@@ -880,19 +889,28 @@ def test_cleanup_source_registers_before_moving(monkeypatch):
         "src.service.transfers.cloud115.importer.service.get_database",
         lambda: SimpleNamespace(atomic=_noop_atomic),
     )
-    service = Cloud115ImportService()
-    service._probe_cloud115_media = AsyncMock(
-        return_value=SimpleNamespace(
-            video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
-        )
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.service.probe_cloud115_media",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
+            )
+        ),
     )
-    service._import_subtitle = AsyncMock()
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.service.import_subtitle",
+        AsyncMock(),
+    )
+    service = Cloud115ImportService()
 
     def fake_register(**kwargs):
         order.append("register")
         return SimpleNamespace(id=1, backend_locator={}, save=lambda: None), True
 
-    service._register_media = fake_register
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.service.register_media",
+        fake_register,
+    )
 
     asyncio.run(
         service._import_group_by_move(

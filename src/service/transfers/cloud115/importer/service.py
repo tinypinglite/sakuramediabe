@@ -48,10 +48,9 @@ from src.common.media_import_status import (
     IMPORT_JOB_STATE_RUNNING,
     make_failure_item,
 )
-from src.common.media_paths import allocate_next_movie_subtitle_path, movie_subtitle_dir
 from src.common.runtime_time import utc_now_for_db
 from src.lib.cloud115 import Cloud115Client, DirEntry
-from src.model import ImportJob, Media, MediaLibrary, Movie, Subtitle, get_database
+from src.model import ImportJob, Media, MediaLibrary, Movie, get_database
 from src.service.cloud115 import (
     assert_cid_outside_library_root,
     cloud115_client_for,
@@ -62,7 +61,6 @@ from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeService,
 )
 from src.service.transfers.cloud115.importer.common import (
-    CLOUD115_METADATA_PROBE_MAX_BYTES,
     CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
     Cloud115TargetDirCache,
     Cloud115TargetDirResolver,
@@ -70,25 +68,24 @@ from src.service.transfers.cloud115.importer.common import (
     list_cloud115_target_files,
     normalize_cloud115_transfer_mode,
     normalize_jav_media_filename,
-    probe_cloud115_media,
     resolve_cloud115_copied_entry,
     verify_cloud115_renamed_file,
 )
 from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
 from src.service.transfers.cloud115.importer.scanner import scan_cloud115_source
+from src.service.transfers.cloud115.importer.strategies.common import (
+    import_subtitle,
+    probe_cloud115_media,
+    record_files_failure,
+    register_media,
+)
 from src.service.transfers.cloud115.importer.types import (
     CloudImportGroup,
     CloudSourceFile,
-    CloudSubtitleFile,
     ResolvedFile as _ResolvedFile,
 )
-from src.service.transfers.downloads.guards.tag_rules import build_media_special_tags
 from src.service.transfers.imports.import_service import MediaImportService
 
-# 直链下载字幕的 UA（拿链接与 GET 由 SDK 保证同 UA）。
-SUBTITLE_DOWNLOAD_UA = "Mozilla/5.0 SakuraMedia-Cloud115-Import/1.0"
-# 字幕文件大小上限：.srt 纯文本，10MB 足够富余。
-SUBTITLE_MAX_BYTES = 10 * 1024 * 1024
 # 手动批量 JAV 导入在番号之间加入随机停顿，降低长时间持续请求 115 的频率。
 MANUAL_GROUP_REST_MIN_SECONDS = 10.0
 MANUAL_GROUP_REST_MAX_SECONDS = 30.0
@@ -760,8 +757,7 @@ class Cloud115ImportService:
                 probe_results[r.cloud_file.sha1] = None
                 continue
             try:
-                probe_results[r.cloud_file.sha1] = await self._probe_cloud115_media(
-                    client,
+                probe_results[r.cloud_file.sha1] = await probe_cloud115_media(client, self._media_metadata_probe_service,
                     pickcode=r.target_pickcode,
                     file_size_bytes=r.cloud_file.size,
                 )
@@ -784,7 +780,7 @@ class Cloud115ImportService:
         try:
             with get_database().atomic():
                 for r in resolved:
-                    _media, registered = self._register_media(
+                    _media, registered = register_media(
                         library=library,
                         movie=movie,
                         cloud_file=r.cloud_file,
@@ -833,11 +829,10 @@ class Cloud115ImportService:
             if r.cloud_file.subtitle is None:
                 continue
             try:
-                await self._import_subtitle(
+                await import_subtitle(
                     client,
                     movie=movie,
                     cloud_file=r.cloud_file,
-                    encoded_name=r.target_name,
                 )
             except Exception as exc:
                 failure_items.append(
@@ -924,13 +919,12 @@ class Cloud115ImportService:
                 probe_results[cloud_file.sha1] = None
                 continue
             try:
-                probe_results[cloud_file.sha1] = await self._probe_cloud115_media(
-                    client,
+                probe_results[cloud_file.sha1] = await probe_cloud115_media(client, self._media_metadata_probe_service,
                     pickcode=cloud_file.pickcode,
                     file_size_bytes=cloud_file.size,
                 )
             except Exception as exc:
-                self._record_files_failure(
+                record_files_failure(
                     pending,
                     reason=FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED,
                     detail=f"{cloud_file.rel_path}: {exc}",
@@ -948,16 +942,13 @@ class Cloud115ImportService:
             if cloud_file.subtitle is None:
                 continue
             try:
-                await self._import_subtitle(
+                await import_subtitle(
                     client,
                     movie=movie,
                     cloud_file=cloud_file,
-                    encoded_name=normalize_jav_media_filename(
-                        group.movie_number, cloud_file.name
-                    ),
                 )
             except Exception as exc:
-                self._record_files_failure(
+                record_files_failure(
                     pending,
                     reason=FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED,
                     detail=f"{cloud_file.rel_path}: {exc}",
@@ -978,7 +969,7 @@ class Cloud115ImportService:
                 group.movie_number
             )
         except Exception as exc:
-            self._record_files_failure(
+            record_files_failure(
                 pending,
                 reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
                 detail=f"创建番号目录失败: {exc}",
@@ -1006,7 +997,7 @@ class Cloud115ImportService:
             await self._discard_version_dirs(
                 client, version_cids.values(), movie_number=group.movie_number
             )
-            self._record_files_failure(
+            record_files_failure(
                 pending,
                 reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
                 detail=f"创建版本目录失败: {exc}",
@@ -1024,7 +1015,7 @@ class Cloud115ImportService:
         try:
             with get_database().atomic():
                 for cloud_file in pending:
-                    media, is_new = self._register_media(
+                    media, is_new = register_media(
                         library=library,
                         movie=movie,
                         cloud_file=cloud_file,
@@ -1040,7 +1031,7 @@ class Cloud115ImportService:
             await self._discard_version_dirs(
                 client, version_cids.values(), movie_number=group.movie_number
             )
-            self._record_files_failure(
+            record_files_failure(
                 pending,
                 reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
                 detail=str(exc),
@@ -1163,13 +1154,10 @@ class Cloud115ImportService:
         """
         if cloud_file.subtitle is not None:
             try:
-                await self._import_subtitle(
+                await import_subtitle(
                     client,
                     movie=movie,
                     cloud_file=cloud_file,
-                    encoded_name=normalize_jav_media_filename(
-                        movie.movie_number, cloud_file.name
-                    ),
                 )
             except Exception as exc:
                 stats["failed"] += 1
@@ -1232,43 +1220,6 @@ class Cloud115ImportService:
         media.updated_at = utc_now_for_db()
         media.save()
 
-    async def _probe_cloud115_media(
-        self,
-        client: Cloud115Client,
-        *,
-        pickcode: str,
-        file_size_bytes: int,
-    ) -> MediaMetadataProbeResult:
-        metadata, fetched_bytes = await probe_cloud115_media(
-            client,
-            self._media_metadata_probe_service,
-            pickcode=pickcode,
-            file_size_bytes=file_size_bytes,
-        )
-        logger.info(
-            "Cloud115 metadata probed pickcode={} fetched_bytes={} budget_bytes={}",
-            pickcode, fetched_bytes, CLOUD115_METADATA_PROBE_MAX_BYTES,
-        )
-        return metadata
-
-    @staticmethod
-    def _record_files_failure(
-        files: list[CloudSourceFile],
-        *,
-        reason: str,
-        detail: str,
-        failure_items: list[dict],
-        stats: dict,
-        kind: str | None = None,
-    ) -> None:
-        """给一批文件各记一条失败；kind 用于覆盖 reason 的默认可操作性分类。"""
-        for cloud_file in files:
-            stats["failed"] += 1
-            item = make_failure_item(cloud_file.rel_path, reason, detail)
-            if kind is not None:
-                item["kind"] = kind
-            failure_items.append(item)
-
     @classmethod
     def _record_group_failure(
         cls,
@@ -1279,7 +1230,7 @@ class Cloud115ImportService:
         failure_items: list[dict],
         stats: dict,
     ) -> None:
-        cls._record_files_failure(
+        record_files_failure(
             group.files,
             reason=reason,
             detail=detail,
@@ -1300,138 +1251,6 @@ class Cloud115ImportService:
             if pickcode and candidate.pickcode == pickcode:
                 return candidate
         return None
-
-    def _register_media(
-        self,
-        *,
-        library: MediaLibrary,
-        movie: Movie,
-        cloud_file: CloudSourceFile,
-        target_fid: str,
-        target_pickcode: str,
-        encoded_name: str,
-        metadata: MediaMetadataProbeResult | None,
-    ) -> tuple[Media, bool]:
-        """按 sha1 指纹幂等登记一条 cloud115 Media。
-
-        返回 ``(media, 是否新登记)``；False 表示命中已有有效记录、只更新了定位信息。
-        调用方需要 media 实例来做搬运后的定位修正，因此一并返回。
-        """
-        locator = Cloud115MediaRegistrar.build_locator(
-            fid=target_fid,
-            pickcode=target_pickcode,
-            name=encoded_name,
-            source_path=cloud_file.rel_path,
-        )
-        fingerprint = Cloud115MediaRegistrar.build_fingerprint(cloud_file.sha1)
-        valid = not cloud_file.censored
-
-        existing_valid = Cloud115MediaRegistrar.find_library_media(library, cloud_file.sha1, valid=True)
-        effective_video_info = metadata.video_info if metadata is not None else None
-        if existing_valid is not None and effective_video_info is None:
-            effective_video_info = existing_valid.video_info
-        if valid and effective_video_info is None:
-            raise RuntimeError("valid cloud115 media requires video_info")
-        resolution = metadata.resolution if metadata is not None else None
-        if metadata is not None:
-            duration_seconds = metadata.duration_seconds or cloud_file.play_long or 0
-        elif existing_valid is not None:
-            duration_seconds = existing_valid.duration_seconds or cloud_file.play_long or 0
-        else:
-            duration_seconds = cloud_file.play_long or 0
-        special_tags = build_media_special_tags(
-            [cloud_file.rel_path],
-            movie.movie_number,
-            video_info=effective_video_info,
-            has_subtitle=cloud_file.subtitle is not None,
-        )
-
-        if existing_valid is not None:
-            previous_locator = existing_valid.backend_locator or {}
-            locator["source_path"] = previous_locator.get("source_path") or cloud_file.rel_path
-            Cloud115MediaRegistrar.apply_cloud115_fields(
-                existing_valid,
-                library=library,
-                locator=locator,
-                fingerprint=fingerprint,
-                file_size_bytes=cloud_file.size,
-                resolution=resolution,
-                duration_seconds=duration_seconds,
-                video_info=effective_video_info,
-                special_tags=special_tags,
-            )
-            existing_valid.save()
-            return existing_valid, False
-
-        invalid_media = Cloud115MediaRegistrar.find_library_media(library, cloud_file.sha1, valid=False)
-        if invalid_media is not None:
-            invalid_media.movie = movie
-            Cloud115MediaRegistrar.apply_cloud115_fields(
-                invalid_media,
-                library=library,
-                locator=locator,
-                fingerprint=fingerprint,
-                file_size_bytes=cloud_file.size,
-                resolution=resolution,
-                duration_seconds=duration_seconds,
-                video_info=effective_video_info,
-                special_tags=special_tags,
-                valid=valid,
-            )
-            invalid_media.save()
-            if valid:
-                Cloud115MediaRegistrar.reset_thumbnail_state(invalid_media.id)
-            return invalid_media, True
-
-        media = Cloud115MediaRegistrar.create_cloud115_media(
-            movie=movie,
-            library=library,
-            locator=locator,
-            fingerprint=fingerprint,
-            file_size_bytes=cloud_file.size,
-            resolution=resolution,
-            duration_seconds=duration_seconds,
-            video_info=effective_video_info,
-            special_tags=special_tags,
-            valid=valid,
-        )
-        if valid:
-            Cloud115MediaRegistrar.reset_thumbnail_state(media.id)
-        logger.info(
-            "Cloud115 media registered movie_number={} media_id={} pickcode={} name={}",
-            movie.movie_number, media.id, target_pickcode, encoded_name,
-        )
-        return media, True
-
-    async def _import_subtitle(
-        self,
-        client: Cloud115Client,
-        *,
-        movie: Movie,
-        cloud_file: CloudSourceFile,
-        encoded_name: str,
-    ) -> None:
-        """把配对的 .srt 下载到 movies/<shard>/{番号}/subtitles/<番号>-<N>.srt 并登记 Subtitle。
-
-        字幕不复制到 115（库子树只存影片文件）；删除源字幕由整组成功后的清源阶段统一处理。
-        命名与本地导入 / 迁移共用 ``allocate_next_movie_subtitle_path`` 分配的 ``<番号>-<N>.srt``。
-        重跑幂等：源字幕在 115 上的 pickcode 稳定，下载内容一致；由外层组级 cleanup-source 保证
-        成功一次后源字幕被删除，重跑不会重复下载。清源前中断重跑会重复下载一次（在同一部影片下
-        分到新的 N），可后续由用户或 sync 收敛。
-        """
-        del encoded_name  # 保留形参一致，命名不再依赖 encoded_name。
-        subtitle = cloud_file.subtitle
-        assert subtitle is not None
-        subtitle_dir = movie_subtitle_dir(movie.movie_number)
-        subtitle_dir.mkdir(parents=True, exist_ok=True)
-        target_path = allocate_next_movie_subtitle_path(movie.movie_number)
-        content = await client.download_bytes(
-            subtitle.pickcode,
-            user_agent=SUBTITLE_DOWNLOAD_UA,
-            max_bytes=SUBTITLE_MAX_BYTES,
-        )
-        target_path.write_bytes(content)
-        Subtitle.get_or_create(movie=movie, file_path=str(target_path))
 
     # ---- 进度 ----
 
