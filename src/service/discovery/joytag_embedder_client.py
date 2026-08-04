@@ -99,6 +99,8 @@ class JoyTagEmbedderClient:
             base_url=self.base_url,
             timeout=self._build_timeout(),
             headers=self._headers(),
+            # 与全仓其余 httpx 构造保持一致：不信任环境代理
+            trust_env=False,
         )
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
