@@ -25,6 +25,24 @@ async def rest_between_requests_async(min_seconds: float, max_seconds: float) ->
     return delay
 
 
+def unlink_ignore_missing(path) -> None:
+    """删除文件；文件本就不存在时静默放行（竞态下先删后查的常见场景）。"""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
+def safe_int(value: Any, default: int | None = 0) -> int | None:
+    """宽容转 int：None / 非数值返回 default，不做任何截断。"""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def count_by_owner(
     link_model: type[Model],
     owner_fk,

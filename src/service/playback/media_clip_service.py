@@ -21,7 +21,12 @@ except ImportError:  # pragma: no cover - runtime dependency check
 from src.api.exception.errors import ApiError
 from src.common import build_signed_clip_url, media_clip_root_path
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import require_by_id, resolve_sort, validate_page
+from src.common.service_helpers import (
+    require_by_id,
+    resolve_sort,
+    unlink_ignore_missing,
+    validate_page,
+)
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115Error
 from src.model import (
@@ -543,8 +548,6 @@ class MediaClipService:
     @staticmethod
     def _unlink_clip_file(target_path: Path) -> None:
         try:
-            target_path.unlink()
-        except FileNotFoundError:
-            return
+            unlink_ignore_missing(target_path)
         except OSError as exc:
             logger.warning("Delete media clip file failed path={} detail={}", str(target_path), exc)

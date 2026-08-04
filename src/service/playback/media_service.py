@@ -18,6 +18,7 @@ from src.common.service_helpers import (
     require_record,
     resolve_sort,
     resolve_sort_expression,
+    unlink_ignore_missing,
     validate_page,
     with_movie_card_relations,
 )
@@ -331,10 +332,7 @@ class MediaService:
 
     @staticmethod
     def _delete_local_media_file(media: Media) -> None:
-        try:
-            Path(media.path).unlink()
-        except FileNotFoundError:
-            return
+        unlink_ignore_missing(Path(media.path))
 
     @classmethod
     def _delete_cloud115_media_file(cls, media: Media) -> None:

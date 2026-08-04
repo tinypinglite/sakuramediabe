@@ -6,6 +6,7 @@ from typing import Any
 from loguru import logger
 
 from src.common.runtime_time import parse_external_datetime
+from src.common.service_helpers import safe_int
 
 try:
     import av
@@ -24,15 +25,6 @@ class MediaMetadataProbeResult:
 
 class MediaMetadataProbeService:
     @staticmethod
-    def _safe_int(value: Any) -> int | None:
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-
-    @staticmethod
     def _safe_float(value: Any, precision: int = 3) -> float | None:
         if value is None:
             return None
@@ -47,7 +39,7 @@ class MediaMetadataProbeService:
     @classmethod
     def _resolve_bit_rate(cls, *candidates: Any) -> int | None:
         for candidate in candidates:
-            bit_rate = cls._safe_int(candidate)
+            bit_rate = safe_int(candidate, None)
             if bit_rate is not None and bit_rate > 0:
                 return bit_rate
         return None
@@ -121,7 +113,7 @@ class MediaMetadataProbeService:
             codec_context = stream.codec_context
             width = width or getattr(codec_context, "width", None)
             height = height or getattr(codec_context, "height", None)
-        return cls._safe_int(width), cls._safe_int(height)
+        return safe_int(width, None), safe_int(height, None)
 
     @classmethod
     def _resolve_frame_rate(cls, stream) -> float | None:
@@ -187,11 +179,13 @@ class MediaMetadataProbeService:
                 getattr(stream, "bit_rate", None),
                 getattr(codec_context, "bit_rate", None),
             ),
-            "sample_rate": cls._safe_int(
-                getattr(stream, "sample_rate", None) or getattr(codec_context, "sample_rate", None)
+            "sample_rate": safe_int(
+                getattr(stream, "sample_rate", None) or getattr(codec_context, "sample_rate", None),
+                None,
             ),
-            "channels": cls._safe_int(
-                getattr(stream, "channels", None) or getattr(codec_context, "channels", None)
+            "channels": safe_int(
+                getattr(stream, "channels", None) or getattr(codec_context, "channels", None),
+                None,
             ),
             "channel_layout": str(channel_layout) if channel_layout else None,
         }

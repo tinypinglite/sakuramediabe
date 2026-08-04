@@ -10,6 +10,8 @@ from urllib.parse import quote, urlencode
 
 from loguru import logger
 
+from src.common.service_helpers import safe_int
+
 from .exceptions import JavdbAuthError, MetadataNotFoundError, MetadataRequestError
 from .http_client import MetadataRequestClient
 from .models import (
@@ -863,14 +865,6 @@ class JavdbProvider(MetadataRequestClient):
         logger.warning("Javdb reviews payload missing reviews list url={}", url)
         raise MetadataRequestError("GET", url, "missing data.reviews")
 
-    def _safe_int(self, value: Any, default: int = 0) -> int:
-        if value is None:
-            return default
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            return default
-
     def _safe_float(self, value: Any, default: float | None = None) -> float | None:
         if value is None:
             return default
@@ -895,13 +889,13 @@ class JavdbProvider(MetadataRequestClient):
 
     def _build_movie_review(self, review: dict[str, Any]) -> JavdbMovieReviewResource:
         mapped_payload = {
-            "id": self._safe_int(review.get("id"), 0),
-            "score": self._safe_int(review.get("score"), 0),
+            "id": safe_int(review.get("id"), 0),
+            "score": safe_int(review.get("score"), 0),
             "content": review.get("content") or "",
             "created_at": review.get("created_at"),
             "username": review.get("username") or "",
-            "like_count": self._safe_int(review.get("likes_count"), 0),
-            "watch_count": self._safe_int(review.get("watched_count"), 0),
+            "like_count": safe_int(review.get("likes_count"), 0),
+            "watch_count": safe_int(review.get("watched_count"), 0),
             "movie": self._build_review_movie(review.get("movie")),
         }
         return JavdbMovieReviewResource.model_validate(mapped_payload)
