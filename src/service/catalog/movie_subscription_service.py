@@ -18,7 +18,11 @@ from datetime import datetime
 from peewee import JOIN, Case, fn
 
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import media_exists_expression, validate_page
+from src.common.service_helpers import (
+    count_by_owner,
+    media_exists_expression,
+    validate_page,
+)
 from src.model import DownloadTask, Image, Media, Movie, ResourceTaskState
 from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.subscriptions import (
@@ -210,11 +214,7 @@ class MovieSubscriptionService:
         cover_images = cls._load_cover_images(ordered_movies)
         movie_numbers = [movie.movie_number for movie in ordered_movies]
         # media_exists_expression 用的是精确相等，这里的计数必须同样精确匹配才和状态判定一致。
-        media_counts = cls._count_by_key(
-            Media.select(Media.movie, fn.COUNT(Media.id))
-            .where(Media.movie.in_(movie_numbers))
-            .group_by(Media.movie)
-        )
+        media_counts = count_by_owner(Media, Media.movie, movie_numbers)
         dead_task_counts = cls._count_dead_download_tasks(movie_numbers)
         attempt_limit = SubscribedMovieSearchStateService.stale_attempt_limit()
         # 只为 import_failed 档取导入作业上下文：其余档没有可操作的导入语义。
@@ -314,10 +314,6 @@ class MovieSubscriptionService:
             )
         return operations
 
-    @staticmethod
-    def _count_by_key(query) -> dict[str, int]:
-        return {row[0]: int(row[1]) for row in query.tuples()}
-
     @classmethod
     def _count_dead_download_tasks(cls, movie_numbers: list[str]) -> dict[str, int]:
         """按番号统计已判死的下载任务数——"这片试过几个种子都死了"。
@@ -325,11 +321,11 @@ class MovieSubscriptionService:
         入参来自本页 Movie 行的规范番号，download_task.movie_number 由提交链路拷贝同一列，
         两侧直接裸列精确比较即可；套 UPPER(TRIM()) 只会废掉该列索引。
         """
-        counts_by_key = cls._count_by_key(
-            DownloadTask.select(DownloadTask.movie, fn.COUNT(DownloadTask.id))
-            .where(DownloadTask.movie.in_(movie_numbers))
-            .where(download_task_dead_expression())
-            .group_by(DownloadTask.movie)
+        counts_by_key = count_by_owner(
+            DownloadTask,
+            DownloadTask.movie,
+            movie_numbers,
+            download_task_dead_expression(),
         )
         return {number: counts_by_key.get(number, 0) for number in movie_numbers}
 

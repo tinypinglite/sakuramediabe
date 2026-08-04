@@ -2,9 +2,32 @@
 
 from collections.abc import Sequence
 
-from peewee import Model, ModelSelect
+from peewee import Model, ModelSelect, fn
 
 from src.api.exception.errors import ApiError
+
+
+def count_by_owner(
+    link_model: type[Model],
+    owner_fk,
+    owner_ids: Sequence,
+    *extra_filters,
+) -> dict[int, int]:
+    """按 owner 外键批量统计关联条数，返回 {owner_id: count}。
+
+    ``link_model`` 为关联表模型，``owner_fk`` 为其 owner 外键列；
+    ``extra_filters`` 为可选的附加过滤条件（如已判死的下载任务）。
+    """
+    if not owner_ids:
+        return {}
+    query = (
+        link_model.select(owner_fk, fn.COUNT(link_model.id))
+        .where(owner_fk.in_(owner_ids))
+        .group_by(owner_fk)
+    )
+    if extra_filters:
+        query = query.where(*extra_filters)
+    return {row[0]: int(row[1]) for row in query.tuples()}
 
 
 def require_record(

@@ -7,7 +7,7 @@ from peewee import JOIN, IntegrityError, fn
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import require_record, validate_page
+from src.common.service_helpers import count_by_owner, require_record, validate_page
 from src.model import Image, VideoCollection, VideoCollectionItem, VideoItem
 from src.model.base import get_database
 from src.schema.catalog.actors import ImageResource
@@ -61,17 +61,7 @@ class VideoCollectionService:
 
     @staticmethod
     def _item_counts(collection_ids: list[int]) -> dict[int, int]:
-        if not collection_ids:
-            return {}
-        query = (
-            VideoCollectionItem.select(
-                VideoCollectionItem.collection,
-                fn.COUNT(VideoCollectionItem.id).alias("item_count"),
-            )
-            .where(VideoCollectionItem.collection.in_(collection_ids))
-            .group_by(VideoCollectionItem.collection)
-        )
-        return {row.collection_id: row.item_count for row in query}
+        return count_by_owner(VideoCollectionItem, VideoCollectionItem.collection, collection_ids)
 
     @staticmethod
     def _collection_cover(collection_id: int) -> ImageResource | None:

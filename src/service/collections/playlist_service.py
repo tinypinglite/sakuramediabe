@@ -11,6 +11,7 @@ from peewee import Case, Ordering, fn
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
+    count_by_owner,
     playable_exists_expression,
     require_record,
     with_movie_card_relations,
@@ -286,14 +287,7 @@ class PlaylistService:
 
     @classmethod
     def _playlist_counts(cls, playlist_ids: list[int]) -> dict[int, int]:
-        if not playlist_ids:
-            return {}
-        query = (
-            PlaylistMovie.select(PlaylistMovie.playlist, fn.COUNT(PlaylistMovie.id).alias("movie_count"))
-            .where(PlaylistMovie.playlist.in_(playlist_ids))
-            .group_by(PlaylistMovie.playlist)
-        )
-        return {item.playlist_id: item.movie_count for item in query}
+        return count_by_owner(PlaylistMovie, PlaylistMovie.playlist, playlist_ids)
 
     @classmethod
     def _get_or_create_recently_played_playlist(cls) -> Playlist:

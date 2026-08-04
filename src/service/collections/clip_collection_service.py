@@ -11,7 +11,7 @@ from peewee import IntegrityError, fn
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import require_record, validate_page
+from src.common.service_helpers import count_by_owner, require_record, validate_page
 from src.model import ClipCollection, ClipCollectionItem, MediaClip
 from src.model.base import get_database
 from src.schema.collections.clips import (
@@ -75,17 +75,7 @@ class ClipCollectionService:
 
     @staticmethod
     def _collection_counts(collection_ids: list[int]) -> dict[int, int]:
-        if not collection_ids:
-            return {}
-        query = (
-            ClipCollectionItem.select(
-                ClipCollectionItem.collection,
-                fn.COUNT(ClipCollectionItem.id).alias("clip_count"),
-            )
-            .where(ClipCollectionItem.collection.in_(collection_ids))
-            .group_by(ClipCollectionItem.collection)
-        )
-        return {item.collection_id: item.clip_count for item in query}
+        return count_by_owner(ClipCollectionItem, ClipCollectionItem.collection, collection_ids)
 
     @classmethod
     def _collection_cover(cls, collection_id: int):
