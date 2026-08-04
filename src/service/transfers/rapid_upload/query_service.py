@@ -1,5 +1,6 @@
 from peewee import fn
 
+from src.api.exception.errors import ApiError
 from src.common.service_helpers import paginate, require_by_id
 from src.model import MediaRapidUploadBatch, MediaRapidUploadItem
 from src.schema.common.pagination import PageResponse

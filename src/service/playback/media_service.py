@@ -1,6 +1,5 @@
 import time
 from collections.abc import Sequence
-from datetime import datetime
 from pathlib import Path
 
 import peewee
@@ -15,6 +14,7 @@ from src.common import (
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     paginate,
+    require_by_id,
     require_record,
     resolve_sort,
     resolve_sort_expression,
@@ -825,7 +825,6 @@ class MediaService:
                 | (VideoItem.title.contains(normalized))
                 | (Media.path.contains(normalized))
             )
-        total = base_query.count()
         return paginate(
             base_query.order_by(Media.updated_at.desc(), Media.id.desc()),
             page,

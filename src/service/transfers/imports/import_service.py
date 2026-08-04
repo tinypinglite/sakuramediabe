@@ -133,7 +133,6 @@ class MediaImportService:
         if database.is_closed():
             database.connect()
 
-    @staticmethod
     def _import_movie_metadata(self, movie_number: str) -> MetadataImportResult:
         self._ensure_worker_database_ready()
         provider = self._get_worker_provider()

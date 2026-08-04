@@ -23,7 +23,7 @@ from peewee import IntegrityError
 
 from src.api.exception.errors import ApiError
 from src.common.fs_browse import assert_within_allowed_roots, normalize_abs_path
-from src.common.service_helpers import paginate
+from src.common.service_helpers import paginate, require_by_id
 from src.common.media_import_status import (
     FAILED_FILE_KIND_FILE,
     FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED,

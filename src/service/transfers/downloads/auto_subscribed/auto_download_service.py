@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from typing import Any, NoReturn
 
@@ -157,6 +158,7 @@ class SubscribedMovieAutoDownloadService:
                     movie_number,
                     delay,
                 )
+                time.sleep(delay)
                 shared["pending_cloud115_rest"] = False
             try:
                 response = self.download_request_service.create_request(payload)

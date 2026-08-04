@@ -409,7 +409,7 @@ def _run_import_groups(
     )
     sleep_mock = AsyncMock()
     monkeypatch.setattr(
-        "src.common.service_helpers.asyncio.sleep",
+        "src.service.transfers.cloud115.importer.service.asyncio.sleep",
         sleep_mock,
     )
 
@@ -613,7 +613,7 @@ def test_auto_import_queue_rests_only_between_successful_jobs(monkeypatch):
         lambda minimum, maximum: 17.5,
     )
     monkeypatch.setattr(
-        "src.common.service_helpers.time.sleep",
+        "src.service.transfers.cloud115.offline.sync_service.time.sleep",
         sleeps.append,
     )
 
@@ -674,7 +674,7 @@ def test_auto_import_queue_stops_without_rest_after_failure(monkeypatch):
         staticmethod(reconcile),
     )
     monkeypatch.setattr(
-        "src.common.service_helpers.time.sleep",
+        "src.service.transfers.cloud115.offline.sync_service.time.sleep",
         sleeps.append,
     )
 

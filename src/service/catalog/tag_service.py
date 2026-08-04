@@ -36,8 +36,10 @@ class TagService:
                 extra=(Tag.name.asc(),),
             )
 
+        # 空白 sort 归一化为默认值（旧实现 ``(sort or "movie_count:desc").strip()`` 语义）。
+        normalized_sort = (sort or "").strip() or "movie_count:desc"
         return resolve_sort_expression(
-            sort or "movie_count:desc",
+            normalized_sort,
             {"movie_count": fn.COUNT(MovieTag.movie), "name": Tag.name},
             error_code="invalid_tag_filter",
             tie_breaker=Tag.id,

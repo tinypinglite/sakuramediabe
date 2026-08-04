@@ -2,27 +2,22 @@
 
 import asyncio
 import random
-import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from peewee import Model, ModelSelect, fn
+from peewee import Model, ModelSelect, Ordering, fn
 
 from src.api.exception.errors import ApiError
 
 
 def rest_between_requests(min_seconds: float, max_seconds: float) -> float:
-    """降频休息：随机取 [min, max] 区间的延迟并同步 sleep，返回实际延迟秒数。"""
-    delay = random.uniform(min_seconds, max_seconds)
-    time.sleep(delay)
-    return delay
+    """取一个降频休息用的随机延迟（秒）；sleep 由调用方在日志/进度事件之后执行。"""
+    return random.uniform(min_seconds, max_seconds)
 
 
 async def rest_between_requests_async(min_seconds: float, max_seconds: float) -> float:
-    """降频休息的异步版（await asyncio.sleep，不阻塞事件循环），返回实际延迟秒数。"""
-    delay = random.uniform(min_seconds, max_seconds)
-    await asyncio.sleep(delay)
-    return delay
+    """取一个降频休息用的随机延迟（秒）的异步版；sleep 由调用方执行。"""
+    return random.uniform(min_seconds, max_seconds)
 
 
 def unlink_ignore_missing(path) -> None:
@@ -53,10 +48,12 @@ async def poll_until(
     check,
     *,
     on_failure: Callable[[Exception], None] | None = None,
+    retry_exceptions: tuple[type[BaseException], ...] | None = None,
 ) -> None:
     """按固定延迟列表轮询直到 ``check()``（可等待）不再抛异常；全部失败时抛最后一次异常。
 
-    ``delays`` 首项可为 0（立即首次尝试）；``on_failure`` 记录每次失败信息供最终错误组装。
+    ``delays`` 首项可为 0（立即首次尝试）；``on_failure`` 记录每次失败信息供最终错误组装；
+    ``retry_exceptions`` 为只重试的异常类型白名单（其余异常立即透传，不消耗延迟轮询）。
     """
     last_exc: Exception | None = None
     for delay in delays:
@@ -66,6 +63,8 @@ async def poll_until(
             await check()
             return
         except Exception as exc:
+            if retry_exceptions is not None and not isinstance(exc, retry_exceptions):
+                raise
             last_exc = exc
             if on_failure is not None:
                 on_failure(exc)
@@ -213,13 +212,15 @@ def build_ordered_expressions(
     - ``nullable`` 为 True 时先加 ``is_null()`` 把空值统一垫后（规避数据库默认空值排序差异）；
     - ``tie_breaker`` 追加稳定的次级排序；
     - ``extra`` 在 tie_breaker 之前追加的额外排序（如 tag 的 name 次级）。
+
+    排序方向统一用 ``Ordering(sort_field, direction.upper())`` 表达：对普通 Field 与关联
+    子查询（ModelSelect）都兼容（子查询没有 ``.asc()/.desc()`` 方法）。
     """
-    ascending = direction == "asc"
-    ordered_field = sort_field.asc() if ascending else sort_field.desc()
+    ordered_field = Ordering(sort_field, direction.upper())
     tie = (
         []
         if tie_breaker is None
-        else [tie_breaker.asc() if ascending else tie_breaker.desc()]
+        else [Ordering(tie_breaker, direction.upper())]
     )
     if nullable:
         return [sort_field.is_null(), ordered_field, *extra, *tie]

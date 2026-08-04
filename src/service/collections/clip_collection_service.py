@@ -5,7 +5,6 @@
 阅读入口建议从 ``list_collections``、``list_collection_clips``、``set_clips`` 开始。
 """
 
-from datetime import datetime
 
 from peewee import IntegrityError, fn
 

@@ -15,6 +15,7 @@ from src.common.service_helpers import (
     count_by_owner,
     playable_exists_expression,
     require_by_id,
+    require_record,
     resolve_sort_expression,
     with_movie_card_relations,
 )

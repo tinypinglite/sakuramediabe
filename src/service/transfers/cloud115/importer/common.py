@@ -344,7 +344,9 @@ async def verify_cloud115_renamed_file(
 
     try:
         await poll_until((0.0, 0.5, 1.0), _check, on_failure=_record_failure)
-    except RuntimeError as exc:
+    except Exception as exc:
+        # 统一收敛为 RuntimeError，保持"改名未在窗口内可见"的错误契约
+        # （内部 file_info 失败或名字一直不匹配都落到这里）。
         raise RuntimeError(
             f"rename did not become visible for fid={fid}, expected={expected_name!r}, "
             f"{details[-1] if details else exc}"

@@ -274,8 +274,6 @@ class VideoImportService:
         job.save()
         return job
 
-    @staticmethod
-
     def import_from_source(
         self,
         source_path: str,

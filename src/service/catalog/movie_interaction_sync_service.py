@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timedelta
 
 from loguru import logger
 
+from src.common.runtime_time import utc_now_for_db
 from src.metadata._providers.exceptions import MetadataRequestError
 from src.metadata.factory import build_javdb_provider
 from src.metadata._providers.javdb import JavdbProvider

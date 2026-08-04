@@ -70,7 +70,11 @@ class FilesCapability(Cloud115Capability):
         async def _check() -> None:
             result.append(await self.pickcode_info(pickcode))
 
-        await poll_until(self._PICKCODE_INDEX_WAIT_DELAYS, _check)
+        await poll_until(
+            self._PICKCODE_INDEX_WAIT_DELAYS,
+            _check,
+            retry_exceptions=(Cloud115NotFoundError,),
+        )
         return result[0]
 
     async def _get_info(self, *, param_key: str, param_value: str, human_id: str) -> FileMeta:

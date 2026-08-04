@@ -9,7 +9,6 @@ from collections.abc import Iterator, Sequence
 from loguru import logger
 from peewee import JOIN, fn
 
-from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     require_by_id,

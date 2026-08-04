@@ -193,6 +193,7 @@ class Cloud115OfflineSyncService:
                 task.id,
                 delay,
             )
+            time.sleep(delay)
 
     @classmethod
     def _wait_for_import_job(cls, import_job_id: int) -> ImportJob | None:

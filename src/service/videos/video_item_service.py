@@ -1,6 +1,5 @@
 """视频条目（VideoItem）service：非 JAV 视频的条目增删改查与详情组装。"""
 
-from datetime import datetime
 
 from peewee import JOIN, Case, fn
 
@@ -101,10 +100,11 @@ class VideoItemService:
         }
         if extra_columns:
             columns.update(extra_columns)
-        # 空值时用 default_sort 解析（与旧实现 ``(sort or default_sort)`` 语义一致）。
+        # 空白 sort 归一化为默认值（旧实现 ``(sort or default_sort).strip()`` 语义）。
+        normalized_sort = (sort or "").strip() or default_sort
         breaker = VideoItem.id if tie_breaker is None else tie_breaker
         return resolve_sort_expression(
-            sort or default_sort,
+            normalized_sort,
             columns,
             error_code="invalid_video_filter",
             tie_breaker=breaker,

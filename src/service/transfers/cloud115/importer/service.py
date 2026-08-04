@@ -340,16 +340,10 @@ class Cloud115ImportService:
                 for group_index, group in enumerate(groups):
                     movie_number = group.movie_number
                     if not managed_download_source and group_index > 0:
+                        # 先取延迟并报"等待中"事件，再真正休息——事件语义是"即将休息到 delay 秒后"。
                         delay = await rest_between_requests_async(
                             MANUAL_GROUP_REST_MIN_SECONDS,
                             MANUAL_GROUP_REST_MAX_SECONDS,
-                        )
-                        logger.info(
-                            "Cloud115 manual import resting before next movie "
-                            "job_id={} movie_number={} delay_seconds={:.1f}",
-                            job.id,
-                            movie_number,
-                            delay,
                         )
                         emit_progress(
                             progress_callback,
@@ -363,6 +357,14 @@ class Cloud115ImportService:
                             text=f"为降低 115 请求频率，{delay:.1f} 秒后继续导入 {movie_number}",
                             summary_patch=self._summary(stats, new_playable_movies),
                         )
+                        logger.info(
+                            "Cloud115 manual import resting before next movie "
+                            "job_id={} movie_number={} delay_seconds={:.1f}",
+                            job.id,
+                            movie_number,
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
                     emit_progress(
                         progress_callback,
                         event="movie_started",

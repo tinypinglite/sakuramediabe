@@ -23,6 +23,7 @@ from src.common import build_signed_clip_url, media_clip_root_path
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     require_by_id,
+    require_record,
     resolve_sort,
     unlink_ignore_missing,
     validate_page,
