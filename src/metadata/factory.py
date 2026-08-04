@@ -119,7 +119,7 @@ def refresh_gfriends_filetree(*, force: bool = False) -> dict[str, Any]:
     force=False 时若 disk cache 新鲜（未超过 TTL）则跳过网络请求；
     force=True 无条件重新拉取。使用当前 settings 中配置的代理与地址。
     """
-    resolver = _build_gfriends_resolver(proxy=settings.metadata.gfriends_proxy)
+    resolver = _build_gfriends_resolver(proxy=settings.metadata.normalized_proxy)
     return resolver.refresh(force=force)
 
 
@@ -128,7 +128,7 @@ def build_javdb_provider() -> GfriendsAvatarJavdbProvider:
 
     JavDB 请求永远不走 metadata proxy：站点访问依托 ``settings.metadata.javdb_host``
     自身的直连/反代能力，叠加代理反而绕远路甚至失败。GFriends CDN 单独沿用
-    ``settings.metadata.gfriends_proxy``，与 JavDB 无关。
+    ``settings.metadata.normalized_proxy``，与 JavDB 无关。
     """
     provider = JavdbProvider(
         host=settings.metadata.javdb_host,
@@ -139,7 +139,7 @@ def build_javdb_provider() -> GfriendsAvatarJavdbProvider:
     return GfriendsAvatarJavdbProvider(
         provider=provider,
         actor_image_resolver=_build_gfriends_resolver(
-            proxy=settings.metadata.gfriends_proxy,
+            proxy=settings.metadata.normalized_proxy,
         ),
     )
 

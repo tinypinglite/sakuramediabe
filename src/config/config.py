@@ -202,10 +202,6 @@ class MovieInfoTranslation(BaseModel):
         return _check_http_url(value, "base_url", info)
 
 
-# 兼容现有导入路径，运行时统一使用 MovieInfoTranslation。
-MovieDescTranslation = MovieInfoTranslation
-
-
 class Metadata(BaseModel):
     javdb_host: str = "jdforrepam.com"
     # JavDB 账号，用于抓取需登录的榜单（年度 / 全部 / 片源类型 TOP250）；留空则不抓这些榜单。
@@ -240,11 +236,6 @@ class Metadata(BaseModel):
     def normalized_proxy(self) -> str | None:
         # 统一在配置层做代理值归一化（去空白，空串归一为 None）。
         return (self.proxy or "").strip() or None
-
-    @property
-    def gfriends_proxy(self) -> str | None:
-        # 兼容旧读路径，GFriends 代理沿用统一 proxy。
-        return self.normalized_proxy
 
 
 _PLUGIN_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -487,15 +478,6 @@ class Settings(BaseSettings):
             # 兼容旧配置节名称，统一映射到新的共享翻译配置上。
             normalized_data["movie_info_translation"] = normalized_data["movie_desc_translation"]
         return normalized_data
-
-    @property
-    def movie_desc_translation(self) -> MovieInfoTranslation:
-        # 兼容旧代码读路径，避免一次性重命名打断未迁移模块。
-        return self.movie_info_translation
-
-    @movie_desc_translation.setter
-    def movie_desc_translation(self, value: MovieInfoTranslation) -> None:
-        self.movie_info_translation = value
 
     @classmethod
     def settings_customise_sources(
