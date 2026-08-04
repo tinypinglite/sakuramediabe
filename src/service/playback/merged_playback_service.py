@@ -117,7 +117,7 @@ class MergedPlaybackService:
         with cls._lock:
             cls._cleanup_cache()
             cached = cls._cache.get(key)
-            if cached is not None and time.time() - cached[0] <= cls._CACHE_TTL_SECONDS:
+            if cached is not None and time.monotonic() - cached[0] <= cls._CACHE_TTL_SECONDS:
                 return cached[1]
             inflight = cls._inflight.get(key)
             if inflight is None:
@@ -150,7 +150,7 @@ class MergedPlaybackService:
         else:
             inflight.layout = layout
             with cls._lock:
-                cls._cache[key] = (time.time(), layout)
+                cls._cache[key] = (time.monotonic(), layout)
             return layout
         finally:
             # 先唤醒等待者再摘除 inflight 记录，避免等待者 wait 永不返回。
