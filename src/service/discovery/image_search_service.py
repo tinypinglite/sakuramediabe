@@ -238,7 +238,11 @@ class ImageSearchService:
             .switch(MediaThumbnail)
             .join(Media)
             .join(Movie, JOIN.INNER, on=(Media.movie == Movie.movie_number))
-            .where(MediaThumbnail.id.in_(unique_ids))
+            # 对齐 moment 版：只检索有效 media，避免失效影片缩略图命中图搜
+            .where(
+                MediaThumbnail.id.in_(unique_ids),
+                Media.valid == True,
+            )
         )
         return {int(thumbnail.id): thumbnail for thumbnail in query}
 
