@@ -5,6 +5,7 @@ from datetime import date, datetime, time, timedelta
 from loguru import logger
 
 from src.metadata._providers.exceptions import MetadataRequestError
+from src.metadata.factory import build_javdb_provider
 from src.metadata._providers.javdb import JavdbProvider
 from src.metadata._providers.models import JavdbMovieDetailResource
 from src.metadata.provider import MetadataNotFoundError
@@ -53,13 +54,7 @@ class MovieInteractionSyncService:
     )
 
     def __init__(self, provider: JavdbProvider | None = None):
-        self.provider = provider or self._build_javdb_provider()
-
-    @staticmethod
-    def _build_javdb_provider() -> JavdbProvider:
-        from src.metadata.factory import build_javdb_provider
-
-        return build_javdb_provider()
+        self.provider = provider or build_javdb_provider()
 
     @staticmethod
     @classmethod

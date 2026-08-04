@@ -15,7 +15,7 @@ from src.common.service_helpers import (
 )
 from src.config.config import settings
 from src.metadata._providers.exceptions import JavdbAuthError
-from src.metadata._providers.javdb import JavdbProvider
+from src.metadata.factory import build_javdb_provider
 from src.model import Media, Movie, RankingItem, get_database
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.discovery import (
@@ -390,17 +390,12 @@ class RankingSyncService:
         self.import_service = import_service or CatalogImportService()
         self.providers = providers or {}
 
-    @staticmethod
-    def _build_javdb_provider() -> JavdbProvider:
-        from src.metadata.factory import build_javdb_provider
-        return build_javdb_provider()
-
     def _provider_for_source(self, source_key: str) -> Any:
         provider = self.providers.get(source_key)
         if provider is not None:
             return provider
         if source_key == "javdb":
-            provider = self._build_javdb_provider()
+            provider = build_javdb_provider()
             self.providers[source_key] = provider
             return provider
         raise ValueError(f"unsupported ranking source: {source_key}")

@@ -2,6 +2,7 @@ from typing import Any
 
 from loguru import logger
 
+from src.metadata.factory import build_javdb_provider
 from src.common.service_helpers import emit_progress
 from src.common.runtime_time import utc_now_for_db
 from src.model import Actor, Movie, MovieActor
@@ -14,14 +15,8 @@ class SubscribedActorMovieSyncService:
         provider: Any | None = None,
         import_service: CatalogImportService | None = None,
     ):
-        self.provider = provider or self._build_javdb_provider()
+        self.provider = provider or build_javdb_provider()
         self.import_service = import_service or CatalogImportService()
-
-    @staticmethod
-    def _build_javdb_provider():
-        from src.metadata.factory import build_javdb_provider
-
-        return build_javdb_provider()
 
     @staticmethod
     def sync_subscribed_actor_movies(self, progress_callback=None) -> dict[str, int]:

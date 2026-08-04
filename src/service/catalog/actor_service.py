@@ -15,7 +15,7 @@ from src.common.service_helpers import (
     require_by_id,
     resolve_sort_expression,
 )
-from src.metadata._providers.javdb import JavdbProvider
+from src.metadata.factory import build_javdb_provider
 from src.metadata._providers.models import JavdbMovieActorResource
 from src.metadata.provider import MetadataNotFoundError
 from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag
@@ -138,11 +138,6 @@ class ActorService:
             total=total,
         )
 
-    @staticmethod
-    def _build_javdb_provider() -> JavdbProvider:
-        from src.metadata.factory import build_javdb_provider
-        return build_javdb_provider()
-
     @classmethod
     def _build_catalog_import_service(cls) -> CatalogImportService:
         return CatalogImportService()
@@ -157,7 +152,7 @@ class ActorService:
         yield "search_started", {"actor_name": normalized_name}
 
         try:
-            actor_resources = cls._build_javdb_provider().search_actors(normalized_name)
+            actor_resources = build_javdb_provider().search_actors(normalized_name)
         except MetadataNotFoundError:
             yield "completed", {"success": False, "reason": "actor_not_found", "actors": []}
             return

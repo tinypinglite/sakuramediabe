@@ -25,7 +25,7 @@ from src.common.service_helpers import (
     resolve_sort_expression,
     with_movie_card_relations,
 )
-from src.metadata._providers.javdb import JavdbProvider
+from src.metadata.factory import build_javdb_provider
 from src.metadata._providers.models import JavdbMovieReviewResource
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import (
@@ -289,11 +289,6 @@ class MovieService:
             .where(Actor.is_subscribed == True, Movie.is_collection == False)
             .distinct()
         )
-
-    @staticmethod
-    def _build_javdb_provider() -> JavdbProvider:
-        from src.metadata.factory import build_javdb_provider
-        return build_javdb_provider()
 
     @staticmethod
     def _require_movie(movie_number: str) -> Movie:
@@ -641,7 +636,7 @@ class MovieService:
         movie = cls._require_movie(movie_number)
         sort_value = sort.value if isinstance(sort, MovieReviewSort) else str(sort)
         try:
-            return cls._build_javdb_provider().get_movie_reviews_by_javdb_id(
+            return build_javdb_provider().get_movie_reviews_by_javdb_id(
                 movie.javdb_id,
                 page=page,
                 limit=page_size,

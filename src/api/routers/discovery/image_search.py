@@ -11,6 +11,7 @@ from fastapi import (
     UploadFile,
 )
 
+from src.api.routers._utils import parse_csv_positive_ints
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.discovery import ImageSearchSessionPageResource
 from src.service.discovery import get_image_search_service
@@ -20,18 +21,6 @@ router = APIRouter(
     tags=["image-search"],
     dependencies=[Depends(db_deps), Depends(get_current_user)],
 )
-
-
-def _parse_csv_ints(raw: str | None, field_name: str) -> list[int] | None:
-    if raw is None:
-        return None
-    parts = [part.strip() for part in raw.split(",") if part.strip()]
-    if not parts:
-        return None
-    try:
-        return [int(item) for item in parts]
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid {field_name} format") from exc
 
 
 @router.post("/sessions", response_model=ImageSearchSessionPageResource)
@@ -50,8 +39,12 @@ async def create_image_search_session(
         return service.create_session_and_first_page(
             image_bytes=image_bytes,
             page_size=page_size,
-            movie_ids=_parse_csv_ints(movie_ids, "movie_ids"),
-            exclude_movie_ids=_parse_csv_ints(exclude_movie_ids, "exclude_movie_ids"),
+            movie_ids=parse_csv_positive_ints(
+                movie_ids, "movie_ids", error_code="invalid_image_search_filter"
+            ),
+            exclude_movie_ids=parse_csv_positive_ints(
+                exclude_movie_ids, "exclude_movie_ids", error_code="invalid_image_search_filter"
+            ),
             score_threshold=score_threshold,
         )
     except ValueError as exc:

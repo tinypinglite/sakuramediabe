@@ -12,7 +12,7 @@ from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common import normalize_movie_number
-from src.metadata._providers.javdb import JavdbProvider
+from src.metadata.factory import build_javdb_provider
 from src.metadata._providers.models import JavdbMovieDetailResource
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Movie, MovieSeries
@@ -26,11 +26,6 @@ from src.service.catalog.movie_service import MovieService
 
 class MovieMetadataRefreshService:
     """封装影片元数据刷新与 JavDB 流式导入。"""
-
-    @staticmethod
-    def _build_javdb_provider() -> JavdbProvider:
-        from src.metadata.factory import build_javdb_provider
-        return build_javdb_provider()
 
     @classmethod
     def _build_catalog_import_service(cls) -> CatalogImportService:
@@ -84,7 +79,7 @@ class MovieMetadataRefreshService:
         normalized_movie_number: str,
     ) -> JavdbMovieDetailResource:
         try:
-            return cls._build_javdb_provider().get_movie_by_number(normalized_movie_number)
+            return build_javdb_provider().get_movie_by_number(normalized_movie_number)
         except MetadataNotFoundError as exc:
             raise ApiError(
                 404,
@@ -217,7 +212,7 @@ class MovieMetadataRefreshService:
             return
 
         try:
-            detail = cls._build_javdb_provider().get_movie_by_number(normalized_movie_number)
+            detail = build_javdb_provider().get_movie_by_number(normalized_movie_number)
         except MetadataNotFoundError:
             yield "completed", {"success": False, "reason": "movie_not_found", "movies": []}
             return
@@ -335,7 +330,7 @@ class MovieMetadataRefreshService:
         series_name = local_series.name.strip()
         yield "series_found", {"series_id": local_series.id, "series_name": series_name}
 
-        provider = cls._build_javdb_provider()
+        provider = build_javdb_provider()
         try:
             series_candidates = provider.search_series(series_name)
         except Exception as exc:
