@@ -73,13 +73,6 @@ class DmmProvider(MetadataRequestClient):
         raise DmmMovieDescNotFoundError(movie_number)
 
     @classmethod
-    def _match_detail_url(cls, search_html: str, normalized_movie_number: str) -> str | None:
-        matched_detail_urls = cls._match_detail_urls(search_html, normalized_movie_number)
-        if not matched_detail_urls:
-            return None
-        return matched_detail_urls[0]
-
-    @classmethod
     def _match_detail_urls(cls, search_html: str, normalized_movie_number: str) -> list[str]:
         matched_detail_urls: list[str] = []
         for detail_url in cls.extract_detail_urls(search_html):

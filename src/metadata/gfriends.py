@@ -250,7 +250,3 @@ class GfriendsActorImageResolver(MetadataRequestClient):
         normalized = normalized.strip().lower()
         normalized = re.sub(r"\s+", "", normalized)
         return normalized
-
-    def build_request_headers(self) -> dict[str, str]:
-        return {
-        }

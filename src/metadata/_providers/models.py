@@ -103,7 +103,6 @@ class JavdbMovieDetail(JavdbMovieBase):
     plot_images: list[str] = Field(default_factory=list)
 
 
-JavdbMovieBaseResource = JavdbMovieBase
 JavdbMovieListItemResource = JavdbMovieListItem
 JavdbMovieActorResource = JavdbMovieActor
 JavdbSeriesResource = JavdbSeries

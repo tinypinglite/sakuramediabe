@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from datetime import datetime, timezone
 
 # 番号解析与规范化的公共实现已收敛到 src.common.movie_numbers，此处仅做转发以保持既有导入路径可用。
@@ -13,8 +12,6 @@ from src.common.movie_numbers import (
 
 __all__ = [
     "MOVIE_NUMBER_PATTERNS",
-    "b64url_decode",
-    "b64url_encode",
     "normalize_movie_number",
     "parse_external_datetime",
     "parse_movie_number_from_text",
@@ -42,12 +39,3 @@ def parse_external_datetime(value) -> datetime | None:
         except ValueError:
             continue
     return None
-
-
-def b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def b64url_decode(value: str) -> bytes:
-    padding = "=" * ((4 - len(value) % 4) % 4)
-    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
