@@ -157,7 +157,3 @@ class MergedPlaybackService:
             inflight.event.set()
             with cls._lock:
                 cls._inflight.pop(key, None)
-
-    @classmethod
-    def clear_cache(cls) -> None:
-        cls._cache.clear()

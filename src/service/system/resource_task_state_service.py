@@ -154,10 +154,6 @@ class ResourceTaskStateService:
         return list(cls.TASK_REGISTRY.values())
 
     @classmethod
-    def _require_task_definition(cls, task_key: str) -> ResourceTaskDefinition:
-        return cls.get_definition(task_key)
-
-    @classmethod
     def _build_default_snapshot(cls, task_definition: ResourceTaskDefinition, resource_id: int) -> ResourceTaskStateSnapshot:
         return ResourceTaskStateSnapshot(
             task_key=task_definition.task_key,
@@ -204,7 +200,7 @@ class ResourceTaskStateService:
         对外公开，供需要自定义记账语义（不走 mark_started/succeeded/failed 那套通用流转）的
         任务复用，例如订阅影片资源查询的退避状态机。并发建行由唯一索引拦截后回读。
         """
-        task_definition = cls._require_task_definition(task_key)
+        task_definition = cls.get_definition(task_key)
         normalized_resource_id = int(resource_id)
         query = ResourceTaskState.select().where(
             ResourceTaskState.task_key == task_definition.task_key,
@@ -228,7 +224,7 @@ class ResourceTaskStateService:
 
     @classmethod
     def get_state(cls, task_key: str, resource_id: int) -> ResourceTaskState | None:
-        task_definition = cls._require_task_definition(task_key)
+        task_definition = cls.get_definition(task_key)
         return ResourceTaskState.get_or_none(
             ResourceTaskState.task_key == task_definition.task_key,
             ResourceTaskState.resource_type == task_definition.resource_type,
@@ -237,7 +233,7 @@ class ResourceTaskStateService:
 
     @classmethod
     def get_state_or_default(cls, task_key: str, resource_id: int) -> ResourceTaskStateSnapshot:
-        task_definition = cls._require_task_definition(task_key)
+        task_definition = cls.get_definition(task_key)
         record = cls.get_state(task_key, resource_id)
         if record is None:
             return cls._build_default_snapshot(task_definition, int(resource_id))
@@ -318,7 +314,7 @@ class ResourceTaskStateService:
         sort: str | None = None,
     ) -> PageResponse[ResourceTaskRecordResource]:
         validate_page(page, page_size, error_code="invalid_resource_task_state_filter")
-        task_definition = cls._require_task_definition(task_key)
+        task_definition = cls.get_definition(task_key)
         query = ResourceTaskState.select().where(
             ResourceTaskState.task_key == task_definition.task_key,
             ResourceTaskState.resource_type == task_definition.resource_type,
@@ -408,7 +404,7 @@ class ResourceTaskStateService:
 
     @classmethod
     def get_record_resource(cls, task_key: str, resource_id: int) -> ResourceTaskRecordResource:
-        task_definition = cls._require_task_definition(task_key)
+        task_definition = cls.get_definition(task_key)
         record = cls.get_state(task_key, resource_id)
         if record is None:
             raise ApiError(

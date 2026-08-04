@@ -19,7 +19,6 @@ class MovieDescTranslationService(MovieFieldTranslationServiceBase):
     FIELD_LABEL = "简介"
     LOG_LABEL = "desc"
     PROMPT_ERROR_PREFIX = "movie_desc_translation"
-    SKIP_ACTION_TEXT = "跳过无需翻译影片"
     INTERRUPTED_TRANSLATION_ERROR_MESSAGE = "影片简介翻译任务中断，等待重试"
     DEFAULT_PROMPT_PATH = (
         Path(__file__).resolve().parent / "prompts" / "movie_desc_translation.md"

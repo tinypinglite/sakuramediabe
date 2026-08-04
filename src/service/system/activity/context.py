@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from contextvars import ContextVar, Token, copy_context
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
-from typing import Any
 
 
 @dataclass(frozen=True)
@@ -36,13 +34,3 @@ class TaskRunContextService:
     @staticmethod
     def reset_task_run_context(token: Token) -> None:
         TASK_RUN_CONTEXT.reset(token)
-
-    @staticmethod
-    def wrap_current_task_run_context(func: Callable[..., Any]) -> Callable[..., Any]:
-        # 线程池不会自动继承 ContextVar，提交任务时显式复制上下文。
-        runtime_context = copy_context()
-
-        def _run_with_context(*args, **kwargs):
-            return runtime_context.run(func, *args, **kwargs)
-
-        return _run_with_context

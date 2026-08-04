@@ -180,10 +180,6 @@ class MediaClipService:
             raise RuntimeError("clip_output_empty")
 
     @classmethod
-    def _cut_clip_file(cls, source_path: Path, target_path: Path, start: int, end: int) -> None:
-        cls._run_ffmpeg_clip(str(source_path), target_path, start, end)
-
-    @classmethod
     def _cut_cloud115_clip_file(
         cls,
         media: Media,
@@ -386,7 +382,7 @@ class MediaClipService:
             if is_cloud115:
                 cls._cut_cloud115_clip_file(media, target_path, start, end)
             else:
-                cls._cut_clip_file(source_path, target_path, start, end)
+                cls._run_ffmpeg_clip(str(source_path), target_path, start, end)
             probe = MediaMetadataProbeService.probe_file(target_path)
             clip.file_path = relative_path
             clip.file_size_bytes = target_path.stat().st_size
