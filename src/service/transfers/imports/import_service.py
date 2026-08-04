@@ -46,10 +46,7 @@ from src.service.catalog.catalog_import_service import CatalogImportService
 from src.service.catalog.movie_image_service import ImageDownloadError
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
 
-# 为向后兼容旧调用方（例如 videos 域曾借用 MediaImportService 的私有静态方法）保留 re-export。
-from src.service.transfers.shared.file_transfer import (
-    delete_source_files as _delete_source_files,
-)
+from src.service.transfers.shared.file_transfer import delete_source_files
 from src.service.transfers.imports.writer import import_single_scanned_file
 from src.service.transfers.imports.source_scanner import (
     ImportTransferMode,
@@ -317,7 +314,7 @@ class MediaImportService:
             # 第一阶段只扫描和分组文件，不碰远端元数据和目标媒体库。
             # scan 命中已入库文件时，cleanup-source 模式下仍需要清理源目录，走 callback 复用共享删源工具。
             def _cleanup_duplicate_sources(source_paths: list[Path]) -> int:
-                return _delete_source_files(source_paths, failure_items, transfer_mode=transfer_mode)
+                return delete_source_files(source_paths, failure_items, transfer_mode=transfer_mode)
 
             grouped_files, grouped_skipped_count, grouped_failed_count = scan_source_files(
                 source_entry,
