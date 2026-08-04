@@ -166,15 +166,6 @@ def verify_media_signature(media_id: int, expires: int, signature: str) -> None:
         raise ApiError(403, "file_signature_invalid", "文件签名无效")
 
 
-def resolve_media_file_path(media_id: int) -> Path:
-    from src.model import Media
-
-    media = Media.get_or_none(Media.id == media_id)
-    if media is None:
-        raise ApiError(404, "media_not_found", "媒体不存在")
-    return Path(media.path).expanduser().resolve()
-
-
 def _build_clip_signature(clip_id: int, expires: int) -> str:
     signature_payload = f"clip:{clip_id}:{expires}"
     return hmac.new(
