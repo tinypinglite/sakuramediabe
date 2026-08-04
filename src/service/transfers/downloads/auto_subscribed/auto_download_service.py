@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import random
-import time
 from collections.abc import Sequence
 from typing import Any, NoReturn
 
@@ -10,7 +8,7 @@ from peewee import JOIN
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import media_exists_expression
+from src.common.service_helpers import media_exists_expression, rest_between_requests
 from src.model import DownloadTask, Movie, ResourceTaskState
 from src.model.enums import DownloadClientKind
 from src.schema.transfers.downloads import (
@@ -152,14 +150,13 @@ class SubscribedMovieAutoDownloadService:
             # 上一次提交打过 115 时，先歇一会儿再发下一个（只在真正要提交前等，
             # 查不到候选的影片不碰 115，不该白等）。
             if shared["pending_cloud115_rest"]:
-                delay = random.uniform(SUBMIT_REST_MIN_SECONDS, SUBMIT_REST_MAX_SECONDS)
+                delay = rest_between_requests(SUBMIT_REST_MIN_SECONDS, SUBMIT_REST_MAX_SECONDS)
                 logger.info(
                     "Auto download resting before next cloud115 submit "
                     "movie_number={} delay_seconds={:.1f}",
                     movie_number,
                     delay,
                 )
-                time.sleep(delay)
                 shared["pending_cloud115_rest"] = False
             try:
                 response = self.download_request_service.create_request(payload)

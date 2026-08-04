@@ -1,11 +1,28 @@
 """跨服务共享的查询与验证工具函数。"""
 
+import asyncio
+import random
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
 from peewee import Model, ModelSelect, fn
 
 from src.api.exception.errors import ApiError
+
+
+def rest_between_requests(min_seconds: float, max_seconds: float) -> float:
+    """降频休息：随机取 [min, max] 区间的延迟并同步 sleep，返回实际延迟秒数。"""
+    delay = random.uniform(min_seconds, max_seconds)
+    time.sleep(delay)
+    return delay
+
+
+async def rest_between_requests_async(min_seconds: float, max_seconds: float) -> float:
+    """降频休息的异步版（await asyncio.sleep，不阻塞事件循环），返回实际延迟秒数。"""
+    delay = random.uniform(min_seconds, max_seconds)
+    await asyncio.sleep(delay)
+    return delay
 
 
 def count_by_owner(

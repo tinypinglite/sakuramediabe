@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import asyncio
-import random
 import time
 from datetime import timedelta
 
@@ -30,6 +29,7 @@ from src.common.media_import_status import (
     IMPORT_STATUS_RUNNING,
 )
 from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import rest_between_requests
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115Error, OfflineTask
 from src.model import DownloadClient, DownloadTask, ImportJob, get_database
@@ -183,7 +183,7 @@ class Cloud115OfflineSyncService:
 
             if cls._next_pending_import(client.id) is None:
                 return triggered_count
-            delay = random.uniform(
+            delay = rest_between_requests(
                 cls.IMPORT_REST_MIN_SECONDS,
                 cls.IMPORT_REST_MAX_SECONDS,
             )
@@ -193,7 +193,6 @@ class Cloud115OfflineSyncService:
                 task.id,
                 delay,
             )
-            time.sleep(delay)
 
     @classmethod
     def _wait_for_import_job(cls, import_job_id: int) -> ImportJob | None:

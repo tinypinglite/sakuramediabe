@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import random
 from collections.abc import Callable
 
 from loguru import logger
@@ -40,7 +39,7 @@ from src.common.media_import_status import (
     IMPORT_JOB_STATE_RUNNING,
     make_failure_item,
 )
-from src.common.service_helpers import emit_progress
+from src.common.service_helpers import emit_progress, rest_between_requests_async
 from src.common.runtime_time import utc_now_for_db
 from src.lib.cloud115 import Cloud115Client
 from src.model import ImportJob, MediaLibrary, Movie
@@ -341,7 +340,7 @@ class Cloud115ImportService:
                 for group_index, group in enumerate(groups):
                     movie_number = group.movie_number
                     if not managed_download_source and group_index > 0:
-                        delay = random.uniform(
+                        delay = await rest_between_requests_async(
                             MANUAL_GROUP_REST_MIN_SECONDS,
                             MANUAL_GROUP_REST_MAX_SECONDS,
                         )
@@ -364,8 +363,6 @@ class Cloud115ImportService:
                             text=f"为降低 115 请求频率，{delay:.1f} 秒后继续导入 {movie_number}",
                             summary_patch=self._summary(stats, new_playable_movies),
                         )
-                        await asyncio.sleep(delay)
-
                     emit_progress(
                         progress_callback,
                         event="movie_started",
