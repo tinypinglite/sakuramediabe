@@ -7,12 +7,13 @@
 from collections.abc import Iterator, Sequence
 
 from loguru import logger
-from peewee import JOIN, Ordering, fn
+from peewee import JOIN, fn
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     require_by_id,
+    resolve_sort_expression,
 )
 from src.metadata._providers.javdb import JavdbProvider
 from src.metadata._providers.models import JavdbMovieActorResource
@@ -20,7 +21,6 @@ from src.metadata.provider import MetadataNotFoundError
 from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag
 from src.model.expressions import year_expression
 from src.schema.catalog.actors import (
-    ACTOR_LIST_SORT_FIELDS,
     ActorDetailResource,
     ActorListGender,
     ActorListSubscriptionStatus,
@@ -61,46 +61,14 @@ class ActorService:
     @classmethod
     def _build_actor_list_sort(cls, sort: str | None) -> Sequence:
         """解析演员列表排序表达式，并补充稳定的 id 次级排序。"""
-        if sort is None:
-            return [Actor.id.asc()]
-
-        normalized = sort.strip().lower()
-        if not normalized:
-            raise ApiError(
-                422,
-                "invalid_actor_filter",
-                "Invalid sort expression",
-                {"sort": sort},
-            )
-
-        try:
-            field_name, direction = normalized.split(":", 1)
-        except ValueError as exc:
-            raise ApiError(
-                422,
-                "invalid_actor_filter",
-                "Invalid sort expression",
-                {"sort": sort},
-            ) from exc
-
-        if field_name not in ACTOR_LIST_SORT_FIELDS or direction not in ("asc", "desc"):
-            raise ApiError(
-                422,
-                "invalid_actor_filter",
-                "Invalid sort expression",
-                {"sort": sort},
-            )
-
-        sort_field = cls._actor_list_sort_field_map()[field_name]
-        if field_name == "movie_count":
-            ordered_field = Ordering(sort_field, direction.upper())
-        else:
-            ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
-        tie_breaker = Actor.id.asc() if direction == "asc" else Actor.id.desc()
-        if field_name in cls.ACTOR_LIST_NULLABLE_SORT_FIELDS:
-            # 允许空值的订阅时间固定排到最后，规避数据库默认空值排序差异。
-            return [sort_field.is_null(), ordered_field, tie_breaker]
-        return [ordered_field, tie_breaker]
+        return resolve_sort_expression(
+            sort,
+            cls._actor_list_sort_field_map(),
+            error_code="invalid_actor_filter",
+            nullable_fields=cls.ACTOR_LIST_NULLABLE_SORT_FIELDS,
+            tie_breaker=Actor.id,
+            default=[Actor.id.asc()],
+        )
 
     @staticmethod
     def _actor_query():

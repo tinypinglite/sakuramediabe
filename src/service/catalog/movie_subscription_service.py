@@ -19,6 +19,7 @@ from peewee import JOIN, Case, fn
 
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
+    build_ordered_expressions,
     count_by_owner,
     media_exists_expression,
     validate_page,
@@ -130,10 +131,12 @@ class MovieSubscriptionService:
     @classmethod
     def _resolve_sort(cls, sort: MovieSubscriptionSort) -> list:
         sort_field, direction = cls.SORT_EXPRESSIONS[sort]
-        ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
-        tie_breaker = Movie.id.asc() if direction == "asc" else Movie.id.desc()
         # 这几个字段都允许为空（未订阅时间、无发布日期、从未查过），空值统一排到最后。
-        return [sort_field.is_null(), ordered_field, tie_breaker]
+        return build_ordered_expressions(
+            sort_field, direction,
+            nullable=True,
+            tie_breaker=Movie.id,
+        )
 
     @classmethod
     def list_subscriptions(

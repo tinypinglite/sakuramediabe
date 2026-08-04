@@ -7,7 +7,7 @@ from peewee import JOIN, Case, fn
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import require_by_id, validate_page
+from src.common.service_helpers import require_by_id, resolve_sort_expression, validate_page
 from src.model import (
     Image,
     Media,
@@ -104,18 +104,14 @@ class VideoItemService:
         }
         if extra_columns:
             columns.update(extra_columns)
-        normalized = (sort or default_sort).strip().lower()
-        try:
-            field_name, direction = normalized.split(":", 1)
-        except ValueError as exc:
-            raise ApiError(422, "invalid_video_filter", "Invalid video sort", {"sort": sort}) from exc
-        if field_name not in columns or direction not in ("asc", "desc"):
-            raise ApiError(422, "invalid_video_filter", "Invalid video sort", {"sort": sort})
-        is_asc = direction == "asc"
-        ordered = columns[field_name].asc() if is_asc else columns[field_name].desc()
+        # 空值时用 default_sort 解析（与旧实现 ``(sort or default_sort)`` 语义一致）。
         breaker = VideoItem.id if tie_breaker is None else tie_breaker
-        tie = breaker.asc() if is_asc else breaker.desc()
-        return [ordered, tie]
+        return resolve_sort_expression(
+            sort or default_sort,
+            columns,
+            error_code="invalid_video_filter",
+            tie_breaker=breaker,
+        )
 
     @classmethod
     def _filtered_query(

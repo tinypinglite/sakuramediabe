@@ -11,9 +11,11 @@ from peewee import Case, Ordering, fn
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
+    build_ordered_expressions,
     count_by_owner,
     playable_exists_expression,
     require_by_id,
+    resolve_sort_expression,
     with_movie_card_relations,
 )
 from src.model import (
@@ -164,44 +166,33 @@ class PlaylistService:
 
         bitrate / added_at 用相关子查询（影片粒度），heat / release_date 取 Movie 列。
         """
-        if sort is None:
-            return None
-        normalized = sort.strip().lower()
-        if not normalized:
-            return None
-        try:
-            field_name, direction = normalized.split(":", 1)
-        except ValueError:
-            raise ApiError(
-                422,
-                "invalid_playlist_filter",
-                "Invalid sort expression",
-                {"sort": sort},
+        def _subquery_order(field_name: str, direction: str) -> list:
+            # added_at / bitrate 均以影片粒度相关子查询为排序列。
+            sort_field = (
+                cls._latest_media_created_at_subquery()
+                if field_name == "added_at"
+                else cls._max_bitrate_subquery()
             )
-        if field_name not in PLAYLIST_SORT_FIELDS or direction not in ("asc", "desc"):
-            raise ApiError(
-                422,
-                "invalid_playlist_filter",
-                "Invalid sort expression",
-                {"sort": sort},
+            return build_ordered_expressions(
+                sort_field, direction,
+                nullable=field_name in PLAYLIST_NULLABLE_SORT_FIELDS,
+                tie_breaker=Movie.id,
             )
-        if field_name == "heat":
-            sort_field = Movie.heat
-            ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
-        elif field_name == "release_date":
-            sort_field = Movie.release_date
-            ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
-        elif field_name == "added_at":
-            sort_field = cls._latest_media_created_at_subquery()
-            ordered_field = Ordering(sort_field, direction.upper())
-        else:  # bitrate
-            sort_field = cls._max_bitrate_subquery()
-            ordered_field = Ordering(sort_field, direction.upper())
-        tie_breaker = Movie.id.asc() if direction == "asc" else Movie.id.desc()
-        if field_name in PLAYLIST_NULLABLE_SORT_FIELDS:
-            # 空值统一垫后，避免不同数据库里空值排序行为不一致。
-            return [sort_field.is_null(), ordered_field, tie_breaker]
-        return [ordered_field, tie_breaker]
+
+        return resolve_sort_expression(
+            sort,
+            {
+                "heat": Movie.heat,
+                "release_date": Movie.release_date,
+                "added_at": Movie.id,
+                "bitrate": Movie.id,
+            },
+            error_code="invalid_playlist_filter",
+            nullable_fields=PLAYLIST_NULLABLE_SORT_FIELDS,
+            tie_breaker=Movie.id,
+            default=None,
+            extra_sort_builders={"added_at": _subquery_order, "bitrate": _subquery_order},
+        )
 
     @staticmethod
     def _current_time() -> datetime:

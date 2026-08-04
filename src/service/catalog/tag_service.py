@@ -11,15 +11,11 @@ from src.schema.catalog.movies import (
     TagListItemResource,
 )
 from src.schema.common.pagination import PageResponse
+from src.common.service_helpers import build_ordered_expressions, resolve_sort_expression
 from src.service.catalog.movie_service import MovieService
 
 
 class TagService:
-    TAG_SORT_FIELD_MAP = {
-        "movie_count": "movie_count",
-        "name": "name",
-    }
-
     @classmethod
     def _normalize_query(cls, query: str | None) -> str | None:
         if query is None:
@@ -31,26 +27,22 @@ class TagService:
 
     @classmethod
     def _build_tag_sort(cls, sort: str | None):
-        normalized = (sort or "movie_count:desc").strip().lower()
-        if not normalized:
-            raise ApiError(422, "invalid_tag_filter", "Invalid tag filter", {"sort": sort})
-
-        try:
-            field_name, direction = normalized.split(":", 1)
-        except ValueError as exc:
-            raise ApiError(422, "invalid_tag_filter", "Invalid tag filter", {"sort": sort}) from exc
-
-        if field_name not in cls.TAG_SORT_FIELD_MAP or direction not in ("asc", "desc"):
-            raise ApiError(422, "invalid_tag_filter", "Invalid tag filter", {"sort": sort})
-
-        movie_count = fn.COUNT(MovieTag.movie)
-        sort_field = movie_count if field_name == "movie_count" else Tag.name
-        ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
-        tie_breaker = Tag.id.asc() if direction == "asc" else Tag.id.desc()
-        if field_name == "movie_count":
+        def _movie_count_order(field_name: str, direction: str) -> list:
             # 影片数相同时按名称稳定排序，保证标签筛选器展示顺序可预期。
-            return [ordered_field, Tag.name.asc(), tie_breaker]
-        return [ordered_field, tie_breaker]
+            return build_ordered_expressions(
+                fn.COUNT(MovieTag.movie),
+                direction,
+                tie_breaker=Tag.id,
+                extra=(Tag.name.asc(),),
+            )
+
+        return resolve_sort_expression(
+            sort or "movie_count:desc",
+            {"movie_count": fn.COUNT(MovieTag.movie), "name": Tag.name},
+            error_code="invalid_tag_filter",
+            tie_breaker=Tag.id,
+            extra_sort_builders={"movie_count": _movie_count_order},
+        )
 
     @classmethod
     def _tag_count_query(cls, query: str | None = None):

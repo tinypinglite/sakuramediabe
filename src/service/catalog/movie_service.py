@@ -8,7 +8,7 @@
 from collections.abc import Sequence
 from datetime import datetime
 
-from peewee import JOIN, Ordering, fn
+from peewee import JOIN, fn
 
 from src.api.exception.errors import ApiError
 from src.common import (
@@ -17,10 +17,12 @@ from src.common import (
 )
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
+    build_ordered_expressions,
     find_movie_by_number,
     media_special_tag_match_expression,
     playable_exists_expression,
     require_record,
+    resolve_sort_expression,
     with_movie_card_relations,
 )
 from src.metadata._providers.javdb import JavdbProvider
@@ -43,7 +45,6 @@ from src.model import (
 )
 from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.movies import (
-    MOVIE_LIST_SORT_FIELDS,
     MovieCollectionMarkResponse,
     MovieCollectionMarkType,
     MovieCollectionStatusResource,
@@ -185,42 +186,25 @@ class MovieService:
     @classmethod
     def _build_movie_list_sort(cls, sort: str | None, status: MovieListStatus = MovieListStatus.ALL) -> Sequence:
         """解析 ``field:direction`` 排序表达式，并补上稳定的次级排序。"""
-        if sort is None:
-            return [Movie.movie_number.asc()]
-
-        normalized = sort.strip().lower()
-        if not normalized:
-            return [Movie.movie_number.asc()]
-
-        try:
-            field_name, direction = normalized.split(":", 1)
-        except ValueError:
-            raise ApiError(
-                422,
-                "invalid_movie_filter",
-                "Invalid sort expression",
-                {"sort": sort},
+        def _added_at_order(field_name: str, direction: str) -> list:
+            # 可播放态按最近媒体入库时间排序：以媒体粒度子查询为排序列。
+            return build_ordered_expressions(
+                cls._latest_media_created_at_subquery(),
+                direction,
+                tie_breaker=Movie.id,
             )
 
-        if field_name not in MOVIE_LIST_SORT_FIELDS or direction not in ("asc", "desc"):
-            raise ApiError(
-                422,
-                "invalid_movie_filter",
-                "Invalid sort expression",
-                {"sort": sort},
-            )
-
-        if field_name == "added_at" and status == MovieListStatus.PLAYABLE:
-            sort_field = cls._latest_media_created_at_subquery()
-            ordered_field = Ordering(sort_field, direction.upper())
-        else:
-            sort_field = cls.MOVIE_LIST_SORT_FIELD_MAP[field_name]
-            ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
-        tie_breaker = Movie.id.asc() if direction == "asc" else Movie.id.desc()
-        if field_name in cls.MOVIE_LIST_NULLABLE_SORT_FIELDS:
-            # 允许空值的字段统一放到后面，避免不同数据库里空值排序行为不一致。
-            return [sort_field.is_null(), ordered_field, tie_breaker]
-        return [ordered_field, tie_breaker]
+        return resolve_sort_expression(
+            sort,
+            cls.MOVIE_LIST_SORT_FIELD_MAP,
+            error_code="invalid_movie_filter",
+            nullable_fields=cls.MOVIE_LIST_NULLABLE_SORT_FIELDS,
+            tie_breaker=Movie.id,
+            default=[Movie.movie_number.asc()],
+            extra_sort_builders=(
+                {"added_at": _added_at_order} if status == MovieListStatus.PLAYABLE else None
+            ),
+        )
 
     @classmethod
     def movie_list_query(

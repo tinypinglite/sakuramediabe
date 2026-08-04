@@ -17,6 +17,7 @@ from src.common.service_helpers import (
     paginate,
     require_record,
     resolve_sort,
+    resolve_sort_expression,
     validate_page,
     with_movie_card_relations,
 )
@@ -385,35 +386,14 @@ class MediaService:
     @classmethod
     def _build_media_list_sort(cls, sort: str | None) -> Sequence:
         """解析 ``field:direction`` 排序表达式，默认按入库时间倒序。"""
-        if sort is None or not sort.strip():
-            return [Media.created_at.desc(), Media.id.desc()]
-
-        normalized = sort.strip().lower()
-        try:
-            field_name, direction = normalized.split(":", 1)
-        except ValueError:
-            raise ApiError(
-                422,
-                "invalid_media_filter",
-                "Invalid sort expression",
-                {"sort": sort},
-            )
-
-        if field_name not in cls.MEDIA_LIST_SORT_FIELD_MAP or direction not in ("asc", "desc"):
-            raise ApiError(
-                422,
-                "invalid_media_filter",
-                "Invalid sort expression",
-                {"sort": sort},
-            )
-
-        sort_field = cls.MEDIA_LIST_SORT_FIELD_MAP[field_name]
-        ordered_field = sort_field.asc() if direction == "asc" else sort_field.desc()
-        tie_breaker = Media.id.asc() if direction == "asc" else Media.id.desc()
-        if field_name in cls.MEDIA_LIST_NULLABLE_SORT_FIELDS:
-            # 允许空值的字段统一放到后面，避免不同数据库里空值排序行为不一致。
-            return [sort_field.is_null(), ordered_field, tie_breaker]
-        return [ordered_field, tie_breaker]
+        return resolve_sort_expression(
+            sort,
+            cls.MEDIA_LIST_SORT_FIELD_MAP,
+            error_code="invalid_media_filter",
+            nullable_fields=cls.MEDIA_LIST_NULLABLE_SORT_FIELDS,
+            tie_breaker=Media.id,
+            default=[Media.created_at.desc(), Media.id.desc()],
+        )
 
     @staticmethod
     def _to_media_list_item_resource(

@@ -1,6 +1,7 @@
 """跨服务共享的查询与验证工具函数。"""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from peewee import Model, ModelSelect, fn
 
@@ -132,6 +133,70 @@ def resolve_sort(
     if normalized not in allowed_sorts:
         raise ApiError(422, error_code, "Invalid sort expression", {"sort": value})
     return allowed_sorts[normalized]
+
+
+def build_ordered_expressions(
+    sort_field,
+    direction: str,
+    *,
+    nullable: bool = False,
+    tie_breaker=None,
+    extra: Sequence = (),
+) -> list:
+    """把排序列 + 方向组装成 order_by 表达式列表。
+
+    - ``nullable`` 为 True 时先加 ``is_null()`` 把空值统一垫后（规避数据库默认空值排序差异）；
+    - ``tie_breaker`` 追加稳定的次级排序；
+    - ``extra`` 在 tie_breaker 之前追加的额外排序（如 tag 的 name 次级）。
+    """
+    ascending = direction == "asc"
+    ordered_field = sort_field.asc() if ascending else sort_field.desc()
+    tie = (
+        []
+        if tie_breaker is None
+        else [tie_breaker.asc() if ascending else tie_breaker.desc()]
+    )
+    if nullable:
+        return [sort_field.is_null(), ordered_field, *extra, *tie]
+    return [ordered_field, *extra, *tie]
+
+
+def resolve_sort_expression(
+    value: str | None,
+    field_map: dict[str, Any],
+    *,
+    error_code: str,
+    nullable_fields: set[str] = frozenset(),
+    tie_breaker=None,
+    default: Sequence | None = None,
+    extra_sort_builders: dict[str, Callable[[str, str], list]] | None = None,
+) -> Sequence | None:
+    """解析 ``field:direction`` 排序表达式并补稳定次级排序；无效值抛 ApiError(422)。
+
+    - ``value`` 为 None 或空串时返回 ``default``（None 表示调用方自行决定是否排序）；
+    - ``field_map`` 为字段名 -> 排序列的映射；
+    - ``nullable_fields`` 中的字段加 ``is_null()`` 垫后；
+    - ``tie_breaker`` 追加稳定次级排序；
+    - ``extra_sort_builders`` 为字段特有的排序构造器（子查询 / 聚合列），签名
+      ``(field_name, direction) -> [expressions]``，命中时覆盖通用组装。
+    """
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    try:
+        field_name, direction = normalized.split(":", 1)
+    except ValueError as exc:
+        raise ApiError(422, error_code, "Invalid sort expression", {"sort": value}) from exc
+    if field_name not in field_map or direction not in ("asc", "desc"):
+        raise ApiError(422, error_code, "Invalid sort expression", {"sort": value})
+    if extra_sort_builders and field_name in extra_sort_builders:
+        return extra_sort_builders[field_name](field_name, direction)
+    return build_ordered_expressions(
+        field_map[field_name],
+        direction,
+        nullable=field_name in nullable_fields,
+        tie_breaker=tie_breaker,
+    )
 
 
 def playable_exists_expression():
