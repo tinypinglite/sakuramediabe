@@ -33,35 +33,3 @@ def test_backfill_movie_thin_cover_images_command_outputs_stats(monkeypatch):
     assert "updated_movies=4" in result.output
     assert "skipped_movies=1" in result.output
     assert "failed_movies=1" in result.output
-
-
-def test_scan_media_files_command_outputs_stats(monkeypatch):
-    class FakeMediaFileScanService:
-        def scan_media_files(self):
-            return {
-                "scanned_media": 10,
-                "updated_media": 4,
-                "skipped_media": 3,
-                "failed_media": 1,
-                "invalidated_media": 1,
-                "revived_media": 1,
-                "cloud115_index_failed_libraries": 1,
-            }
-
-    monkeypatch.setattr("src.start.commands._ensure_database_ready", lambda: None)
-    monkeypatch.setattr(
-        "src.start.commands.MediaFileScanService",
-        FakeMediaFileScanService,
-    )
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["scan-media-files"])
-
-    assert result.exit_code == 0
-    assert "scanned_media=10" in result.output
-    assert "updated_media=4" in result.output
-    assert "skipped_media=3" in result.output
-    assert "failed_media=1" in result.output
-    assert "invalidated_media=1" in result.output
-    assert "revived_media=1" in result.output
-    assert "cloud115_index_failed_libraries=1" in result.output

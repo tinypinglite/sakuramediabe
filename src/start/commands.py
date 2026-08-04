@@ -33,7 +33,7 @@ from src.service.catalog.movie_subtitle_unify_migration_service import (
     MovieSubtitleUnifyMigrationService,
 )
 from src.service.catalog.plot_layout_migration_service import PlotLayoutMigrationService
-from src.service.playback import MediaFileScanService, MediaLibraryService
+from src.service.playback import MediaLibraryService
 from src.service.playback.jav_layout_migration_service import JavLayoutMigrationService
 from src.service.system import TaskRunConflictError
 from src.start.initdb import create_tables
@@ -648,36 +648,6 @@ def backfill_movie_thin_cover_images():
         f"updated_movies={stats['updated_movies']} "
         f"skipped_movies={stats['skipped_movies']} "
         f"failed_movies={stats['failed_movies']}"
-    )
-
-
-@main.command(name="scan-media-files")
-def scan_media_files():
-    logger.info("CLI scan-media-files start")
-    _ensure_database_ready()
-    service = MediaFileScanService()
-    stats = service.scan_media_files()
-    logger.info(
-        "CLI scan-media-files finished scanned_media={} updated_media={} "
-        "skipped_media={} failed_media={} invalidated_media={} revived_media={} "
-        "cloud115_index_failed_libraries={}",
-        stats["scanned_media"],
-        stats["updated_media"],
-        stats["skipped_media"],
-        stats["failed_media"],
-        stats["invalidated_media"],
-        stats["revived_media"],
-        stats["cloud115_index_failed_libraries"],
-    )
-    click.echo(
-        "media file scan finished: "
-        f"scanned_media={stats['scanned_media']} "
-        f"updated_media={stats['updated_media']} "
-        f"skipped_media={stats['skipped_media']} "
-        f"failed_media={stats['failed_media']} "
-        f"invalidated_media={stats['invalidated_media']} "
-        f"revived_media={stats['revived_media']} "
-        f"cloud115_index_failed_libraries={stats['cloud115_index_failed_libraries']}"
     )
 
 
