@@ -23,6 +23,7 @@ from peewee import IntegrityError
 
 from src.api.exception.errors import ApiError
 from src.common.fs_browse import assert_within_allowed_roots, normalize_abs_path
+from src.common.service_helpers import paginate
 from src.common.media_import_status import (
     FAILED_FILE_KIND_FILE,
     FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED,
@@ -73,20 +74,14 @@ class BaseImportJobService:
 
     @classmethod
     def list_jobs(cls, *, page: int = 1, page_size: int = 20) -> PageResponse:
-        if page < 1 or page_size < 1:
-            raise ApiError(422, "invalid_pagination", "分页参数非法")
         query = cls.JOB_MODEL.select().order_by(cls.JOB_MODEL.id.desc())
-        total = query.count()
-        start = (page - 1) * page_size
-        items = [
-            cls.LIST_RESOURCE.from_model(job)
-            for job in query.offset(start).limit(page_size)
-        ]
-        return PageResponse[cls.LIST_RESOURCE](
-            items=items,
-            page=page,
-            page_size=page_size,
-            total=total,
+        return paginate(
+            query,
+            page,
+            page_size,
+            error_code="invalid_pagination",
+            item_mapper=cls.LIST_RESOURCE.from_model,
+            response_model=PageResponse[cls.LIST_RESOURCE],
         )
 
     @classmethod

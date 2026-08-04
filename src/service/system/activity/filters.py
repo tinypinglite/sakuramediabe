@@ -1,16 +1,6 @@
 from src.api.exception.errors import ApiError
 
 
-def validate_page(page: int, page_size: int) -> None:
-    if page <= 0 or page_size <= 0 or page_size > 100:
-        raise ApiError(
-            422,
-            "invalid_pagination",
-            "page and page_size must be valid positive integers",
-            {"page": page, "page_size": page_size},
-        )
-
-
 def normalize_string_filter(value: str | None) -> str | None:
     normalized = (value or "").strip()
     return normalized or None

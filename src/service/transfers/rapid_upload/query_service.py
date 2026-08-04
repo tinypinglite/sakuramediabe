@@ -1,6 +1,6 @@
 from peewee import fn
 
-from src.api.exception.errors import ApiError
+from src.common.service_helpers import paginate
 from src.model import MediaRapidUploadBatch, MediaRapidUploadItem
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.rapid_upload import (
@@ -26,18 +26,16 @@ from src.service.transfers.rapid_upload.states import (
 class MediaRapidUploadQueryService:
     @classmethod
     def list_batches(cls, *, page: int = 1, page_size: int = 20) -> PageResponse:
-        if page < 1 or page_size < 1 or page_size > 100:
-            raise ApiError(422, "invalid_pagination", "分页参数非法")
         query = MediaRapidUploadBatch.select().order_by(
             MediaRapidUploadBatch.id.desc()
         )
-        total = query.count()
-        rows = list(query.offset((page - 1) * page_size).limit(page_size))
-        return PageResponse[MediaRapidUploadBatchListItemResource](
-            items=[MediaRapidUploadBatchListItemResource.from_model(row) for row in rows],
-            page=page,
-            page_size=page_size,
-            total=total,
+        return paginate(
+            query,
+            page,
+            page_size,
+            error_code="invalid_pagination",
+            item_mapper=MediaRapidUploadBatchListItemResource.from_model,
+            response_model=PageResponse[MediaRapidUploadBatchListItemResource],
         )
 
     @classmethod

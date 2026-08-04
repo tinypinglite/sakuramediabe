@@ -62,6 +62,28 @@ def validate_page(page: int, page_size: int, *, error_code: str) -> None:
         )
 
 
+def paginate(
+    query: ModelSelect,
+    page: int,
+    page_size: int,
+    *,
+    error_code: str,
+    item_mapper=None,
+    response_model,
+):
+    """执行分页查询并组装 PageResponse；内部无条件校验分页参数。
+
+    ``item_mapper`` 为单行资源转换（缺省原样返回模型行），``response_model`` 为
+    ``PageResponse[X]`` 参数化后的响应类。
+    """
+    validate_page(page, page_size, error_code=error_code)
+    total = query.count()
+    start = (page - 1) * page_size
+    rows = list(query.offset(start).limit(page_size))
+    items = rows if item_mapper is None else [item_mapper(row) for row in rows]
+    return response_model(items=items, page=page, page_size=page_size, total=total)
+
+
 def resolve_sort(
     value: str | None,
     allowed_sorts: dict[str, Sequence],

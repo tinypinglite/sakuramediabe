@@ -14,6 +14,7 @@ from src.common import (
 )
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
+    paginate,
     require_record,
     resolve_sort,
     validate_page,
@@ -855,15 +856,11 @@ class MediaService:
                 | (Media.path.contains(normalized))
             )
         total = base_query.count()
-        rows = list(
-            base_query.order_by(Media.updated_at.desc(), Media.id.desc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
-        items = [cls._to_invalid_media_resource(media) for media in rows]
-        return PageResponse[InvalidMediaResource](
-            items=items,
-            page=page,
-            page_size=page_size,
-            total=total,
+        return paginate(
+            base_query.order_by(Media.updated_at.desc(), Media.id.desc()),
+            page,
+            page_size,
+            error_code="invalid_media_filter",
+            item_mapper=cls._to_invalid_media_resource,
+            response_model=PageResponse[InvalidMediaResource],
         )

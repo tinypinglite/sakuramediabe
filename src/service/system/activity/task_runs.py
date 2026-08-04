@@ -10,12 +10,12 @@ from src.common.runtime_time import utc_now_for_db
 from src.model import BackgroundTaskRun
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
+from src.common.service_helpers import validate_page
 from src.schema.system.activity import TaskRunResource
 from src.service.system.activity.events import SystemEventService
 from src.service.system.activity.filters import (
     normalize_allowed_filter,
     normalize_string_filter,
-    validate_page,
 )
 from src.service.system.activity.notifications import NotificationService
 from src.service.system.activity.task_catalog import TASK_NAME_REGISTRY
@@ -352,7 +352,7 @@ class TaskRunService:
         trigger_type: str | None = None,
         sort: str | None = None,
     ) -> PageResponse[TaskRunResource]:
-        validate_page(page, page_size)
+        validate_page(page, page_size, error_code="invalid_pagination")
         return cls.page_task_runs(
             cls.build_task_run_query(
                 state=state,

@@ -12,10 +12,10 @@ from src.schema.system.activity import (
     NotificationReadResponse,
     NotificationResource,
 )
+from src.common.service_helpers import paginate, validate_page
 from src.service.system.activity.events import SystemEventService
 from src.service.system.activity.filters import (
     normalize_allowed_filter,
-    validate_page,
 )
 
 ALLOWED_NOTIFICATION_CATEGORIES = {"reminder", "info", "warning", "error"}
@@ -135,14 +135,13 @@ class NotificationService:
 
     @classmethod
     def page_notifications(cls, query, *, page: int, page_size: int) -> PageResponse[NotificationResource]:
-        total = query.count()
-        start = (page - 1) * page_size
-        items = [
-            cls.to_notification_resource(item)
-            for item in query.offset(start).limit(page_size)
-        ]
-        return PageResponse[NotificationResource](
-            items=items, page=page, page_size=page_size, total=total
+        return paginate(
+            query,
+            page,
+            page_size,
+            error_code="invalid_pagination",
+            item_mapper=cls.to_notification_resource,
+            response_model=PageResponse[NotificationResource],
         )
 
     @classmethod
@@ -154,7 +153,7 @@ class NotificationService:
         category: str | None = None,
         is_read: bool | None = None,
     ) -> PageResponse[NotificationResource]:
-        validate_page(page, page_size)
+        validate_page(page, page_size, error_code="invalid_pagination")
         return cls.page_notifications(
             cls.build_notification_query(category=category, is_read=is_read),
             page=page,
