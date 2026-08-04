@@ -1032,6 +1032,7 @@ class JavdbProvider(MetadataRequestClient):
                 JavdbMovieActorResource.model_validate(
                     {
                         "javdb_id": actor_id,
+                        "javdb_type": actor.get("type") or 0,
                         "name": actor.get("name") or "",
                         "alias_names": self._collect_actor_candidate_names(actor),
                         "avatar_url": self._resolve_actor_avatar_url(actor),
