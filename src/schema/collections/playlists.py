@@ -46,7 +46,7 @@ class PlaylistCreateRequest(SchemaModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("name cannot be blank")
-        return value
+        return normalized
 
 
 class PlaylistUpdateRequest(SchemaModel):
@@ -61,7 +61,7 @@ class PlaylistUpdateRequest(SchemaModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("name cannot be blank")
-        return value
+        return normalized
 
 
 class PlaylistMovieListItemResource(MovieListItemResource):

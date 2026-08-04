@@ -185,7 +185,7 @@ class MovieNumberParseRequest(SchemaModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("query cannot be blank")
-        return value
+        return normalized
 
 
 class MovieNumberParseResponse(SchemaModel):

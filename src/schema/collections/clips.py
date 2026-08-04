@@ -17,7 +17,7 @@ class ClipCollectionCreateRequest(SchemaModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("name cannot be blank")
-        return value
+        return normalized
 
 
 class ClipCollectionUpdateRequest(SchemaModel):
@@ -32,7 +32,7 @@ class ClipCollectionUpdateRequest(SchemaModel):
         normalized = value.strip()
         if not normalized:
             raise ValueError("name cannot be blank")
-        return value
+        return normalized
 
 
 class ClipCollectionResource(SchemaModel):
