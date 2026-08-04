@@ -71,8 +71,6 @@ class Cloud115VideoImportService:
         )
 
     @staticmethod
-
-    @staticmethod
     def _suffix(name: str) -> str:
         return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
 

@@ -49,8 +49,6 @@ class MediaFileScanService:
         )
 
     @staticmethod
-
-    @staticmethod
     def _cloud115_library_ids() -> set[int]:
         """一次查出全部 cloud115 库 id，取代逐条媒体懒加载 media.library 的 N+1。"""
         from src.model.enums import MediaLibraryBackend
