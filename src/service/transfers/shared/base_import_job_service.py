@@ -434,10 +434,12 @@ class BaseImportJobService:
 
     @classmethod
     def _require_job(cls, job_id: int):
-        job = cls.JOB_MODEL.get_or_none(cls.JOB_MODEL.id == job_id)
-        if job is None:
-            raise ApiError(404, cls.JOB_NOT_FOUND_CODE, cls.JOB_NOT_FOUND_MESSAGE, {cls.JOB_ID_FIELD: job_id})
-        return job
+        return require_by_id(
+            cls.JOB_MODEL, job_id, cls.JOB_ID_FIELD,
+            error_code=cls.JOB_NOT_FOUND_CODE,
+            error_message=cls.JOB_NOT_FOUND_MESSAGE,
+            error_details_key=cls.JOB_ID_FIELD,
+        )
 
     @classmethod
     def _assert_job_terminal(cls, job) -> None:

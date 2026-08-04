@@ -11,7 +11,7 @@ from peewee import IntegrityError, fn
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import count_by_owner, require_record, validate_page
+from src.common.service_helpers import count_by_owner, require_by_id, validate_page
 from src.model import ClipCollection, ClipCollectionItem, MediaClip
 from src.model.base import get_database
 from src.schema.collections.clips import (
@@ -57,21 +57,17 @@ class ClipCollectionService:
 
     @staticmethod
     def _require_collection(collection_id: int) -> ClipCollection:
-        return require_record(
-            ClipCollection, ClipCollection.id == collection_id,
-            error_code="clip_collection_not_found",
+        return require_by_id(
+            ClipCollection,
+            collection_id,
+            "clip_collection",
             error_message="Clip collection not found",
-            error_details={"collection_id": collection_id},
+            error_details_key="collection_id",
         )
 
     @staticmethod
     def _require_clip(clip_id: int) -> MediaClip:
-        return require_record(
-            MediaClip, MediaClip.id == clip_id,
-            error_code="media_clip_not_found",
-            error_message="Media clip not found",
-            error_details={"clip_id": clip_id},
-        )
+        return require_by_id(MediaClip, clip_id, "media_clip", error_message="Media clip not found", error_details_key="clip_id")
 
     @staticmethod
     def _collection_counts(collection_ids: list[int]) -> dict[int, int]:

@@ -7,7 +7,7 @@ from peewee import JOIN, IntegrityError, fn
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import count_by_owner, require_record, validate_page
+from src.common.service_helpers import count_by_owner, require_by_id, validate_page
 from src.model import Image, VideoCollection, VideoCollectionItem, VideoItem
 from src.model.base import get_database
 from src.schema.catalog.actors import ImageResource
@@ -28,23 +28,17 @@ class VideoCollectionService:
 
     @staticmethod
     def _require_collection(collection_id: int) -> VideoCollection:
-        return require_record(
+        return require_by_id(
             VideoCollection,
-            VideoCollection.id == collection_id,
-            error_code="video_collection_not_found",
+            collection_id,
+            "video_collection",
             error_message="Video collection not found",
-            error_details={"collection_id": collection_id},
+            error_details_key="collection_id",
         )
 
     @staticmethod
     def _require_video(video_item_id: int) -> VideoItem:
-        return require_record(
-            VideoItem,
-            VideoItem.id == video_item_id,
-            error_code="video_item_not_found",
-            error_message="Video item not found",
-            error_details={"video_item_id": video_item_id},
-        )
+        return require_by_id(VideoItem, video_item_id, "video_item", error_message="Video item not found")
 
     @classmethod
     def _ensure_name_available(cls, name: str, exclude_id: int | None = None) -> None:

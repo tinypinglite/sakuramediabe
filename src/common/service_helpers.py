@@ -52,6 +52,32 @@ def require_record(
     return record
 
 
+def require_by_id(
+    model_class: type[Model],
+    entity_id: int,
+    entity_name: str,
+    *,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    error_details_key: str | None = None,
+    query: ModelSelect | None = None,
+):
+    """按主键查找单条记录，不存在抛 ApiError(404)。
+
+    ``entity_name`` 用于生成默认错误码/文案/详情键（如 "actor" -> actor_not_found /
+    actor_id）；需要定制时显式传 error_code / error_message / error_details_key。
+    """
+    details_key = error_details_key or f"{entity_name}_id"
+    return require_record(
+        model_class,
+        model_class.id == entity_id,
+        error_code=error_code or f"{entity_name}_not_found",
+        error_message=error_message or f"{entity_name} not found",
+        error_details={details_key: entity_id},
+        query=query,
+    )
+
+
 def validate_page(page: int, page_size: int, *, error_code: str) -> None:
     """校验分页参数。"""
     if page <= 0:

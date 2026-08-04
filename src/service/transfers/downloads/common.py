@@ -13,7 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from src.api.exception.errors import ApiError
-from src.common.service_helpers import require_record, resolve_sort
+from src.common.service_helpers import require_by_id, resolve_sort
 from src.common.service_helpers import validate_page as _validate_page
 from src.config.config import settings
 from src.model import (
@@ -147,20 +147,16 @@ def resolve_qbittorrent_download_state(raw_state: str, last_activity: int | None
 
 
 def require_client(client_id: int) -> DownloadClient:
-    return require_record(
-        DownloadClient, DownloadClient.id == client_id,
-        error_code="download_client_not_found",
-        error_message="Download client not found",
-        error_details={"client_id": client_id},
+    return require_by_id(
+        DownloadClient, client_id, "download_client",
+        error_message="Download client not found", error_details_key="client_id",
     )
 
 
 def require_media_library(library_id: int) -> MediaLibrary:
-    return require_record(
-        MediaLibrary, MediaLibrary.id == library_id,
-        error_code="media_library_not_found",
-        error_message="Media library not found",
-        error_details={"library_id": library_id},
+    return require_by_id(
+        MediaLibrary, library_id, "media_library",
+        error_message="Media library not found", error_details_key="library_id",
     )
 
 
@@ -279,11 +275,9 @@ def resolve_preferred_client(clients: Sequence[DownloadClient]) -> DownloadClien
 
 
 def require_task(task_id: int) -> DownloadTask:
-    return require_record(
-        DownloadTask, DownloadTask.id == task_id,
-        error_code="download_task_not_found",
-        error_message="Download task not found",
-        error_details={"task_id": task_id},
+    return require_by_id(
+        DownloadTask, task_id, "download_task",
+        error_message="Download task not found", error_details_key="task_id",
     )
 
 

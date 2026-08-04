@@ -1,6 +1,6 @@
 from peewee import fn
 
-from src.common.service_helpers import paginate
+from src.common.service_helpers import paginate, require_by_id
 from src.model import MediaRapidUploadBatch, MediaRapidUploadItem
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.rapid_upload import (
@@ -212,12 +212,7 @@ class MediaRapidUploadQueryService:
 
     @staticmethod
     def _require_batch(batch_id: int) -> MediaRapidUploadBatch:
-        batch = MediaRapidUploadBatch.get_or_none(MediaRapidUploadBatch.id == batch_id)
-        if batch is None:
-            raise ApiError(
-                404,
-                "media_rapid_upload_batch_not_found",
-                "秒传批次不存在",
-                {"rapid_upload_batch_id": batch_id},
-            )
-        return batch
+        return require_by_id(
+            MediaRapidUploadBatch, batch_id, "media_rapid_upload_batch",
+            error_message="秒传批次不存在", error_details_key="rapid_upload_batch_id",
+        )

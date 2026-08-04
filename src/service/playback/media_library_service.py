@@ -4,7 +4,7 @@ from peewee import IntegrityError
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import require_record
+from src.common.service_helpers import require_by_id
 from src.lib.cloud115 import (
     Cloud115AuthError,
     Cloud115Client,
@@ -42,11 +42,12 @@ from src.service.transfers.rapid_upload.query_service import (
 class MediaLibraryService:
     @staticmethod
     def _require_library(library_id: int) -> MediaLibrary:
-        return require_record(
-            MediaLibrary, MediaLibrary.id == library_id,
-            error_code="media_library_not_found",
+        return require_by_id(
+            MediaLibrary,
+            library_id,
+            "media_library",
             error_message="Media library not found",
-            error_details={"library_id": library_id},
+            error_details_key="library_id",
         )
 
     @staticmethod

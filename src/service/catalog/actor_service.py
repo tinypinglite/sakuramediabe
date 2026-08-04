@@ -12,7 +12,7 @@ from peewee import JOIN, Ordering, fn
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
-    require_record,
+    require_by_id,
 )
 from src.metadata._providers.javdb import JavdbProvider
 from src.metadata._providers.models import JavdbMovieActorResource
@@ -134,11 +134,11 @@ class ActorService:
 
     @classmethod
     def _require_actor(cls, actor_id: int) -> Actor:
-        return require_record(
-            Actor, Actor.id == actor_id,
-            error_code="actor_not_found",
+        return require_by_id(
+            Actor,
+            actor_id,
+            "actor",
             error_message="演员不存在",
-            error_details={"actor_id": actor_id},
             query=cls._actor_query(),
         )
 
@@ -314,9 +314,7 @@ class ActorService:
 
     @classmethod
     def set_subscription(cls, actor_id: int, subscribed: bool) -> None:
-        actor = Actor.get_or_none(Actor.id == actor_id)
-        if actor is None:
-            raise ApiError(404, "actor_not_found", "演员不存在", {"actor_id": actor_id})
+        actor = require_by_id(Actor, actor_id, "actor", error_message="演员不存在")
 
         if subscribed:
             actor.is_subscribed = True

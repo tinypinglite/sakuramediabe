@@ -7,7 +7,7 @@ from peewee import JOIN, Case, fn
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import require_record, validate_page
+from src.common.service_helpers import require_by_id, validate_page
 from src.model import (
     Image,
     Media,
@@ -43,13 +43,7 @@ class VideoItemService:
 
     @staticmethod
     def _require_video(video_id: int) -> VideoItem:
-        return require_record(
-            VideoItem,
-            VideoItem.id == video_id,
-            error_code="video_item_not_found",
-            error_message="Video item not found",
-            error_details={"video_item_id": video_id},
-        )
+        return require_by_id(VideoItem, video_id, "video_item", error_message="Video item not found")
 
     @staticmethod
     def _parse_resolution(value: str | None) -> tuple[int | None, int | None]:

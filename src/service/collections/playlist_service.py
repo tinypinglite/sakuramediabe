@@ -13,7 +13,7 @@ from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     count_by_owner,
     playable_exists_expression,
-    require_record,
+    require_by_id,
     with_movie_card_relations,
 )
 from src.model import (
@@ -251,12 +251,7 @@ class PlaylistService:
 
     @staticmethod
     def _require_playlist(playlist_id: int) -> Playlist:
-        return require_record(
-            Playlist, Playlist.id == playlist_id,
-            error_code="playlist_not_found",
-            error_message="Playlist not found",
-            error_details={"playlist_id": playlist_id},
-        )
+        return require_by_id(Playlist, playlist_id, "playlist", error_message="Playlist not found")
 
     @classmethod
     def _require_custom_playlist(cls, playlist_id: int) -> Playlist:

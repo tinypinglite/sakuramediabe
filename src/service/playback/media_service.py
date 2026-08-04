@@ -277,12 +277,7 @@ class MediaService:
 
     @staticmethod
     def _require_media(media_id: int) -> Media:
-        return require_record(
-            Media, Media.id == media_id,
-            error_code="media_not_found",
-            error_message="Media not found",
-            error_details={"media_id": media_id},
-        )
+        return require_by_id(Media, media_id, "media", error_message="Media not found")
 
     @staticmethod
     def _require_media_point_for_media(media_id: int, point_id: int) -> MediaPoint:

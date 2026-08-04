@@ -21,7 +21,7 @@ except ImportError:  # pragma: no cover - runtime dependency check
 from src.api.exception.errors import ApiError
 from src.common import build_signed_clip_url, media_clip_root_path
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import require_record, resolve_sort, validate_page
+from src.common.service_helpers import require_by_id, resolve_sort, validate_page
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115Error
 from src.model import (
@@ -61,12 +61,7 @@ class MediaClipService:
 
     @staticmethod
     def _require_media(media_id: int) -> Media:
-        return require_record(
-            Media, Media.id == media_id,
-            error_code="media_not_found",
-            error_message="Media not found",
-            error_details={"media_id": media_id},
-        )
+        return require_by_id(Media, media_id, "media", error_message="Media not found")
 
     @staticmethod
     def _require_thumbnail_for_media(media: Media, thumbnail_id: int) -> MediaThumbnail:
@@ -82,12 +77,7 @@ class MediaClipService:
 
     @staticmethod
     def _require_clip(clip_id: int) -> MediaClip:
-        return require_record(
-            MediaClip, MediaClip.id == clip_id,
-            error_code="media_clip_not_found",
-            error_message="Media clip not found",
-            error_details={"clip_id": clip_id},
-        )
+        return require_by_id(MediaClip, clip_id, "media_clip", error_message="Media clip not found", error_details_key="clip_id")
 
     # ------------------------------------------------------------------ 资源构建
 
