@@ -81,9 +81,6 @@ class MediaService:
     MEDIA_LIST_NULLABLE_SORT_FIELDS = {"heat"}
 
     @staticmethod
-    def _current_time() -> datetime:
-        return utc_now_for_db()
-
     @staticmethod
     def is_cloud115_media(media: Media) -> bool:
         # backend 判定的权威来源是所属库（Media 不冗余 backend 字段）。
@@ -658,7 +655,7 @@ class MediaService:
         payload: MediaProgressUpdateRequest,
     ) -> MediaProgressResource:
         media = cls._require_media(media_id)
-        watched_at = cls._current_time()
+        watched_at = utc_now_for_db()
         progress = MediaProgress.get_or_none(MediaProgress.media == media)
         if progress is None:
             progress = MediaProgress.create(

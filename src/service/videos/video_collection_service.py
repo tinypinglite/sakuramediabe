@@ -23,9 +23,6 @@ from src.service.videos.video_item_service import VideoItemService
 
 class VideoCollectionService:
     @staticmethod
-    def _current_time() -> datetime:
-        return utc_now_for_db()
-
     @staticmethod
     def _require_collection(collection_id: int) -> VideoCollection:
         return require_by_id(
@@ -126,7 +123,7 @@ class VideoCollectionService:
             collection.name = name
         if "description" in update_data and update_data["description"] is not None:
             collection.description = update_data["description"]
-        collection.updated_at = cls._current_time()
+        collection.updated_at = utc_now_for_db()
         collection.save()
         return cls.get_collection(collection.id)
 
@@ -269,7 +266,7 @@ class VideoCollectionService:
         )
         if existing is not None:
             return
-        touched_at = cls._current_time()
+        touched_at = utc_now_for_db()
         # 位置计算与插入纳入同一事务，避免并发追加时 _next_position 读到陈旧 MAX。
         try:
             with get_database().atomic():
@@ -297,7 +294,7 @@ class VideoCollectionService:
             .execute()
         )
         if deleted:
-            cls._touch_collection(collection, cls._current_time())
+            cls._touch_collection(collection, utc_now_for_db())
 
     @classmethod
     def reorder_items(cls, collection_id: int, ordered_item_ids: list[int]) -> list[VideoCollectionItemResource]:
@@ -317,7 +314,7 @@ class VideoCollectionService:
                 "ordered_item_ids must cover exactly all collection items",
                 {"collection_id": collection_id},
             )
-        touched_at = cls._current_time()
+        touched_at = utc_now_for_db()
         with get_database().atomic():
             for position, item_id in enumerate(normalized):
                 item = VideoCollectionItem.get_by_id(item_id)

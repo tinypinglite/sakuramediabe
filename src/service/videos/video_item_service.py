@@ -38,9 +38,6 @@ from src.schema.videos.items import (
 
 class VideoItemService:
     @staticmethod
-    def _current_time() -> datetime:
-        return utc_now_for_db()
-
     @staticmethod
     def _require_video(video_id: int) -> VideoItem:
         return require_by_id(VideoItem, video_id, "video_item", error_message="Video item not found")
@@ -372,7 +369,7 @@ class VideoItemService:
             video.summary = update_data["summary"]
         if "release_date" in update_data:
             video.release_date = update_data["release_date"]
-        video.updated_at = cls._current_time()
+        video.updated_at = utc_now_for_db()
         video.save()
         return cls.get_video_detail(video.id)
 

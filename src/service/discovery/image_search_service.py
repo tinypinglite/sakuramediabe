@@ -40,9 +40,6 @@ class ImageSearchService:
         self.embedder = embedder or get_joytag_embedder_client()
 
     @staticmethod
-    def _now() -> datetime:
-        return utc_now_for_db()
-
     @staticmethod
     def _normalize_ids(ids: Sequence[int] | None) -> list[int] | None:
         if not ids:
@@ -84,7 +81,7 @@ class ImageSearchService:
 
     @classmethod
     def _purge_expired_sessions(cls) -> None:
-        ImageSearchSession.delete().where(ImageSearchSession.expires_at <= cls._now()).execute()
+        ImageSearchSession.delete().where(ImageSearchSession.expires_at <= utc_now_for_db()).execute()
 
     @classmethod
     def _get_session_model(cls, session_id: str) -> ImageSearchSession:
@@ -116,7 +113,7 @@ class ImageSearchService:
         except JoyTagInferenceClientError as exc:
             # 远端推理不可用时直接中止建会话，避免写入无法使用的查询会话。
             raise ApiError(exc.status_code, exc.error_code, exc.message) from exc
-        now = self._now()
+        now = utc_now_for_db()
         expires_at = now + timedelta(seconds=settings.image_search.session_ttl_seconds)
         session = ImageSearchSession.create(
             session_id=uuid.uuid4().hex,
@@ -191,7 +188,7 @@ class ImageSearchService:
                 break
 
         session.next_cursor = next_cursor
-        session.updated_at = self._now()
+        session.updated_at = utc_now_for_db()
         session.save(only=[ImageSearchSession.next_cursor, ImageSearchSession.updated_at])
         return ImageSearchSessionPageResource(
             session_id=session.session_id,

@@ -36,9 +36,6 @@ class NotificationDraft:
     related_resource_id: int | None = None
 
 
-def _now():
-    return utc_now_for_db()
-
 
 def _detect_failed_summary(summary: dict | None) -> bool:
     if not summary:
@@ -183,8 +180,8 @@ class NotificationService:
                 )
             if not notification.is_read:
                 notification.is_read = True
-                notification.read_at = _now()
-                notification.updated_at = _now()
+                notification.read_at = utc_now_for_db()
+                notification.updated_at = utc_now_for_db()
                 notification.save()
                 SystemEventService.publish(
                     event_type="notification_updated",
@@ -202,7 +199,7 @@ class NotificationService:
 
     @classmethod
     def mark_notifications_read(cls, ids: list[int]) -> NotificationBatchReadResponse:
-        now = _now()
+        now = utc_now_for_db()
         with get_database().atomic():
             updated_count = 0
             if ids:
@@ -230,7 +227,7 @@ class NotificationService:
 
     @classmethod
     def mark_all_notifications_read(cls) -> NotificationBatchReadResponse:
-        now = _now()
+        now = utc_now_for_db()
         with get_database().atomic():
             updated_count = (
                 SystemNotification.update(is_read=True, read_at=now, updated_at=now)

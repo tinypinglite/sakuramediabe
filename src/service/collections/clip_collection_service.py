@@ -26,9 +26,6 @@ from src.service.playback.media_clip_service import MediaClipService
 
 class ClipCollectionService:
     @staticmethod
-    def _current_time() -> datetime:
-        return utc_now_for_db()
-
     @staticmethod
     def _normalize_name(name: str) -> str:
         normalized = name.strip()
@@ -142,7 +139,7 @@ class ClipCollectionService:
         if "description" in update_data:
             collection.description = cls._normalize_description(update_data["description"])
 
-        collection.updated_at = cls._current_time()
+        collection.updated_at = utc_now_for_db()
         collection.save()
         counts = cls._collection_counts([collection.id])
         return cls._to_resource(collection, counts.get(collection.id, 0))
@@ -200,7 +197,7 @@ class ClipCollectionService:
         )
         if existing is not None:
             return
-        touched_at = cls._current_time()
+        touched_at = utc_now_for_db()
         try:
             with get_database().atomic():
                 next_position = (
@@ -233,7 +230,7 @@ class ClipCollectionService:
             .execute()
         )
         if deleted:
-            collection.updated_at = cls._current_time()
+            collection.updated_at = utc_now_for_db()
             collection.save(only=[ClipCollection.updated_at])
 
     @classmethod
@@ -250,7 +247,7 @@ class ClipCollectionService:
         for clip_id in ordered_ids:
             cls._require_clip(clip_id)
 
-        touched_at = cls._current_time()
+        touched_at = utc_now_for_db()
         with get_database().atomic():
             ClipCollectionItem.delete().where(
                 ClipCollectionItem.collection == collection

@@ -195,9 +195,6 @@ class PlaylistService:
         )
 
     @staticmethod
-    def _current_time() -> datetime:
-        return utc_now_for_db()
-
     @staticmethod
     def _normalize_name(name: str) -> str:
         normalized = name.strip()
@@ -414,7 +411,7 @@ class PlaylistService:
         if "description" in update_data:
             playlist.description = cls._normalize_description(update_data["description"])
 
-        playlist.updated_at = cls._current_time()
+        playlist.updated_at = utc_now_for_db()
         playlist.save()
         counts = cls._playlist_counts([playlist.id])
         return PlaylistResource.from_playlist(playlist, movie_count=counts.get(playlist.id, 0))
@@ -535,7 +532,7 @@ class PlaylistService:
     def add_movie_to_playlist(cls, playlist_id: int, movie_number: str) -> None:
         playlist = cls._require_custom_playlist(playlist_id)
         movie = cls._require_movie(movie_number)
-        touched_at = cls._current_time()
+        touched_at = utc_now_for_db()
         playlist_movie = PlaylistMovie.get_or_none(
             PlaylistMovie.playlist == playlist,
             PlaylistMovie.movie == movie,
@@ -568,13 +565,13 @@ class PlaylistService:
             .execute()
         )
         if deleted_count:
-            cls._touch_playlist(playlist, cls._current_time())
+            cls._touch_playlist(playlist, utc_now_for_db())
 
     @classmethod
     def touch_recently_played(cls, movie: Movie) -> None:
         """把影片写入系统最近播放列表，并刷新排序时间。"""
         playlist = cls._get_or_create_recently_played_playlist()
-        touched_at = cls._current_time()
+        touched_at = utc_now_for_db()
         playlist_movie = PlaylistMovie.get_or_none(
             PlaylistMovie.playlist == playlist,
             PlaylistMovie.movie == movie,

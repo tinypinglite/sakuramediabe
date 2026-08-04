@@ -62,11 +62,6 @@ class MovieInteractionSyncService:
         return build_javdb_provider()
 
     @staticmethod
-    def _now() -> datetime:
-        from src.common.runtime_time import utc_now_for_db
-
-        return utc_now_for_db()
-
     @classmethod
     def recover_interrupted_running_movies(cls, *, error_message: str | None = None) -> int:
         normalized_error = (error_message or "").strip() or cls.INTERRUPTED_SYNC_ERROR_MESSAGE
@@ -193,7 +188,7 @@ class MovieInteractionSyncService:
         return last_succeeded_at + refresh_interval <= now
 
     def _select_candidates(self, _state_condition, only_ids=None) -> list[Movie]:
-        now = self._now()
+        now = utc_now_for_db()
         query = Movie.select().order_by(Movie.id.asc())
         if only_ids:
             query = query.where(Movie.id.in_(list(only_ids)))
