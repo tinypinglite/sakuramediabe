@@ -157,15 +157,10 @@ async def stream_media_file(
 
     # cloud115 库优先派发最高码率 HLS；HLS 暂不可用时服务层自动回落原画直链。
     if MediaService.is_cloud115_media(media):
-        # 用 getlist 排查"客户端塞了多条 User-Agent"这类隐蔽情况——libmpv/ffmpeg 某些版本
-        # 用 -headers 覆盖 UA 时会与默认 UA 同时出现在报文里，Starlette 只取第一条，与
-        # CDN 侧解析的 UA 可能是不同一条，进而造成签名不一致。
+        # UA 取值规则与 CDN 侧解析保持一致（多 UA 取第一条），是签名绑定成立的前提。
         user_agent = _request_user_agent(request)
-        ua_list = request.headers.getlist("user-agent")
-        from loguru import logger
-        logger.info(
-            "cloud115 stream request media_id={} ua_count={} ua_first={!r} ua_all={!r} sig={} client={}",
-            media_id, len(ua_list), user_agent, ua_list, signature[:12], request.client.host if request.client else "?",
+        playback_url = await MediaService.resolve_cloud115_playback_url(
+            media, user_agent, signature
         )
         playback_url = await MediaService.resolve_cloud115_playback_url(
             media, user_agent, signature
