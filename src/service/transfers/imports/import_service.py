@@ -34,6 +34,7 @@ from src.common.media_import_status import (
     IMPORT_STATUS_RUNNING,
     make_failure_item,
 )
+from src.common.service_helpers import emit_progress
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import DownloadTask, ImportJob, MediaLibrary, Movie, get_database
@@ -133,11 +134,6 @@ class MediaImportService:
             database.connect()
 
     @staticmethod
-    def _emit_progress(progress_callback: ImportProgressCallback | None, **payload: object) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(payload)
-
     def _import_movie_metadata(self, movie_number: str) -> MetadataImportResult:
         self._ensure_worker_database_ready()
         provider = self._get_worker_provider()
@@ -356,7 +352,7 @@ class MediaImportService:
                 )
             total_movie_numbers = len(grouped_files)
             completed_movie_numbers = 0
-            self._emit_progress(
+            emit_progress(
                 progress_callback,
                 event="scan_complete",
                 total_movies=total_movie_numbers,
@@ -383,7 +379,7 @@ class MediaImportService:
                             len(group.files),
                             job.id,
                         )
-                        self._emit_progress(
+                        emit_progress(
                             progress_callback,
                             event="movie_started",
                             stage="metadata",
@@ -416,7 +412,7 @@ class MediaImportService:
                                     )
                                 )
                             completed_movie_numbers += 1
-                            self._emit_progress(
+                            emit_progress(
                                 progress_callback,
                                 event="movie_finished",
                                 stage="metadata",
@@ -439,7 +435,7 @@ class MediaImportService:
                             continue
 
                         movie = Movie.get_by_id(metadata_result.movie_id)
-                        self._emit_progress(
+                        emit_progress(
                             progress_callback,
                             event="movie_stage",
                             stage="import-media",
@@ -500,7 +496,7 @@ class MediaImportService:
                                 )
 
                         completed_movie_numbers += 1
-                        self._emit_progress(
+                        emit_progress(
                             progress_callback,
                             event="movie_finished",
                             stage="import-media",
@@ -540,7 +536,7 @@ class MediaImportService:
                 job.skipped_count,
                 job.failed_count,
             )
-            self._emit_progress(
+            emit_progress(
                 progress_callback,
                 event="job_finished",
                 current=total_movie_numbers,
@@ -575,7 +571,7 @@ class MediaImportService:
                 str(source_entry),
                 exc,
             )
-            self._emit_progress(
+            emit_progress(
                 progress_callback,
                 event="job_failed",
                 text="媒体导入任务失败",

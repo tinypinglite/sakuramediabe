@@ -110,6 +110,12 @@ def paginate(
     return response_model(items=items, page=page, page_size=page_size, total=total)
 
 
+def emit_progress(callback, **payload) -> None:
+    """向进度回调发射事件；回调为空时静默跳过。"""
+    if callback is not None:
+        callback(payload)
+
+
 def resolve_sort(
     value: str | None,
     allowed_sorts: dict[str, Sequence],

@@ -9,6 +9,7 @@ from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import runtime_now, utc_now_for_db
 from src.common.service_helpers import (
+    emit_progress,
     parse_special_tags_text,
     with_movie_card_relations,
 )
@@ -536,12 +537,6 @@ class RankingSyncService:
         }
 
     @staticmethod
-    def _emit_progress(progress_callback, **payload) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(payload)
-
-    @staticmethod
     def _scope_has_items(source_key: str, board_key: str, period: str) -> bool:
         return (
             RankingItem.select()
@@ -597,7 +592,7 @@ class RankingSyncService:
         completed_targets = 0
         # 登录失败只发一次通知，并跳过其余需登录的目标。
         account_login_notified = False
-        self._emit_progress(
+        emit_progress(
             progress_callback,
             current=0,
             total=total_targets,
@@ -624,7 +619,7 @@ class RankingSyncService:
                     account_login_notified = True
                     self._notify_account_login_failed(task_run_id)
                 completed_targets += 1
-                self._emit_progress(
+                emit_progress(
                     progress_callback,
                     current=completed_targets,
                     total=total_targets,
@@ -642,7 +637,7 @@ class RankingSyncService:
                     exc,
                 )
                 completed_targets += 1
-                self._emit_progress(
+                emit_progress(
                     progress_callback,
                     current=completed_targets,
                     total=total_targets,
@@ -657,7 +652,7 @@ class RankingSyncService:
             stats["skipped_movies"] += int(target_stats["skipped_movies"])
             stats["stored_items"] += int(target_stats["stored_items"])
             completed_targets += 1
-            self._emit_progress(
+            emit_progress(
                 progress_callback,
                 current=completed_targets,
                 total=total_targets,

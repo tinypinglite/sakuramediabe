@@ -7,7 +7,11 @@ from loguru import logger
 
 from src.common import resolve_image_file_path
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import validate_page, with_movie_card_relations
+from src.common.service_helpers import (
+    emit_progress,
+    validate_page,
+    with_movie_card_relations,
+)
 from src.model import (
     Image,
     Media,
@@ -96,11 +100,6 @@ class MomentRecommendationService:
         self.movie_recommendation_service = (
             movie_recommendation_service or MovieRecommendationService()
         )
-
-    @staticmethod
-    def _emit_progress(progress_callback: Callable[[dict], None] | None, **payload) -> None:
-        if progress_callback is not None:
-            progress_callback(payload)
 
     @staticmethod
     def _heat_score(movie: Movie) -> float:
@@ -462,7 +461,7 @@ class MomentRecommendationService:
             "popular_candidates": popular_candidates,
             "stored_items": len(ranked),
         }
-        self._emit_progress(progress_callback, **stats)
+        emit_progress(progress_callback, **stats)
         return stats
 
     @classmethod

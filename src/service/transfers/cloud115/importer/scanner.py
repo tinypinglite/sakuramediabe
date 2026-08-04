@@ -13,6 +13,7 @@ from loguru import logger
 
 from src.common import subtitle_matches_movie_number
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
+from src.common.service_helpers import emit_progress
 from src.common.media_import_status import (
     FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
     FAILURE_REASON_DUPLICATE_FINGERPRINT,
@@ -46,10 +47,6 @@ def _entry_is_video(entry: DirEntry) -> bool:
     return _entry_suffix(entry.name) in SUPPORTED_VIDEO_EXTENSIONS
 
 
-def _emit(progress_callback: ImportProgressCallback | None, **payload: object) -> None:
-    if progress_callback is None:
-        return
-    progress_callback(payload)
 
 
 async def scan_cloud115_source(
@@ -69,7 +66,7 @@ async def scan_cloud115_source(
     failed_count = 0
     only_set = set(only_files) if only_files is not None else None
 
-    _emit(
+    emit_progress(
         progress_callback,
         event="scan_started",
         stage="scan",
@@ -80,7 +77,7 @@ async def scan_cloud115_source(
     source_files, rel_dirs = await collect_cloud115_source_files(
         client, source_cid, needs_rel_path=_entry_is_video
     )
-    _emit(
+    emit_progress(
         progress_callback,
         event="scan_progress",
         stage="scan",

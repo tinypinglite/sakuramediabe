@@ -2,6 +2,7 @@ from typing import Any
 
 from loguru import logger
 
+from src.common.service_helpers import emit_progress
 from src.common.runtime_time import utc_now_for_db
 from src.model import Actor, Movie, MovieActor
 from src.service.catalog.catalog_import_service import CatalogImportService
@@ -23,11 +24,6 @@ class SubscribedActorMovieSyncService:
         return build_javdb_provider()
 
     @staticmethod
-    def _emit_progress(progress_callback, **payload) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(payload)
-
     def sync_subscribed_actor_movies(self, progress_callback=None) -> dict[str, int]:
         actors = list(
             Actor.select()
@@ -41,7 +37,7 @@ class SubscribedActorMovieSyncService:
             "failed_actors": 0,
             "imported_movies": 0,
         }
-        self._emit_progress(
+        emit_progress(
             progress_callback,
             current=0,
             total=len(actors),
@@ -61,7 +57,7 @@ class SubscribedActorMovieSyncService:
                     actor.javdb_id,
                     actor.name,
                 )
-            self._emit_progress(
+            emit_progress(
                 progress_callback,
                 current=index,
                 total=len(actors),

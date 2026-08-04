@@ -12,6 +12,7 @@ from peewee import fn
 
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import (
+    emit_progress,
     find_movie_by_number,
     parse_special_tags_text,
     with_movie_card_relations,
@@ -53,11 +54,6 @@ class MovieRecommendationService:
         store: QdrantMovieSimilarityStore | None = None,
     ) -> None:
         self.store = store or get_qdrant_movie_similarity_store()
-
-    @staticmethod
-    def _emit_progress(progress_callback, **payload) -> None:
-        if progress_callback is not None:
-            progress_callback(payload)
 
     @staticmethod
     def _load_feature_document_frequencies(
@@ -208,7 +204,7 @@ class MovieRecommendationService:
             "actor_features": sum(actor_df.values()),
             "tag_features": sum(tag_df.values()),
         }
-        self._emit_progress(
+        emit_progress(
             progress_callback,
             current=0,
             total=total_movies,
@@ -228,7 +224,7 @@ class MovieRecommendationService:
             self.store.upsert_sparse_points(collection_name, batch)
             stats["indexed_movies"] += len(batch)
             batch.clear()
-            self._emit_progress(
+            emit_progress(
                 progress_callback,
                 current=stats["indexed_movies"],
                 total=total_movies,
@@ -279,7 +275,7 @@ class MovieRecommendationService:
                     exc,
                 )
 
-        self._emit_progress(
+        emit_progress(
             progress_callback,
             current=total_movies,
             total=total_movies,

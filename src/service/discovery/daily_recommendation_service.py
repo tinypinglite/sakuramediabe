@@ -9,7 +9,11 @@ from loguru import logger
 from peewee import JOIN
 
 from src.common.runtime_time import runtime_now, utc_now_for_db
-from src.common.service_helpers import validate_page, with_movie_card_relations
+from src.common.service_helpers import (
+    emit_progress,
+    validate_page,
+    with_movie_card_relations,
+)
 from src.model import (
     PLAYLIST_KIND_RECENTLY_PLAYED,
     Actor,
@@ -77,11 +81,6 @@ class _ScoredRecommendation:
 
 class DailyRecommendationService:
     """每日推荐快照生成与查询。"""
-
-    @staticmethod
-    def _emit_progress(progress_callback: Callable[[dict], None] | None, **payload) -> None:
-        if progress_callback is not None:
-            progress_callback(payload)
 
     @staticmethod
     def _snapshot_date(target_date: date | None) -> date:
@@ -353,7 +352,7 @@ class DailyRecommendationService:
             "extreme_cold_start": bool(score_stats["extreme_cold_start"]),
             "recent_seed_movies": int(score_stats["recent_seed_movies"]),
         }
-        cls._emit_progress(progress_callback, **stats)
+        emit_progress(progress_callback, **stats)
         return stats
 
     @classmethod

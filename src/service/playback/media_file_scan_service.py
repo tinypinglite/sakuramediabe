@@ -5,6 +5,7 @@ from pathlib import Path
 from loguru import logger
 
 from src.api.exception.errors import ApiError
+from src.common.service_helpers import emit_progress
 from src.common.runtime_time import utc_now_for_db
 from src.model import Media, MediaLibrary
 
@@ -48,10 +49,6 @@ class MediaFileScanService:
         )
 
     @staticmethod
-    def _emit_progress(progress_callback, **payload) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(payload)
 
     @staticmethod
     def _cloud115_library_ids() -> set[int]:
@@ -264,7 +261,7 @@ class MediaFileScanService:
         }
         max_media_id = self._max_media_id()
         last_media_id = 0
-        self._emit_progress(
+        emit_progress(
             progress_callback,
             current=0,
             total=None,
@@ -298,7 +295,7 @@ class MediaFileScanService:
                 len(remote_index),
                 len(cloud115_library_ids),
             )
-        self._emit_progress(
+        emit_progress(
             progress_callback,
             current=0,
             total=None,
@@ -332,7 +329,7 @@ class MediaFileScanService:
                         media.path,
                         exc,
                     )
-                    self._emit_progress(
+                    emit_progress(
                         progress_callback,
                         current=stats["scanned_media"],
                         total=None,
@@ -350,7 +347,7 @@ class MediaFileScanService:
                 if result["revived"]:
                     stats["revived_media"] += 1
 
-                self._emit_progress(
+                emit_progress(
                     progress_callback,
                     current=stats["scanned_media"],
                     total=None,

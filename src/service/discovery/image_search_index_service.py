@@ -4,6 +4,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from src.common.service_helpers import emit_progress
 from src.common import resolve_image_file_path
 from src.config.config import settings
 from src.model import Image, Media, MediaThumbnail, Movie
@@ -42,11 +43,6 @@ class ImageSearchIndexService:
         self._store_ready = True
 
     @staticmethod
-    def _emit_progress(progress_callback, **payload) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(payload)
-
     def index_pending_thumbnails(self, progress_callback=None) -> dict[str, int]:
         pending_ids = self._pending_thumbnail_ids()
         stats = {
@@ -58,7 +54,7 @@ class ImageSearchIndexService:
         if not pending_ids:
             logger.info("No pending JoyTag thumbnails for indexing")
             return stats
-        self._emit_progress(
+        emit_progress(
             progress_callback,
             current=0,
             total=len(pending_ids),
@@ -89,7 +85,7 @@ class ImageSearchIndexService:
                 batch_ids = pending_ids[chunk_start : chunk_start + inference_batch_size]
                 current = chunk_start
                 total = len(pending_ids)
-                self._emit_progress(
+                emit_progress(
                     progress_callback,
                     current=current,
                     total=total,
@@ -130,7 +126,7 @@ class ImageSearchIndexService:
                         successful_since_last_optimize = 0
                         last_optimize_at = time.time()
                 processed = chunk_start + len(batch_ids)
-                self._emit_progress(
+                emit_progress(
                     progress_callback,
                     current=processed,
                     total=total,
@@ -149,7 +145,7 @@ class ImageSearchIndexService:
                     reason="job_end",
                     successful_since_last_optimize=successful_since_last_optimize,
                 )
-        self._emit_progress(
+        emit_progress(
             progress_callback,
             current=len(pending_ids),
             total=len(pending_ids),

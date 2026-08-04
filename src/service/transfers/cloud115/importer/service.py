@@ -40,6 +40,7 @@ from src.common.media_import_status import (
     IMPORT_JOB_STATE_RUNNING,
     make_failure_item,
 )
+from src.common.service_helpers import emit_progress
 from src.common.runtime_time import utc_now_for_db
 from src.lib.cloud115 import Cloud115Client
 from src.model import ImportJob, MediaLibrary, Movie
@@ -153,7 +154,7 @@ class Cloud115ImportService:
                 "Cloud115 import job finished job_id={} state={} imported={} skipped={} failed={}",
                 job.id, job.state, job.imported_count, job.skipped_count, job.failed_count,
             )
-            self._emit(
+            emit_progress(
                 progress_callback,
                 event="job_finished",
                 text="115 网盘导入任务完成",
@@ -176,7 +177,7 @@ class Cloud115ImportService:
                 "Cloud115 import job crashed job_id={} source_cid={} detail={}",
                 job.id, source_cid, exc,
             )
-            self._emit(
+            emit_progress(
                 progress_callback,
                 event="job_failed",
                 text="115 网盘导入任务失败",
@@ -238,7 +239,7 @@ class Cloud115ImportService:
 
         def _on_pace_wait(seconds: float) -> None:
             # 批次休息期间不发请求，进度必须显式透出，否则与"卡死"无法区分。
-            self._emit(
+            emit_progress(
                 progress_callback,
                 event="pace_waiting",
                 stage="pacing",
@@ -311,7 +312,7 @@ class Cloud115ImportService:
 
             total_movies = len(groups)
             completed_movies = 0
-            self._emit(
+            emit_progress(
                 progress_callback,
                 event="scan_complete",
                 total_movies=total_movies,
@@ -351,7 +352,7 @@ class Cloud115ImportService:
                             movie_number,
                             delay,
                         )
-                        self._emit(
+                        emit_progress(
                             progress_callback,
                             event="movie_waiting",
                             stage="rest",
@@ -365,7 +366,7 @@ class Cloud115ImportService:
                         )
                         await asyncio.sleep(delay)
 
-                    self._emit(
+                    emit_progress(
                         progress_callback,
                         event="movie_started",
                         stage="metadata",
@@ -389,7 +390,7 @@ class Cloud115ImportService:
                                 )
                             )
                         completed_movies += 1
-                        self._emit(
+                        emit_progress(
                             progress_callback,
                             event="movie_finished",
                             stage="metadata",
@@ -404,7 +405,7 @@ class Cloud115ImportService:
                         continue
 
                     movie = Movie.get_by_id(metadata_result.movie_id)
-                    self._emit(
+                    emit_progress(
                         progress_callback,
                         event="movie_stage",
                         stage="import-media",
@@ -430,7 +431,7 @@ class Cloud115ImportService:
                     )
 
                     completed_movies += 1
-                    self._emit(
+                    emit_progress(
                         progress_callback,
                         event="movie_finished",
                         stage="import-media",
@@ -547,8 +548,3 @@ class Cloud115ImportService:
             "new_playable_movies": list(new_playable_movies.values()),
         }
 
-    @staticmethod
-    def _emit(progress_callback: ImportProgressCallback | None, **payload: object) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(payload)

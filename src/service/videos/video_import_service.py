@@ -30,6 +30,7 @@ from src.common.media_import_status import (
     IMPORT_JOB_STATE_RUNNING,
     make_failure_item,
 )
+from src.common.service_helpers import emit_progress
 from src.common.runtime_time import utc_now_for_db
 from src.model import (
     Media,
@@ -274,10 +275,6 @@ class VideoImportService:
         return job
 
     @staticmethod
-    def _emit(progress_callback: ImportProgressCallback | None, **payload: object) -> None:
-        if progress_callback is None:
-            return
-        progress_callback(payload)
 
     def import_from_source(
         self,
@@ -338,7 +335,7 @@ class VideoImportService:
         try:
             files = self._collect_video_files(str(source_entry), only_file_set=only_file_set)
             total = len(files)
-            self._emit(
+            emit_progress(
                 progress_callback,
                 event="scan_complete",
                 current=0,
@@ -348,7 +345,7 @@ class VideoImportService:
             )
 
             for index, file_path in enumerate(files, start=1):
-                self._emit(
+                emit_progress(
                     progress_callback,
                     event="file_started",
                     current=index - 1,
@@ -383,7 +380,7 @@ class VideoImportService:
                             make_failure_item(file_path, FAILURE_REASON_MEDIA_IMPORT_FAILED, str(exc))
                         )
 
-                self._emit(
+                emit_progress(
                     progress_callback,
                     event="file_finished",
                     current=index,
@@ -393,7 +390,7 @@ class VideoImportService:
                 )
 
             self._finalize_job(job, imported=imported, skipped=skipped, failed=failed, failure_items=failure_items)
-            self._emit(
+            emit_progress(
                 progress_callback,
                 event="job_finished",
                 current=total,
@@ -421,7 +418,7 @@ class VideoImportService:
                 failure_items=failure_items,
                 force_failed=True,
             )
-            self._emit(
+            emit_progress(
                 progress_callback,
                 event="job_failed",
                 text="视频导入任务失败",

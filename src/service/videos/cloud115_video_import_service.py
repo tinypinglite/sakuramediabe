@@ -27,6 +27,7 @@ from src.common.media_import_status import (
     IMPORT_JOB_STATE_RUNNING,
     make_failure_item,
 )
+from src.common.service_helpers import emit_progress
 from src.common.runtime_time import utc_now_for_db
 from src.lib.cloud115 import Cloud115Client, DirEntry
 from src.model import Media, MediaLibrary, VideoImportJob, VideoItem, get_database
@@ -70,9 +71,6 @@ class Cloud115VideoImportService:
         )
 
     @staticmethod
-    def _emit(callback: ImportProgressCallback | None, **payload: object) -> None:
-        if callback is not None:
-            callback(payload)
 
     @staticmethod
     def _suffix(name: str) -> str:
@@ -360,7 +358,7 @@ class Cloud115VideoImportService:
             )
             seen_sha1: set[str] = set()
             total = len(sources)
-            self._emit(
+            emit_progress(
                 progress_callback,
                 event="scan_complete",
                 current=0,
@@ -369,7 +367,7 @@ class Cloud115VideoImportService:
             )
 
             for index, source in enumerate(sources, start=1):
-                self._emit(
+                emit_progress(
                     progress_callback,
                     event="file_started",
                     current=index - 1,
@@ -455,7 +453,7 @@ class Cloud115VideoImportService:
                     failure_items=failure_items,
                     stats=stats,
                 )
-                self._emit(
+                emit_progress(
                     progress_callback,
                     event="file_finished",
                     current=index,
