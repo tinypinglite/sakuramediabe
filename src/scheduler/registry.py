@@ -42,32 +42,32 @@ from src.service.transfers.downloads.small_file_cleanup_service import (
 from src.service.transfers.downloads.sync_service import DownloadSyncService
 
 
-def _resolve_stat_value(
-    stats: dict[str, Any],
-    source_keys: str | tuple[str, ...],
-    default: Any,
-) -> Any:
-    if isinstance(source_keys, tuple):
-        for source_key in source_keys:
-            if source_key in stats:
-                return stats[source_key]
-        return default
-    return stats.get(source_keys, default)
-
-
 def _build_stats_formatter(
     prefix: str,
-    *fields: tuple[str, str | tuple[str, ...], Any],
+    *names: str,
+    **defaults: Any,
 ) -> Callable[[dict[str, Any]], str]:
     def _formatter(stats: dict[str, Any]) -> str:
-        # 统一在这里处理缺省值和别名字段，避免注册表里散落大量重复的 s.get(...)。
+        # 统一在这里处理缺省值（默认 0，个别字段经 **defaults 覆盖），
+        # 避免注册表里散落大量重复的 s.get(...) 与 (name, name, 0) 三元组。
         formatted_fields = [
-            f"{field_name}={_resolve_stat_value(stats, source_keys, default)}"
-            for field_name, source_keys, default in fields
+            f"{name}={stats.get(name, defaults.get(name, 0))}"
+            for name in (*names, *defaults)
         ]
         return f"{prefix} {' '.join(formatted_fields)}"
 
     return _formatter
+
+
+# movie kernel 三任务（desc sync / desc translation / title translation）共用同一组统计字段。
+MOVIE_KERNEL_STATS_FIELDS = (
+    "candidate_movies",
+    "processed_movies",
+    "succeeded_movies",
+    "failed_movies",
+    "updated_movies",
+    "skipped_movies",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -86,10 +86,10 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         ),
         format_stats=_build_stats_formatter(
             "sync finished:",
-            ("total_actors", "total_actors", 0),
-            ("success_actors", "success_actors", 0),
-            ("failed_actors", "failed_actors", 0),
-            ("imported_movies", "imported_movies", 0),
+            "total_actors",
+            "success_actors",
+            "failed_actors",
+            "imported_movies",
         ),
     ),
     JobDefinition(
@@ -108,12 +108,12 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         },
         format_stats=_build_stats_formatter(
             "auto download finished:",
-            ("candidate_movies", "candidate_movies", 0),
-            ("searched_movies", "searched_movies", 0),
-            ("submitted_movies", "submitted_movies", 0),
-            ("no_candidate_movies", "no_candidate_movies", 0),
-            ("skipped_movies", "skipped_movies", 0),
-            ("failed_movies", "failed_movies", 0),
+            "candidate_movies",
+            "searched_movies",
+            "submitted_movies",
+            "no_candidate_movies",
+            "skipped_movies",
+            "failed_movies",
         ),
     ),
     JobDefinition(
@@ -125,9 +125,9 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: MovieHeatService.update_movie_heat(),
         format_stats=_build_stats_formatter(
             "heat update finished:",
-            ("candidate_count", "candidate_count", 0),
-            ("updated_count", "updated_count", 0),
-            ("formula_version", "formula_version", "unknown"),
+            "candidate_count",
+            "updated_count",
+            formula_version="unknown",
         ),
     ),
     JobDefinition(
@@ -145,13 +145,13 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         },
         format_stats=_build_stats_formatter(
             "movie interaction sync finished:",
-            ("candidate_movies", "candidate_movies", 0),
-            ("processed_movies", "processed_movies", 0),
-            ("succeeded_movies", "succeeded_movies", 0),
-            ("failed_movies", "failed_movies", 0),
-            ("updated_movies", "updated_movies", 0),
-            ("unchanged_movies", "unchanged_movies", 0),
-            ("heat_updated_movies", "heat_updated_movies", 0),
+            "candidate_movies",
+            "processed_movies",
+            "succeeded_movies",
+            "failed_movies",
+            "updated_movies",
+            "unchanged_movies",
+            "heat_updated_movies",
         ),
     ),
     JobDefinition(
@@ -166,14 +166,14 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         ),
         format_stats=_build_stats_formatter(
             "ranking sync finished:",
-            ("total_targets", "total_targets", 0),
-            ("success_targets", "success_targets", 0),
-            ("failed_targets", "failed_targets", 0),
-            ("fetched_numbers", "fetched_numbers", 0),
-            ("imported_movies", "imported_movies", 0),
-            ("local_hit_movies", "local_hit_movies", 0),
-            ("skipped_movies", "skipped_movies", 0),
-            ("stored_items", "stored_items", 0),
+            "total_targets",
+            "success_targets",
+            "failed_targets",
+            "fetched_numbers",
+            "imported_movies",
+            "local_hit_movies",
+            "skipped_movies",
+            "stored_items",
         ),
     ),
     JobDefinition(
@@ -185,13 +185,13 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: HotReviewSyncService().sync_all_hot_reviews(),
         format_stats=_build_stats_formatter(
             "hot review sync finished:",
-            ("total_periods", "total_periods", 0),
-            ("success_periods", "success_periods", 0),
-            ("failed_periods", "failed_periods", 0),
-            ("fetched_reviews", "fetched_reviews", 0),
-            ("imported_movies", "imported_movies", 0),
-            ("skipped_reviews", "skipped_reviews", 0),
-            ("stored_items", "stored_items", 0),
+            "total_periods",
+            "success_periods",
+            "failed_periods",
+            "fetched_reviews",
+            "imported_movies",
+            "skipped_reviews",
+            "stored_items",
         ),
     ),
     JobDefinition(
@@ -203,11 +203,11 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: MovieCollectionService.sync_movie_collections(),
         format_stats=_build_stats_formatter(
             "collection sync finished:",
-            ("total_movies", "total_movies", 0),
-            ("matched_count", "matched_count", 0),
-            ("updated_to_collection_count", "updated_to_collection_count", 0),
-            ("updated_to_single_count", "updated_to_single_count", 0),
-            ("unchanged_count", "unchanged_count", 0),
+            "total_movies",
+            "matched_count",
+            "updated_to_collection_count",
+            "updated_to_single_count",
+            "unchanged_count",
         ),
     ),
     JobDefinition(
@@ -235,11 +235,11 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: Cloud115OfflineSyncService().run(),
         format_stats=_build_stats_formatter(
             "cloud115 offline sync finished:",
-            ("total_clients", "total_clients", 0),
-            ("updated_count", "updated_count", 0),
-            ("import_triggered_count", "import_triggered_count", 0),
-            ("abandoned_count", "abandoned_count", 0),
-            ("failed_count", "failed_count", 0),
+            "total_clients",
+            "updated_count",
+            "import_triggered_count",
+            "abandoned_count",
+            "failed_count",
         ),
     ),
     JobDefinition(
@@ -251,11 +251,11 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: DownloadSmallFileCleanupService().cleanup_small_files(),
         format_stats=_build_stats_formatter(
             "download small file cleanup finished:",
-            ("total_clients", "total_clients", 0),
-            ("scanned_torrents", "scanned_torrents", 0),
-            ("deselected_files", "deselected_files", 0),
-            ("deleted_files", "deleted_files", 0),
-            ("failed_count", "failed_count", 0),
+            "total_clients",
+            "scanned_torrents",
+            "deselected_files",
+            "deleted_files",
+            "failed_count",
         ),
     ),
     JobDefinition(
@@ -269,15 +269,15 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         ),
         format_stats=_build_stats_formatter(
             "media file scan finished:",
-            ("scanned_media", "scanned_media", 0),
-            ("updated_media", "updated_media", 0),
-            ("skipped_media", "skipped_media", 0),
-            ("failed_media", "failed_media", 0),
-            ("invalidated_media", "invalidated_media", 0),
-            ("revived_media", "revived_media", 0),
+            "scanned_media",
+            "updated_media",
+            "skipped_media",
+            "failed_media",
+            "invalidated_media",
+            "revived_media",
             # 远端清单枚举失败的 cloud115 库数：非 0 时该库媒体本轮未做 valid 判定，
             # 结果与"全部正常"同形，必须单独出数。
-            ("cloud115_index_failed_libraries", "cloud115_index_failed_libraries", 0),
+            "cloud115_index_failed_libraries",
         ),
     ),
     JobDefinition(
@@ -295,12 +295,7 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         },
         format_stats=_build_stats_formatter(
             "movie desc sync finished:",
-            ("candidate_movies", "candidate_movies", 0),
-            ("processed_movies", "processed_movies", 0),
-            ("succeeded_movies", "succeeded_movies", 0),
-            ("failed_movies", "failed_movies", 0),
-            ("updated_movies", "updated_movies", 0),
-            ("skipped_movies", "skipped_movies", 0),
+            *MOVIE_KERNEL_STATS_FIELDS,
         ),
     ),
     JobDefinition(
@@ -318,12 +313,7 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         },
         format_stats=_build_stats_formatter(
             "movie desc translation finished:",
-            ("candidate_movies", "candidate_movies", 0),
-            ("processed_movies", "processed_movies", 0),
-            ("succeeded_movies", "succeeded_movies", 0),
-            ("failed_movies", "failed_movies", 0),
-            ("updated_movies", "updated_movies", 0),
-            ("skipped_movies", "skipped_movies", 0),
+            *MOVIE_KERNEL_STATS_FIELDS,
         ),
     ),
     JobDefinition(
@@ -341,12 +331,7 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         },
         format_stats=_build_stats_formatter(
             "movie title translation finished:",
-            ("candidate_movies", "candidate_movies", 0),
-            ("processed_movies", "processed_movies", 0),
-            ("succeeded_movies", "succeeded_movies", 0),
-            ("failed_movies", "failed_movies", 0),
-            ("updated_movies", "updated_movies", 0),
-            ("skipped_movies", "skipped_movies", 0),
+            *MOVIE_KERNEL_STATS_FIELDS,
         ),
     ),
     JobDefinition(
@@ -361,13 +346,13 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         ),
         format_stats=_build_stats_formatter(
             "thumbnail generation finished:",
-            ("pending_media", "pending_media", 0),
-            ("successful_media", "successful_media", 0),
-            ("generated_thumbnails", "generated_thumbnails", 0),
-            ("deferred_media", "deferred_media", 0),
-            ("retryable_failed_media", "retryable_failed_media", 0),
-            ("terminal_failed_media", "terminal_failed_media", 0),
-            ("exhausted_media", "exhausted_media", 0),
+            "pending_media",
+            "successful_media",
+            "generated_thumbnails",
+            "deferred_media",
+            "retryable_failed_media",
+            "terminal_failed_media",
+            "exhausted_media",
         ),
     ),
     JobDefinition(
@@ -381,9 +366,9 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         ),
         format_stats=_build_stats_formatter(
             "image search index finished:",
-            ("pending_thumbnails", "pending_thumbnails", 0),
-            ("successful_thumbnails", "successful_thumbnails", 0),
-            ("failed_thumbnails", "failed_thumbnails", 0),
+            "pending_thumbnails",
+            "successful_thumbnails",
+            "failed_thumbnails",
         ),
     ),
     JobDefinition(
@@ -397,10 +382,10 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         ),
         format_stats=_build_stats_formatter(
             "movie similarity recompute finished:",
-            ("total_movies", "total_movies", 0),
-            ("indexed_movies", "indexed_movies", 0),
-            ("actor_features", "actor_features", 0),
-            ("tag_features", "tag_features", 0),
+            "total_movies",
+            "indexed_movies",
+            "actor_features",
+            "tag_features",
         ),
     ),
     JobDefinition(
@@ -414,11 +399,11 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         ),
         format_stats=_build_stats_formatter(
             "moment recommendation generate finished:",
-            ("seed_points", "seed_points", 0),
-            ("visual_candidates", "visual_candidates", 0),
-            ("similar_candidates", "similar_candidates", 0),
-            ("popular_candidates", "popular_candidates", 0),
-            ("stored_items", "stored_items", 0),
+            "seed_points",
+            "visual_candidates",
+            "similar_candidates",
+            "popular_candidates",
+            "stored_items",
         ),
     ),
     JobDefinition(
@@ -432,10 +417,10 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         ),
         format_stats=_build_stats_formatter(
             "daily recommendation generate finished:",
-            ("candidate_movies", "candidate_movies", 0),
-            ("stored_items", "stored_items", 0),
-            ("cold_start", "cold_start", False),
-            ("extreme_cold_start", "extreme_cold_start", False),
+            "candidate_movies",
+            "stored_items",
+            cold_start=False,
+            extreme_cold_start=False,
         ),
     ),
     JobDefinition(
@@ -447,7 +432,7 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: ImageSearchIndexService().optimize_index(),
         format_stats=_build_stats_formatter(
             "image search optimize finished:",
-            ("optimized", "optimized", False),
+            optimized=False,
         ),
     ),
     JobDefinition(
@@ -459,9 +444,9 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: refresh_gfriends_filetree(force=True),
         format_stats=_build_stats_formatter(
             "gfriends filetree refresh finished:",
-            ("entries", "entries", 0),
-            ("source", "source", "unknown"),
-            ("bytes_written", "bytes_written", 0),
+            "entries",
+            "bytes_written",
+            source="unknown",
         ),
     ),
     JobDefinition(
@@ -473,9 +458,9 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: ActivityCleanupService().cleanup(),
         format_stats=_build_stats_formatter(
             "activity record cleanup finished:",
-            ("deleted_events", "deleted_events", 0),
-            ("deleted_task_runs", "deleted_task_runs", 0),
-            ("deleted_notifications", "deleted_notifications", 0),
+            "deleted_events",
+            "deleted_task_runs",
+            "deleted_notifications",
         ),
     ),
     JobDefinition(
@@ -487,7 +472,7 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: ResourceTaskAttemptCleanupService().cleanup(),
         format_stats=_build_stats_formatter(
             "resource task attempt cleanup finished:",
-            ("deleted_attempts", "deleted_attempts", 0),
+            "deleted_attempts",
         ),
     ),
     JobDefinition(
@@ -499,10 +484,10 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         service_factory=lambda _reporter: Cloud115KeepaliveService().run(),
         format_stats=_build_stats_formatter(
             "cloud115 keepalive finished:",
-            ("total", "total", 0),
-            ("alive", "alive", 0),
-            ("expired", "expired", 0),
-            ("unavailable", "unavailable", 0),
+            "total",
+            "alive",
+            "expired",
+            "unavailable",
         ),
     ),
 ]
