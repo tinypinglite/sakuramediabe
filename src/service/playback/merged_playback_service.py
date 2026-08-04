@@ -57,7 +57,8 @@ class MergedPlaybackService:
 
     @classmethod
     def _cleanup_cache(cls) -> None:
-        now = time.time()
+        # TTL 判断用单调时钟，避免系统时间回拨导致缓存长期不清理
+        now = time.monotonic()
         stale = [
             key
             for key, (built_at, _layout) in cls._cache.items()
