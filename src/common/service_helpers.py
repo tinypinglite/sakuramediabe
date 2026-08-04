@@ -43,6 +43,36 @@ def safe_int(value: Any, default: int | None = 0) -> int | None:
         return default
 
 
+def backoff_delay(attempt: int, *, step: float = 0.5, cap: float = 2.0) -> float:
+    """线性退避延迟：``min(step * attempt, cap)`` 秒；``attempt`` 从 1 起。"""
+    return min(step * max(attempt, 0), cap)
+
+
+async def poll_until(
+    delays: Sequence[float],
+    check,
+    *,
+    on_failure: Callable[[Exception], None] | None = None,
+) -> None:
+    """按固定延迟列表轮询直到 ``check()``（可等待）不再抛异常；全部失败时抛最后一次异常。
+
+    ``delays`` 首项可为 0（立即首次尝试）；``on_failure`` 记录每次失败信息供最终错误组装。
+    """
+    last_exc: Exception | None = None
+    for delay in delays:
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            await check()
+            return
+        except Exception as exc:
+            last_exc = exc
+            if on_failure is not None:
+                on_failure(exc)
+    assert last_exc is not None  # delays 至少一项
+    raise last_exc
+
+
 def count_by_owner(
     link_model: type[Model],
     owner_fk,

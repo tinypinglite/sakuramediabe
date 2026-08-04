@@ -29,6 +29,7 @@ from src.common.media_paths import (
     movie_asset_relative_dir,
     normalize_asset_dir_name,
 )
+from src.common.service_helpers import backoff_delay
 from src.common.runtime_time import utc_now_for_db
 from src.metadata._providers.models import JavdbMovieActorResource
 from src.model import Image, Movie, MoviePlotImage
@@ -720,6 +721,6 @@ class MovieImageService:
                     exc,
                 )
                 if attempt < self.IMAGE_DOWNLOAD_MAX_RETRIES:
-                    time.sleep(min(0.3 * attempt, 1.0))
+                    time.sleep(backoff_delay(attempt, step=0.3, cap=1.0))
 
         raise ImageDownloadError(f"download_failed:{image_url}:{last_error}")

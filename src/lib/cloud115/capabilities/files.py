@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from src.lib.cloud115.capabilities.base import Cloud115Capability
+from src.common.service_helpers import poll_until
 from src.lib.cloud115.exceptions import Cloud115NotFoundError, Cloud115RequestError
 from src.lib.cloud115.types import DirBreadcrumb, DirEntry, DirMeta, FileMeta
 
@@ -65,16 +65,13 @@ class FilesCapability(Cloud115Capability):
         return await self._get_info(param_key="pick_code", param_value=pickcode, human_id=pickcode)
 
     async def _wait_pickcode_indexed(self, pickcode: str) -> FileMeta:
-        last_exc: Cloud115NotFoundError | None = None
-        for delay in self._PICKCODE_INDEX_WAIT_DELAYS:
-            if delay:
-                await asyncio.sleep(delay)
-            try:
-                return await self.pickcode_info(pickcode)
-            except Cloud115NotFoundError as exc:
-                last_exc = exc
-        assert last_exc is not None  # 循环至少执行一次
-        raise last_exc
+        result: list[FileMeta] = []
+
+        async def _check() -> None:
+            result.append(await self.pickcode_info(pickcode))
+
+        await poll_until(self._PICKCODE_INDEX_WAIT_DELAYS, _check)
+        return result[0]
 
     async def _get_info(self, *, param_key: str, param_value: str, human_id: str) -> FileMeta:
         url = f"{self._BASE_WEBAPI}/files/get_info"

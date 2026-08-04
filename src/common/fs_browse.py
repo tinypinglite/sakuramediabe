@@ -95,3 +95,8 @@ def assert_within_allowed_roots(path: Path, roots: Iterable[str]) -> None:
 def is_video_file(path: Path) -> bool:
     """按后缀判定是否为受支持的视频文件。"""
     return path.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+
+
+def video_suffix(name: str) -> str:
+    """提取文件名后缀（含点、小写）；无扩展名时返回空串。"""
+    return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""

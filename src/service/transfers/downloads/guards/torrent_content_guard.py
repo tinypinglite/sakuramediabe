@@ -21,7 +21,7 @@ import libtorrent as lt
 from loguru import logger
 
 from src.api.exception.errors import ApiError
-from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
+from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS, video_suffix
 from src.config.config import settings
 from src.service.transfers.imports.source_scanner import parse_movie_number_from_scan_path
 
@@ -57,11 +57,6 @@ def _describe_fetch_error(exc: Exception) -> str:
     return type(exc).__name__
 
 
-def _suffix(file_path: str) -> str:
-    name = file_path.rsplit("/", 1)[-1]
-    return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
-
-
 def count_qualified_videos(files: Sequence[tuple[str, int]]) -> int:
     """统计种子里"导入侧真的会收下"的视频文件数。
 
@@ -72,7 +67,7 @@ def count_qualified_videos(files: Sequence[tuple[str, int]]) -> int:
     return sum(
         1
         for file_path, file_size in files
-        if _suffix(file_path) in SUPPORTED_VIDEO_EXTENSIONS and file_size >= minimum_size
+        if video_suffix(file_path.rsplit("/", 1)[-1]) in SUPPORTED_VIDEO_EXTENSIONS and file_size >= minimum_size
     )
 
 
@@ -90,7 +85,7 @@ def count_distinct_movie_numbers(files: Sequence[tuple[str, int]]) -> int:
     minimum_size = settings.media.allowed_min_video_file_size
     distinct_numbers: set[str] = set()
     for file_path, file_size in files:
-        if _suffix(file_path) not in SUPPORTED_VIDEO_EXTENSIONS or file_size < minimum_size:
+        if video_suffix(file_path.rsplit("/", 1)[-1]) not in SUPPORTED_VIDEO_EXTENSIONS or file_size < minimum_size:
             continue
         # 给种子内相对路径垫一个虚拟根段，与落盘后的绝对路径结构对齐：导入侧对
         # <save_path>/<种子内路径> 解析时路径段数恒 >= 3，走父目录 + 文件名分支；不垫层时

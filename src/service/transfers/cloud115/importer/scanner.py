@@ -12,7 +12,7 @@ from collections.abc import Callable
 from loguru import logger
 
 from src.common import subtitle_matches_movie_number
-from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
+from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS, video_suffix
 from src.common.service_helpers import emit_progress
 from src.common.media_import_status import (
     FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
@@ -39,12 +39,8 @@ from src.service.transfers.imports.source_scanner import parse_movie_number_from
 ImportProgressCallback = Callable[[dict], None]
 
 
-def _entry_suffix(name: str) -> str:
-    return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
-
-
 def _entry_is_video(entry: DirEntry) -> bool:
-    return _entry_suffix(entry.name) in SUPPORTED_VIDEO_EXTENSIONS
+    return video_suffix(entry.name) in SUPPORTED_VIDEO_EXTENSIONS
 
 
 
@@ -87,7 +83,7 @@ async def scan_cloud115_source(
     videos: list[CloudSourceFile] = []
     subtitles_by_dir: dict[str, list[CloudSubtitleFile]] = {}
     for entry in source_files:
-        suffix = _entry_suffix(entry.name)
+        suffix = video_suffix(entry.name)
         if suffix == ".srt":
             subtitles_by_dir.setdefault(entry.parent_id, []).append(
                 CloudSubtitleFile(fid=entry.entry_id, pickcode=entry.pickcode, name=entry.name)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
+from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS, video_suffix
 from src.common.media_import_status import (
     FAILURE_REASON_CLOUD115_FILE_CENSORED,
     FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED,
@@ -71,10 +71,6 @@ class Cloud115VideoImportService:
         )
 
     @staticmethod
-    def _suffix(name: str) -> str:
-        return ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
-
-    @staticmethod
     async def _assert_file_outside_library_root(
         client: Cloud115Client,
         *,
@@ -127,11 +123,11 @@ class Cloud115VideoImportService:
             source_entries, rel_dirs = await collect_cloud115_source_files(
                 client,
                 source_cid,
-                needs_rel_path=lambda entry: self._suffix(entry.name)
+                needs_rel_path=lambda entry: video_suffix(entry.name)
                 in SUPPORTED_VIDEO_EXTENSIONS,
             )
             for entry in source_entries:
-                if self._suffix(entry.name) not in SUPPORTED_VIDEO_EXTENSIONS:
+                if video_suffix(entry.name) not in SUPPORTED_VIDEO_EXTENSIONS:
                     continue
                 rel_dir_parts = rel_dirs[entry.parent_id]
                 rel_path = "/".join([*rel_dir_parts, entry.name])
@@ -175,7 +171,7 @@ class Cloud115VideoImportService:
         await self._assert_file_outside_library_root(
             client, parent_cid=file_meta.parent_id, root_cid=root_cid
         )
-        if self._suffix(file_meta.name) not in SUPPORTED_VIDEO_EXTENSIONS:
+        if video_suffix(file_meta.name) not in SUPPORTED_VIDEO_EXTENSIONS:
             raise ValueError("import_source_unsupported")
         parent_meta = await client.dir_info(file_meta.parent_id)
         display_path = "/".join(

@@ -6,6 +6,8 @@ from typing import Any
 import httpx
 from loguru import logger
 
+from src.common.service_helpers import backoff_delay
+
 from .exceptions import MetadataRequestError
 
 
@@ -67,7 +69,7 @@ class MetadataRequestClient:
                 logger.warning("Metadata request transient error method={} url={} elapsed_ms={} detail={}", method.upper(), url, elapsed_ms, exc)
             if attempt >= self.max_retries:
                 break
-            time.sleep(min(0.5 * (attempt + 1), 2.0))
+            time.sleep(backoff_delay(attempt + 1, step=0.5, cap=2.0))
         logger.error("Metadata request failed after retries method={} url={} detail={}", method.upper(), url, last_exception)
         raise MetadataRequestError(method, url, str(last_exception)) from last_exception
 

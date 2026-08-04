@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
+
+from src.common.service_helpers import poll_until
 
 from src.lib.cloud115 import (
     Cloud115Client,
@@ -330,20 +331,24 @@ async def verify_cloud115_renamed_file(
     expected_name: str,
 ) -> None:
     """按 FID 查询并等待 115 改名结果可见。"""
-    last_detail = ""
-    for delay in (0.0, 0.5, 1.0):
-        if delay:
-            await asyncio.sleep(delay)
-        try:
-            meta = await client.file_info(fid)
-            if meta.name == expected_name:
-                return
-            last_detail = f"actual_name={meta.name!r}"
-        except Exception as exc:
-            last_detail = str(exc)
-    raise RuntimeError(
-        f"rename did not become visible for fid={fid}, expected={expected_name!r}, {last_detail}"
-    )
+    details: list[str] = []
+
+    def _record_failure(exc: Exception) -> None:
+        details.append(str(exc))
+
+    async def _check() -> None:
+        meta = await client.file_info(fid)
+        if meta.name == expected_name:
+            return
+        raise RuntimeError(f"actual_name={meta.name!r}")
+
+    try:
+        await poll_until((0.0, 0.5, 1.0), _check, on_failure=_record_failure)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"rename did not become visible for fid={fid}, expected={expected_name!r}, "
+            f"{details[-1] if details else exc}"
+        ) from exc
 
 
 async def open_cloud115_range_reader(
