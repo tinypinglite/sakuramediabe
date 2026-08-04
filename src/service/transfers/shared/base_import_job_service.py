@@ -392,7 +392,9 @@ class BaseImportJobService:
 
     @classmethod
     def _orphan_jobs_query(cls):
-        raise NotImplementedError
+        # 孤儿回收默认不生效；由覆盖该钩子的子类（本地/云端 job service 各自按模型筛选）注册回收入口。
+        # 注释此处的通用实现为默认空查询，避免每个不参与回收的子类重复写 `select().where(False)` 死桩。
+        return cls.JOB_MODEL.select().where(False)
 
     @classmethod
     def _pre_launch_validate(cls, **trigger_kwargs) -> None:

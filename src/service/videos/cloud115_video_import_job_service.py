@@ -347,8 +347,3 @@ class Cloud115VideoImportJobService(BaseImportJobService):
             job.save()
         cls._save_failed_files(job, items)
         return cls.DETAIL_RESOURCE.from_model(job, failed_files=cls._failed_file_resources(job))
-
-    @classmethod
-    def _orphan_jobs_query(cls):
-        # VideoImportJobService 的查询覆盖全部 videos 作业，本类不重复回收。
-        return VideoImportJob.select().where(False)

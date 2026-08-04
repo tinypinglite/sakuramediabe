@@ -279,9 +279,3 @@ class Cloud115ImportJobService(BaseImportJobService):
             "job_state": result_job.state,
             "new_playable_movies": reporter.summary.get("new_playable_movies", []),
         }
-
-    @classmethod
-    def _orphan_jobs_query(cls):
-        # 孤儿回收由 MediaImportJobService 统一处理（cloud115 作业同为 download_task 为空的
-        # ImportJob，被其查询覆盖），本类不单独注册回收入口。
-        return ImportJob.select().where(False)
