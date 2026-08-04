@@ -15,7 +15,7 @@ from src.lib.cloud115 import (
     VideoDefinition,
     VideoSegment,
 )
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
+from src.service.playback.thumbnails.artifacts import ThumbnailArtifactService
 from src.service.playback.thumbnails.backends import cloud115_hls as thumbnail_module
 from src.service.playback.thumbnails.backends.cloud115_hls import (
     Cloud115HlsThumbnailBackend,
@@ -40,7 +40,7 @@ def test_hls_thumbnail_selects_lowest_resolution_then_bandwidth() -> None:
         VideoDefinition(300_000, "", "unknown", "https://cdn/unknown.m3u8"),
     ]
 
-    selected = MediaThumbnailService._select_lowest_hls_definition(definitions)
+    selected = Cloud115HlsThumbnailBackend.select_lowest_definition(definitions)
 
     assert selected.label == "HD-low"
 
@@ -51,13 +51,13 @@ def test_hls_thumbnail_selects_lowest_bandwidth_when_resolutions_are_missing() -
         VideoDefinition(300_000, "invalid", "low", "https://cdn/low.m3u8"),
     ]
 
-    selected = MediaThumbnailService._select_lowest_hls_definition(definitions)
+    selected = Cloud115HlsThumbnailBackend.select_lowest_definition(definitions)
 
     assert selected.label == "low"
 
 
 def test_hls_timeline_keeps_fixed_offsets_and_reuses_same_segment() -> None:
-    targets, expected_count = MediaThumbnailService._build_hls_thumbnail_targets(
+    targets, expected_count = Cloud115HlsThumbnailBackend.build_targets(
         [_segment(0, 10.01), _segment(1, 9.99), _segment(2, 5.0)]
     )
 
@@ -69,7 +69,7 @@ def test_hls_timeline_keeps_fixed_offsets_and_reuses_same_segment() -> None:
 
 
 def test_hls_timeline_assigns_exact_boundary_to_next_segment() -> None:
-    targets, expected_count = MediaThumbnailService._build_hls_thumbnail_targets(
+    targets, expected_count = Cloud115HlsThumbnailBackend.build_targets(
         [_segment(0), _segment(1)]
     )
 
@@ -82,9 +82,9 @@ def test_hls_timeline_assigns_exact_boundary_to_next_segment() -> None:
 
 def test_hls_timeline_defers_empty_or_zero_duration_playlist() -> None:
     with pytest.raises(RuntimeError, match="cloud115_hls_segments_empty"):
-        MediaThumbnailService._build_hls_thumbnail_targets([])
+        Cloud115HlsThumbnailBackend.build_targets([])
     with pytest.raises(RuntimeError, match="cloud115_hls_segments_empty"):
-        MediaThumbnailService._build_hls_thumbnail_targets([_segment(0, 0.0)])
+        Cloud115HlsThumbnailBackend.build_targets([_segment(0, 0.0)])
 
 
 def test_hls_segment_reader_is_lazy_and_reuses_bound_user_agent() -> None:
@@ -221,7 +221,7 @@ def test_hls_segment_decode_limits_network_and_ffmpeg_probe(
 
     assert generated_count == 1
     assert captured["reader_kwargs"] == {
-        "user_agent": MediaThumbnailService.CLOUD115_THUMBNAIL_UA,
+        "user_agent": Cloud115HlsThumbnailBackend.USER_AGENT,
         "chunk_size": 16 * 1024,
     }
     assert captured["open_kwargs"] == {
@@ -303,18 +303,15 @@ def test_thumbnail_dimensions_come_from_generated_webp(
     image_path.parent.mkdir(parents=True)
     PILImage.new("RGB", (640, 360), "black").save(image_path, format="WEBP")
     monkeypatch.setattr(
-        MediaThumbnailService,
-        "_image_root_path",
-        classmethod(lambda cls: tmp_path),
+        "src.service.playback.thumbnails.artifacts.media_image_root_path",
+        lambda: tmp_path,
     )
 
-    assert MediaThumbnailService._read_thumbnail_dimensions(
-        "movies/sample.webp"
-    ) == (640, 360)
+    assert ThumbnailArtifactService.read_dimensions("movies/sample.webp") == (640, 360)
 
 
 def test_video_not_ready_is_classified_as_deferred_system_failure() -> None:
     from src.lib.cloud115 import Cloud115VideoNotReadyError
 
-    assert Cloud115VideoNotReadyError in MediaThumbnailService.CLOUD115_SYSTEM_FAILURES
-    assert MediaThumbnailService._minimum_acceptable_thumbnail_count(100) == 85
+    assert Cloud115VideoNotReadyError in Cloud115HlsThumbnailBackend.SYSTEM_FAILURES
+    assert MediaThumbnailTaskService.minimum_acceptable_count(100) == 85

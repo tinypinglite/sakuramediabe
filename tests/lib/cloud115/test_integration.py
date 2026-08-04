@@ -26,7 +26,7 @@ from src.lib.cloud115 import (
     Cloud115VideoNotReadyError,
     DirEntry,
 )
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
+from src.service.playback.thumbnails.backends.cloud115_hls import Cloud115HlsThumbnailBackend
 
 pytestmark = pytest.mark.cloud115_integration
 
@@ -236,7 +236,7 @@ async def test_hls_segment_thumbnail_decode_real(
     """真实 TS 使用绑定 UA 惰性读取，并能产出首个完整 WebP。"""
     async with Cloud115Client(
         cookies=real_cookies,
-        user_agent=MediaThumbnailService.CLOUD115_THUMBNAIL_UA,
+        user_agent=Cloud115HlsThumbnailBackend.USER_AGENT,
     ) as hls_client:
         pickcode = os.environ.get("CLOUD115_TEST_PICKCODE", "").strip()
         if not pickcode:
@@ -263,7 +263,7 @@ async def test_hls_segment_thumbnail_decode_real(
             info = await hls_client.get_video_info(pickcode)
         except Cloud115MembershipRequiredError as exc:
             pytest.skip(f"account is not VIP: {exc}")
-        definition = MediaThumbnailService._select_lowest_hls_definition(
+        definition = Cloud115HlsThumbnailBackend.select_lowest_definition(
             info.definitions
         )
         segments = await hls_client.get_video_segments_for_definition(definition)
@@ -271,7 +271,7 @@ async def test_hls_segment_thumbnail_decode_real(
             pytest.skip("video HLS playlist has no TS segments")
 
     generated_count = await asyncio.to_thread(
-        MediaThumbnailService._decode_hls_segment_to_webp,
+        Cloud115HlsThumbnailBackend.decode_segment,
         segments[0],
         [0],
         tmp_path,
