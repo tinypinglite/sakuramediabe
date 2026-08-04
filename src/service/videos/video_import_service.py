@@ -41,8 +41,7 @@ from src.model import (
 )
 from src.model.enums import MediaLibraryBackend
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
-from src.service.system.resource_task_state_service import ResourceTaskStateService
+from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
 from src.service.transfers.shared.file_transfer import (
     VIDEOS_LIBRARY_SUBDIR,
     create_version_directory,
@@ -225,7 +224,7 @@ class VideoImportService:
             raise
 
         # 缩略图任务接手（与 JAV 一致，导入后置为全新待处理状态）。
-        ResourceTaskStateService.reset_for_requeue(MediaThumbnailService.TASK_KEY, media.id)
+        Cloud115MediaRegistrar.reset_thumbnail_state(media.id)
         # 首帧封面：增益项，失败仅记日志不阻断导入。
         VideoCoverService.generate_cover(video, target_path)
         # 落库（含合集关联）成功后再删源（cleanup-source；删失败仅告警计入失败明细）。
