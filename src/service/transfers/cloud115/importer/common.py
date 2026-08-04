@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 from src.lib.cloud115 import (
     Cloud115Client,
     Cloud115DuplicateNameError,
