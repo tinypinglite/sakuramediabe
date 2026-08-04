@@ -5,8 +5,6 @@
 实例。
 
 - ``record_files_failure``：批量记账失败项（copy 侧的 group 版包在 copy.py 里）。
-- ``probe_cloud115_media``：字幕/元数据探测的薄包装，只是在 ``common.probe_cloud115_media``
-  基础上多打一条 info 日志。
 - ``register_media``：sha1 幂等登记一条 cloud115 Media；返回 ``(media, 是否新登记)``。
 - ``import_subtitle``：把配对 .srt 下载到本地并落 Subtitle 表。
 """
@@ -21,11 +19,6 @@ from src.lib.cloud115 import Cloud115Client
 from src.model import Media, MediaLibrary, Movie, Subtitle
 from src.service.playback.media_metadata_probe_service import (
     MediaMetadataProbeResult,
-    MediaMetadataProbeService,
-)
-from src.service.transfers.cloud115.importer.common import (
-    CLOUD115_METADATA_PROBE_MAX_BYTES,
-    probe_cloud115_media as _probe_cloud115_media_raw,
 )
 from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
 from src.service.transfers.cloud115.importer.types import CloudSourceFile
@@ -53,26 +46,6 @@ def record_files_failure(
         if kind is not None:
             item["kind"] = kind
         failure_items.append(item)
-
-
-async def probe_cloud115_media(
-    client: Cloud115Client,
-    probe_service: MediaMetadataProbeService,
-    *,
-    pickcode: str,
-    file_size_bytes: int,
-) -> MediaMetadataProbeResult:
-    metadata, fetched_bytes = await _probe_cloud115_media_raw(
-        client,
-        probe_service,
-        pickcode=pickcode,
-        file_size_bytes=file_size_bytes,
-    )
-    logger.info(
-        "Cloud115 metadata probed pickcode={} fetched_bytes={} budget_bytes={}",
-        pickcode, fetched_bytes, CLOUD115_METADATA_PROBE_MAX_BYTES,
-    )
-    return metadata
 
 
 def register_media(

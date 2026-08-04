@@ -34,13 +34,13 @@ from src.service.transfers.cloud115.importer.common import (
     list_cloud115_entity_target_files,
     list_cloud115_target_files,
     normalize_jav_media_filename,
+    probe_cloud115_media,
     resolve_cloud115_copied_entry,
     verify_cloud115_renamed_file,
 )
 from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
 from src.service.transfers.cloud115.importer.strategies.common import (
     import_subtitle,
-    probe_cloud115_media,
     record_files_failure,
     register_media,
 )
@@ -49,23 +49,6 @@ from src.service.transfers.cloud115.importer.types import (
     CloudSourceFile,
     ResolvedFile,
 )
-
-
-def _record_group_failure(
-    group: CloudImportGroup,
-    *,
-    reason: str,
-    detail: str,
-    failure_items: list[dict],
-    stats: dict,
-) -> None:
-    record_files_failure(
-        group.files,
-        reason=reason,
-        detail=detail,
-        failure_items=failure_items,
-        stats=stats,
-    )
 
 
 def _resolve_registered_entry(candidates: list[DirEntry], media: Media) -> DirEntry | None:
@@ -105,8 +88,8 @@ async def import_group_by_copy(
             await target_dir_resolver.resolve_jav_entity(group.movie_number)
         )
     except Exception as exc:
-        _record_group_failure(
-            group,
+        record_files_failure(
+            group.files,
             reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
             detail=f"创建番号目录失败: {exc}",
             failure_items=failure_items,
@@ -126,8 +109,8 @@ async def import_group_by_copy(
             else await list_cloud115_entity_target_files(client, entity_cid)
         )
     except Exception as exc:
-        _record_group_failure(
-            group,
+        record_files_failure(
+            group.files,
             reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
             detail=f"列出番号目录失败: {exc}",
             failure_items=failure_items,
@@ -204,8 +187,8 @@ async def import_group_by_copy(
                             "Cloud115 version dir rollback failed movie_number={} version_cid={} detail={}",
                             group.movie_number, version_cid, cleanup_exc,
                         )
-                _record_group_failure(
-                    group,
+                record_files_failure(
+                    group.files,
                     reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
                     detail=str(exc),
                     failure_items=failure_items,
@@ -224,8 +207,8 @@ async def import_group_by_copy(
                 entity_entries_by_sha1[cloud_file.sha1] = [target_entry]
 
         if target_entry is None:
-            _record_group_failure(
-                group,
+            record_files_failure(
+                group.files,
                 reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
                 detail=f"复制后在目标目录未找到 sha1={cloud_file.sha1} 的条目",
                 failure_items=failure_items,
@@ -249,8 +232,8 @@ async def import_group_by_copy(
             await client.rename_file(r.target_fid, r.target_name)
             await verify_cloud115_renamed_file(client, r.target_fid, r.target_name)
         except Exception as exc:
-            _record_group_failure(
-                group,
+            record_files_failure(
+                group.files,
                 reason=FAILURE_REASON_CLOUD115_RENAME_FAILED,
                 detail=f"fid={r.target_fid}: {exc}",
                 failure_items=failure_items,
@@ -273,15 +256,16 @@ async def import_group_by_copy(
             probe_results[r.cloud_file.sha1] = None
             continue
         try:
-            probe_results[r.cloud_file.sha1] = await probe_cloud115_media(
+            metadata, _fetched = await probe_cloud115_media(
                 client,
                 probe_service,
                 pickcode=r.target_pickcode,
                 file_size_bytes=r.cloud_file.size,
             )
+            probe_results[r.cloud_file.sha1] = metadata
         except Exception as exc:
-            _record_group_failure(
-                group,
+            record_files_failure(
+                group.files,
                 reason=FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED,
                 detail=f"{r.cloud_file.rel_path}: {exc}",
                 failure_items=failure_items,
@@ -309,8 +293,8 @@ async def import_group_by_copy(
                 )
                 registration_results.append((r.cloud_file, registered))
     except Exception as exc:
-        _record_group_failure(
-            group,
+        record_files_failure(
+            group.files,
             reason=FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
             detail=str(exc),
             failure_items=failure_items,

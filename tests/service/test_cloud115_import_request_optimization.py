@@ -793,8 +793,11 @@ def _run_move_group(
     monkeypatch.setattr(
         "src.service.transfers.cloud115.importer.strategies.move.probe_cloud115_media",
         AsyncMock(
-            return_value=SimpleNamespace(
-                video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
+            return_value=(
+                SimpleNamespace(
+                    video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
+                ),
+                0,
             )
         ),
     )
@@ -894,8 +897,11 @@ def test_cleanup_source_registers_before_moving(monkeypatch):
     monkeypatch.setattr(
         "src.service.transfers.cloud115.importer.strategies.move.probe_cloud115_media",
         AsyncMock(
-            return_value=SimpleNamespace(
-                video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
+            return_value=(
+                SimpleNamespace(
+                    video_info={"codec": "h264"}, resolution="1080p", duration_seconds=60
+                ),
+                0,
             )
         ),
     )

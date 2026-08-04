@@ -37,12 +37,12 @@ from src.service.playback.media_metadata_probe_service import (
 from src.service.transfers.cloud115.importer.common import (
     Cloud115TargetDirResolver,
     normalize_jav_media_filename,
+    probe_cloud115_media,
     verify_cloud115_renamed_file,
 )
 from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
 from src.service.transfers.cloud115.importer.strategies.common import (
     import_subtitle,
-    probe_cloud115_media,
     record_files_failure,
     register_media,
 )
@@ -202,12 +202,13 @@ async def import_group_by_move(
             probe_results[cloud_file.sha1] = None
             continue
         try:
-            probe_results[cloud_file.sha1] = await probe_cloud115_media(
+            metadata, _fetched = await probe_cloud115_media(
                 client,
                 probe_service,
                 pickcode=cloud_file.pickcode,
                 file_size_bytes=cloud_file.size,
             )
+            probe_results[cloud_file.sha1] = metadata
         except Exception as exc:
             record_files_failure(
                 pending,

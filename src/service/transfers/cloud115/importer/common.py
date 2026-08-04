@@ -385,4 +385,8 @@ async def probe_cloud115_media(
         fetched_bytes = reader.fetched_bytes
     if metadata.video_info is None:
         raise RuntimeError("video_info_missing_after_probe")
+    logger.info(
+        "Cloud115 metadata probed pickcode={} fetched_bytes={} budget_bytes={}",
+        pickcode, fetched_bytes, CLOUD115_METADATA_PROBE_MAX_BYTES,
+    )
     return metadata, fetched_bytes
