@@ -15,8 +15,6 @@ from .movies import (
     MovieListItemResource,
     MovieNumberParseRequest,
     MovieNumberParseResponse,
-    MovieSeriesJavdbImportCompletedResource,
-    MovieSeriesJavdbImportStatsResource,
     TagListItemResource,
 )
 
@@ -34,8 +32,6 @@ __all__ = [
     "MovieListItemResource",
     "MovieNumberParseRequest",
     "MovieNumberParseResponse",
-    "MovieSeriesJavdbImportCompletedResource",
-    "MovieSeriesJavdbImportStatsResource",
     "TagListItemResource",
     "YearResource",
 ]

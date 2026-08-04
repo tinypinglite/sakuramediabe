@@ -141,11 +141,6 @@ class MovieMediaPointResource(SchemaModel):
     image: ImageResource
 
 
-class MovieMediaSubtitleResource(SchemaModel):
-    file_name: str
-    url: str
-
-
 class MovieMediaResource(SchemaModel):
     media_id: int = Field(validation_alias="id")
     library_id: int | None = None
@@ -212,22 +207,6 @@ class MovieSeriesListRequest(SchemaModel):
     sort: str | None = None
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
-
-
-class MovieSeriesJavdbImportStatsResource(SchemaModel):
-    total: int = 0
-    created_count: int = 0
-    already_exists_count: int = 0
-    failed_count: int = 0
-
-
-class MovieSeriesJavdbImportCompletedResource(SchemaModel):
-    success: bool
-    movies: list[MovieListItemResource] = Field(default_factory=list)
-    skipped_items: list[dict[str, Any]] = Field(default_factory=list)
-    failed_items: list[dict[str, Any]] = Field(default_factory=list)
-    stats: MovieSeriesJavdbImportStatsResource | None = None
-    reason: str | None = None
 
 
 class MovieCollectionMarkRequest(SchemaModel):
