@@ -366,11 +366,6 @@ class Cloud115KeepaliveService:
             return Cloud115CookieStatus.UNAVAILABLE
 
     @classmethod
-    async def _check_library(cls, library: MediaLibrary) -> Cloud115CookieStatus:
-        """兼容既有调用和测试替换点；新调用方使用公开探测方法。"""
-        return await cls.probe_library_cookies_status(library)
-
-    @classmethod
     def run(cls, progress_callback=None) -> dict:
         libraries = cls._cloud115_libraries()
         stats = {
@@ -390,7 +385,7 @@ class Cloud115KeepaliveService:
                     library.id, library.name, exc,
                 )
             try:
-                cookie_status = asyncio.run(cls._check_library(library))
+                cookie_status = asyncio.run(cls.probe_library_cookies_status(library))
             except Cloud115AuthError:
                 cookie_status = Cloud115CookieStatus.EXPIRED
             except Exception as exc:
