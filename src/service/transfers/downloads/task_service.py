@@ -30,7 +30,7 @@ from src.service.transfers.downloads.common import (
     ALLOWED_DOWNLOAD_STATES,
     build_task_movie_filter,
     is_download_complete,
-    normalize_state_filter,
+    normalize_state_filters,
     require_client,
     require_task,
     resolve_task_sort,
@@ -58,7 +58,7 @@ class DownloadTaskService:
         page_size: int = 20,
         client_id: int | None = None,
         movie_number: str | None = None,
-        download_state: str | None = None,
+        download_state: list[str] | None = None,
         sort: str | None = None,
     ) -> PageResponse[DownloadTaskResource]:
         validate_page(page, page_size)
@@ -68,13 +68,15 @@ class DownloadTaskService:
             query = query.where(DownloadTask.client == client_id)
         if movie_number and movie_number.strip():
             query = query.where(build_task_movie_filter(movie_number))
-        normalized_state = normalize_state_filter(
+        normalized_states = normalize_state_filters(
             download_state,
             field_name="download_state",
             allowed_values=ALLOWED_DOWNLOAD_STATES,
         )
-        if normalized_state is not None:
-            query = query.where(DownloadTask.download_state == normalized_state)
+        if normalized_states is not None:
+            query = query.where(
+                DownloadTask.download_state.in_(tuple(sorted(normalized_states)))
+            )
 
         total = query.count()
         tasks = list(

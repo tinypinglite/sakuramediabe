@@ -342,25 +342,35 @@ def ensure_name_available(name: str, exclude_client_id: int | None = None) -> No
         )
 
 
-def normalize_state_filter(
-    value: str | None,
+def normalize_state_filters(
+    values: list[str] | None,
     *,
     field_name: str,
     allowed_values: set[str],
-) -> str | None:
-    if value is None:
+) -> set[str] | None:
+    """把多值状态筛选（list[str]）归一化为合法状态集合；空/未传返回 None。
+
+    逐个校验并把空串/空白项跳过，返回去重后的集合；若合法项为空则返回 None
+    （表示不过滤）。非法取值抛 [ApiError] 422。
+    """
+    if not values:
         return None
-    normalized = value.strip().lower()
-    if not normalized:
-        return None
-    if normalized not in allowed_values:
-        raise ApiError(
-            422,
-            "invalid_download_task_filter",
-            f"Invalid {field_name}",
-            {field_name: value},
-        )
-    return normalized
+    normalized: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        item = value.strip().lower()
+        if not item:
+            continue
+        if item not in allowed_values:
+            raise ApiError(
+                422,
+                "invalid_download_task_filter",
+                f"Invalid {field_name}",
+                {field_name: value},
+            )
+        normalized.add(item)
+    return normalized or None
 
 
 def resolve_task_sort(value: str | None) -> Sequence:
