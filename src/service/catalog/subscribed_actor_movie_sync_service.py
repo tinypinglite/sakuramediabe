@@ -18,7 +18,6 @@ class SubscribedActorMovieSyncService:
         self.provider = provider or build_javdb_provider()
         self.import_service = import_service or CatalogImportService()
 
-    @staticmethod
     def sync_subscribed_actor_movies(self, progress_callback=None) -> dict[str, int]:
         actors = list(
             Actor.select()

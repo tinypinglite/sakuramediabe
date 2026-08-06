@@ -42,7 +42,6 @@ class ImageSearchIndexService:
         self.store.ensure_scalar_indices()
         self._store_ready = True
 
-    @staticmethod
     def index_pending_thumbnails(self, progress_callback=None) -> dict[str, int]:
         pending_ids = self._pending_thumbnail_ids()
         stats = {
