@@ -245,6 +245,7 @@ class SubscribedMovieAutoDownloadService:
             setup_run=self._setup_run,
             # 种子判死后 succeeded 行会重新进候选，领取复核用宽松版。
             claim_eligible=ResourceTaskLedger.resync_claim_eligible,
+            resource_model=Movie,
         )
         stats = ResourceTaskRunner.run(spec, reporter, only_ids=only_ids)
         shared = stats.get("shared") or {}
@@ -273,7 +274,9 @@ class SubscribedMovieAutoDownloadService:
         """
         now = utc_now_for_db()
         query = (
-            Movie.select(Movie)
+            # 候选只取 id（完整模型由内核分批加载，process_one / retry.exempt 用到
+            # movie_number / release_date 时由批加载的完整模型提供）。
+            Movie.select(Movie.id)
             .join(ResourceTaskState, JOIN.LEFT_OUTER, on=search_state_join_condition())
             .where(Movie.is_subscribed == True)
             .where(~self._media_exists_expression())

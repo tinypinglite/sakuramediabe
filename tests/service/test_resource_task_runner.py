@@ -3,6 +3,7 @@ succeeded / failed_retryable+退避 / failed_terminal / exhausted / deferred / a
 """
 
 from datetime import timedelta
+from typing import Callable
 
 import pytest
 
@@ -31,6 +32,45 @@ class StubReporter:
 
 def _create_movie(number: str) -> Movie:
     return Movie.create(movie_number=number, javdb_id=f"javdb-{number}", title=number)
+
+
+def _batched_spec(
+    movie_ids: list[int],
+    processed: list[int],
+    *,
+    process_one: Callable | None = None,
+    raw_ids: bool = False,
+    order_desc: bool = True,
+) -> ResourceTaskSpec:
+    """分批加载模式：候选只返回 id，内核按批加载完整模型后交给 process_one。
+
+    ``processed`` 由外部传入捕获实际处理顺序，用于验证批内按候选 id 重排。
+    ``raw_ids`` 时候选直接返回 int 列表（模拟候选快照过期：id 仍保留但行已不存在）。
+    """
+
+    def select_candidates(state_condition, only_ids=None):
+        if raw_ids:
+            return list(movie_ids)
+        # 带显式 order_by：验证内核把"候选顺序"（而非 IN 返回序）原样交给 process_one。
+        query = Movie.select(Movie.id).where(Movie.id.in_(movie_ids))
+        query = query.order_by(Movie.id.desc() if order_desc else Movie.id.asc())
+        if only_ids:
+            query = query.where(Movie.id.in_(only_ids))
+        return query
+
+    def default_process_one(_ctx, movie):
+        # 分批模式下 process_one 必须拿到完整模型（而非只有 id 的投影）。
+        assert movie.movie_number
+        processed.append(movie.id)
+
+    return ResourceTaskSpec(
+        task_key=TASK_KEY,
+        resource_type="movie",
+        retry=RetryPolicy(max_attempts=3, backoff_base_seconds=600),
+        select_candidates=select_candidates,
+        process_one=process_one or default_process_one,
+        resource_model=Movie,
+    )
 
 
 def _build_spec(behavior: dict[int, Exception | None], *, max_attempts: int = 3) -> ResourceTaskSpec:
@@ -256,8 +296,7 @@ def test_runner_resync_claim_allows_succeeded_row(test_db):
     assert _record(movie).state == "succeeded"
 
 
-def test_ledger_force_claim_only_refuses_running(test_db):
-    # 单资源直跑（不传 eligible_check）：succeeded 可强制领取（重跑语义），running 拒绝。
+def test_ledger_force_claim_only_refuses_running(test_db):    # 单资源直跑（不传 eligible_check）：succeeded 可强制领取（重跑语义），running 拒绝。
     movie = _create_movie("KER-013")
     _create_state(movie, "succeeded")
 
@@ -286,3 +325,70 @@ def test_ledger_force_claim_only_refuses_running(test_db):
         )
         is None
     )
+
+
+def test_runner_batched_loads_full_models_and_preserves_order(test_db):
+    # 分批模式下：候选只给 id（倒序查询），内核批加载完整模型、按候选顺序处理。
+    first = _create_movie("KER-014")
+    second = _create_movie("KER-015")
+    third = _create_movie("KER-016")
+    processed: list[int] = []
+    reporter = StubReporter()
+
+    stats = ResourceTaskRunner.run(
+        _batched_spec([third.id, first.id, second.id], processed), reporter
+    )
+
+    assert stats["candidate_count"] == 3
+    assert stats["succeeded_count"] == 3
+    # 候选按 id 倒序（third, second, first）→ 内核保持该顺序处理。
+    assert processed == [third.id, second.id, first.id]
+    assert reporter.events[-1]["current"] == 3
+    assert reporter.events[-1]["total"] == 3
+
+
+def test_runner_batched_abort_stops_following_batches(test_db):
+    # 分批模式串行执行：首资源 abort 后，后续资源不再处理（无状态行残留）。
+    first = _create_movie("KER-017")
+    second = _create_movie("KER-018")
+    processed: list[int] = []
+
+    def abort_on_first(_ctx, movie):
+        if movie.id == first.id:
+            raise TaskAbortError("upstream_fused", "熔断")
+        processed.append(movie.id)
+
+    spec = _batched_spec(
+        [first.id, second.id], processed, process_one=abort_on_first, order_desc=False
+    )
+
+    with pytest.raises(TaskAbortError):
+        ResourceTaskRunner.run(spec, StubReporter())
+
+    assert processed == []
+    # 中止发生在第一个资源：后面的资源保持无状态行，等下一轮。
+    assert (
+        ResourceTaskState.select()
+        .where(ResourceTaskState.resource_id == second.id)
+        .count()
+        == 0
+    )
+
+
+def test_runner_batched_missing_row_counts_as_skipped(test_db):
+    # 候选 id 在批加载时已不存在（如行被删除 / 快照过期）：按 skipped 计并推进进度。
+    movie = _create_movie("KER-019")
+    ghost_id = movie.id + 1000
+    processed: list[int] = []
+    reporter = StubReporter()
+
+    stats = ResourceTaskRunner.run(
+        _batched_spec([ghost_id, movie.id], processed, raw_ids=True), reporter
+    )
+
+    assert stats["candidate_count"] == 2
+    assert stats["skipped_count"] == 1
+    assert stats["succeeded_count"] == 1
+    assert processed == [movie.id]
+    assert reporter.events[-1]["current"] == 2
+    assert reporter.events[-1]["total"] == 2

@@ -185,7 +185,13 @@ class MovieInteractionSyncService:
 
     def _select_candidates(self, _state_condition, only_ids=None) -> list[Movie]:
         now = utc_now_for_db()
-        query = Movie.select().order_by(Movie.id.asc())
+        # 候选只取分层筛选所需的列（完整模型由内核分批加载），避免全库全字段驻留内存。
+        query = Movie.select(
+            Movie.id,
+            Movie.release_date,
+            Movie.is_subscribed,
+            Movie.subscribed_at,
+        ).order_by(Movie.id.asc())
         if only_ids:
             query = query.where(Movie.id.in_(list(only_ids)))
         movies = list(query)
@@ -280,6 +286,7 @@ class MovieInteractionSyncService:
             },
             # 分层重刷会把 succeeded 行选进候选，领取复核用宽松版。
             claim_eligible=ResourceTaskLedger.resync_claim_eligible,
+            resource_model=Movie,
         )
         stats = ResourceTaskRunner.run(spec, reporter, only_ids=only_ids)
         counters = stats.get("shared") or {}

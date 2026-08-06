@@ -65,10 +65,35 @@ REASON_TEXTS = {
 }
 
 
+class _CandidateMovie:
+    """每日推荐候选的轻量评分输入：只驻留打分所需字段，不持有完整 Movie 模型。
+
+    生成链路（30 万级全库候选）不再把完整 Movie 对象全量加载进内存，
+    评分与落库只用 id / heat / release_date / created_at。
+    """
+
+    __slots__ = ("id", "heat", "release_date", "created_at", "is_subscribed")
+
+    def __init__(
+        self,
+        *,
+        id: int,
+        heat: int,
+        release_date,
+        created_at,
+        is_subscribed: bool = False,
+    ) -> None:
+        self.id = id
+        self.heat = heat
+        self.release_date = release_date
+        self.created_at = created_at
+        self.is_subscribed = is_subscribed
+
+
 class _ScoredRecommendation:
     def __init__(
         self,
-        movie: Movie,
+        movie: _CandidateMovie,
         score: float,
         reason_codes: list[str],
         signal_scores: dict[str, float],
@@ -97,7 +122,7 @@ class DailyRecommendationService:
         return max(0.0, (1.0 - ((rank - 1) / RANK_DECAY_WINDOW)) * weight)
 
     @staticmethod
-    def _release_sort_value(movie: Movie) -> datetime:
+    def _release_sort_value(movie: _CandidateMovie) -> datetime:
         release_date = movie.release_date
         if release_date is None:
             return datetime.min
@@ -106,8 +131,30 @@ class DailyRecommendationService:
         return datetime.combine(release_date, time.min)
 
     @classmethod
-    def _load_candidate_movies(cls) -> list[Movie]:
-        return list(Movie.select().where(Movie.is_collection == False))
+    def _load_candidate_movies(cls) -> list[_CandidateMovie]:
+        # 全库候选只投影打分所需列，避免 30 万完整 Movie 模型驻留内存（实测峰值 3.9GB）。
+        # is_collection 仅用于过滤，不需要进入投影列。
+        rows = (
+            Movie.select(
+                Movie.id,
+                Movie.heat,
+                Movie.release_date,
+                Movie.created_at,
+                Movie.is_subscribed,
+            )
+            .where(Movie.is_collection == False)
+            .order_by(Movie.id.asc())
+        )
+        return [
+            _CandidateMovie(
+                id=row.id,
+                heat=int(row.heat or 0),
+                release_date=row.release_date,
+                created_at=row.created_at,
+                is_subscribed=bool(row.is_subscribed),
+            )
+            for row in rows
+        ]
 
     @staticmethod
     def _load_recent_seed_ids(candidate_ids: set[int]) -> list[int]:
@@ -132,17 +179,6 @@ class DailyRecommendationService:
             MovieActor.select(MovieActor.movie)
             .join(Actor, JOIN.INNER, on=(MovieActor.actor == Actor.id))
             .where(Actor.is_subscribed == True, MovieActor.movie.in_(candidate_ids))
-            .tuples()
-        )
-        return {movie_id for (movie_id,) in rows}
-
-    @staticmethod
-    def _load_subscribed_movie_ids(candidate_ids: set[int]) -> set[int]:
-        if not candidate_ids:
-            return set()
-        rows = (
-            Movie.select(Movie.id)
-            .where(Movie.id.in_(candidate_ids), Movie.is_subscribed == True)
             .tuples()
         )
         return {movie_id for (movie_id,) in rows}
@@ -175,13 +211,13 @@ class DailyRecommendationService:
         return dict(scores)
 
     @classmethod
-    def _load_heat_scores(cls, movies: Sequence[Movie]) -> dict[int, float]:
-        positive_heats = sorted(int(movie.heat or 0) for movie in movies if int(movie.heat or 0) > 0)
+    def _load_heat_scores(cls, movies: Sequence[_CandidateMovie]) -> dict[int, float]:
+        positive_heats = sorted(movie.heat for movie in movies if movie.heat > 0)
         if not positive_heats:
             return {}
         index = max(0, math.ceil(len(positive_heats) * 0.95) - 1)
         heat_ref = max(float(positive_heats[index]), 1.0)
-        return {movie.id: cls._normalize(int(movie.heat or 0) / heat_ref) for movie in movies}
+        return {movie.id: cls._normalize(movie.heat / heat_ref) for movie in movies}
 
     @classmethod
     def _load_ranking_scores(cls, candidate_ids: set[int]) -> dict[int, float]:
@@ -213,7 +249,7 @@ class DailyRecommendationService:
         return dict(scores)
 
     @classmethod
-    def _build_freshness_scores(cls, movies: Sequence[Movie]) -> dict[int, float]:
+    def _build_freshness_scores(cls, movies: Sequence[_CandidateMovie]) -> dict[int, float]:
         if not movies:
             return {}
         ordered = sorted(
@@ -238,11 +274,12 @@ class DailyRecommendationService:
         return [REASON_TEXTS[reason_code] for reason_code in reason_codes if reason_code in REASON_TEXTS]
 
     @classmethod
-    def _score_movies(cls, movies: Sequence[Movie]) -> tuple[list[_ScoredRecommendation], dict[str, int | bool]]:
+    def _score_movies(cls, movies: Sequence[_CandidateMovie]) -> tuple[list[_ScoredRecommendation], dict[str, int | bool]]:
         candidate_ids = {movie.id for movie in movies}
         recent_seed_ids = cls._load_recent_seed_ids(candidate_ids)
         subscribed_actor_movie_ids = cls._load_subscribed_actor_movie_ids(candidate_ids)
-        subscribed_movie_ids = cls._load_subscribed_movie_ids(candidate_ids)
+        # 订阅影片标记已随候选投影加载（Movie.is_subscribed），无需再查一次 30 万行范围。
+        subscribed_movie_ids = {movie.id for movie in movies if movie.is_subscribed}
         similarity_scores = cls._load_similarity_scores(recent_seed_ids, candidate_ids)
         heat_scores = cls._load_heat_scores(movies)
         ranking_scores = cls._load_ranking_scores(candidate_ids)

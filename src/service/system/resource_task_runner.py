@@ -37,6 +37,10 @@ STATE_EXHAUSTED = "exhausted"
 
 ERROR_CODE_UNHANDLED = "unhandled_exception"
 
+# 候选分批加载的批大小：一次只驻留一批完整模型，避免 desc_sync / 翻译等
+# 任务把数万~数十万候选全量 list() 进内存（实测单任务峰值 3.4-3.9GB）。
+CANDIDATE_BATCH_SIZE = 200
+
 
 class TaskItemError(Exception):
     """单资源处理失败：带结构化 error_code 与可重试性，由内核分类落库。
@@ -110,7 +114,13 @@ class ResourceTaskSpec:
     process_one: Callable[[RunContext, Any], Any]
     # 每 run 一次，产出跨资源共享上下文（provider 会话 / 预载缓存 / 熔断器等）。
     setup_run: Callable[[RunContext], Any] | None = None
-    resource_id_of: Callable[[Any], int] = field(default=lambda resource: int(resource.id))
+    resource_id_of: Callable[[Any], int] = field(
+        default=lambda resource: int(getattr(resource, "id", resource))
+    )
+    # 候选分批加载用的模型类型：提供后内核只把候选 id 全量驻留（int 列表内存极小），
+    # 完整模型按 CANDIDATE_BATCH_SIZE 分批加载、批间释放；None 时退化为旧行为
+    # （候选对象全量驻留，兼容未接入分批的调用方与既有测试）。
+    resource_model: type | None = None
     # 任务内并发：>1 时内核开线程池逐资源执行（每 worker 自建 DB 连接、ctx 显式传参，
     # 取代旧的 ContextVar wrap）。并发模式下 TaskAbortError 在收齐已提交项后再抛出。
     concurrency: int = 1
@@ -490,13 +500,46 @@ class ResourceTaskRunner:
             reporter.emit(current=current, total=total)
 
         concurrency = max(int(spec.concurrency or 1), 1)
-        if concurrency == 1 or len(candidates) <= 1:
-            for resource in candidates:
-                bucket, abort_error = cls._run_single(spec, ctx, resource)
-                record_outcome(bucket)
-                if abort_error is not None:
-                    raise abort_error
-        else:
+        resource_model = spec.resource_model
+
+        def iter_resource_batches():
+            """按候选 id 分批产出完整模型；未提供 resource_model 时退化为旧行为。
+
+            完整模型批内按候选 id 顺序重排（IN 查询不保证行序），保证跨批优先级
+            语义不变；批内缺行（加载不到，如已删除）按 skipped 计数并推进进度。
+            """
+            if resource_model is None:
+                yield candidates
+                return
+            pk = resource_model._meta.primary_key
+            for batch_start in range(0, len(candidates), CANDIDATE_BATCH_SIZE):
+                batch_ids = [
+                    spec.resource_id_of(candidate)
+                    for candidate in candidates[batch_start : batch_start + CANDIDATE_BATCH_SIZE]
+                ]
+                rows_by_id = {
+                    int(getattr(row, pk.name)): row
+                    for row in resource_model.select().where(pk.in_(batch_ids))
+                }
+                batch: list = []
+                for candidate_id in batch_ids:
+                    row = rows_by_id.get(candidate_id)
+                    if row is None:
+                        record_outcome("skipped_count")
+                        continue
+                    batch.append(row)
+                if batch:
+                    yield batch
+
+        def process_batch(batch: list) -> TaskAbortError | None:
+            if concurrency == 1 or len(batch) <= 1:
+                for resource in batch:
+                    bucket, abort_error = cls._run_single(spec, ctx, resource)
+                    record_outcome(bucket)
+                    if abort_error is not None:
+                        return abort_error
+                return None
+
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             from src.common.database import ensure_database_ready
@@ -511,15 +554,19 @@ class ResourceTaskRunner:
                 max_workers=concurrency,
                 thread_name_prefix=f"resource-task-{spec.task_key}",
             ) as pool:
-                futures = [pool.submit(worker, resource) for resource in candidates]
+                futures = [pool.submit(worker, resource) for resource in batch]
                 for future in as_completed(futures):
                     bucket, abort_error = future.result()
                     record_outcome(bucket)
                     if abort_error is not None and first_abort is None:
                         first_abort = abort_error
-            if first_abort is not None:
-                # 并发模式下无法拦截已提交项：收齐全部结果后再抛出中止。
-                raise first_abort
+            return first_abort
+
+        # 批间串行；abort 在批内立即停，后续批不再启动。
+        for batch in iter_resource_batches():
+            abort_error = process_batch(batch)
+            if abort_error is not None:
+                raise abort_error
 
         if isinstance(ctx.shared, dict):
             # setup_run 产出的共享上下文若是 dict，回传给任务侧合并领域计数。

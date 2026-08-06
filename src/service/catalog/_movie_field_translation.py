@@ -145,7 +145,8 @@ class MovieFieldTranslationServiceBase:
             Movie.heat,
         )
         query = (
-            Movie.select(Movie)
+            # 只取 id：完整模型由内核分批加载，避免全量驻留内存（候选可达数十万）。
+            Movie.select(Movie.id)
             .where(
                 source_field != "",
                 state_condition(cls.TASK_KEY, "movie", Movie.id),
@@ -344,6 +345,7 @@ class MovieFieldTranslationServiceBase:
             select_candidates=self._select_candidates,
             process_one=self._process_one,
             setup_run=self._setup_run,
+            resource_model=Movie,
         )
         stats = ResourceTaskRunner.run(spec, reporter, only_ids=only_ids)
         # 保持旧统计口径（registry format_stats 与日志锚点不变）。

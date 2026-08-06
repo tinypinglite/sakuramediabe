@@ -57,7 +57,9 @@ class MediaThumbnailTaskService:
         only_ids=None,
     ):
         query = (
-            Media.select(Media)
+            # 候选只取 id（count_pending_media 复用同一查询做 .count() 兼容）；
+            # 完整模型由内核按 CANDIDATE_BATCH_SIZE 分批加载。
+            Media.select(Media.id)
             .join(MediaLibrary)
             .where(
                 Media.valid == True,
@@ -233,6 +235,7 @@ class MediaThumbnailTaskService:
             process_one=cls._process_one,
             setup_run=lambda _ctx: {"generated_thumbnails": 0},
             concurrency=concurrency,
+            resource_model=Media,
         )
 
     @classmethod

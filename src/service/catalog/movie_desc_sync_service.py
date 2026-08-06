@@ -25,8 +25,9 @@ class MovieDescSyncService:
 
     @classmethod
     def _select_candidates(cls, state_condition, only_ids=None):
+        # 只取 id：完整模型由内核按 CANDIDATE_BATCH_SIZE 分批加载，避免全量驻留内存。
         query = (
-            Movie.select(Movie)
+            Movie.select(Movie.id)
             .where(state_condition(cls.TASK_KEY, "movie", Movie.id))
             # 已订阅影片优先（订阅时间升序），其余按 id 稳定排序。
             .order_by(Movie.subscribed_at.is_null(), Movie.subscribed_at.asc(), Movie.id.asc())
@@ -57,6 +58,7 @@ class MovieDescSyncService:
             retry=CatalogImportService.DESC_SYNC_RETRY_POLICY,
             select_candidates=self._select_candidates,
             process_one=self._process_one,
+            resource_model=Movie,
         )
         stats = ResourceTaskRunner.run(spec, reporter, only_ids=only_ids)
         # 保持旧统计口径（registry format_stats 与日志锚点不变）。
