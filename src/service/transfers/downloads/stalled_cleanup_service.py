@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from loguru import logger
 
@@ -140,7 +140,9 @@ class QBStalledCleanupService:
             # 正常排队→轮上→下载的种子 started_at 早已由对账写入，不会用 added_on 误伤。
             if not isinstance(last_activity, int) or isinstance(last_activity, bool):
                 return "skipped"
-            now_ts = int(now.timestamp())
+            # utc_now_for_db 返回 naive UTC，naive 的 .timestamp() 会按 OS 本地时区解释
+            # （+8 时区偏小 8h → 阈值虚涨、负时区偏大 → 提前误删），必须显式补时区。
+            now_ts = int(now.replace(tzinfo=timezone.utc).timestamp())
             if last_activity <= 0 or last_activity > now_ts:
                 return "skipped"
             if now_ts - last_activity < hours * 3600:
