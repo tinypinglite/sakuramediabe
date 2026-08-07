@@ -10,6 +10,7 @@ from src.api.exception.errors import ApiError
 from src.api.exception.exception import api_error_handler
 from src.api.routers import deps
 from src.api.routers.catalog import subscriptions as movie_subscriptions
+from src.api.routers.catalog import subtitle_imports
 from src.api.routers.catalog import tags
 from src.api.routers.discovery import hot_reviews, image_search, ranking_sources
 from src.api.routers.files import images
@@ -72,6 +73,15 @@ def test_media_import_router_uses_auth_and_db_dependencies():
     dependency_targets = {
         dependency.dependency
         for dependency in media_import.router.dependencies
+    }
+
+    assert deps.db_deps in dependency_targets
+    assert deps.get_current_user in dependency_targets
+
+
+def test_subtitle_imports_router_uses_auth_and_db_dependencies():
+    dependency_targets = {
+        dependency.dependency for dependency in subtitle_imports.router.dependencies
     }
 
     assert deps.db_deps in dependency_targets
@@ -221,6 +231,18 @@ def test_create_app_registers_videos_routes():
     assert "/video-collections/{collection_id}/items/{item_id}" in paths
     assert "/video-collections/{collection_id}/items/reorder" in paths
     assert "/video-imports" in paths
+
+
+def test_create_app_registers_subtitle_import_routes():
+    app = create_app()
+    paths = {getattr(route, "path", None) for route in app.routes}
+
+    assert "/subtitle-imports" in paths
+    assert "/subtitle-imports/{subtitle_import_job_id}" in paths
+    assert "/subtitle-imports/{subtitle_import_job_id}/retry" in paths
+    assert "/subtitle-imports/{subtitle_import_job_id}/rerun" in paths
+    assert "/subtitle-imports/{subtitle_import_job_id}/failed-files" in paths
+    assert "/subtitle-imports/{subtitle_import_job_id}/failed-files/rename" in paths
 
 
 def test_openapi_uses_oauth2_password_flow_for_authorize_button():

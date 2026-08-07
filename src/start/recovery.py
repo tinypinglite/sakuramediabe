@@ -9,6 +9,7 @@ from src.service.catalog import (
     MovieDescTranslationService,
     MovieInteractionSyncService,
     MovieTitleTranslationService,
+    SubtitleImportJobService,
 )
 from src.service.playback import MediaThumbnailService
 from src.service.system import ActivityService
@@ -55,6 +56,7 @@ BUSINESS_RECOVERY_HANDLERS: dict[str, Callable[[], object]] = {
     "download_task_import": lambda: DownloadSyncService().recover_orphaned_imports_only(),
     "media_directory_import": _recover_media_directory_imports,
     "video_directory_import": lambda: VideoImportJobService.recover_orphaned_jobs(),
+    "subtitle_directory_import": lambda: SubtitleImportJobService.recover_orphaned_jobs(),
     "media_rapid_upload": lambda: MediaRapidUploadService.recover_interrupted_batches(),
 }
 

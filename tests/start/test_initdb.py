@@ -29,6 +29,7 @@ from src.model import (
     ResourceTaskState,
     SchemaMigration,
     Subtitle,
+    SubtitleImportJob,
     SystemEvent,
     SystemNotification,
     User,
@@ -105,6 +106,7 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
     assert SystemNotification.table_exists()
     assert SystemEvent.table_exists()
     assert Subtitle.table_exists()
+    assert SubtitleImportJob.table_exists()
     assert MediaRapidUploadBatch.table_exists()
     assert MediaRapidUploadItem.table_exists()
     # 秒传 item 需带 failure_reason 列，用来区分 not_hit / 其它可重试失败。

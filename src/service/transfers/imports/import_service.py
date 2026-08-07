@@ -4,7 +4,6 @@
 再委托 ``media_import_writer`` 完成落库。ImportJob 状态维护与 DownloadTask 状态回写在这里收口。
 """
 
-import json
 import time
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -25,8 +24,6 @@ from src.common.media_import_status import (
     FAILURE_REASON_METADATA_UPSERT_FAILED,
     FAILURE_REASON_NO_MEDIA_FILES_FOUND,
     FAILURE_REASON_RETRY_SOURCES_MISSING,
-    IMPORT_JOB_STATE_COMPLETED,
-    IMPORT_JOB_STATE_FAILED,
     IMPORT_JOB_STATE_PENDING,
     IMPORT_JOB_STATE_RUNNING,
     IMPORT_STATUS_COMPLETED,
@@ -48,6 +45,7 @@ from src.service.catalog.movie_image_service import ImageDownloadError
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
 
 from src.service.transfers.shared.file_transfer import delete_source_files
+from src.service.transfers.shared.import_job_state import finalize_import_job
 from src.service.transfers.imports.writer import import_single_scanned_file
 from src.service.transfers.imports.source_scanner import (
     ImportTransferMode,
@@ -517,13 +515,13 @@ class MediaImportService:
                         )
 
             # 整个导入过程中即使有单文件失败，也会把已成功结果保留下来，并以 failed 状态返回统计信息。
-            job.imported_count = imported_count
-            job.skipped_count = skipped_count
-            job.failed_count = failed_count
-            job.state = IMPORT_JOB_STATE_FAILED if failed_count > 0 else IMPORT_JOB_STATE_COMPLETED
-            job.failed_files = json.dumps(failure_items, ensure_ascii=False)
-            job.finished_at = utc_now_for_db()
-            job.save()
+            finalize_import_job(
+                job,
+                imported_count=imported_count,
+                skipped_count=skipped_count,
+                failed_count=failed_count,
+                failure_items=failure_items,
+            )
             if download_task is not None:
                 download_task.import_status = IMPORT_STATUS_FAILED if failed_count > 0 else IMPORT_STATUS_COMPLETED
                 download_task.save()
@@ -554,13 +552,13 @@ class MediaImportService:
             failure_items.append(
                 make_failure_item(source_entry, FAILURE_REASON_IMPORT_JOB_CRASHED, str(exc))
             )
-            job.imported_count = imported_count
-            job.skipped_count = skipped_count
-            job.failed_count = failed_count + 1
-            job.state = IMPORT_JOB_STATE_FAILED
-            job.failed_files = json.dumps(failure_items, ensure_ascii=False)
-            job.finished_at = utc_now_for_db()
-            job.save()
+            finalize_import_job(
+                job,
+                imported_count=imported_count,
+                skipped_count=skipped_count,
+                failed_count=failed_count + 1,
+                failure_items=failure_items,
+            )
             if download_task is not None:
                 download_task.import_status = IMPORT_STATUS_FAILED
                 download_task.save()

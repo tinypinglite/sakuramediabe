@@ -68,8 +68,12 @@ def qb_env(test_db):
 
 
 def _remote_torrent(
-    info_hash: str, state: str, progress: float = 0.5, last_activity: int | None = 1785522822
+    info_hash: str, state: str, progress: float = 0.5, last_activity: int | None = None
 ) -> dict:
+    # 默认按当前时间生成"近期有活动"，避免写死时间戳在超过 7 天停滞判死窗口后
+    # 把 stalledDL 误升成 stalled_dead，让断言随日期漂移。
+    if last_activity is None:
+        last_activity = int(utc_now_for_db().timestamp()) - 60
     return {
         "info_hash": info_hash,
         "name": "ABP-001",

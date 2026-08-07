@@ -14,6 +14,7 @@ from .catalog import (
     MovieSeries,
     MovieTag,
     Subtitle,
+    SubtitleImportJob,
     Tag,
 )
 from .collections import (
@@ -121,6 +122,7 @@ __all__ = [
     "ResourceTaskState",
     "SchemaMigration",
     "Subtitle",
+    "SubtitleImportJob",
     "SystemEvent",
     "SystemNotification",
     "Tag",

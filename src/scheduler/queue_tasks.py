@@ -51,6 +51,13 @@ def _run_video_directory_import(reporter, params: dict) -> dict:
     return video_import_job_service_for(job_id).execute_from_queue(reporter, params)
 
 
+def _run_subtitle_directory_import(reporter, params: dict) -> dict:
+    from src.service.catalog.subtitle_import_job_service import SubtitleImportJobService
+
+    job_id = int(params["subtitle_import_job_id"])
+    return SubtitleImportJobService.execute_from_queue(reporter, params)
+
+
 def _run_download_task_import(reporter, params: dict) -> dict:
     from src.service.transfers.downloads.task_service import DownloadTaskService
 
@@ -126,6 +133,12 @@ QUEUE_TASK_REGISTRY: dict[str, QueueTaskDefinition] = {
             task_key="video_directory_import",
             log_name="video-directory-import",
             handler=_run_video_directory_import,
+            lane=LANE_IMPORT,
+        ),
+        QueueTaskDefinition(
+            task_key="subtitle_directory_import",
+            log_name="subtitle-directory-import",
+            handler=_run_subtitle_directory_import,
             lane=LANE_IMPORT,
         ),
         QueueTaskDefinition(

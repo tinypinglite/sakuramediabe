@@ -1078,6 +1078,53 @@ Authorization: Bearer <token>
 }
 ```
 
+### 手动字幕导入
+
+支持用户把按番号命名的 `.srt` 放进服务器某个目录（浏览白名单 `media_import.browse_roots` 内），
+在 GUI 里选择该目录后由后端递归扫描并归档到对应影片的字幕目录。异步执行，进度走
+`/system/events/stream`，失败文件支持改名后重导。
+
+**命名规则（v1）**：
+
+- 只接受 `.srt`（后缀大小写不敏感），不支持 `.ass` / `.ssa` / `.vtt`
+- 番号必须写在**文件名里**，父目录名不参与识别
+- 文件名中必须能解析出一个番号，解析不出则进入失败列表，改名后重导
+- 番号以外的内容随意（语种标记、分辨率、字幕组、括号序号、年份等）
+- 一个文件只写一个番号：解析器按规则顺序取第一条命中，多个番号结果不可预期
+
+识别口径复用 `src/common/movie_numbers.py` 的 `parse_movie_number_from_text()`，大小写不敏感，
+`-` / `_` / 空格分隔都能识别；匹配影片时复用 `find_movie_by_number()`（大小写、分隔符宽松）。
+示例：
+
+| 用户命名 | 识别出的番号 | 结果 |
+|---|---|---|
+| `ABP-123.srt` / `abp-123.srt` | `ABP-123` | 导入 |
+| `ABC-001 4K 中文字幕.srt` | `ABC-001` | 导入 |
+| `ABC123.srt` / `ABC 123.srt` | `ABC-123` | 导入 |
+| `[字幕组] ABP-123.cht.SRT` | `ABP-123` | 导入 |
+| `FC2PPV-123456.srt` / `FC2-PPV-123456.srt` | `FC2-123456` | 导入 |
+| `01.srt` / `sub.srt` / `中文字幕.srt` | （空） | 失败 |
+
+**导入行为**：
+
+- 递归扫描所选目录（也可直接选单个 `.srt` 文件），只处理 `.srt`，其它文件忽略
+- 归档到 `<图片根>/movies/{shard}/{番号}/subtitles/<番号>-<N>.srt` 并登记 `Subtitle`，
+  源文件始终保留（硬链接优先、复制兜底，不删源）
+- 同一影片已存在相同内容（sha256 相同）的字幕时跳过，不重复导入
+- 源文件名里的 `.chs` / `.cht` 等标注**不会**保留到字幕列表，只显示 `<番号>-<N>.srt`
+- 解析不出番号 / 库中无对应影片 / 搬运登记异常进入失败列表（`kind=file`，可改名/删除/重导）；
+  目录里没有任何 `.srt` 时作业判失败并给出任务级失败原因
+
+接口（均需 Bearer Token）：
+
+- `POST /subtitle-imports`：创建字幕导入作业，body `{"source_path": "<绝对路径>"}`，返回 `202`
+- `GET /subtitle-imports`：分页列表
+- `GET /subtitle-imports/{subtitle_import_job_id}`：作业详情（含失败文件）
+- `POST /subtitle-imports/{subtitle_import_job_id}/retry`：重导失败文件
+- `POST /subtitle-imports/{subtitle_import_job_id}/rerun`：整作业重跑
+- `DELETE /subtitle-imports/{subtitle_import_job_id}/failed-files`：删除失败源文件
+- `POST /subtitle-imports/{subtitle_import_job_id}/failed-files/rename`：重命名失败源文件
+
 ### `PUT /movies/{movie_number}/subscription`
 
 - 鉴权：需要 Bearer Token

@@ -11,6 +11,7 @@ from src.model import (
     Image,
     MediaLibrary,
     SchemaMigration,
+    SubtitleImportJob,
     VideoImportJob,
 )
 from src.start.commands import main
@@ -382,6 +383,25 @@ def test_run_pending_migrations_creates_video_import_job_on_existing_database(cl
     assert execution.applied is True
     assert clean_db.table_exists("video_import_job")
     assert "20260613_01_add_videos_and_decouple_media" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_creates_subtitle_import_job_on_existing_database(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    # 模拟尚未应用当天迁移的库：依赖表都在，但还没有 subtitle_import_job，下次启动 migrate 应自动补建。
+    clean_db.drop_tables([SubtitleImportJob])
+    assert not clean_db.table_exists("subtitle_import_job")
+
+    summary = run_pending_migrations(clean_db)
+
+    execution = next(
+        item
+        for item in summary.executed
+        if item.name == "20260810_01_add_subtitle_import_job"
+    )
+    assert execution.applied is True
+    assert clean_db.table_exists("subtitle_import_job")
+    assert "20260810_01_add_subtitle_import_job" in _schema_migration_names(clean_db)
 
 
 def test_run_pending_migrations_adds_video_import_job_cloud_sources_idempotently(clean_db):

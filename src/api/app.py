@@ -16,6 +16,7 @@ from src.api.exception.exception import (
 from src.api.routers.catalog.actors import router as actors_router
 from src.api.routers.catalog.movies import router as movies_router
 from src.api.routers.catalog.subscriptions import router as movie_subscriptions_router
+from src.api.routers.catalog.subtitle_imports import router as subtitle_imports_router
 from src.api.routers.catalog.tags import router as tags_router
 from src.api.routers.collections.clip_collections import (
     router as clip_collections_router,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(actors_router)
     app.include_router(movies_router)
     app.include_router(movie_subscriptions_router)
+    app.include_router(subtitle_imports_router)
     app.include_router(tags_router)
     app.include_router(playlists_router)
     app.include_router(clip_collections_router)

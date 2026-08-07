@@ -63,6 +63,9 @@ class BaseImportJobService:
     # 任务名前缀。
     TRIGGER_TASK_NAME_PREFIX: str = ""  # "目录导入" / "视频导入"
     RETRY_TASK_NAME_PREFIX: str = ""  # "重导失败文件 #" / "重导失败视频 #"
+    RERUN_TASK_NAME_PREFIX: str = "重跑导入 #"
+    # 作业是否强制归属媒体库；无媒体库语义的作业类型（如字幕导入）置 False。
+    LIBRARY_REQUIRED: bool = True
     # 失败/恢复文案与日志标签。
     INTERRUPTED_FAILURE_DETAIL: str = ""
     INTERRUPTED_RECOVER_MESSAGE: str = ""
@@ -185,7 +188,7 @@ class BaseImportJobService:
     def retry_failed_files(cls, job_id: int, files: list[str] | None = None):
         job = cls._require_job(job_id)
         cls._assert_job_terminal(job)
-        library = cls._require_library(job.library_id)
+        library = cls._require_job_library(job)
         # 只允许重导失败列表中“可操作的单文件失败项”（kind=file）。
         actionable_paths = cls._actionable_failed_paths(job)
 
@@ -211,7 +214,9 @@ class BaseImportJobService:
             assert_within_allowed_roots(Path(candidate), settings.media_import.browse_roots)
 
         resolved_source = cls._resolve_source_path(job.source_path)
-        mutex_key = cls._build_retry_mutex_key(job_id, library.id, resolved_source)
+        mutex_key = cls._build_retry_mutex_key(
+            job_id, cls._job_library_id(job), resolved_source
+        )
         return cls._launch_import(
             library=library,
             resolved_source=resolved_source,
@@ -220,6 +225,23 @@ class BaseImportJobService:
             mutex_key=mutex_key,
             only_files=resolved_files,
             task_name=f"{cls.RETRY_TASK_NAME_PREFIX}{job_id}",
+            **cls._launch_kwargs_from_retry(job),
+        )
+
+    @classmethod
+    def rerun_job(cls, job_id: int):
+        """整作业重跑：不论上次成败按原源整目录重扫——"completed 零产出"的恢复通路。"""
+        job = cls._require_job(job_id)
+        cls._assert_job_terminal(job)
+        library = cls._require_job_library(job)
+        resolved_source = cls._resolve_source_path(job.source_path)
+        return cls._launch_import(
+            library=library,
+            resolved_source=resolved_source,
+            transfer_mode=job.transfer_mode or "auto",
+            mutex_key=f"{cls.MUTEX_PREFIX}:rerun:{cls._job_library_id(job)}:{job_id}",
+            only_files=None,
+            task_name=f"{cls.RERUN_TASK_NAME_PREFIX}{job_id}",
             **cls._launch_kwargs_from_retry(job),
         )
 
@@ -414,7 +436,10 @@ class BaseImportJobService:
     # ---- 下沉的通用校验与失败文件解析 ----
 
     @classmethod
-    def _require_library(cls, library_id: int) -> MediaLibrary:
+    def _require_library(cls, library_id: int | None) -> MediaLibrary | None:
+        if not cls.LIBRARY_REQUIRED:
+            # 无媒体库语义的作业类型不解析、不校验 library，调用方拿到 None 后自行忽略。
+            return None
         library = MediaLibrary.get_or_none(MediaLibrary.id == library_id)
         if library is None:
             raise ApiError(404, "media_library_not_found", "媒体库不存在", {"library_id": library_id})
@@ -431,6 +456,20 @@ class BaseImportJobService:
                 },
             )
         return library
+
+    @classmethod
+    def _require_job_library(cls, job) -> MediaLibrary | None:
+        """按作业行解析归属媒体库；``LIBRARY_REQUIRED=False`` 的作业类型直接返回 None。"""
+        if not cls.LIBRARY_REQUIRED:
+            return None
+        return cls._require_library(job.library_id)
+
+    @classmethod
+    def _job_library_id(cls, job) -> int | None:
+        """作业行上的 library_id；``LIBRARY_REQUIRED=False`` 的作业类型返回 None。"""
+        if not cls.LIBRARY_REQUIRED:
+            return None
+        return job.library_id
 
     @classmethod
     def _require_job(cls, job_id: int):
@@ -487,13 +526,19 @@ class BaseImportJobService:
         return resolved
 
     @classmethod
-    def _build_mutex_key(cls, library_id: int, resolved_source: Path) -> str:
+    def _build_mutex_key(cls, library_id: int | None, resolved_source: Path) -> str:
         digest = hashlib.sha1(str(resolved_source).encode("utf-8")).hexdigest()
+        if not cls.LIBRARY_REQUIRED:
+            return f"{cls.MUTEX_PREFIX}:{digest}"
         return f"{cls.MUTEX_PREFIX}:{library_id}:{digest}"
 
     @classmethod
-    def _build_retry_mutex_key(cls, job_id: int, library_id: int, resolved_source: Path) -> str:
+    def _build_retry_mutex_key(
+        cls, job_id: int, library_id: int | None, resolved_source: Path
+    ) -> str:
         digest = hashlib.sha1(str(resolved_source).encode("utf-8")).hexdigest()
+        if not cls.LIBRARY_REQUIRED:
+            return f"{cls.MUTEX_PREFIX}:retry:{digest}:{job_id}"
         return f"{cls.MUTEX_PREFIX}:retry:{library_id}:{digest}:{job_id}"
 
     @staticmethod
