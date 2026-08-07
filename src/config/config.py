@@ -283,6 +283,8 @@ class Scheduler(BaseModel):
     download_task_sync_cron: str = "*/5 * * * *"
     download_task_auto_import_cron: str = "*/10 * * * *"
     download_small_file_cleanup_cron: str = "*/5 * * * *"
+    # qB 停滞/慢速任务清理：每天凌晨 1 点跑（早于订阅自动下载 02:30，删完当天就能换种重下）。
+    qbittorrent_stalled_cleanup_cron: str = "0 1 * * *"
     # cloud115 离线任务对账：远端进度回写 + 完成触发导入 + 超时放弃。cron 最小粒度即 1 分钟；
     # 没有活跃任务时对账是零请求空转，不会打扰 115。
     cloud115_offline_sync_cron: str = "* * * * *"
@@ -369,6 +371,14 @@ class Downloads(BaseModel):
     # 比 115 的 cloud115_offline_abandon_hours 宽松得多——115 是云端拉取，24h 拉不到基本就是没有；
     # 本地 BT 依赖 peer 在线，老片常态是只有一两个 seeder 且不挂机，卡几天后复活很正常。
     qbittorrent_stalled_abandon_days: int = Field(default=7, ge=1)
+    # qB 停滞/慢速任务自动清理：处于活跃下载态（stalled/downloading，由对账维护
+    # download_started_at 计时，排队时长不计）且未完成、超过该时长仍未下完的种子，
+    # 直接删种并连带删除已下载文件，本地行落 stalled_dead 拉黑（同 info_hash 不再自动提交，
+    # 影片换其他候选重下）。queuedDL（排队）/ pausedDL / stoppedDL 永不自动清理。
+    # 这是破坏性动作（删文件不可恢复）：判定完全依赖系统侧维护的开始时刻，首次部署首轮
+    # 只写入不删除；存量行 download_started_at 为空时先让对账起算。enabled=False 关闭该清理。
+    qbittorrent_stalled_cleanup_enabled: bool = Field(default=True)
+    qbittorrent_stalled_cleanup_hours: int = Field(default=24, ge=1)
     # 订阅影片资源查询分两档，调度是每天一轮（subscribed_movie_auto_download_cron），所以
     # "每轮都查" 就等于 "每天查一次"：
     #   新片（release_date 落在下面这个窗口内，含未来日期）：每轮都查，不计次数，永不放弃；

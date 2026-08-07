@@ -446,6 +446,9 @@ def test_create_tables_creates_download_domain_multi_bind_schema(clean_db, monke
     assert "kind" in client_columns
     task_columns = {column.name for column in database.get_columns("download_task")}
     assert "target_ref" in task_columns
+    # qB 停滞/慢速清理按 download_started_at 计时（排队时间不计），新库直接建出该列。
+    assert "download_started_at" in task_columns
+    assert _column_is_nullable(database, "download_task", "download_started_at") is True
     cloud115_indexes = {
         index.name: index
         for index in database.get_indexes("download_client")

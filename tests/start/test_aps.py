@@ -243,6 +243,19 @@ def test_aps_cleanup_download_small_files_command_runs_job(monkeypatch):
     )
 
 
+def test_aps_cleanup_qb_stalled_tasks_command_runs_job(monkeypatch):
+    _test_cli_command(
+        monkeypatch,
+        "cleanup-qb-stalled-tasks",
+        {
+            "total_clients": 2, "scanned_torrents": 5, "cleaned_count": 3,
+            "failed_count": 1,
+        },
+        "qb stalled cleanup finished: total_clients=2 scanned_torrents=5 "
+        "cleaned_count=3 failed_count=1",
+    )
+
+
 def test_aps_sync_cloud115_offline_tasks_command_runs_job(monkeypatch):
     _test_cli_command(
         monkeypatch,

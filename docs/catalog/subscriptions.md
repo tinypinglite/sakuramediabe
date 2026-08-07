@@ -158,8 +158,8 @@ POST /system/resource-task-actions
 
 **重置不放开选种黑名单。** `info_hash` 是内容寻址的——同一个 hash 就是同一个 swarm，换个索引器它
 照样是死的；用户重置后真正想要的是让这部影片去找一个**别的**种子，而黑名单本来就不挡这个。确实要
-重试某个具体种子时，从 qB 里删掉它即可，`DownloadSyncService._prune_ghost_tasks` 的反向对账会同步
-删掉本地台账行，该 hash 随之离开黑名单。
+重试某个具体种子时，手动删除该下载任务（UI 删任务会同步删 qB 侧与本地行）；`_prune_ghost_tasks`
+对死态行豁免，仅凭在 qB 里删掉种子不会解除黑名单。
 
 ## 错误码
 

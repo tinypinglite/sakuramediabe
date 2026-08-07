@@ -81,7 +81,8 @@ class SubscribedMovieSearchStateService:
 
         注意重置**不放开选种黑名单**：黑名单是该影片已判死种子的 info_hash 集合，而
         info_hash 是内容寻址的——同一个 hash 就是同一个 swarm，换索引器它照样是死的。
-        确实想重试某个具体种子时，从 qB 里删掉它即可。
+        确实想重试某个具体种子时，手动删除该下载任务（UI 删任务会同步删 qB 侧与本地行）；
+        _prune_ghost_tasks 对死态行豁免，仅凭在 qB 里删掉种子不会解除黑名单。
         """
         if not movie_ids:
             return 0

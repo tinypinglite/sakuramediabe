@@ -16,11 +16,13 @@ from src.model.enums import DownloadClientKind
 from src.schema.transfers.downloads import DownloadClientSyncResponse
 from src.service.system import ActivityService
 from src.service.transfers.downloads.common import (
+    DOWNLOAD_ACTIVE_DOWNLOAD_STATES,
     DOWNLOAD_COMPLETE_STATES,
     map_remote_path,
     require_client,
     resolve_qbittorrent_download_state,
 )
+from src.service.transfers.shared.common import download_task_dead_expression
 from src.service.transfers.downloads.task_service import DownloadTaskService
 from src.service.transfers.downloads.clients.qbittorrent import (
     QBittorrentClient,
@@ -55,6 +57,7 @@ class DownloadSyncService:
         updated_count = 0
         unchanged_count = 0
         remote_hashes: set[str] = set()
+        now = utc_now_for_db()
         for remote_task in remote_tasks:
             # 判死收口在对账：stalledDL 且 qB 的 last_activity 超窗 -> stalled_dead。
             normalized_state = resolve_qbittorrent_download_state(
@@ -75,6 +78,10 @@ class DownloadSyncService:
                     "progress": remote_task.get("progress", 0.0),
                     "download_state": normalized_state,
                     "import_status": IMPORT_STATUS_PENDING,
+                    # 重建的行若已处于活跃下载态，开始时刻按当前对账时刻起算。
+                    "download_started_at": (
+                        now if normalized_state in DOWNLOAD_ACTIVE_DOWNLOAD_STATES else None
+                    ),
                 },
             )
             if created:
@@ -99,6 +106,15 @@ class DownloadSyncService:
                 changed = True
             if task.download_state != normalized_state:
                 task.download_state = normalized_state
+                changed = True
+            # 维护"进入活跃下载态的时刻"：进入 stalled/downloading 且为空时起算，
+            # 离开（暂停/完成/做种/排队/失败等）即清空——排队时长不计入下载时长。
+            if normalized_state in DOWNLOAD_ACTIVE_DOWNLOAD_STATES:
+                if task.download_started_at is None:
+                    task.download_started_at = now
+                    changed = True
+            elif task.download_started_at is not None:
+                task.download_started_at = None
                 changed = True
             if changed:
                 task.save()
@@ -153,6 +169,10 @@ class DownloadSyncService:
         removed_count = DownloadTask.delete().where(
             (DownloadTask.client == client_id)
             & DownloadTask.info_hash.not_in(list(remote_hashes))
+            # 死态行豁免：failed / abandoned / stalled_dead 是选种黑名单台账，qB 侧删种后
+            # 不能顺手抹掉——否则停滞清理删掉的种子下轮对账就"消失"，黑名单失效，
+            # 自动下载第二天又把同一死种拉回来。
+            & ~download_task_dead_expression()
             & (DownloadTask.import_status != IMPORT_STATUS_RUNNING)
             & DownloadTask.id.not_in(active_import_task_ids)
         ).execute()

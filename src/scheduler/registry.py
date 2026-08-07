@@ -39,6 +39,9 @@ from src.service.transfers.downloads.auto_subscribed.auto_download_service impor
 from src.service.transfers.downloads.small_file_cleanup_service import (
     DownloadSmallFileCleanupService,
 )
+from src.service.transfers.downloads.stalled_cleanup_service import (
+    QBStalledCleanupService,
+)
 from src.service.transfers.downloads.sync_service import DownloadSyncService
 
 
@@ -255,6 +258,21 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
             "scanned_torrents",
             "deselected_files",
             "deleted_files",
+            "failed_count",
+        ),
+    ),
+    JobDefinition(
+        task_key="qb_stalled_cleanup",
+        log_name="qb-stalled-cleanup",
+        cli_name="cleanup-qb-stalled-tasks",
+        cli_help="清理 qB 中长期停滞/龟速的下载任务（删种+删文件+拉黑）",
+        cron_setting="qbittorrent_stalled_cleanup_cron",
+        service_factory=lambda _reporter: QBStalledCleanupService().cleanup_stalled_tasks(),
+        format_stats=_build_stats_formatter(
+            "qb stalled cleanup finished:",
+            "total_clients",
+            "scanned_torrents",
+            "cleaned_count",
             "failed_count",
         ),
     ),

@@ -52,6 +52,9 @@ def canonicalize_btih(value: str) -> str:
 # 对账不跑 = 状态冻结，正是想要的行为。
 _DOWNLOAD_DEAD_STATES = frozenset({"failed", "abandoned", "stalled_dead"})
 
+# 公开别名：清理服务需要在原子 UPDATE 里做"非死态"守卫（in_(...) 需要排序保证参数稳定）。
+DOWNLOAD_DEAD_STATES = _DOWNLOAD_DEAD_STATES
+
 
 def _download_task_movie_match_expression():
     """DownloadTask 与 Movie 的番号关联条件。

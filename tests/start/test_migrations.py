@@ -1658,3 +1658,42 @@ def test_run_pending_migrations_wipes_system_notifications(clean_db):
 
     assert clean_db.execute_sql("SELECT count(*) FROM system_notification").fetchone()[0] == 0
     assert "20260730_05_wipe_system_notifications" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_adds_download_task_started_at(clean_db):
+    """20260806_01：download_task 补 download_started_at 列（qB 停滞/慢速清理计时用）。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+
+    # 模拟旧库：先建出的 download_task 没有 download_started_at 列，并插入存量行。
+    clean_db.execute_sql(
+        "ALTER TABLE download_task DROP COLUMN IF EXISTS download_started_at"
+    )
+    clean_db.execute_sql(
+        "INSERT INTO media_library (created_at, updated_at, name, backend,"
+        " backend_config)"
+        " VALUES (NOW(), NOW(), 'local-downloads', 'local', '{}')"
+    )
+    clean_db.execute_sql(
+        "INSERT INTO download_client (created_at, updated_at, name, kind,"
+        " media_library_id)"
+        " VALUES (NOW(), NOW(), 'qb-main', 'qbittorrent', 1)"
+    )
+    clean_db.execute_sql(
+        "INSERT INTO download_task (created_at, updated_at, client_id, name,"
+        " info_hash, save_path, progress, download_state, import_status)"
+        " VALUES (NOW(), NOW(), 1, 'ABP-001', 'hash-1', '/mnt/downloads/ABP-001',"
+        " 0.0, 'downloading', 'pending')"
+    )
+
+    run_pending_migrations(clean_db)
+
+    task_columns = {column.name for column in clean_db.get_columns("download_task")}
+    assert "download_started_at" in task_columns
+    # 存量行保持 NULL：首次部署先让对账写入，避免清理误杀。
+    assert clean_db.execute_sql(
+        "SELECT download_started_at FROM download_task WHERE info_hash = 'hash-1'"
+    ).fetchone()[0] is None
+
+    # 幂等：再跑一次不重复建列。
+    run_pending_migrations(clean_db)

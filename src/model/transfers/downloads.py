@@ -90,6 +90,10 @@ class DownloadTask(TimestampedMixin, BaseModel):
     progress = peewee.FloatField(default=0)
     download_state = peewee.CharField(max_length=32, default="downloading", index=True)
     import_status = peewee.CharField(max_length=32, default="pending", index=True)
+    # 进入活跃下载态（stalled/downloading）的时刻，由 qB 对账维护：排队/暂停/完成/做种时清空。
+    # 停滞/慢速清理按它计时——qB 接口没有"开始下载时刻"字段（只有 added_on 与 last_activity），
+    # 直接用 added_on 会把排队时长算进去，2000 部订阅 + 10 并发的排队场景会误删队尾种子。
+    download_started_at = peewee.DateTimeField(null=True)
 
     class Meta:
         table_name = "download_task"

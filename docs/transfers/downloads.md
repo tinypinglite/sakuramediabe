@@ -83,6 +83,13 @@
 - 每个 `Indexer` 必须绑定一个 `DownloadClient`
 - `DownloadClient` 必须绑定一个可用的 `MediaLibrary`
 
+另有两个内部定时任务：
+
+- `sync-download-tasks`（每 5 分钟）：qB 对账——状态归一化、判死、`download_started_at` 维护、
+  ghost 任务反向清理
+- `cleanup-qb-stalled-tasks`（每天凌晨 1 点）：停滞 / 慢速任务自动清理（删种 + 删文件 + 拉黑），
+  详见「停滞 / 慢速任务自动清理」一节
+
 #### 死种判定
 
 下载任务进入下列状态即视为**死种**：本地已确知不会再有进展，该影片重新参与资源查询。
@@ -120,7 +127,32 @@
 - `paused` 永远不判死，那是用户在 qB 里的显式意图。
 - `completed` 但 `import_status = failed` 仍算**活跃**：文件已在盘上，该修的是导入而不是重下。
 - 种子在 qB 里被手动删除时，`DownloadSyncService._prune_ghost_tasks` 的反向对账会直接删掉本地行，
-  该影片同样回到候选池——这条链路早已存在，与死种判定互补。
+  该影片同样回到候选池——这条链路早已存在，与死种判定互补。**仅限非死态行**：死态行
+  （failed / abandoned / stalled_dead）对反向对账豁免（见「选种黑名单」与「停滞 / 慢速任务自动清理」）。
+
+#### 停滞 / 慢速任务自动清理（`cleanup-qb-stalled-tasks`）
+
+每天凌晨 1 点（`qbittorrent_stalled_cleanup_cron`，早于订阅自动下载 02:30，删完当天就能换种重下）
+清理 qB 中长期没有进展的种子：**删种 + 连带删除已下载文件 + 本地行落 `stalled_dead` 拉黑**。
+配置：`qbittorrent_stalled_cleanup_enabled`（默认开）、`qbittorrent_stalled_cleanup_hours`（默认 24）。
+
+判定（命中即删，`QBStalledCleanupService`，只碰系统标签种子）：
+
+- 归一化状态 ∈ `{stalled, downloading}` 且未完成（progress < 1）
+- **且 `DownloadTask.download_started_at` 距今 ≥ 阈值**——该字段由对账维护：进入活跃下载态
+  （stalled / downloading）写当前时刻，离开（暂停 / 完成 / 做种 / 排队 / 失败）即清空
+
+为什么不用 qB 的 `added_on` 计时：qB 接口没有"种子开始下载的时刻"字段，直接用添加时刻会把
+排队时长算进"下载时长"。一次性订阅 2000 部 + qB 并发位占满时，队尾种子排队几天必然轮不上，
+按添加时刻计时会把这批排队种子全部误删并永久拉黑。
+
+**永不清理**：`queuedDL`（排队是用户配置并发数的正常现象）、`pausedDL` / `stoppedDL`
+（用户显式暂停）、`error` / `missingFiles`（对账即映射为 `failed` 立即拉黑，不进清理流程）。
+
+存量行首次部署时 `download_started_at` 为空：先由对账起算，**首轮只写入不删除**，避免误杀。
+
+删除后的拉黑与 `stalled_dead` 判死共用同一套台账；区别是清理删掉了 qB 侧种子和已下载文件，
+后续对账不会再看到它、状态不会流回，黑名单是**永久**的（要重试需手动删任务，见选种黑名单一节）。
 
 ### 种子内容闸门
 
@@ -194,8 +226,10 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 - 排除后无候选 = 本轮没找到资源，正常计入查询次数
 - **黑名单是永久的，重置查询状态不放开它。** `info_hash` 是内容寻址的——同一个 hash 就是同一个
   swarm，换个索引器它照样是死的；用户重置后真正想要的是找一个**别的**种子，而黑名单本来就不挡这个。
-  确实要重试某个具体种子时，从 qB 里删掉它即可（上面 `_prune_ghost_tasks` 的反向对账会同步删掉
-  本地台账行，该 hash 随之离开黑名单）。
+  确实要重试某个具体种子时，**手动删除该下载任务**（UI 删任务会同步删 qB 侧与本地台账行）——
+  反向对账 `_prune_ghost_tasks` 对死态行（failed / abandoned / stalled_dead）**豁免**，仅凭在 qB 里
+  删掉种子不会解除黑名单；豁免是停滞清理的闭环前提：否则删完种子下轮对账就抹掉黑名单，
+  第二天自动下载又把同一死种拉回来。
 
 **种子身份从哪来**（`JackettClient._resolve_info_hash`），按顺序取第一个能用的，两条都是纯字符串处理：
 
@@ -219,10 +253,6 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 40 位小写 hex）。它放在 transfers 公共模块而不是某个下载器模块里：选种、115 离线对账、任务删除、索引器
 候选四条链路都要用，且必须是同一个实现，否则「这两个是不是同一个种子」在不同链路上会给出不同答案。
 实测同一个种子在 knaben（大写 hex）和 sukebei（小写 hex）上会收敛到同一个字符串。
-- **黑名单是永久的，重置查询状态不放开它。** `info_hash` 是内容寻址的——同一个 hash 就是同一个
-  swarm，换个索引器它照样是死的；用户重置后真正想要的是找一个**别的**种子，而黑名单本来就不挡这个。
-  确实要重试某个具体种子时，从 qB 里删掉它即可（上面 `_prune_ghost_tasks` 的反向对账会同步删掉
-  本地台账行，该 hash 随之离开黑名单）。
 
 #### 查询次数与放弃
 
@@ -375,6 +405,8 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 - `(client_id, info_hash)` 是任务幂等键
 - `movie_number` 可以为空；同步阶段允许先按 `name` 解析，后续再补齐
 - `import_status` 只反映本地导入流程，不直接映射 qBittorrent 状态
+- `download_started_at`（qb 专用）：进入活跃下载态（stalled / downloading）的时刻，由对账维护；
+  排队 / 暂停 / 完成 / 做种时清空。停滞 / 慢速清理按它计时，排队时长不计入
 
 ## 状态约定
 
@@ -389,8 +421,9 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 - `checking`
 - `queued`
 - `abandoned`（cloud115 专用：离线任务超时后的本地放弃态，不再对账、不再推进度；115 侧任务保留。**粘性终态**）
-- `stalled_dead`（qB 专用：`stalledDL` 且 `last_activity` 超过 `qbittorrent_stalled_abandon_days`。
-  **非粘性**，每轮对账按 qB 实时值重算，peer 回来会自动流回 `stalled` / `downloading`）
+- `stalled_dead`（qB 专用：`stalledDL` 且 `last_activity` 超过 `qbittorrent_stalled_abandon_days`；
+  也由停滞 / 慢速清理落库。**非粘性**，每轮对账按 qB 实时值重算，peer 回来会自动流回
+  `stalled` / `downloading`——清理删掉 qB 侧种子后对账不再上报该 hash，状态即冻结为永久拉黑）
 
 ### `import_status` 枚举
 

@@ -313,7 +313,8 @@ class SubscribedMovieAutoDownloadService:
 
         DownloadTask 本身就是台账，因此黑名单不需要额外的表或字段。黑名单是永久的：info_hash
         内容寻址，同一个 hash 就是同一个 swarm，换索引器它照样是死的。要重试某个具体种子，
-        从 qB 里删掉它即可（_prune_ghost_tasks 的反向对账会同步删掉本地行）。
+        手动删除该下载任务（UI 删任务会同步删 qB 侧与本地行）；仅凭在 qB 里删掉种子不会解除
+        黑名单——_prune_ghost_tasks 对死态行豁免（停滞清理的闭环前提，见 sync_service）。
         """
         # 入参是 Movie 行的规范番号，download_task.movie_number 由提交链路拷贝同一列，
         # 两侧直接裸列精确比较；套 UPPER(TRIM()) 只会废掉索引。

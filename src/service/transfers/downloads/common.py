@@ -47,6 +47,10 @@ ALLOWED_DOWNLOAD_STATES = {
 DOWNLOAD_COMPLETE_STATES = {"completed", "seeding"}
 DOWNLOAD_STALLED_STATE = "stalled"
 DOWNLOAD_STALLED_DEAD_STATE = "stalled_dead"
+# 活跃下载态：对账据此维护 DownloadTask.download_started_at（进入写 now、离开清空）。
+# 停滞/慢速清理只按该字段计时；queued（排队）不算——qB 并发位占满时排队是正常现象，
+# 2000 部订阅 + 10 并发下队尾种子排几天都轮不上，把排队时长计进"下载时长"会误杀。
+DOWNLOAD_ACTIVE_DOWNLOAD_STATES = frozenset({DOWNLOAD_STALLED_STATE, "downloading"})
 # paused 是用户在 qB 里的显式意图，永远不判死。
 TASK_SORT_FIELDS = {
     "created_at:desc": (DownloadTask.created_at.desc(), DownloadTask.id.desc()),
