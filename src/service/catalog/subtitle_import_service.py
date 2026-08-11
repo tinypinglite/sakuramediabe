@@ -8,12 +8,10 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from loguru import logger
 
-from src.api.exception.errors import ApiError
 from src.common.fs_browse import is_within_allowed_roots
 from src.common.media_import_status import (
     FAILURE_REASON_DUPLICATE_FINGERPRINT,
@@ -28,11 +26,9 @@ from src.common.media_import_status import (
 from src.common.movie_numbers import parse_movie_number_from_text
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import emit_progress, find_movie_by_number
-from src.common.subtitle_paths import ensure_movie_subtitle_path
 from src.config.config import settings
-from src.model import Subtitle, SubtitleImportJob, get_database
-from src.service.transfers.imports.writer import prepare_movie_subtitle_target_path
-from src.service.transfers.shared.file_transfer import transfer_file
+from src.model import SubtitleImportJob, get_database
+from src.service.catalog.subtitle_asset_service import SubtitleAssetService
 from src.service.transfers.shared.import_job_state import finalize_import_job
 
 
@@ -201,15 +197,24 @@ class SubtitleImportService:
         if movie is None:
             return "failed", FAILURE_REASON_SUBTITLE_MOVIE_NOT_FOUND, movie_number
 
-        content_hash = self._sha256(subtitle_path)
-        if content_hash in self._movie_subtitle_hashes(movie, existing_hashes):
-            return "skipped", FAILURE_REASON_DUPLICATE_FINGERPRINT, subtitle_path.name
-
         try:
-            # 统一落新布局并分配 <番号>-<N>.srt；硬链接优先、失败回退复制，不删源。
-            target_path = prepare_movie_subtitle_target_path(movie.movie_number, None)
-            transfer_file(subtitle_path, target_path, transfer_mode="auto")
-            Subtitle.create(movie=movie, file_path=str(target_path))
+            # 统一走共享资产 service：内容指纹去重 + 落新布局 + Subtitle 登记。
+            status, _reason, detail = SubtitleAssetService.register_subtitle_file(
+                movie,
+                subtitle_path,
+                existing_hashes=existing_hashes,
+            )
+            if status == "imported":
+                logger.info(
+                    "Subtitle imported source={} movie_number={} target={}",
+                    str(subtitle_path),
+                    movie.movie_number,
+                    detail,
+                )
+                return status, "", ""
+            if status == "skipped":
+                return status, FAILURE_REASON_DUPLICATE_FINGERPRINT, subtitle_path.name
+            return "failed", FAILURE_REASON_SUBTITLE_IMPORT_FAILED, detail
         except Exception as exc:
             logger.exception(
                 "Subtitle import failed source={} movie_number={}",
@@ -217,15 +222,6 @@ class SubtitleImportService:
                 movie.movie_number,
             )
             return "failed", FAILURE_REASON_SUBTITLE_IMPORT_FAILED, str(exc)
-
-        existing_hashes.setdefault(movie.id, set()).add(content_hash)
-        logger.info(
-            "Subtitle imported source={} movie_number={} target={}",
-            str(subtitle_path),
-            movie.movie_number,
-            str(target_path),
-        )
-        return "imported", "", ""
 
     @classmethod
     def _iter_subtitle_paths(cls, source_entry: Path) -> list[Path]:
@@ -266,22 +262,6 @@ class SubtitleImportService:
         """返回该影片已登记字幕的内容指纹集合（含新老布局合法路径）。"""
         if movie.id in existing_hashes:
             return existing_hashes[movie.id]
-        hashes: set[str] = set()
-        for subtitle in Subtitle.select().where(Subtitle.movie == movie):
-            try:
-                absolute_path = ensure_movie_subtitle_path(movie, subtitle.file_path)
-            except ApiError:
-                continue
-            if absolute_path.is_file():
-                hashes.add(SubtitleImportService._sha256(absolute_path))
+        hashes = SubtitleAssetService.movie_subtitle_hashes(movie)
         existing_hashes[movie.id] = hashes
         return hashes
-
-    @staticmethod
-    def _sha256(file_path: Path) -> str:
-        # 字幕文件很小，分块读保证任意体积都可用且内存恒定。
-        digest = hashlib.sha256()
-        with open(file_path, "rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()

@@ -10,8 +10,7 @@ from src.api.exception.errors import ApiError
 from src.api.exception.exception import api_error_handler
 from src.api.routers import deps
 from src.api.routers.catalog import subscriptions as movie_subscriptions
-from src.api.routers.catalog import subtitle_imports
-from src.api.routers.catalog import tags
+from src.api.routers.catalog import subtitle_imports, tags
 from src.api.routers.discovery import hot_reviews, image_search, ranking_sources
 from src.api.routers.files import images
 from src.api.routers.playback import media as media_router
@@ -22,6 +21,7 @@ from src.api.routers.system import (
     auth,
     indexer_settings,
     movie_desc_translation_settings,
+    plugins,
     status,
 )
 from src.api.routers.system import config as system_config
@@ -132,6 +132,15 @@ def test_movie_desc_translation_settings_router_uses_db_deps_as_router_level_dep
         or dependency.dependency is deps.db_deps
         for dependency in movie_desc_translation_settings.router.dependencies
     )
+
+
+def test_plugins_router_uses_auth_and_db_dependencies():
+    dependency_targets = {
+        dependency.dependency for dependency in plugins.router.dependencies
+    }
+
+    assert deps.db_deps in dependency_targets
+    assert deps.get_current_user in dependency_targets
 
 
 def test_config_router_uses_db_deps_as_router_level_dependency():

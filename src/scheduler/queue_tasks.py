@@ -54,7 +54,6 @@ def _run_video_directory_import(reporter, params: dict) -> dict:
 def _run_subtitle_directory_import(reporter, params: dict) -> dict:
     from src.service.catalog.subtitle_import_job_service import SubtitleImportJobService
 
-    job_id = int(params["subtitle_import_job_id"])
     return SubtitleImportJobService.execute_from_queue(reporter, params)
 
 

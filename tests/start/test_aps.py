@@ -66,7 +66,9 @@ def _test_cli_command(monkeypatch, cli_name, return_stats, expected_output):
     """通用 CLI 命令测试辅助函数。"""
     called = {"job": 0}
 
-    def fake_run_job(job_def, *, trigger_type="scheduled", extra_callbacks=None):
+    def fake_run_job(
+        job_def, *, trigger_type="scheduled", extra_callbacks=None, params=None
+    ):
         called["job"] += 1
         assert trigger_type == "manual"
         return return_stats
@@ -123,7 +125,9 @@ def test_aps_subcommand_prepares_database_before_running_job(monkeypatch):
     def fake_prepare_database():
         events.append("db.ready")
 
-    def fake_run_job(job_def, *, trigger_type="scheduled", extra_callbacks=None):
+    def fake_run_job(
+        job_def, *, trigger_type="scheduled", extra_callbacks=None, params=None
+    ):
         events.append(("job", trigger_type))
         return {"candidate_count": 1, "updated_count": 1, "formula_version": "v1"}
 

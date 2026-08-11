@@ -3,6 +3,7 @@ import logging
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import click
 from loguru import logger
@@ -15,8 +16,8 @@ from src.metadata.factory import build_dmm_provider, build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import init_database
 from src.model.enums import MediaLibraryBackend
+from src.plugins.manager import PluginManager
 from src.scheduler.progress import TqdmProgressAdapter
-from src.scheduler.registry import JOB_REGISTRY
 from src.schema.playback.media_libraries import MediaLibraryCreateRequest
 from src.service.catalog import MovieThinCoverBackfillService
 from src.service.catalog.movie_asset_shard_migration_service import (
@@ -471,7 +472,24 @@ def test_dmm(movie_number: str, output_json: bool):
         )
 
 
-@main.group(invoke_without_command=True)
+class _LazyApsGroup(click.Group):
+    """APS 子命令组：首次调用时才从 JOB_REGISTRY 注册子命令。
+
+    插件在 import 期加载有副作用（依赖安装、插件代码执行），插件管理 CLI
+    （plugins list/install 等）不应为此被迫加载全部插件，因此注册表访问
+    推迟到真正执行 APS 子命令时。
+    """
+
+    def invoke(self, ctx: click.Context) -> Any:
+        if not self.commands:
+            from src.scheduler.registry import JOB_REGISTRY
+
+            for job_def in JOB_REGISTRY:
+                _register_aps_command(job_def, group=self)
+        return super().invoke(ctx)
+
+
+@main.group(cls=_LazyApsGroup, invoke_without_command=True)
 @click.pass_context
 def aps(ctx: click.Context):
     """定时任务相关命令"""
@@ -490,28 +508,175 @@ def aps(ctx: click.Context):
 # ---------------------------------------------------------------------------
 
 
-def _register_aps_command(job_def):
-    @aps.command(name=job_def.cli_name, help=job_def.cli_help)
-    def _cmd():
-        from src.start.aps import run_job
+def _run_cli_job(job_def, params=None):
+    from src.start.aps import run_job
 
-        adapter = TqdmProgressAdapter()
-        try:
-            stats = run_job(job_def, trigger_type="manual", extra_callbacks=[adapter.callback])
-        except TaskRunConflictError as exc:
-            raise click.ClickException(str(exc))
-        finally:
-            adapter.close()
-        if job_def.format_stats and isinstance(stats, dict):
-            click.echo(job_def.format_stats(stats))
-        else:
-            click.echo(f"{job_def.cli_name} finished: {stats}")
+    adapter = TqdmProgressAdapter()
+    try:
+        stats = run_job(
+            job_def,
+            trigger_type="manual",
+            params=params,
+            extra_callbacks=[adapter.callback],
+        )
+    except TaskRunConflictError as exc:
+        raise click.ClickException(str(exc))
+    finally:
+        adapter.close()
+    if job_def.format_stats and isinstance(stats, dict):
+        click.echo(job_def.format_stats(stats))
+    else:
+        click.echo(f"{job_def.cli_name} finished: {stats}")
 
-    return _cmd
+
+def _register_aps_command(job_def, group):
+    if job_def.manual_only and job_def.params_schema is None:
+        # 无参的 manual_only 任务只能走 HTTP 触发，CLI 无法表达触发参数。
+        return
+    if job_def.params_schema is None:
+        @group.command(name=job_def.cli_name, help=job_def.cli_help)
+        def _cmd():
+            _run_cli_job(job_def)
+
+        return
+
+    @group.command(name=job_def.cli_name, help=job_def.cli_help)
+    @click.option(
+        "--params-json",
+        required=job_def.manual_only,
+        default=None if job_def.manual_only else "{}",
+        help="任务参数 JSON，按任务声明的 params_schema 校验",
+    )
+    def _cmd_with_params(params_json):
+        payload = json.loads(params_json or "{}")
+        job_def.params_schema.model_validate(payload)
+        _run_cli_job(job_def, params=payload)
 
 
-for _job_def in JOB_REGISTRY:
-    _register_aps_command(_job_def)
+# ---------------------------------------------------------------------------
+# 插件管理 CLI
+# ---------------------------------------------------------------------------
+
+
+@main.group(name="plugins")
+def plugins_group():
+    """插件生命周期管理（安装/升级/回滚/启停/卸载/状态）。"""
+
+
+def _plugin_operation(operation):
+    try:
+        return operation()
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+@plugins_group.command("list")
+def plugins_list():
+    """列出已安装插件。"""
+    for item in PluginManager().list_plugins():
+        click.echo(
+            f"{item['plugin_id']:<24} {item['display_name']} "
+            f"v{item['version']} enabled={str(item['enabled']).lower()} "
+            f"deps={item['deps_status']} load={item['load_status']}"
+        )
+
+
+@plugins_group.command("install")
+@click.argument("zip_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--sha256", default=None, help="zip 包 sha256（可选，校验完整性）")
+@click.option("--no-enable", is_flag=True, default=False, help="安装但不写入 enabled")
+def plugins_install(zip_path: Path, sha256: str | None, no_enable: bool):
+    """安装插件 zip 包。"""
+    result = _plugin_operation(
+        lambda: PluginManager().install(
+            zip_path, sha256=sha256, enable=not no_enable
+        )
+    )
+    click.echo(
+        f"插件 {result.plugin_id} v{result.version} 安装完成；"
+        "重启 api 与 aps 后生效"
+    )
+
+
+@plugins_group.command("update")
+@click.argument("plugin_id")
+@click.argument("zip_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--sha256", default=None, help="zip 包 sha256（可选，校验完整性）")
+def plugins_update(plugin_id: str, zip_path: Path, sha256: str | None):
+    """升级插件（保留 data/，旧版本进入 .previous/）。"""
+    result = _plugin_operation(
+        lambda: PluginManager().update(plugin_id, zip_path, sha256=sha256)
+    )
+    click.echo(
+        f"插件 {result.plugin_id} v{result.version} 升级完成；"
+        "重启 api 与 aps 后生效"
+    )
+
+
+@plugins_group.command("rollback")
+@click.argument("plugin_id")
+def plugins_rollback(plugin_id: str):
+    """回滚到上一个版本（.previous/）。"""
+    result = _plugin_operation(lambda: PluginManager().rollback(plugin_id))
+    click.echo(
+        f"插件 {result.plugin_id} 已回滚；重启 api 与 aps 后生效"
+    )
+
+
+@plugins_group.command("enable")
+@click.argument("plugin_id")
+def plugins_enable(plugin_id: str):
+    """启用插件（写入 enabled，重启后生效）。"""
+    _plugin_operation(lambda: PluginManager().set_enabled(plugin_id, True))
+    click.echo(f"插件 {plugin_id} 已启用；重启 api 与 aps 后生效")
+
+
+@plugins_group.command("disable")
+@click.argument("plugin_id")
+def plugins_disable(plugin_id: str):
+    """停用插件（从 enabled 移除，重启后生效）。"""
+    _plugin_operation(lambda: PluginManager().set_enabled(plugin_id, False))
+    click.echo(f"插件 {plugin_id} 已停用；重启 api 与 aps 后生效")
+
+
+@plugins_group.command("uninstall")
+@click.argument("plugin_id")
+@click.option("--purge-data", is_flag=True, default=False, help="同时真删插件运行数据")
+def plugins_uninstall(plugin_id: str, purge_data: bool):
+    """卸载插件；默认移入 .trash/ 可恢复。"""
+    result = _plugin_operation(
+        lambda: PluginManager().uninstall(plugin_id, purge_data=purge_data)
+    )
+    click.echo(
+        f"插件 {result.plugin_id} 已卸载"
+        + ("" if purge_data else "（保留于 .trash/，可手动恢复）")
+    )
+
+
+@plugins_group.command("status")
+@click.argument("plugin_id")
+def plugins_status(plugin_id: str):
+    """查看插件状态（manifest/依赖/加载错误/日志尾部）。"""
+    detail = _plugin_operation(lambda: PluginManager().get_plugin(plugin_id))
+    if detail is None:
+        raise click.ClickException(f"插件未安装: {plugin_id}")
+    click.echo(f"plugin_id   : {detail['plugin_id']}")
+    click.echo(f"display_name: {detail['display_name']}")
+    click.echo(f"version     : {detail['version']}")
+    click.echo(f"enabled     : {detail['enabled']}")
+    click.echo(f"deps_status : {detail['deps_status']}")
+    click.echo(f"load_status : {detail['load_status']}")
+    if detail.get("load_error"):
+        click.echo(f"load_error  : {detail['load_error']}")
+    click.echo(f"data_dir    : {detail['data_dir']}")
+    if detail["dists"]:
+        click.echo(
+            "deps        : "
+            + ", ".join(f"{name}=={version}" for name, version in detail["dists"].items())
+        )
+    if detail["install_log_tail"]:
+        click.echo("--- install.log tail ---")
+        click.echo(detail["install_log_tail"])
 
 
 # ---------------------------------------------------------------------------

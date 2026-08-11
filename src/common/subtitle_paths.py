@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.api.exception.errors import ApiError
-from src.common.media_paths import movie_subtitle_dir
+from src.common.media_paths import MOVIE_SUBTITLE_EXTENSIONS, movie_subtitle_dir
 from src.config.config import settings
 
 
@@ -13,7 +13,7 @@ def normalize_subtitle_path(file_path: str | Path) -> Path:
         absolute_path = (Path.cwd() / absolute_path).resolve()
     else:
         absolute_path = absolute_path.resolve()
-    if absolute_path.suffix.lower() != ".srt":
+    if absolute_path.suffix.lower() not in MOVIE_SUBTITLE_EXTENSIONS:
         raise ApiError(403, "file_path_invalid", "文件路径非法")
     return absolute_path
 

@@ -2,7 +2,6 @@ import json
 import math
 import os
 import pathlib
-import re
 import secrets
 from enum import Enum
 from pathlib import Path
@@ -26,6 +25,8 @@ from pydantic_settings import (
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
+
+from src.plugins.manifest import PLUGIN_ID_PATTERN
 
 
 # 这里处理的是番号**前缀**（如 OFJE），不是完整番号，所以只做去空白 + 大写：
@@ -234,12 +235,14 @@ class Metadata(BaseModel):
         return (self.proxy or "").strip() or None
 
 
-_PLUGIN_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+_PLUGIN_ID_PATTERN = PLUGIN_ID_PATTERN
 
 
 class Plugins(BaseModel):
     """仓库内可信插件配置；插件必须出现在 enabled 中才会被导入。"""
 
+    # 插件根目录：生产默认 /data/plugins；本地开发可指向 ./storage/plugins。
+    root_dir: str = "/data/plugins"
     enabled: list[str] = Field(default_factory=list)
     job_crons: dict[str, dict[str, str]] = Field(default_factory=dict)
     settings: dict[str, dict[str, Any]] = Field(default_factory=dict)

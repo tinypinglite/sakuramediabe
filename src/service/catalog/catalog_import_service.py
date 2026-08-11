@@ -81,6 +81,7 @@ class CatalogImportService:
         image_downloader: Callable[[str, Path], None] | None = None,
         persist_lock=None,
         dmm_provider: DmmProvider | None = None,
+        skip_dmm: bool = False,
     ):
         # 图片子系统统一交由 MovieImageService，downloader 透传下去保住 media_import 的注入接缝。
         self.image_service = MovieImageService(image_downloader=image_downloader)
@@ -88,7 +89,8 @@ class CatalogImportService:
         self.dmm_provider = dmm_provider or self._build_dmm_provider()
         # DMM 熔断状态：连续连通性失败计数与是否已判定不可用（仅在本实例生命周期内有效）。
         self._dmm_request_failures = 0
-        self._dmm_circuit_open = False
+        # 插件/批量导入可显式跳过 DMM 简介抓取（每部省 ~1.8s），由调用方按需开启。
+        self._dmm_circuit_open = skip_dmm
 
     @staticmethod
     def _build_dmm_provider() -> DmmProvider:

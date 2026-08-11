@@ -18,19 +18,19 @@ from src.service.catalog.movie_subtitle_service import MovieSubtitleService
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.system.resource_task_state_service import ResourceTaskStateService
-from src.service.transfers.shared.file_transfer import (
-    JAV_LIBRARY_SUBDIR,
-    create_version_directory,
-    delete_source_files,
-    transfer_file,
-)
+from src.service.transfers.downloads.guards.tag_rules import build_media_special_tags
 from src.service.transfers.imports.source_scanner import (
     ImportTransferMode,
     ScannedSourceFile,
     existing_media_file_exists,
     find_media_by_content_fingerprint,
 )
-from src.service.transfers.downloads.guards.tag_rules import build_media_special_tags
+from src.service.transfers.shared.file_transfer import (
+    JAV_LIBRARY_SUBDIR,
+    create_version_directory,
+    delete_source_files,
+    transfer_file,
+)
 
 
 def import_single_scanned_file(
@@ -203,8 +203,13 @@ def _import_single_media_file(
     return storage_mode, target_path
 
 
-def prepare_movie_subtitle_target_path(movie_number: str, target_video_path: Path) -> Path:
-    """字幕统一落 ``movies/<shard>/<番号>/subtitles/<番号>-<N>.srt``。
+def prepare_movie_subtitle_target_path(
+    movie_number: str,
+    target_video_path: Path,
+    *,
+    extension: str = ".srt",
+) -> Path:
+    """字幕统一落 ``movies/<shard>/<番号>/subtitles/<番号>-<N><extension>``。
 
     N 由 ``allocate_next_movie_subtitle_path`` 从当前目录已有序号 max + 1 起分配，同一部影片下
     多份字幕（不同版本目录里同名，或同版本目录里 whisperjav 生成的 chinese/plain 两份）都能拿到
@@ -214,7 +219,7 @@ def prepare_movie_subtitle_target_path(movie_number: str, target_video_path: Pat
     del target_video_path  # 保留形参一致，实际命名不再依赖版本目录名。
     subtitle_directory = movie_subtitle_dir(movie_number)
     subtitle_directory.mkdir(parents=True, exist_ok=True)
-    return allocate_next_movie_subtitle_path(movie_number)
+    return allocate_next_movie_subtitle_path(movie_number, extension=extension)
 
 
 def _import_sidecar_subtitle(
@@ -230,5 +235,4 @@ def _import_sidecar_subtitle(
         return
     target_subtitle_path = prepare_movie_subtitle_target_path(movie_number, target_video_path)
     transfer_file(subtitle_source_path, target_subtitle_path, transfer_mode=transfer_mode)
-
 

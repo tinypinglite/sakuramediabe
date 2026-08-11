@@ -49,6 +49,7 @@ from src.api.routers.system.jobs import router as jobs_router
 from src.api.routers.system.movie_desc_translation_settings import (
     router as movie_desc_translation_settings_router,
 )
+from src.api.routers.system.plugins import router as plugins_router
 from src.api.routers.system.status import router as status_router
 from src.api.routers.transfers.downloads import router as downloads_router
 from src.api.routers.transfers.media_import import router as media_import_router
@@ -132,6 +133,7 @@ def create_app() -> FastAPI:
     app.include_router(auth_router)
     app.include_router(indexer_settings_router)
     app.include_router(movie_desc_translation_settings_router)
+    app.include_router(plugins_router)
 
     app.include_router(config_router)
 

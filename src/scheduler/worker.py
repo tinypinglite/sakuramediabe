@@ -105,7 +105,12 @@ class TaskWorker:
             func = lambda reporter: queue_def.handler(reporter, params)
             log_name = queue_def.log_name
             notify_result = queue_def.notify_result
-        elif job_def is not None:
+        elif job_def is not None and params and job_def.params_handler is not None:
+            # 插件/参数化任务：手动带参执行体，与 cron 批任务共用互斥与恢复。
+            func = lambda reporter: job_def.params_handler(reporter, params)
+            log_name = job_def.log_name
+            notify_result = True
+        elif job_def is not None and job_def.service_factory is not None:
             func = job_def.service_factory
             log_name = job_def.log_name
             notify_result = True

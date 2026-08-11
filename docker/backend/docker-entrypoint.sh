@@ -52,6 +52,7 @@ bootstrap_data_dirs() {
         "${DATA_ROOT}/cache/subtitles" \
         "${DATA_ROOT}/cache/gfriends" \
         "${DATA_ROOT}/media-clips" \
+        "${DATA_ROOT}/plugins" \
         "${DATA_ROOT}/logs"
 
     # bind mount 上来的 /data 可能属主是 root 或宿主机用户，导致切到 app 用户后写不进 config.toml/日志。
@@ -67,6 +68,7 @@ bootstrap_data_dirs() {
         "${DATA_ROOT}/cache/subtitles" \
         "${DATA_ROOT}/cache/gfriends" \
         "${DATA_ROOT}/media-clips" \
+        "${DATA_ROOT}/plugins" \
         "${DATA_ROOT}/logs"; do
         chown_if_mismatch "${target_uid}" "${target_gid}" "${dir}"
     done

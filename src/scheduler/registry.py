@@ -6,8 +6,9 @@ from typing import Any
 from src.config.config import settings
 from src.metadata.factory import refresh_gfriends_filetree
 from src.plugins.contracts import PluginRegistration
-from src.plugins.loader import load_enabled_plugins
+from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
 from src.scheduler.contracts import JobDefinition
+from src.scheduler.queue_tasks import QUEUE_TASK_REGISTRY
 from src.service.catalog import (
     MovieCollectionService,
     MovieDescSyncService,
@@ -32,7 +33,9 @@ from src.service.playback import (
 )
 from src.service.system import ActivityCleanupService, ResourceTaskAttemptCleanupService
 from src.service.system.resource_task_runner import ResourceTaskLedger
-from src.service.transfers.cloud115.offline.sync_service import Cloud115OfflineSyncService
+from src.service.transfers.cloud115.offline.sync_service import (
+    Cloud115OfflineSyncService,
+)
 from src.service.transfers.downloads.auto_subscribed.auto_download_service import (
     SubscribedMovieAutoDownloadService,
 )
@@ -515,28 +518,73 @@ def _build_job_registry(
     builtin_jobs: list[JobDefinition],
     plugins: tuple[PluginRegistration, ...],
 ) -> list[JobDefinition]:
-    """先校验全部唯一标识，再一次性发布完整注册表。"""
+    """先校验全部唯一标识，再发布完整注册表。
+
+    内建任务冲突属开发错误，直接抛；插件任务冲突记入 PLUGIN_LOAD_ERRORS
+    并跳过该插件，保证坏插件不会拖垮服务启动。
+    """
     jobs = [*builtin_jobs]
     for plugin in plugins:
         jobs.extend(plugin.jobs)
 
+    queue_task_keys = set(QUEUE_TASK_REGISTRY)
+    rejected_plugins: set[str] = set()
+
+    # 三字段唯一性校验：内建与内建冲突是开发错误直接抛；
+    # 插件参与的冲突一律隔离插件，保证坏插件不会拖垮服务启动。
     for field_name in ("task_key", "cli_name", "log_name"):
         owners: dict[str, str] = {}
         for job in jobs:
+            if job.plugin_id in rejected_plugins:
+                continue
             value = getattr(job, field_name)
             owner = job.plugin_id or "core"
             previous_owner = owners.get(value)
             if previous_owner is not None:
-                raise RuntimeError(
-                    f"任务注册冲突 field={field_name} value={value} "
-                    f"owners={previous_owner},{owner}"
-                )
+                if owner == "core" and previous_owner == "core":
+                    raise RuntimeError(
+                        f"任务注册冲突 field={field_name} value={value} "
+                        f"owners={previous_owner},{owner}"
+                    )
+                # 插件与内建/插件冲突：内建任务必须保留，隔离冲突的插件。
+                offender = owner if owner != "core" else previous_owner
+                PLUGIN_LOAD_ERRORS[offender] = {
+                    "stage": "registry_conflict",
+                    "message": (
+                        f"任务注册冲突 field={field_name} value={value} "
+                        f"owners={previous_owner},{owner}"
+                    ),
+                }
+                rejected_plugins.add(offender)
+                continue
             owners[value] = owner
-    return jobs
+
+    # 队列专属 key 冲突同样只隔离插件（内建与队列同 key 是设计内语义）。
+    result: list[JobDefinition] = [*builtin_jobs]
+    for plugin in plugins:
+        if plugin.plugin_id in rejected_plugins:
+            continue
+        for job in plugin.jobs:
+            if job.task_key in queue_task_keys:
+                PLUGIN_LOAD_ERRORS[plugin.plugin_id] = {
+                    "stage": "registry_conflict",
+                    "message": (
+                        f"任务注册冲突 field=task_key value={job.task_key} "
+                        f"owners={plugin.plugin_id},queue"
+                    ),
+                }
+                rejected_plugins.add(plugin.plugin_id)
+                break
+        if plugin.plugin_id not in rejected_plugins:
+            result.extend(plugin.jobs)
+    return result
 
 
-# 显式启用插件在 import 阶段完整加载；任一插件失败时不发布半成品注册表。
-LOADED_PLUGINS: tuple[PluginRegistration, ...] = load_enabled_plugins(settings.plugins)
+# 显式启用插件在 import 阶段完整加载；单个插件失败记入 PLUGIN_LOAD_ERRORS 并隔离。
+LOADED_PLUGINS: tuple[PluginRegistration, ...] = load_enabled_plugins(
+    settings.plugins,
+    root_dir=settings.plugins.root_dir,
+)
 JOB_REGISTRY: list[JobDefinition] = _build_job_registry(
     BUILTIN_JOB_REGISTRY,
     LOADED_PLUGINS,

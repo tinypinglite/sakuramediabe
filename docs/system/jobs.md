@@ -21,6 +21,7 @@
   "cron_setting": "ranking_sync_cron",
   "cron_expr": "0 2 * * *",
   "manual_trigger_allowed": true,
+  "params_schema": null,
   "last_task_run": {
     "id": 12,
     "task_key": "ranking_sync",
@@ -50,8 +51,11 @@
 - `cli_help`：CLI 帮助文案，也可作为前端说明文案
 - `cron_setting`：内建任务为 `Scheduler` 字段名；插件任务为
   `plugins.job_crons.<plugin_id>.<task_key>` 配置路径
-- `cron_expr`：当前运行配置解析出的 cron 表达式；缺失新增配置时回退默认值
+- `cron_expr`：当前运行配置解析出的 cron 表达式；缺失新增配置时回退默认值；
+  `manual_only` 任务（无定时、只能手动带参触发）为 `null`
 - `manual_trigger_allowed`：是否允许通过 HTTP 手动触发
+- `params_schema`：任务声明了参数模型时返回其 JSON Schema，前端可据此渲染请求体；
+  无参数任务为 `null`
 - `last_task_run`：该任务最新一条运行记录；从未运行过时为 `null`
 
 ### ManualJobTriggerResponse
@@ -107,10 +111,17 @@
 
 - `200 OK`：返回新建的任务运行记录 ID 与初始状态
 
+请求体：
+
+- 无参数任务：不传请求体；
+- 声明了 `params_schema` 的任务：传符合该 JSON Schema 的 JSON 对象，
+  例如字幕抓取任务 `{"movie_number": "ABP-123"}`。
+
 错误响应：
 
 - `401 Unauthorized`：未认证
 - `403 manual_trigger_forbidden`：该任务不允许通过 HTTP 手动触发
+- `422 invalid_job_params`：请求体不符合任务声明的 `params_schema`
 - `404 job_not_found`：`task_key` 不在任务注册表中
 - `409 task_conflict`：同一任务已有 `manual` 或 `scheduled` 运行记录占用互斥锁
 

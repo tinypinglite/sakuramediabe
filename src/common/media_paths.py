@@ -62,23 +62,27 @@ def movie_subtitle_dir(movie_number: str) -> Path:
     return movie_asset_dir(movie_number) / MOVIE_SUBTITLES_SUBDIR
 
 
-# 统一字幕命名：``<番号>-<N>.srt``，N 从 1 递增；同一部影片内连续但不严格无洞。
+# 统一字幕命名：``<番号>-<N>.<ext>``，N 从 1 递增；同一部影片内连续但不严格无洞。
+# 默认仍为 .srt，插件/资产 API 可显式指定 .ass/.ssa/.vtt。
 MOVIE_SUBTITLE_EXTENSION = ".srt"
+MOVIE_SUBTITLE_EXTENSIONS = (".srt", ".ass", ".ssa", ".vtt")
 
 
 def is_movie_subtitle_target_name(movie_number: str, file_name: str) -> bool:
-    """判断文件名是否已经符合 ``<番号>-<N>.srt`` 命名格式。
+    """判断文件名是否已经符合 ``<番号>-<N>.<ext>`` 命名格式。
 
     迁移与写入侧共用这一判定：已符合格式的字幕视为终态，重跑走 fast-path skip。
     """
     prefix = f"{movie_number}-"
-    if not file_name.endswith(MOVIE_SUBTITLE_EXTENSION):
-        return False
-    stem = file_name[: -len(MOVIE_SUBTITLE_EXTENSION)]
-    if not stem.startswith(prefix):
-        return False
-    tail = stem[len(prefix):]
-    return tail.isdigit() and tail == str(int(tail))  # 拒绝 "01" 这类前导零
+    for extension in MOVIE_SUBTITLE_EXTENSIONS:
+        if not file_name.endswith(extension):
+            continue
+        stem = file_name[: -len(extension)]
+        if not stem.startswith(prefix):
+            return False
+        tail = stem[len(prefix):]
+        return tail.isdigit() and tail == str(int(tail))  # 拒绝 "01" 这类前导零
+    return False
 
 
 def _current_max_subtitle_sequence(subtitle_dir: Path, movie_number: str) -> int:
@@ -100,14 +104,18 @@ def allocate_next_movie_subtitle_path(
     movie_number: str,
     *,
     reserved_names: set[str] | None = None,
+    extension: str = MOVIE_SUBTITLE_EXTENSION,
 ) -> Path:
-    """分配下一个 ``<subtitles>/<番号>-<N>.srt`` 目标路径。
+    """分配下一个 ``<subtitles>/<番号>-<N><extension>`` 目标路径。
 
     N 从 ``max(现有落盘 seq, reserved 里已占用的 seq) + 1`` 起。同一批处理里传
     ``reserved_names``（本批已分配还没落盘的文件名集合）可避免连续分配撞车。
 
     幂等策略：调用侧写文件前可以先判断"字幕文件已经在正确目录 & 符合命名"，是的话不必再分配。
     """
+    normalized_extension = extension.lower()
+    if normalized_extension not in MOVIE_SUBTITLE_EXTENSIONS:
+        raise ValueError(f"不支持的字幕扩展名: {extension}")
     subtitle_dir = movie_subtitle_dir(movie_number)
     max_seq = _current_max_subtitle_sequence(subtitle_dir, movie_number)
     if reserved_names:
@@ -116,4 +124,4 @@ def allocate_next_movie_subtitle_path(
                 continue
             seq = int(Path(name).stem[len(f"{movie_number}-"):])
             max_seq = max(max_seq, seq)
-    return subtitle_dir / f"{movie_number}-{max_seq + 1}{MOVIE_SUBTITLE_EXTENSION}"
+    return subtitle_dir / f"{movie_number}-{max_seq + 1}{normalized_extension}"

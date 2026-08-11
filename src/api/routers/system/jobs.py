@@ -41,6 +41,11 @@ def _build_job_metadata(job_def: JobDefinition, last_run: BackgroundTaskRun | No
         cron_setting=get_job_cron_setting(job_def),
         cron_expr=resolve_job_cron_expr(job_def),
         manual_trigger_allowed=job_def.manual_trigger_allowed,
+        params_schema=(
+            job_def.params_schema.model_json_schema()
+            if job_def.params_schema is not None
+            else None
+        ),
         last_task_run=TaskRunResource.model_validate(last_run) if last_run else None,
     )
 
@@ -52,7 +57,7 @@ def list_jobs():
 
 
 @router.post("/system/jobs/{task_key}/run", response_model=ManualJobTriggerResponse)
-def trigger_job(task_key: str):
+def trigger_job(task_key: str, payload: dict | None = None):
     job_def = JOB_REGISTRY_BY_KEY.get(task_key)
     if job_def is None:
         raise ApiError(404, "job_not_found", f"未知任务 task_key={task_key}")
@@ -63,8 +68,20 @@ def trigger_job(task_key: str):
             f"任务 {task_key} 不允许通过接口手动触发",
         )
 
+    params = None
+    if job_def.params_schema is not None:
+        try:
+            params = job_def.params_schema.model_validate(payload or {}).model_dump()
+        except Exception as exc:
+            raise ApiError(
+                422,
+                "invalid_job_params",
+                f"任务 {task_key} 参数校验失败",
+                {"detail": str(exc)},
+            ) from exc
+
     try:
-        task_run = submit_manual_job(job_def)
+        task_run = submit_manual_job(job_def, params=params)
     except TaskRunConflictError as exc:
         blocking = exc.blocking_task_run
         raise ApiError(
