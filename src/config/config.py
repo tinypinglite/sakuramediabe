@@ -80,10 +80,6 @@ class DatabaseEngine(str, Enum):
     POSTGRES = "postgres"
 
 
-class IndexerType(str, Enum):
-    JACKETT = "jackett"
-
-
 class IndexerKind(str, Enum):
     PT = "pt"
     BT = "bt"
@@ -400,11 +396,6 @@ class Logging(BaseModel):
     level: str = "INFO"
 
 
-class IndexerSettings(BaseModel):
-    type: IndexerType = IndexerType.JACKETT
-    api_key: str = "change-me"
-
-
 class ImageSearch(BaseModel):
     inference_base_url: str = "http://joytag-infer:8001"
     # CPU 后端逐张推理，一批 16 张会串行跑满 16 次；30s 不足以覆盖，中途超时会让整批作废。
@@ -466,7 +457,6 @@ class Settings(BaseSettings):
     downloads: Downloads = Field(default_factory=Downloads)
     media_import: MediaImport = Field(default_factory=MediaImport)
     logging: Logging = Field(default_factory=Logging)
-    indexer_settings: IndexerSettings = Field(default_factory=IndexerSettings)
     image_search: ImageSearch = Field(default_factory=ImageSearch)
     qdrant: Qdrant = Field(default_factory=Qdrant)
     enable_docs: bool = False

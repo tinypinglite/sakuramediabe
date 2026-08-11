@@ -41,8 +41,12 @@ DownloadClient.add_index(
 
 class Indexer(TimestampedMixin, BaseModel):
     name = peewee.CharField(max_length=255, unique=True, index=True)
+    # Torznab 搜索接口地址；鉴权 key 可选，随每个索引器独立配置（为空则不携带 apikey 参数）。
     url = peewee.CharField(max_length=1024)
+    # 索引器种类（IndexerKind）：pt / bt；PT 禁绑 cloud115 下载入口。
     kind = peewee.CharField(max_length=32)
+    # 每个索引器自己的 Torznab 鉴权 key，可空；为空时搜索请求不带 apikey。
+    api_key = peewee.CharField(max_length=255, null=True)
 
     class Meta:
         table_name = "indexer"

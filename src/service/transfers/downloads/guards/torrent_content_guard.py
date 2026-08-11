@@ -30,7 +30,7 @@ ERROR_CODE_CONTENT_REJECTED = "download_candidate_content_rejected"
 # 拿不到或解析不了种子文件：候选本身可能没问题，是索引器/网络故障，换候选大概率也一样失败。
 ERROR_CODE_CONTENT_UNVERIFIABLE = "download_candidate_content_unverifiable"
 
-# Jackett 的 /dl/ 端点要回源到上游站点，偶发超时是常态（实测 30 次里有几次），重试即可恢复。
+# Torznab 聚合器（如 Jackett）的 /dl/ 下载端点要回源到上游站点，偶发超时是常态（实测 30 次里有几次），重试即可恢复。
 # 次数与超时压得紧是因为调用方拿到失败后会换下一个候选：单候选的最坏耗时会被换种次数放大，
 # 自动下载一部影片最多 MAX_CONTENT_REJECTED_CANDIDATES 轮，不能让每轮都耗满退避。
 FETCH_ATTEMPTS = 2
@@ -40,7 +40,8 @@ FETCH_TIMEOUT_SECONDS = 20.0
 def _redact_url(url: str) -> str:
     """去掉 query 再入日志。
 
-    Jackett 的下载地址形如 ``http://host:9117/dl/<indexer>/?jackett_apikey=<KEY>&path=...``，
+    Torznab 服务返回的下载地址通常自带鉴权参数（Jackett 形如
+    ``http://host:9117/dl/<indexer>/?jackett_apikey=<KEY>&path=...``），
     apikey 就在 query 里且紧跟在很短的 host+path 之后，截断长度挡不住它。
     """
     return url.split("?", 1)[0][:120]

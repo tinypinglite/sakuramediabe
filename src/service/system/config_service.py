@@ -41,7 +41,6 @@ SECTION_EFFECT: dict[str, ConfigEffectLevel] = {
     "downloads": ConfigEffectLevel.RESTART_SCHEDULER,    # 阈值由 aps 定时清理任务消费
     "media_import": ConfigEffectLevel.HOT,               # 每次浏览/导入现读，api 驱动
     "logging": ConfigEffectLevel.RESTART_API,            # 仅 configure_logging() 启动期应用
-    "indexer_settings": ConfigEffectLevel.HOT,           # 每次 new client 现读
     "image_search": ConfigEffectLevel.HOT,               # 现读 + refresh 清 lru 单例
     "qdrant": ConfigEffectLevel.HOT,                     # 现读 + refresh 清 lru 单例
 }

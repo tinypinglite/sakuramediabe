@@ -2,7 +2,7 @@
 
 ## 资源说明
 
-下载域负责对接 Jackett、qBittorrent 与 115 离线下载，并管理本地可查询的下载状态。
+下载域负责对接 Torznab 索引器、qBittorrent 与 115 离线下载，并管理本地可查询的下载状态。
 
 下载入口按 `DownloadClient.kind` 区分两种：
 
@@ -11,7 +11,7 @@
 
 所有时间字段都由后端按当前运行环境时区转换后返回，格式为不带时区后缀的本地时间字符串。
 
-- Jackett 负责“搜索候选资源”
+- Torznab 索引器负责“搜索候选资源”
 - qBittorrent 负责“实际下载”
 - `DownloadTask` 是本地镜像数据，由“提交下载”或“同步任务”流程写入
 - API 不提供 `DownloadTask` 的通用创建、更新、详情接口；只提供查询、实时状态与受控操作
@@ -29,9 +29,9 @@
 ## 设计目标
 
 - 保持依赖方向为 `api -> service -> model`
-- 让 Jackett 配置与 qBittorrent 客户端配置解耦
+- 让索引器配置与 qBittorrent 客户端配置解耦
 - 让搜索、提交下载、任务同步、媒体导入分成独立流程
-- 允许一个系统级 Jackett 配置服务多个 `DownloadClient`
+- 允许一套索引器配置服务多个 `DownloadClient`
 - 允许多个 `DownloadClient` 绑定不同媒体库
 - 支持后续增加定时同步与自动导入，而不破坏 API 边界
 - 支持后续增加自动搜索订阅影片资源，而不新增额外下载 API
@@ -45,7 +45,7 @@
 - 仅处理 `is_subscribed = true` 的影片
 - 仅处理不存在有效 `Media` 且**不存在活跃 `DownloadTask`** 的影片（判定的是活跃而非存在，见下「死种判定」）
 - 仅处理**尚未放弃**的影片（`state != exhausted`，见下「查询次数与放弃」）
-- 使用 Jackett 搜索 PT 与 BT 候选资源
+- 使用 Torznab 协议搜索 PT 与 BT 候选资源
 - 选种为「过滤 → 打分取最高」两步，与 `downloads.preferred_client_kinds` 无关（见下）
 - 复用 `POST /download-requests` 对应的 service 提交下载，不新增 API
 
@@ -202,15 +202,15 @@
 索引器整体故障不会走到这里——那种情况 `search_candidates` 会先失败并按 `indexer_search_failed`
 处理（那才是真正的基础设施故障，不消耗次数）。
 
-拉取策略：`FETCH_ATTEMPTS = 2`、`FETCH_TIMEOUT_SECONDS = 20`。Jackett 的 `/dl/` 端点要回源到
-上游站点，偶发超时是常态，重试即可恢复；生产实测串行重试下 33/33 全部可得（并发压测时会出现
-瞬时失败，因此闸门刻意逐个候选串行校验）。次数与超时压得紧，是因为单候选的最坏耗时会被换种
-次数放大（最坏 5 × 2 × 20s）。
+拉取策略：`FETCH_ATTEMPTS = 2`、`FETCH_TIMEOUT_SECONDS = 20`。Torznab 聚合器（如 Jackett）
+的 `/dl/` 下载端点要回源到上游站点，偶发超时是常态，重试即可恢复；生产实测串行重试下
+33/33 全部可得（并发压测时会出现瞬时失败，因此闸门刻意逐个候选串行校验）。次数与超时压得紧，
+是因为单候选的最坏耗时会被换种次数放大（最坏 5 × 2 × 20s）。
 
-**日志与 `ApiError.details` 里绝不能出现原始下载地址。** Jackett 的下载链接形如
-`http://host:9117/dl/<indexer>/?jackett_apikey=<KEY>&...`，apikey 就在 query 里；httpx 的异常
-字符串也会内嵌完整 URL，而 `details` 会被 API 层原样返回给调用方。因此 URL 一律经 `_redact_url`
-去 query，异常一律经 `_describe_fetch_error` 压成「类型名 / HTTP 状态码」。
+**日志与 `ApiError.details` 里绝不能出现原始下载地址。** Torznab 服务返回的下载地址通常自带
+鉴权参数（Jackett 形如 `http://host:9117/dl/<indexer>/?jackett_apikey=<KEY>&...`），apikey 就在
+query 里；httpx 的异常字符串也会内嵌完整 URL，而 `details` 会被 API 层原样返回给调用方。
+因此 URL 一律经 `_redact_url` 去 query，异常一律经 `_describe_fetch_error` 压成「类型名 / HTTP 状态码」。
 
 **只有磁力链的候选一律判为不可校验。** 磁力本身不含文件列表，要拿到只能走 BEP-9 从 swarm 换
 metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 67 秒），做不了提交前的同步闸门。
@@ -231,7 +231,7 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
   删掉种子不会解除黑名单；豁免是停滞清理的闭环前提：否则删完种子下轮对账就抹掉黑名单，
   第二天自动下载又把同一死种拉回来。
 
-**种子身份从哪来**（`JackettClient._resolve_info_hash`），按顺序取第一个能用的，两条都是纯字符串处理：
+**种子身份从哪来**（`TorznabClient._resolve_info_hash`），按顺序取第一个能用的，两条都是纯字符串处理：
 
 1. torznab 响应里的 `<torznab:attr name="infohash">` —— 索引器直接给的
 2. 磁力链里的 `xt=urn:btih:`
@@ -353,11 +353,11 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 
 ### DownloadCandidate
 
-`DownloadCandidate` 表示一次 Jackett 搜索返回的候选资源，不落库。
+`DownloadCandidate` 表示一次 Torznab 搜索返回的候选资源，不落库。
 
 ```json
 {
-  "source": "jackett",
+  "source": "torznab",
   "indexer_name": "mteam",
   "indexer_kind": "pt",
   "resolved_client_id": 1,
@@ -974,7 +974,7 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 
 ### Purpose
 
-根据番号搜索 Jackett 候选资源。
+根据番号搜索 Torznab 候选资源。
 
 ### Auth
 
@@ -988,7 +988,7 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 ### Behavior
 
 - 服务读取 `/indexer-settings` 对应的当前运行时配置
-- 当 `movie_number` 以 `FC2` 开头（含 `FC2-PPV-xxxx`）时，调用 Jackett 会仅使用数字部分作为查询词
+- 当 `movie_number` 以 `FC2` 开头（含 `FC2-PPV-xxxx`）时，调用 Torznab 客户端会仅使用数字部分作为查询词
 - 结果为临时数据，不写入数据库
 - 每条候选通过 `download_clients` 返回对应索引器绑定的全部可选下载器，`resolved_client_*` 表示按全局偏好预选的默认下载器
 - 按“更高做种数优先，其次更大体积优先”排序返回
@@ -1002,7 +1002,7 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 ```json
 [
   {
-    "source": "jackett",
+    "source": "torznab",
     "indexer_name": "mteam",
     "indexer_kind": "pt",
     "resolved_client_id": 1,
@@ -1027,7 +1027,7 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 
 - `401 Unauthorized`: 未认证
 - `422 Unprocessable Entity`: 查询参数非法
-- `502 Bad Gateway`: Jackett 请求失败
+- `502 Bad Gateway`: Torznab 请求失败
 
 ### Endpoint
 
@@ -1047,7 +1047,7 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 {
   "movie_number": "ABC-001",
   "candidate": {
-    "source": "jackett",
+    "source": "torznab",
     "indexer_name": "mteam",
     "indexer_kind": "pt",
     "title": "ABC-001 4K 中文字幕",

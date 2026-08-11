@@ -3,12 +3,12 @@ from src.api.exception.errors import ApiError
 from src.config.config import IndexerKind
 from src.schema.transfers.downloads import DownloadCandidateResource
 from src.service.transfers.downloads.common import validate_non_empty
-from src.service.transfers.downloads.clients.jackett import JackettClient, JackettClientError
+from src.service.transfers.downloads.clients.torznab import TorznabClient, TorznabClientError
 
 
 class DownloadSearchService:
-    def __init__(self, jackett_client: JackettClient | None = None):
-        self.jackett_client = jackett_client or JackettClient()
+    def __init__(self, torznab_client: TorznabClient | None = None):
+        self.torznab_client = torznab_client or TorznabClient()
 
     def search_candidates(
         self,
@@ -23,12 +23,12 @@ class DownloadSearchService:
         ).upper()
         normalized_kind = self._validate_indexer_kind(indexer_kind)
         try:
-            return self.jackett_client.search(normalized_movie_number, normalized_kind)
-        except JackettClientError as exc:
+            return self.torznab_client.search(normalized_movie_number, normalized_kind)
+        except TorznabClientError as exc:
             raise ApiError(
                 502,
                 "download_candidate_search_failed",
-                "Jackett search failed",
+                "Torznab search failed",
                 {"detail": str(exc)},
             ) from exc
 

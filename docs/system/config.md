@@ -34,7 +34,7 @@
 
 | 配置节 | 生效方式 |
 |---|---|
-| `media` `movie_info_translation` `metadata` `media_import` `indexer_settings` `image_search` `qdrant` | `hot` |
+| `media` `movie_info_translation` `metadata` `media_import` `image_search` `qdrant` | `hot` |
 | `database` `logging` | `restart_api` |
 | `scheduler` `downloads` | `restart_scheduler` |
 

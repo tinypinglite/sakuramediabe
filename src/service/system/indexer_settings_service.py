@@ -1,16 +1,12 @@
 import time
 from urllib.parse import urlparse
 
+from loguru import logger
+
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import (
     IndexerKind,
-    IndexerType,
-    Settings,
-    settings,
-)
-from src.config.config import (
-    update_settings as persist_settings,
 )
 from src.model import DownloadClient, Indexer, IndexerDownloadClient
 from src.model.enums import DownloadClientKind
@@ -46,14 +42,13 @@ class IndexerSettingsService:
                 )
             )
         return IndexerSettingsResource(
-            type=settings.indexer_settings.type,
-            api_key=settings.indexer_settings.api_key,
             indexers=[
                 IndexerItemResource(
                     id=indexer.id,
                     name=indexer.name,
                     url=indexer.url,
                     kind=IndexerKind(indexer.kind),
+                    api_key=indexer.api_key,
                     download_clients=links_by_indexer.get(indexer.id, []),
                 )
                 for indexer in Indexer.select().order_by(Indexer.id.asc())
@@ -73,36 +68,33 @@ class IndexerSettingsService:
                 "At least one field must be provided",
             )
 
-        current_settings = Settings.model_validate(settings.model_dump())
-        indexer_settings = current_settings.indexer_settings.model_copy(deep=True)
-
-        if "type" in update_data:
-            indexer_settings.type = cls._validate_type(payload.type)
-
-        if "api_key" in update_data:
-            indexer_settings.api_key = cls._validate_api_key(payload.api_key)
+        legacy_keys = update_data.keys() & {"type", "api_key"}
+        if legacy_keys:
+            # 兼容旧版前端：全局 type/api_key 已废弃，只记录不生效，避免升级后旧请求直接 422。
+            logger.warning(
+                "Ignored legacy indexer settings fields: {}",
+                sorted(legacy_keys),
+            )
 
         if "indexers" in update_data:
             cls._replace_indexers(payload.indexers)
 
-        current_settings.indexer_settings = indexer_settings
-        persist_settings(current_settings)
         return cls.get_settings()
 
     @classmethod
     def test_connection(
         cls,
         *,
-        jackett_client_cls=None,
+        torznab_client_cls=None,
     ) -> IndexerConnectionTestResponse:
-        """Jackett 连通性检测:用固定番号真实搜一次，而不是单纯 ping,以此验证 apikey 与 indexer 配置整体可用。"""
+        """Torznab 连通性检测:用固定番号真实搜一次，而不是单纯 ping,以此验证各 indexer 的 key 与地址整体可用。"""
         # 延迟导入，避免 system service 与 transfers service 顶层依赖链形成循环。
-        from src.service.transfers.downloads.clients.jackett import (
-            JackettClient,
-            JackettClientError,
+        from src.service.transfers.downloads.clients.torznab import (
+            TorznabClient,
+            TorznabClientError,
         )
 
-        jackett_client_cls = jackett_client_cls or JackettClient
+        torznab_client_cls = torznab_client_cls or TorznabClient
         start_at = time.time()
         indexers_checked = Indexer.select().count()
         if indexers_checked == 0:
@@ -112,19 +104,19 @@ class IndexerSettingsService:
                 indexers_checked=0,
                 error=IndexerConnectionTestError(
                     type="no_indexers_configured",
-                    message="尚未配置任何 indexer，无法测试 Jackett 连通性",
+                    message="尚未配置任何 indexer，无法测试 Torznab 连通性",
                 ),
             )
 
         try:
-            candidates = jackett_client_cls().search(cls.CONNECTION_TEST_QUERY)
-        except JackettClientError as exc:
+            candidates = torznab_client_cls().search(cls.CONNECTION_TEST_QUERY)
+        except TorznabClientError as exc:
             return cls._build_connection_test_response(
                 start_at=start_at,
                 healthy=False,
                 indexers_checked=indexers_checked,
                 error=IndexerConnectionTestError(
-                    type="jackett_request_error",
+                    type="torznab_request_error",
                     message=str(exc),
                 ),
             )
@@ -157,21 +149,12 @@ class IndexerSettingsService:
         )
 
     @staticmethod
-    def _validate_api_key(value: str | None) -> str:
+    def _validate_indexer_api_key(value: str | None) -> str | None:
+        # 可选鉴权 key：未配置/空/纯空白一律归一为 None，表示请求不携带 apikey。
         if value is None:
-            raise ApiError(
-                422,
-                "invalid_indexer_settings_api_key",
-                "Indexer API key cannot be empty",
-            )
+            return None
         normalized = value.strip()
-        if not normalized:
-            raise ApiError(
-                422,
-                "invalid_indexer_settings_api_key",
-                "Indexer API key cannot be empty",
-            )
-        return normalized
+        return normalized or None
 
     @staticmethod
     def _validate_name(value: str) -> str:
@@ -203,32 +186,6 @@ class IndexerSettingsService:
                 {"url": value},
             )
         return normalized
-
-    @staticmethod
-    def _validate_type(value: str | None) -> IndexerType:
-        if value is None:
-            raise ApiError(
-                422,
-                "invalid_indexer_settings_type",
-                "Indexer type cannot be empty",
-            )
-        normalized = value.strip().lower()
-        if not normalized:
-            raise ApiError(
-                422,
-                "invalid_indexer_settings_type",
-                "Indexer type cannot be empty",
-            )
-
-        try:
-            return IndexerType(normalized)
-        except ValueError as exc:
-            raise ApiError(
-                422,
-                "invalid_indexer_settings_type",
-                "Unsupported indexer type",
-                {"type": value},
-            ) from exc
 
     @staticmethod
     def _validate_kind(value: str) -> IndexerKind:
@@ -263,6 +220,11 @@ class IndexerSettingsService:
             )
         normalized_names: set[str] = set()
         indexers: list[dict] = []
+        # 兼容旧前端整表保存：省略 api_key 时沿用同名现有索引器的 key，只有显式传 null/空串才清空。
+        existing_api_keys = {
+            indexer.name: indexer.api_key
+            for indexer in Indexer.select(Indexer.name, Indexer.api_key)
+        }
 
         for item in items:
             name = cls._validate_name(item.name)
@@ -276,11 +238,16 @@ class IndexerSettingsService:
                 )
             normalized_names.add(normalized_name)
             kind = cls._validate_kind(item.kind)
+            if "api_key" in item.model_fields_set:
+                api_key = cls._validate_indexer_api_key(item.api_key)
+            else:
+                api_key = existing_api_keys.get(name)
             indexers.append(
                 {
                     "name": name,
                     "url": cls._validate_url(item.url),
                     "kind": kind.value,
+                    "api_key": api_key,
                     "download_client_ids": cls._validate_download_client_ids(
                         item.download_client_ids,
                         indexer_kind=kind,

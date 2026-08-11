@@ -5,7 +5,6 @@ import xmltodict
 from loguru import logger
 
 from src.common.movie_numbers import normalize_movie_number
-from src.config.config import settings
 from src.model import DownloadClient, Indexer, IndexerDownloadClient
 from src.schema.transfers.downloads import (
     DownloadCandidateClientResource,
@@ -16,21 +15,35 @@ from src.service.transfers.shared.common import canonicalize_btih
 from src.service.transfers.downloads.guards.tag_rules import detect_candidate_tags
 
 
-class JackettClientError(Exception):
+def _describe_search_error(exc: Exception) -> str:
+    """把请求异常压成不含 URL/凭据的短描述。
+
+    httpx 异常字符串会内嵌完整请求 URL（连同 apikey），既不能进日志也不能进
+    TorznabClientError/ApiError.details；HTTP 错误保留状态码，传输层错误只保留类型 + 去 query 的地址。
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    if isinstance(exc, httpx.HTTPError):
+        request = getattr(exc, "request", None)
+        url = getattr(request, "url", None)
+        if url is not None:
+            return f"{type(exc).__name__} url={str(url).split('?', 1)[0]}"
+    return str(exc)
+
+
+class TorznabClientError(Exception):
     pass
 
 
-class JackettClient:
+class TorznabClient:
     FC2_QUERY_PATTERN = re.compile(r"^FC2-?(\d+)$", re.IGNORECASE)
     MAGNET_BTIH_PATTERN = re.compile(r"xt=urn:btih:([^&]+)", re.IGNORECASE)
 
     def __init__(
         self,
         *,
-        api_key: str | None = None,
         client: httpx.Client | None = None,
     ):
-        self.api_key = api_key if api_key is not None else settings.indexer_settings.api_key
         self.client = client or httpx.Client(timeout=30.0, trust_env=False)
 
     def search(self, movie_number: str, indexer_kind: str | None = None) -> list[DownloadCandidateResource]:
@@ -49,25 +62,29 @@ class JackettClient:
                 continue
             resolved_client = resolve_preferred_client(download_clients)
             try:
+                params = {
+                    "t": "search",
+                    "q": search_query,
+                    "cat": 6000,
+                }
+                # 每个索引器独立可选 key：未配置时不携带 apikey，兼容免鉴权 Torznab 端点。
+                if indexer.api_key:
+                    params["apikey"] = indexer.api_key
                 response = self.client.get(
                     indexer.url,
-                    params={
-                        "t": "search",
-                        "q": search_query,
-                        "apikey": self.api_key,
-                        "cat": 6000,
-                    },
+                    params=params,
                 )
                 response.raise_for_status()
                 payload = xmltodict.parse(response.text)
             except Exception as exc:
+                detail = _describe_search_error(exc)
                 logger.warning(
-                    "Jackett search failed movie_number={} indexer={} detail={}",
+                    "Torznab search failed movie_number={} indexer={} detail={}",
                     movie_number,
                     indexer.name,
-                    exc,
+                    detail,
                 )
-                raise JackettClientError(str(exc)) from exc
+                raise TorznabClientError(detail) from exc
 
             channel = self._coerce_mapping((payload.get("rss") or {}).get("channel"))
             channel_title = self._coerce_text(channel.get("title"))
@@ -100,7 +117,7 @@ class JackettClient:
     @classmethod
     def _build_search_query(cls, movie_number: str) -> str:
         normalized = normalize_movie_number(movie_number)
-        # FC2 资源在 Jackett 中通常按纯数字检索，命中率更稳定。
+        # FC2 资源在 Torznab 聚合器中通常按纯数字检索，命中率更稳定。
         if normalized.startswith("FC2"):
             matched = cls.FC2_QUERY_PATTERN.match(normalized)
             if matched:
@@ -124,8 +141,8 @@ class JackettClient:
         title = self._coerce_text(item.get("title"))
         description = self._coerce_text(item.get("description"))
         full_title = " ".join(part for part in [title, description] if part)
-        # Torznab/Jackett 协议中磁力链可能出现在 magneturl 属性、link 或 guid 任一字段
-        # （只有磁力链没有 .torrent 文件时，Jackett 会把磁力链直接塞进 link/guid），
+        # Torznab 协议中磁力链可能出现在 magneturl 属性、link 或 guid 任一字段
+        # （只有磁力链没有 .torrent 文件时，聚合器如 Jackett 会把磁力链直接塞进 link/guid），
         # 因此按内容而非字段名分流：磁力链归 magnet_url，其余链接归 torrent_url。
         magnet_url, torrent_url = self._split_download_links(
             attr_map.get("magneturl"),
@@ -133,7 +150,7 @@ class JackettClient:
             item.get("guid"),
         )
         return DownloadCandidateResource(
-            source="jackett",
+            source="torznab",
             indexer_name=indexer.name or remote_indexer["id"] or remote_indexer["name"],
             indexer_kind=indexer.kind,
             resolved_client_id=resolved_client.id,
@@ -222,6 +239,7 @@ class JackettClient:
 
     @classmethod
     def _extract_indexer_metadata(cls, item: dict, channel_title: str) -> dict[str, str]:
+        # jackettindexer 是 Jackett 的扩展字段；Prowlarr/原生 Torznab 走 indexer 或 channel title 回退。
         jackett_indexer = cls._coerce_mapping(item.get("jackettindexer"))
         plain_indexer = cls._coerce_mapping(item.get("indexer"))
         return {

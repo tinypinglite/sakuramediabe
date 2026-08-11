@@ -1267,7 +1267,7 @@ def test_run_pending_migrations_moves_indexer_binding_to_junction_table(clean_db
     clean_db.execute_sql(
         """
         INSERT INTO indexer (created_at, updated_at, name, url, kind, download_client_id)
-        VALUES ('2026-07-14', '2026-07-14', 'mteam', 'http://jackett/api', 'pt', 1)
+        VALUES ('2026-07-14', '2026-07-14', 'mteam', 'http://torznab/api', 'pt', 1)
         """
     )
 
@@ -1290,6 +1290,18 @@ def test_run_pending_migrations_moves_indexer_binding_to_junction_table(clean_db
     indexer_columns = {column.name for column in clean_db.get_columns("indexer")}
     assert "download_client_id" not in indexer_columns
     assert "20260714_07_indexer_multi_client_binding" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_adds_indexer_api_key_column(clean_db):
+    """20260812_01：indexer 补可空 api_key 列（每个索引器独立 Torznab 鉴权 key）。"""
+    _create_legacy_download_tables(clean_db)
+
+    run_pending_migrations(clean_db)
+
+    indexer_columns = {column.name: column for column in clean_db.get_columns("indexer")}
+    assert "api_key" in indexer_columns
+    assert indexer_columns["api_key"].null is True
+    assert "20260812_01_add_indexer_api_key" in _schema_migration_names(clean_db)
 
 
 def test_run_pending_migrations_adds_movie_number_upper_index(clean_db):
