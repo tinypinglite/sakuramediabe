@@ -19,7 +19,7 @@ worktrees/
 .claude
 docs/deployment/license.md
 # Cloud115 本地集成笔记不进入版本库
-docs/development/cloud115-integration-notes.md
+docs/development
 .jscpd-report
 
 .codex
