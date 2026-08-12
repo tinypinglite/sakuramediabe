@@ -232,33 +232,6 @@ def _schedule_bootstrap_job(
     )
 
 
-def _bootstrap_first_playback_ranking(scheduler: BlockingScheduler) -> None:
-    """首次部署引导：若 Movie 表为空，安排一次 javdb 热播榜 daily 抓取。
-
-    - 目的：新库启动后立刻有内容，不必等凌晨 01:45 的定时 ranking_sync
-    - 目标最小：只抓 javdb 免登录的 playback_all/daily，冷启动足够轻
-    - 任何异常都吞掉：早期部署可能还没跑迁移，不能让引导逻辑打崩 APS 启动
-    """
-    try:
-        from src.model.catalog.movies import Movie
-        from src.service.discovery import RankingSyncService
-
-        if Movie.select().count() > 0:
-            return
-
-        logger.info("首次部署检测：影片库为空，安排一次 javdb 热播榜（daily）抓取")
-        _schedule_bootstrap_job(
-            scheduler,
-            "ranking_sync",
-            job_id="bootstrap_ranking_playback",
-            func=lambda _reporter: RankingSyncService().sync_board_period(
-                "javdb", "playback_all", "daily"
-            ),
-        )
-    except Exception:
-        logger.exception("Skip bootstrap ranking due to unexpected error")
-
-
 def _bootstrap_gfriends_filetree_refresh(scheduler: BlockingScheduler) -> None:
     """首次部署/缓存缺失时的引导：立刻拉一次 GFriends Filetree 到 disk cache。
 
@@ -345,13 +318,11 @@ def aps():
     database = ensure_database_ready()
     logger.info("Scheduler runtime database ready {}", type(database).__name__)
     # APS 进程启动时统一回收由该进程负责的任务类型，并联动清理业务侧 running 状态。
-    # startup 类型对应本进程内 `_bootstrap_first_playback_ranking` 排下的引导任务。
     recover_interrupted_tasks(
         trigger_types=("scheduled", "manual", "internal", "startup"),
         error_message="APS进程重启，任务已中断",
     )
     scheduler = build_scheduler()
-    _bootstrap_first_playback_ranking(scheduler)
     _bootstrap_gfriends_filetree_refresh(scheduler)
     _bootstrap_movie_similarity_index(scheduler)
     # 队列 worker 与调度器同进程：APS 只按 cron 入队，worker 领取执行。

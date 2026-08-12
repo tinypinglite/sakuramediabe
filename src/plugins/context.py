@@ -1,4 +1,4 @@
-"""插件访问宿主能力的稳定门面（v2）。
+"""插件访问宿主能力的稳定门面。
 
 具体 service/provider 在方法内懒导入，避免插件加载阶段反向依赖任务注册表。
 插件只允许使用本类方法与 ``src.plugins.types`` 中的公开类型。
@@ -89,6 +89,52 @@ class PluginContext:
             content,
             filename,
             language=language,
+        )
+
+    def sync_ranking_sources(
+        self,
+        progress_callback=None,
+        task_run_id: int | None = None,
+    ) -> dict[str, int]:
+        """同步当前插件声明的全部排行榜来源，返回统计 dict。"""
+        from src.service.discovery.ranking_service import (
+            RANKING_SOURCE_OWNERS,
+            RankingSyncService,
+        )
+
+        source_keys = tuple(
+            source_key
+            for source_key, owner in RANKING_SOURCE_OWNERS.items()
+            if owner == self.plugin_id
+        )
+        if not source_keys:
+            raise RuntimeError(f"插件 {self.plugin_id} 未注册排行榜来源")
+        return RankingSyncService().sync_all_rankings(
+            progress_callback=progress_callback,
+            task_run_id=task_run_id,
+            source_keys=source_keys,
+        )
+
+    def sync_ranking_board(
+        self,
+        source_key: str,
+        board_key: str,
+        period: str | None = None,
+    ) -> dict[str, int | str]:
+        """同步单个榜单；source_key 必须是本插件声明的来源。"""
+        from src.service.discovery.ranking_service import (
+            RANKING_SOURCE_OWNERS,
+            RankingSyncService,
+        )
+
+        if RANKING_SOURCE_OWNERS.get(source_key) != self.plugin_id:
+            raise ValueError(
+                f"排行榜来源 {source_key} 不属于插件 {self.plugin_id}"
+            )
+        return RankingSyncService().sync_board_period(
+            source_key=source_key,
+            board_key=board_key,
+            period=period,
         )
 
     @staticmethod

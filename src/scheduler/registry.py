@@ -7,6 +7,7 @@ from src.config.config import settings
 from src.metadata.factory import refresh_gfriends_filetree
 from src.plugins.contracts import PluginRegistration
 from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
+from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
 from src.scheduler.contracts import JobDefinition
 from src.scheduler.queue_tasks import QUEUE_TASK_REGISTRY
 from src.service.catalog import (
@@ -24,7 +25,6 @@ from src.service.discovery import (
     ImageSearchIndexService,
     MomentRecommendationService,
     MovieRecommendationService,
-    RankingSyncService,
 )
 from src.service.playback import (
     Cloud115KeepaliveService,
@@ -158,28 +158,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
             "updated_movies",
             "unchanged_movies",
             "heat_updated_movies",
-        ),
-    ),
-    JobDefinition(
-        task_key="ranking_sync",
-        log_name="ranking-sync",
-        cli_name="sync-rankings",
-        cli_help="执行一次排行榜同步",
-        cron_setting="ranking_sync_cron",
-        service_factory=lambda reporter: RankingSyncService().sync_all_rankings(
-            progress_callback=reporter.progress_callback,
-            task_run_id=reporter.task_run_id,
-        ),
-        format_stats=_build_stats_formatter(
-            "ranking sync finished:",
-            "total_targets",
-            "success_targets",
-            "failed_targets",
-            "fetched_numbers",
-            "imported_movies",
-            "local_hit_movies",
-            "skipped_movies",
-            "stored_items",
         ),
     ),
     JobDefinition(
@@ -585,8 +563,15 @@ LOADED_PLUGINS: tuple[PluginRegistration, ...] = load_enabled_plugins(
     settings.plugins,
     root_dir=settings.plugins.root_dir,
 )
+# 排行榜来源合并：来源冲突的插件整插件隔离（任务也不注册）。
+_REJECTED_RANKING_PLUGINS: set[str] = apply_plugin_ranking_sources(LOADED_PLUGINS)
+_ACTIVE_PLUGINS: tuple[PluginRegistration, ...] = tuple(
+    plugin
+    for plugin in LOADED_PLUGINS
+    if plugin.plugin_id not in _REJECTED_RANKING_PLUGINS
+)
 JOB_REGISTRY: list[JobDefinition] = _build_job_registry(
     BUILTIN_JOB_REGISTRY,
-    LOADED_PLUGINS,
+    _ACTIVE_PLUGINS,
 )
 JOB_REGISTRY_BY_KEY: dict[str, JobDefinition] = {job.task_key: job for job in JOB_REGISTRY}

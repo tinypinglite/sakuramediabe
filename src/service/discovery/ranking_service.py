@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,14 +35,16 @@ from src.service.discovery.ranking_notifications import (
 class RankingBoardDefinition:
     key: str
     name: str
-    provider_raw_key: str
-    supported_periods: tuple[str, ...]
+    supported_periods: tuple[str, ...] = ()
     default_period: str | None = None
-    # 抓取方式，决定走 JavDB 哪个接口；仅用于抓取分发，不影响 list_boards/list_sources。
-    #   rankings -> /api/v1/rankings（免登录，type=0/1/3）
-    #   playback -> /api/v1/rankings/playback（免登录，filter_by=all/high_score）
-    #   top250   -> /api/v1/movies/top（需登录，period 编码 all/uncensored/censored/fc2/年份）
-    fetch_kind: str = "rankings"
+    # 需要宿主 metadata 账号才抓；未配置账号时宿主跳过该 board。
+    requires_account: bool = False
+    # 抓取前回调：(period, 该 board+period 是否已有数据) -> 是否抓。
+    should_fetch: Callable[[str, bool], bool] | None = None
+    # 动态周期提供者（如 top250 年份逐年滚动）；优先于 supported_periods。
+    supported_periods_provider: Callable[[], tuple[str, ...]] | None = None
+    # 番号抓取回调；由插件提供，宿主只负责编排与写库。
+    fetch_numbers: Callable[[str], list[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,8 @@ class RankingSourceDefinition:
     key: str
     name: str
     boards: tuple[RankingBoardDefinition, ...]
+    # 来源归属插件 ID（内建来源为 None），仅用于 API 展示归属。
+    plugin_id: str | None = None
 
     def board_by_key(self, board_key: str) -> RankingBoardDefinition | None:
         for board in self.boards:
@@ -57,108 +62,29 @@ class RankingSourceDefinition:
         return None
 
 
-# TOP250（需登录）：board 固定为 top250，period 编码不同子榜——
-# 固定子榜 all/无码/有码/FC2，外加 2008 至当前年的逐年年度榜。
-TOP250_FIXED_PERIODS = ("all", "uncensored", "censored", "fc2")
-TOP250_START_YEAR = 2008
-# 固定子榜 period -> playback 接口的 (type, type_value)；年份 period 走 type=year。
-_TOP250_VIDEO_TYPE_BY_PERIOD = {"censored": "0", "uncensored": "1", "fc2": "3"}
-
-
-def _current_year() -> int:
-    return runtime_now().year
-
-
-def _top250_year_periods() -> tuple[str, ...]:
-    # 当前年在前，回溯到起始年；逐年滚动，无需每年改代码。
-    return tuple(str(year) for year in range(_current_year(), TOP250_START_YEAR - 1, -1))
-
-
 def board_supported_periods(board: RankingBoardDefinition) -> tuple[str, ...]:
-    # top250 的年份维度是动态的，其余 board 直接用静态 supported_periods。
-    if board.fetch_kind == "top250":
-        return tuple(board.supported_periods) + _top250_year_periods()
+    # 动态周期提供者优先；否则用静态 supported_periods。
+    if board.supported_periods_provider is not None:
+        return tuple(board.supported_periods_provider())
     return board.supported_periods
 
 
-def top250_type_for_period(period: str) -> tuple[str, str]:
-    # 把 top250 的 period 映射成 /api/v1/movies/top 的 (type, type_value)。
-    if period == "all":
-        return ("all", "")
-    if period in _TOP250_VIDEO_TYPE_BY_PERIOD:
-        return ("video_type", _TOP250_VIDEO_TYPE_BY_PERIOD[period])
-    return ("year", period)
+# 排行榜来源注册表：宿主不内置任何来源，全部由插件在启动时合并进来。
+RANKING_SOURCES: dict[str, RankingSourceDefinition] = {}
+# source_key -> plugin_id 归属表：插件只能同步自己声明的来源。
+RANKING_SOURCE_OWNERS: dict[str, str] = {}
 
 
-def _is_top250_historical_year(period: str) -> bool:
-    # 历史年份（非当前年）：抓一次即可，库里已有就不再每天重抓。
-    return period.isdigit() and int(period) < _current_year()
-
-
-def top250_historical_year_periods() -> list[str]:
-    # 静态历史年份 period 列表（不含当前年），供跨模块判定"这条 RankingItem 已经不会再变"。
-    # 与 _is_top250_historical_year 判定共用同一批年份，避免各处重复展开区间。
-    return [str(year) for year in range(TOP250_START_YEAR, _current_year())]
-
-
-JAVDB_SOURCE = RankingSourceDefinition(
-    key="javdb",
-    name="JavDB",
-    boards=(
-        # 播放榜排在最前，使整体同步优先抓取；provider_raw_key 对应 playback 接口的 filter_by。
-        RankingBoardDefinition(
-            key="playback_all",
-            name="热播",
-            provider_raw_key="all",
-            supported_periods=("daily", "weekly", "monthly"),
-            default_period="daily",
-            fetch_kind="playback",
-        ),
-        RankingBoardDefinition(
-            key="playback_high_score",
-            name="高评分",
-            provider_raw_key="high_score",
-            supported_periods=("daily", "weekly", "monthly"),
-            default_period="daily",
-            fetch_kind="playback",
-        ),
-        RankingBoardDefinition(
-            key="censored",
-            name="有码",
-            provider_raw_key="0",
-            supported_periods=("daily", "weekly", "monthly"),
-            default_period="daily",
-        ),
-        RankingBoardDefinition(
-            key="uncensored",
-            name="无码",
-            provider_raw_key="1",
-            supported_periods=("daily", "weekly", "monthly"),
-            default_period="daily",
-        ),
-        RankingBoardDefinition(
-            key="fc2",
-            name="FC2",
-            provider_raw_key="3",
-            supported_periods=("daily", "weekly", "monthly"),
-            default_period="daily",
-        ),
-        # TOP250（需登录）排最后：首次历史回填量大，避免阻塞上面更轻量、更新更频繁的榜单。
-        # period 维度由 board_supported_periods 动态补充年份；provider_raw_key 不使用。
-        RankingBoardDefinition(
-            key="top250",
-            name="TOP250",
-            provider_raw_key="",
-            supported_periods=TOP250_FIXED_PERIODS,
-            default_period="all",
-            fetch_kind="top250",
-        ),
-    ),
-)
-
-RANKING_SOURCES: dict[str, RankingSourceDefinition] = {
-    JAVDB_SOURCE.key: JAVDB_SOURCE,
-}
+def register_plugin_ranking_sources(
+    sources: list[RankingSourceDefinition],
+    owners: dict[str, str],
+) -> None:
+    """整体重建排行榜注册表与归属表；只由 scheduler adapter 调用。"""
+    merged = {source.key: source for source in sources}
+    RANKING_SOURCES.clear()
+    RANKING_SOURCES.update(merged)
+    RANKING_SOURCE_OWNERS.clear()
+    RANKING_SOURCE_OWNERS.update(owners)
 
 
 class RankingCatalogService:
@@ -265,7 +191,11 @@ class RankingCatalogService:
     @staticmethod
     def list_sources() -> list[RankingSourceResource]:
         return [
-            RankingSourceResource(source_key=source.key, name=source.name)
+            RankingSourceResource(
+                source_key=source.key,
+                name=source.name,
+                plugin_id=source.plugin_id,
+            )
             for source in RANKING_SOURCES.values()
         ]
 
@@ -390,44 +320,31 @@ class RankingSyncService:
         self.import_service = import_service or CatalogImportService()
         self.providers = providers or {}
 
-    def _provider_for_source(self, source_key: str) -> Any:
-        provider = self.providers.get(source_key)
-        if provider is not None:
-            return provider
-        if source_key == "javdb":
-            provider = build_javdb_provider()
-            self.providers[source_key] = provider
-            return provider
-        raise ValueError(f"unsupported ranking source: {source_key}")
-
     def _get_rank_numbers(
         self,
         *,
-        source_key: str,
         board: RankingBoardDefinition,
         period: str,
     ) -> list[str]:
-        if source_key == "javdb":
-            provider = self._provider_for_source("javdb")
-            # 按 fetch_kind 分发到不同 JavDB 接口。
-            if board.fetch_kind == "top250":
-                top_type, type_value = top250_type_for_period(period)
-                return provider.get_top_numbers(top_type=top_type, type_value=type_value)
-            if board.fetch_kind == "playback":
-                return provider.get_playback_rank_numbers(
-                    filter_by=board.provider_raw_key,
-                    period=period,
-                )
-            return provider.get_rank_numbers(
-                video_type=board.provider_raw_key,
-                period=period,
+        if board.fetch_numbers is None:
+            raise ValueError(f"ranking board 缺少 fetch_numbers: {board.key}")
+        numbers = board.fetch_numbers(period)
+        if not isinstance(numbers, list) or not all(
+            isinstance(number, str) for number in numbers
+        ):
+            raise ValueError(
+                f"fetch_numbers 必须返回 list[str]: board={board.key} "
+                f"got={type(numbers)}"
             )
-        raise ValueError(f"unsupported ranking source: {source_key}")
+        return numbers
 
     def _get_movie_detail(self, source_key: str, movie_number: str) -> Any:
-        if source_key == "javdb":
-            return self._provider_for_source("javdb").get_movie_by_number(movie_number)
-        raise ValueError(f"unsupported ranking source: {source_key}")
+        # 排行榜排的都是 JAV 主库影片，详情统一走 JavDB provider。
+        provider = self.providers.get(source_key)
+        if provider is None:
+            provider = build_javdb_provider()
+            self.providers[source_key] = provider
+        return provider.get_movie_by_number(movie_number)
 
     def _replace_scope_items(
         self,
@@ -457,7 +374,6 @@ class RankingSyncService:
         normalized_period = RankingCatalogService._resolve_period(board, period)
         now = utc_now_for_db()
         movie_numbers = self._get_rank_numbers(
-            source_key=source_key,
             board=board,
             period=normalized_period,
         )
@@ -546,24 +462,26 @@ class RankingSyncService:
     @classmethod
     def _iter_sync_targets(
         cls,
+        source_keys: tuple[str, ...] | None = None,
     ) -> list[tuple[RankingSourceDefinition, RankingBoardDefinition, str]]:
-        # 收敛出本次真正要同步的目标，应用两条策略：
-        #   1) top250 需登录：未配账号则整 board 跳过；
-        #   2) top250 历史年份抓一次：库里已有数据就不再每天重抓（当前年与固定子榜照常抓）。
+        # 收敛出本次真正要同步的目标：
+        #   1) requires_account 未配账号整 board 跳过；
+        #   2) should_fetch(period, has_items) 返回 False 则跳过（如历史年份已抓过）。
         account_configured = settings.metadata.javdb_account_configured
         targets: list[tuple[RankingSourceDefinition, RankingBoardDefinition, str]] = []
         for source in RANKING_SOURCES.values():
+            if source_keys is not None and source.key not in source_keys:
+                continue
             for board in source.boards:
-                requires_account = board.fetch_kind == "top250"
-                if requires_account and not account_configured:
+                if board.requires_account and not account_configured:
                     continue
                 for period in board_supported_periods(board) or ("",):
-                    if (
-                        board.fetch_kind == "top250"
-                        and _is_top250_historical_year(period)
-                        and cls._scope_has_items(source.key, board.key, period)
-                    ):
-                        continue
+                    if board.should_fetch is not None:
+                        if not board.should_fetch(
+                            period,
+                            cls._scope_has_items(source.key, board.key, period),
+                        ):
+                            continue
                     targets.append((source, board, period))
         return targets
 
@@ -571,8 +489,9 @@ class RankingSyncService:
         self,
         progress_callback=None,
         task_run_id: int | None = None,
+        source_keys: tuple[str, ...] | None = None,
     ) -> dict[str, int]:
-        targets = self._iter_sync_targets()
+        targets = self._iter_sync_targets(source_keys=source_keys)
         stats = {
             "total_targets": len(targets),
             "success_targets": 0,

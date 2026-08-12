@@ -13,26 +13,26 @@
 
 ```json
 {
-  "task_key": "ranking_sync",
+  "task_key": "movie_heat_update",
   "plugin_id": null,
-  "log_name": "ranking-sync",
-  "cli_name": "sync-rankings",
-  "cli_help": "执行一次排行榜同步",
-  "cron_setting": "ranking_sync_cron",
-  "cron_expr": "0 2 * * *",
+  "log_name": "movie-heat-update",
+  "cli_name": "update-movie-heat",
+  "cli_help": "执行一次影片热度重算",
+  "cron_setting": "movie_heat_cron",
+  "cron_expr": "15 0 * * *",
   "manual_trigger_allowed": true,
   "params_schema": null,
   "last_task_run": {
     "id": 12,
-    "task_key": "ranking_sync",
-    "task_name": "排行榜同步",
+    "task_key": "movie_heat_update",
+    "task_name": "影片热度更新",
     "trigger_type": "scheduled",
     "state": "completed",
     "progress_current": null,
     "progress_total": null,
     "progress_text": null,
     "result_text": null,
-    "result_summary": {"stored_items": 230},
+    "result_summary": {"candidate_count": 120, "updated_count": 96, "formula_version": "v1"},
     "error_message": null,
     "started_at": "2026-05-13T02:00:00",
     "finished_at": "2026-05-13T02:03:12",
@@ -63,7 +63,7 @@
 ```json
 {
   "task_run_id": 13,
-  "task_key": "ranking_sync",
+  "task_key": "movie_heat_update",
   "state": "pending"
 }
 ```
@@ -95,7 +95,7 @@
 行为说明：
 
 - 只返回 `src.scheduler.registry.JOB_REGISTRY` 中注册的任务
-- 只有在 `config.toml` 的 `plugins.enabled` 中显式启用且成功加载的插件任务才会进入注册表
+- 只有在 `config.toml` 的 `plugins.enabled` 中显式启用且成功加载的插件任务才会进入注册表（插件开发见 [插件系统开发指南](./plugins.md)）
 - `last_task_run` 使用每个 `task_key` 最新一条 `BackgroundTaskRun` 记录
 - 任务元数据来自后端注册表，不允许通过接口修改
 

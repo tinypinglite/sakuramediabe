@@ -165,21 +165,6 @@ def test_aps_manual_subcommand_exits_with_click_error_when_task_conflicts(monkey
     assert "任务“订阅演员影片同步”已在运行中" in result.output
 
 
-def test_aps_sync_rankings_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "sync-rankings",
-        {
-            "total_targets": 12, "success_targets": 11, "failed_targets": 1,
-            "fetched_numbers": 240, "imported_movies": 200, "local_hit_movies": 20,
-            "skipped_movies": 20, "stored_items": 220,
-        },
-        "ranking sync finished: total_targets=12 success_targets=11 failed_targets=1 "
-        "fetched_numbers=240 imported_movies=200 local_hit_movies=20 "
-        "skipped_movies=20 stored_items=220",
-    )
-
-
 def test_aps_sync_hot_reviews_command_runs_job(monkeypatch):
     _test_cli_command(
         monkeypatch,
@@ -446,7 +431,6 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_similarity_recompute_cron", "30 3 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.moment_recommendation_generate_cron", "0 4 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.daily_recommendation_generate_cron", "0 5 * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.ranking_sync_cron", "10 1 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.hot_review_sync_cron", "20 1 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.activity_cleanup_cron", "30 5 * * *")
     monkeypatch.setattr(
@@ -464,7 +448,6 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert str(scheduler.get_job("actor_subscription_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='0']"
     assert str(scheduler.get_job("subscribed_movie_auto_download").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='30']"
     assert str(scheduler.get_job("movie_collection_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='1', minute='0']"
-    assert str(scheduler.get_job("ranking_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='1', minute='10']"
     assert str(scheduler.get_job("hot_review_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='1', minute='20']"
     assert str(scheduler.get_job("movie_desc_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='0']"
     assert str(scheduler.get_job("movie_interaction_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"
@@ -693,24 +676,23 @@ def test_run_job_ensures_database_and_calls_activity_service(monkeypatch):
     monkeypatch.setattr("src.start.aps.ActivityService.run_task", fake_run_task)
     recovered_payload = _mock_recover_interrupted_task_runs(monkeypatch)
 
-    job_def = JOB_REGISTRY_BY_KEY["ranking_sync"]
+    job_def = JOB_REGISTRY_BY_KEY["movie_heat_update"]
     monkeypatch.setattr(
-        "src.scheduler.registry.RankingSyncService.sync_all_rankings",
-        lambda self, progress_callback=None, task_run_id=None: {
-            "total_targets": 12, "success_targets": 12, "failed_targets": 0,
-            "fetched_numbers": 240, "imported_movies": 230, "skipped_movies": 10, "stored_items": 230,
+        "src.scheduler.registry.MovieHeatService.update_movie_heat",
+        lambda: {
+            "candidate_count": 12, "updated_count": 11, "formula_version": "v1",
         },
     )
 
     result = run_job(job_def)
 
-    assert result["total_targets"] == 12
+    assert result["candidate_count"] == 12
     assert recovered_payload == {
-        "task_key": "ranking_sync",
+        "task_key": "movie_heat_update",
         "error_message": INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
         "allow_null_owner": True,
     }
-    assert events == ["ready", ("run_task", "ranking_sync", "ranking-sync", "aps:ranking_sync", "skip")]
+    assert events == ["ready", ("run_task", "movie_heat_update", "movie-heat-update", "aps:movie_heat_update", "skip")]
 
 
 def test_run_job_movie_desc_sync_with_recovery(monkeypatch):
@@ -872,23 +854,15 @@ def test_run_job_recovers_task_runs_for_job_without_business_recovery(monkeypatc
     monkeypatch.setattr("src.start.aps.ActivityService.run_task", fake_run_task)
     recovered_payload = _mock_recover_interrupted_task_runs(monkeypatch, recovered_task_runs=[object()])
     monkeypatch.setattr(
-        "src.scheduler.registry.RankingSyncService.sync_all_rankings",
-        lambda self, progress_callback=None, task_run_id=None: {
-            "total_targets": 1,
-            "success_targets": 1,
-            "failed_targets": 0,
-            "fetched_numbers": 10,
-            "imported_movies": 10,
-            "skipped_movies": 0,
-            "stored_items": 10,
-        },
+        "src.scheduler.registry.MovieHeatService.update_movie_heat",
+        lambda: {"candidate_count": 1, "updated_count": 1, "formula_version": "v1"},
     )
 
-    result = run_job(JOB_REGISTRY_BY_KEY["ranking_sync"])
+    result = run_job(JOB_REGISTRY_BY_KEY["movie_heat_update"])
 
     assert result["recovered_task_runs"] == 1
     assert recovered_payload == {
-        "task_key": "ranking_sync",
+        "task_key": "movie_heat_update",
         "error_message": INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
         "allow_null_owner": True,
     }

@@ -23,7 +23,7 @@
 ## 任务模型
 
 - `task_key`
-  - 任务类型稳定标识，如 `ranking_sync`、`download_task_import`
+  - 任务类型稳定标识，如 `movie_heat_update`、`download_task_import`
 - `task_name`
   - 前端直接展示的任务名称
 - `trigger_type`

@@ -1,4 +1,4 @@
-"""SakuraMedia 插件基础设施（v2）。"""
+"""SakuraMedia 插件基础设施。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,11 @@ _PUBLIC_EXPORTS = {
     "HOST_API_VERSION": "src.plugins.contracts",
     "MIN_SUPPORTED_HOST_API_VERSION": "src.plugins.contracts",
     "PluginRegistration": "src.plugins.contracts",
+    "PluginExtension": "src.plugins.contracts",
     "PluginContext": "src.plugins.context",
+    "PluginRankingBoard": "src.plugins.extensions.ranking",
+    "PluginRankingSource": "src.plugins.extensions.ranking",
+    "RANKING_SOURCE_EXTENSION_KEY": "src.plugins.extensions.ranking",
 }
 
 __all__ = [
@@ -17,6 +21,10 @@ __all__ = [
     "MIN_SUPPORTED_HOST_API_VERSION",
     "PluginContext",
     "PluginRegistration",
+    "PluginExtension",
+    "PluginRankingBoard",
+    "PluginRankingSource",
+    "RANKING_SOURCE_EXTENSION_KEY",
 ]
 
 

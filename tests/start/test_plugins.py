@@ -1,4 +1,4 @@
-"""插件机制 v2 护栏测试：包格式、安装器、依赖、loader、注册表与参数化任务。"""
+"""插件机制护栏测试：包格式、安装器、依赖、loader、注册表与参数化任务。"""
 
 from __future__ import annotations
 
@@ -12,11 +12,24 @@ from pydantic import BaseModel, ValidationError
 
 from src.config.config import Plugins
 from src.plugins import HOST_API_VERSION
-from src.plugins.contracts import PluginRegistration
+from src.plugins.contracts import (
+    PluginExtension,
+    PluginRegistration,
+)
+from src.plugins.extensions.ranking import (
+    RANKING_SOURCE_EXTENSION_KEY,
+    PluginRankingBoard,
+    PluginRankingSource,
+)
 from src.plugins.installer import PluginInstaller, PluginInstallError
 from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
+from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
 from src.scheduler.contracts import JobDefinition
 from src.scheduler.registry import _build_job_registry
+from src.service.discovery.ranking_service import (
+    RANKING_SOURCE_OWNERS,
+    RANKING_SOURCES,
+)
 from src.start.aps import get_job_cron_setting, resolve_job_cron_expr
 
 
@@ -655,3 +668,188 @@ def test_registry_isolates_plugin_job_conflicting_with_builtin():
     jobs = _build_job_registry([builtin], (registration,))
     assert [job.task_key for job in jobs] == ["builtin_x"]
     assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "registry_conflict"
+
+
+def test_plugin_ranking_board_validates_periods():
+    # 静态与动态周期二选一
+    with pytest.raises(ValidationError):
+        PluginRankingBoard(
+            key="hot",
+            name="hot",
+            supported_periods=("daily",),
+            supported_periods_provider=lambda: ("daily",),
+            fetch_numbers=lambda period: [],
+        )
+    # default_period 必须属于静态周期
+    with pytest.raises(ValidationError):
+        PluginRankingBoard(
+            key="hot",
+            name="hot",
+            supported_periods=("daily",),
+            default_period="weekly",
+            fetch_numbers=lambda period: [],
+        )
+    # 单期榜不允许 default_period
+    with pytest.raises(ValidationError):
+        PluginRankingBoard(
+            key="hot",
+            name="hot",
+            default_period="daily",
+            fetch_numbers=lambda period: [],
+        )
+    # 合法声明通过
+    PluginRankingBoard(
+        key="hot",
+        name="hot",
+        supported_periods=("daily", "weekly"),
+        default_period="daily",
+        fetch_numbers=lambda period: [],
+    )
+
+
+def test_apply_plugin_ranking_sources_merges_and_isolates_conflicts():
+    def fetch_a(period):
+        return ["ABP-123"]
+
+    def fetch_b(period):
+        return ["IPX-456"]
+
+    reg_a = PluginRegistration(
+        plugin_id="rank_a",
+        display_name="A",
+        version="1.0.0",
+        extensions=(
+            PluginExtension(
+                key=RANKING_SOURCE_EXTENSION_KEY,
+                data=PluginRankingSource(
+                    source_key="aaa",
+                    name="AAA",
+                    boards=(
+                        PluginRankingBoard(
+                            key="hot",
+                            name="hot",
+                            fetch_numbers=fetch_a,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    reg_b = PluginRegistration(
+        plugin_id="rank_b",
+        display_name="B",
+        version="1.0.0",
+        extensions=(
+            PluginExtension(
+                key=RANKING_SOURCE_EXTENSION_KEY,
+                data=PluginRankingSource(
+                    source_key="aaa",
+                    name="AAA2",
+                    boards=(
+                        PluginRankingBoard(
+                            key="hot",
+                            name="hot",
+                            fetch_numbers=fetch_b,
+                        ),
+                    ),
+                ),
+            ),
+            PluginExtension(
+                key=RANKING_SOURCE_EXTENSION_KEY,
+                data=PluginRankingSource(
+                    source_key="bbb",
+                    name="BBB",
+                    boards=(
+                        PluginRankingBoard(
+                            key="hot",
+                            name="hot",
+                            fetch_numbers=fetch_b,
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    rejected = apply_plugin_ranking_sources((reg_a, reg_b))
+    assert rejected == {"rank_b"}
+    assert set(RANKING_SOURCES) == {"aaa"}
+    assert RANKING_SOURCE_OWNERS == {"aaa": "rank_a"}
+    assert RANKING_SOURCES["aaa"].plugin_id == "rank_a"
+    assert RANKING_SOURCES["aaa"].boards[0].fetch_numbers("daily") == ["ABP-123"]
+    assert PLUGIN_LOAD_ERRORS["rank_b"]["stage"] == "ranking_conflict"
+
+    # 空插件集合恢复空注册表（排行榜不是默认功能）
+    apply_plugin_ranking_sources(())
+    assert RANKING_SOURCES == {}
+    assert RANKING_SOURCE_OWNERS == {}
+
+
+def test_plugin_extension_validates_shape():
+    # key 必须符合点分命名空间格式
+    with pytest.raises(ValidationError):
+        PluginExtension(key="Bad.Key", data={"x": 1})
+    # data 不能为空
+    with pytest.raises(ValidationError):
+        PluginExtension(key="discovery.ranking_source", data=None)
+    # 合法声明通过
+    PluginExtension(key="discovery.ranking_source", data={"x": 1})
+
+
+def test_loader_rejects_unknown_extension_key(tmp_path):
+    root = tmp_path / "root"
+    source = (
+        "from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, "
+        "PluginRegistration\n"
+        "def register(context):\n"
+        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
+        "version='1.0.0', host_api_version=HOST_API_VERSION, "
+        "extensions=(PluginExtension(key='foo.bar', data={'x': 1}),))\n"
+    )
+    pkg = _write_package(tmp_path, "bad_plugin", init_source=source)
+    zip_path = tmp_path / "bad.zip"
+    _zip_package(pkg, zip_path)
+    PluginInstaller(root).install(zip_path)
+
+    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
+    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"
+
+
+def test_loader_rejects_duplicate_extension_key(tmp_path):
+    root = tmp_path / "root"
+    source = (
+        "from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, "
+        "PluginRegistration\n"
+        "def register(context):\n"
+        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
+        "version='1.0.0', host_api_version=HOST_API_VERSION, "
+        "extensions=(PluginExtension(key='foo.bar', data={'x': 1}), "
+        "PluginExtension(key='foo.bar', data={'y': 2})))\n"
+    )
+    pkg = _write_package(tmp_path, "bad_plugin", init_source=source)
+    zip_path = tmp_path / "bad.zip"
+    _zip_package(pkg, zip_path)
+    PluginInstaller(root).install(zip_path)
+
+    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
+    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"
+
+
+def test_loader_rejects_bad_ranking_extension_payload(tmp_path):
+    root = tmp_path / "root"
+    source = (
+        "from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, "
+        "PluginRegistration, RANKING_SOURCE_EXTENSION_KEY\n"
+        "def register(context):\n"
+        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
+        "version='1.0.0', host_api_version=HOST_API_VERSION, "
+        "extensions=(PluginExtension(key=RANKING_SOURCE_EXTENSION_KEY, "
+        "data={'source_key': 'bad', 'name': 'x', 'boards': []}),))\n"
+    )
+    pkg = _write_package(tmp_path, "bad_plugin", init_source=source)
+    zip_path = tmp_path / "bad.zip"
+    _zip_package(pkg, zip_path)
+    PluginInstaller(root).install(zip_path)
+
+    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
+    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"

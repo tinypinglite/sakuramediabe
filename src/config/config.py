@@ -290,7 +290,6 @@ class Scheduler(BaseModel):
     movie_collection_sync_cron: str = "0 1 * * *"
     movie_heat_cron: str = "15 0 * * *"
     movie_interaction_sync_cron: str = "0 5 * * *"
-    ranking_sync_cron: str = "45 1 * * *"
     hot_review_sync_cron: str = "20 1 * * *"
     # 全量巡检会 stat 媒体库里每个文件，放到每天凌晨集中一次，避免高频唤醒媒体盘。
     media_file_scan_cron: str = "0 4 * * *"

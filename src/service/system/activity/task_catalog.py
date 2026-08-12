@@ -3,7 +3,6 @@ TASK_NAME_REGISTRY = {
     "subscribed_movie_auto_download": "已订阅缺失影片自动下载",
     "movie_heat_update": "影片热度更新",
     "movie_interaction_sync": "影片互动数同步",
-    "ranking_sync": "排行榜同步",
     "hot_review_sync": "JavDB 热评同步",
     "movie_collection_sync": "合集影片同步",
     "movie_desc_sync": "影片描述回填",

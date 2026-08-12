@@ -1,4 +1,4 @@
-"""插件加载器（v2）。
+"""插件加载器。
 
 从插件根目录加载显式启用的插件：依赖就绪 → 静态白名单扫描 →
 import 包根 register() → 契约校验 → 注入 plugin_id 并发布注册表。
@@ -30,6 +30,7 @@ from src.plugins.dependencies import (
     plugin_dep_conflict_message,
     target_distributions,
 )
+from src.plugins.extensions import EXTENSION_VALIDATORS
 from src.plugins.import_guard import ImportBoundaryError, scan_plugin_imports
 from src.plugins.installer import PluginInstaller
 from src.plugins.manifest import MANIFEST_FILENAME, load_manifest_from_file
@@ -105,6 +106,42 @@ def _validate_plugin_jobs(
             )
         jobs.append(job.model_copy(update={"plugin_id": plugin_id}))
     return tuple(jobs)
+
+
+def _validate_plugin_extensions(
+    *,
+    plugin_id: str,
+    registration: PluginRegistration,
+) -> None:
+    """扩展点声明通用校验：key 唯一、key 受宿主支持，并委托领域校验器。
+
+    这里不感知任何领域语义；data 的形状与约束由按 key 注册的校验器解释，
+    失败统一走 PluginLoadError，保持坏插件隔离。
+    """
+    seen: set[str] = set()
+    for extension in registration.extensions:
+        if extension.key in seen:
+            raise PluginLoadError(
+                plugin_id,
+                "validate_extensions",
+                f"扩展点 key 重复: {extension.key}",
+            )
+        seen.add(extension.key)
+        validator = EXTENSION_VALIDATORS.get(extension.key)
+        if validator is None:
+            raise PluginLoadError(
+                plugin_id,
+                "validate_extensions",
+                f"宿主不支持该扩展点: {extension.key}",
+            )
+        try:
+            validator(plugin_id=plugin_id, extension=extension)
+        except Exception as exc:
+            raise PluginLoadError(
+                plugin_id,
+                "validate_extensions",
+                f"扩展点 {extension.key} 校验失败: {exc}",
+            ) from exc
 
 
 def _load_plugin_dir(
@@ -186,6 +223,10 @@ def _load_plugin_dir(
         )
 
     jobs = _validate_plugin_jobs(
+        plugin_id=plugin_id,
+        registration=registration,
+    )
+    _validate_plugin_extensions(
         plugin_id=plugin_id,
         registration=registration,
     )

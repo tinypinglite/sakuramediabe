@@ -10,6 +10,8 @@ from src.schema.common.pagination import PageResponse
 class RankingSourceResource(SchemaModel):
     source_key: str = Field(min_length=1)
     name: str = Field(min_length=1)
+    # 来源归属插件 ID（内建来源为 None），仅展示用，不影响查询。
+    plugin_id: str | None = None
 
 
 class RankingBoardResource(SchemaModel):
