@@ -21,7 +21,7 @@
 - [system/notifications.md](./system/notifications.md): 通知中心接口
 - [system/jobs.md](./system/jobs.md): 系统任务元数据与手动触发接口
 - [system/task-runs.md](./system/task-runs.md): 任务中心与事件流接口
-- [system/plugins.md](./system/plugins.md): 插件系统开发指南（包规范、契约、任务、依赖与生命周期）
+- [system/plugins.md](./system/plugins.md): 插件系统开发指南（目录/zip 插件、契约、任务、扩展点与 CLI/API 管理）
 
 ### Catalog
 

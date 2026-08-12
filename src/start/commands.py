@@ -560,7 +560,7 @@ def _register_aps_command(job_def, group):
 
 @main.group(name="plugins")
 def plugins_group():
-    """插件生命周期管理（安装/升级/回滚/启停/卸载/状态）。"""
+    """插件管理（目录/zip 安装：list/install/remove/enable/disable/check）。"""
 
 
 def _plugin_operation(operation):
@@ -574,53 +574,42 @@ def _plugin_operation(operation):
 def plugins_list():
     """列出已安装插件。"""
     for item in PluginManager().list_plugins():
+        error = f" error={item['load_error']}" if item["load_error"] else ""
         click.echo(
             f"{item['plugin_id']:<24} {item['display_name']} "
             f"v{item['version']} enabled={str(item['enabled']).lower()} "
-            f"deps={item['deps_status']} load={item['load_status']}"
+            f"load={item['load_status']}{error}"
         )
 
 
 @plugins_group.command("install")
-@click.argument("zip_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("plugin_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--sha256", default=None, help="zip 包 sha256（可选，校验完整性）")
 @click.option("--no-enable", is_flag=True, default=False, help="安装但不写入 enabled")
-def plugins_install(zip_path: Path, sha256: str | None, no_enable: bool):
-    """安装插件 zip 包。"""
-    result = _plugin_operation(
-        lambda: PluginManager().install(
-            zip_path, sha256=sha256, enable=not no_enable
-        )
-    )
+def plugins_install(plugin_path: Path, sha256: str | None, no_enable: bool):
+    """把插件目录或 zip 包安装到插件根目录（重复安装保留 data/）。"""
+
+    def _install():
+        manager = PluginManager()
+        if plugin_path.suffix.lower() == ".zip":
+            return manager.install_zip(
+                plugin_path, sha256=sha256, enable=not no_enable
+            )
+        return manager.install(plugin_path, enable=not no_enable)
+
+    result = _plugin_operation(_install)
     click.echo(
-        f"插件 {result.plugin_id} v{result.version} 安装完成；"
+        f"插件 {result['plugin_id']} v{result['version']} 已安装；"
         "重启 api 与 aps 后生效"
     )
 
 
-@plugins_group.command("update")
+@plugins_group.command("remove")
 @click.argument("plugin_id")
-@click.argument("zip_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--sha256", default=None, help="zip 包 sha256（可选，校验完整性）")
-def plugins_update(plugin_id: str, zip_path: Path, sha256: str | None):
-    """升级插件（保留 data/，旧版本进入 .previous/）。"""
-    result = _plugin_operation(
-        lambda: PluginManager().update(plugin_id, zip_path, sha256=sha256)
-    )
-    click.echo(
-        f"插件 {result.plugin_id} v{result.version} 升级完成；"
-        "重启 api 与 aps 后生效"
-    )
-
-
-@plugins_group.command("rollback")
-@click.argument("plugin_id")
-def plugins_rollback(plugin_id: str):
-    """回滚到上一个版本（.previous/）。"""
-    result = _plugin_operation(lambda: PluginManager().rollback(plugin_id))
-    click.echo(
-        f"插件 {result.plugin_id} 已回滚；重启 api 与 aps 后生效"
-    )
+def plugins_remove(plugin_id: str):
+    """删除插件目录（含 data/，请先自行备份）。"""
+    _plugin_operation(lambda: PluginManager().remove(plugin_id))
+    click.echo(f"插件 {plugin_id} 已删除")
 
 
 @plugins_group.command("enable")
@@ -639,44 +628,17 @@ def plugins_disable(plugin_id: str):
     click.echo(f"插件 {plugin_id} 已停用；重启 api 与 aps 后生效")
 
 
-@plugins_group.command("uninstall")
-@click.argument("plugin_id")
-@click.option("--purge-data", is_flag=True, default=False, help="同时真删插件运行数据")
-def plugins_uninstall(plugin_id: str, purge_data: bool):
-    """卸载插件；默认移入 .trash/ 可恢复。"""
-    result = _plugin_operation(
-        lambda: PluginManager().uninstall(plugin_id, purge_data=purge_data)
-    )
-    click.echo(
-        f"插件 {result.plugin_id} 已卸载"
-        + ("" if purge_data else "（保留于 .trash/，可手动恢复）")
-    )
+@plugins_group.command("check")
+@click.argument("plugin_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
+def plugins_check(plugin_dir: Path):
+    """校验插件目录（import + register + 契约），供插件作者使用。"""
+    from src.plugins.loader import check_plugin_dir
 
-
-@plugins_group.command("status")
-@click.argument("plugin_id")
-def plugins_status(plugin_id: str):
-    """查看插件状态（manifest/依赖/加载错误/日志尾部）。"""
-    detail = _plugin_operation(lambda: PluginManager().get_plugin(plugin_id))
-    if detail is None:
-        raise click.ClickException(f"插件未安装: {plugin_id}")
-    click.echo(f"plugin_id   : {detail['plugin_id']}")
-    click.echo(f"display_name: {detail['display_name']}")
-    click.echo(f"version     : {detail['version']}")
-    click.echo(f"enabled     : {detail['enabled']}")
-    click.echo(f"deps_status : {detail['deps_status']}")
-    click.echo(f"load_status : {detail['load_status']}")
-    if detail.get("load_error"):
-        click.echo(f"load_error  : {detail['load_error']}")
-    click.echo(f"data_dir    : {detail['data_dir']}")
-    if detail["dists"]:
-        click.echo(
-            "deps        : "
-            + ", ".join(f"{name}=={version}" for name, version in detail["dists"].items())
-        )
-    if detail["install_log_tail"]:
-        click.echo("--- install.log tail ---")
-        click.echo(detail["install_log_tail"])
+    try:
+        check_plugin_dir(plugin_dir=plugin_dir)
+    except Exception as exc:
+        raise click.ClickException(f"插件校验失败: {exc}") from exc
+    click.echo(f"插件 {plugin_dir.name} 校验通过")
 
 
 # ---------------------------------------------------------------------------

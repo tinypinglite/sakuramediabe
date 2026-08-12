@@ -1,4 +1,9 @@
-"""插件管理 API：安装、升级、回滚、启停、依赖重装、卸载与状态查询。"""
+"""插件管理 API：zip 上传安装、启停、移除与状态查询。
+
+插件在 api/aps 的 import 阶段加载，所有写操作都需要重启两个进程生效；
+``pending_restart`` 就是这两个进程名。安装 = 上传 zip 并发布目录，
+目标已存在时替换代码并保留 data/。
+"""
 
 from __future__ import annotations
 
@@ -43,7 +48,7 @@ def _check_upload_size(request: Request) -> None:
         )
 
 
-def _upload_temp_path(manager: PluginManager, suffix: str = ".zip") -> Path:
+def _upload_temp_path(manager: PluginManager) -> Path:
     upload_dir = manager.root_dir / ".staging" / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     # 清理上次异常退出残留的临时上传，避免 .staging/uploads 无限累积。
@@ -54,7 +59,7 @@ def _upload_temp_path(manager: PluginManager, suffix: str = ".zip") -> Path:
                 entry.unlink(missing_ok=True)
         except OSError:
             continue
-    return upload_dir / f"{uuid.uuid4().hex}{suffix}"
+    return upload_dir / f"{uuid.uuid4().hex}.zip"
 
 
 @router.get("", response_model=list[PluginSummaryResource])
@@ -83,62 +88,15 @@ def install_plugin(
     try:
         with temp_path.open("wb") as handle:
             shutil.copyfileobj(file.file, handle)
-        result = manager.install(temp_path, sha256=sha256, enable=enable)
+        result = manager.install_zip(temp_path, sha256=sha256, enable=enable)
     except Exception as exc:
-        raise ApiError(
-            422,
-            "plugin_install_failed",
-            f"插件安装失败: {exc}",
-        ) from exc
+        raise ApiError(422, "plugin_install_failed", f"插件安装失败: {exc}") from exc
     finally:
         temp_path.unlink(missing_ok=True)
     return PluginInstallResponse(
-        plugin_id=result.plugin_id,
-        version=result.version,
-        pending_restart=list(result.pending_restart),
-    )
-
-
-@router.post("/{plugin_id}/update", response_model=PluginInstallResponse)
-def update_plugin(
-    request: Request,
-    plugin_id: str,
-    file: UploadFile = File(...),
-    sha256: str | None = Form(default=None),
-):
-    _check_upload_size(request)
-    manager = PluginManager()
-    temp_path = _upload_temp_path(manager)
-    try:
-        with temp_path.open("wb") as handle:
-            shutil.copyfileobj(file.file, handle)
-        result = manager.update(plugin_id, temp_path, sha256=sha256)
-    except Exception as exc:
-        raise ApiError(
-            422,
-            "plugin_update_failed",
-            f"插件升级失败: {exc}",
-        ) from exc
-    finally:
-        temp_path.unlink(missing_ok=True)
-    return PluginInstallResponse(
-        plugin_id=result.plugin_id,
-        version=result.version,
-        pending_restart=list(result.pending_restart),
-    )
-
-
-@router.post("/{plugin_id}/rollback", response_model=PluginInstallResponse)
-def rollback_plugin(plugin_id: str):
-    manager = PluginManager()
-    try:
-        result = manager.rollback(plugin_id)
-    except Exception as exc:
-        raise ApiError(422, "plugin_rollback_failed", f"插件回滚失败: {exc}") from exc
-    return PluginInstallResponse(
-        plugin_id=result.plugin_id,
-        version=result.version,
-        pending_restart=list(result.pending_restart),
+        plugin_id=result["plugin_id"],
+        version=result["version"],
+        pending_restart=["api", "aps"],
     )
 
 
@@ -156,44 +114,23 @@ def set_plugin_enabled(plugin_id: str, enabled: bool):
         version=detail["version"],
         host_api_version=detail["host_api_version"],
         enabled=detail["enabled"],
-        deps_status=detail["deps_status"],
         load_status=detail["load_status"],
         load_error=detail["load_error"],
-        installed_at=detail["installed_at"],
-    )
-
-
-@router.post("/{plugin_id}/deps/install", response_model=PluginInstallResponse)
-def reinstall_plugin_deps(plugin_id: str):
-    manager = PluginManager()
-    try:
-        manager.reinstall_deps(plugin_id)
-    except Exception as exc:
-        raise ApiError(
-            422,
-            "plugin_deps_install_failed",
-            f"插件依赖重装失败: {exc}",
-        ) from exc
-    return PluginInstallResponse(
-        plugin_id=plugin_id,
-        version="",
-        pending_restart=["api", "aps"],
     )
 
 
 @router.delete("/{plugin_id}", response_model=PluginInstallResponse)
-def uninstall_plugin(plugin_id: str, purge_data: bool = False):
+def remove_plugin(plugin_id: str):
     manager = PluginManager()
+    detail = manager.get_plugin(plugin_id)
+    if detail is None:
+        raise ApiError(404, "plugin_not_found", f"未知插件 plugin_id={plugin_id}")
     try:
-        result = manager.uninstall(plugin_id, purge_data=purge_data)
-    except Exception as exc:
-        raise ApiError(
-            422,
-            "plugin_uninstall_failed",
-            f"插件卸载失败: {exc}",
-        ) from exc
+        manager.remove(plugin_id)
+    except ValueError as exc:
+        raise ApiError(404, "plugin_not_found", str(exc)) from exc
     return PluginInstallResponse(
-        plugin_id=result.plugin_id,
-        version=result.version,
-        pending_restart=list(result.pending_restart),
+        plugin_id=plugin_id,
+        version=detail["version"],
+        pending_restart=["api", "aps"],
     )

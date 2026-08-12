@@ -1,10 +1,8 @@
-"""插件机制护栏测试：包格式、安装器、依赖、loader、注册表与参数化任务。"""
+"""插件机制护栏测试：目录插件加载、契约、扩展点、注册表与参数化任务。"""
 
 from __future__ import annotations
 
 import json
-import os
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -21,8 +19,7 @@ from src.plugins.extensions.ranking import (
     PluginRankingBoard,
     PluginRankingSource,
 )
-from src.plugins.installer import PluginInstaller, PluginInstallError
-from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
+from src.plugins.loader import PLUGIN_LOAD_ERRORS, check_plugin_dir, load_enabled_plugins
 from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
 from src.scheduler.contracts import JobDefinition
 from src.scheduler.registry import _build_job_registry
@@ -33,7 +30,13 @@ from src.service.discovery.ranking_service import (
 from src.start.aps import get_job_cron_setting, resolve_job_cron_expr
 
 
-def _write_package(base: Path, plugin_id: str, *, version: str = "1.0.0", init_source: str = "") -> Path:
+def _write_plugin_dir(
+    base: Path,
+    plugin_id: str,
+    *,
+    version: str = "1.0.0",
+    init_source: str = "",
+) -> Path:
     pkg = base / plugin_id
     pkg.mkdir(parents=True, exist_ok=True)
     (pkg / "manifest.json").write_text(
@@ -43,7 +46,6 @@ def _write_package(base: Path, plugin_id: str, *, version: str = "1.0.0", init_s
                 "display_name": plugin_id,
                 "version": version,
                 "host_api_version": HOST_API_VERSION,
-                "dependencies": {"requirements": []},
             },
             ensure_ascii=False,
         ),
@@ -51,12 +53,6 @@ def _write_package(base: Path, plugin_id: str, *, version: str = "1.0.0", init_s
     )
     (pkg / "__init__.py").write_text(init_source, encoding="utf-8")
     return pkg
-
-
-def _zip_package(pkg: Path, zip_path: Path) -> None:
-    with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.write(pkg / "manifest.json", "manifest.json")
-        archive.write(pkg / "__init__.py", "__init__.py")
 
 
 def _empty_register_source() -> str:
@@ -75,7 +71,7 @@ def _clear_load_errors():
     PLUGIN_LOAD_ERRORS.clear()
 
 
-def test_install_publishes_and_loads_plugin_with_params_jobs(tmp_path):
+def test_loader_loads_plugin_with_params_jobs(tmp_path):
     init_source = """\
 from pydantic import BaseModel
 from src.plugins import HOST_API_VERSION, PluginContext, PluginRegistration
@@ -115,13 +111,8 @@ def register(context: PluginContext) -> PluginRegistration:
         ),
     )
 """
-    pkg = _write_package(tmp_path, "demo_plugin", init_source=init_source)
-    zip_path = tmp_path / "demo.zip"
-    _zip_package(pkg, zip_path)
-
     root = tmp_path / "root"
-    result = PluginInstaller(root).install(zip_path)
-    assert result.plugin_id == "demo_plugin"
+    _write_plugin_dir(root, "demo_plugin", init_source=init_source)
 
     loaded = load_enabled_plugins(Plugins(enabled=["demo_plugin"]), root_dir=root)
     assert [registration.plugin_id for registration in loaded] == ["demo_plugin"]
@@ -140,174 +131,8 @@ def register(context: PluginContext) -> PluginRegistration:
     ]
     assert get_job_cron_setting(by_key["demo_fetch"]) is None
     assert resolve_job_cron_expr(by_key["demo_fetch"]) is None
-    assert (root / "demo_plugin" / "installed.json").is_file()
     assert (root / "demo_plugin" / "data").is_dir()
     assert PLUGIN_LOAD_ERRORS == {}
-
-
-def test_zip_path_traversal_rejected(tmp_path):
-    evil = tmp_path / "evil.zip"
-    with zipfile.ZipFile(evil, "w") as archive:
-        archive.writestr("../evil.py", "x = 1")
-    with pytest.raises(PluginInstallError):
-        PluginInstaller(tmp_path / "root").install(evil)
-
-
-def test_zip_symlink_rejected(tmp_path):
-    evil = tmp_path / "evil.zip"
-    with zipfile.ZipFile(evil, "w") as archive:
-        info = zipfile.ZipInfo("link")
-        info.external_attr = (0o120000 << 16)  # symlink mode
-        archive.writestr(info, "target")
-    with pytest.raises(PluginInstallError):
-        PluginInstaller(tmp_path / "root").install(evil)
-
-
-def test_checksum_mismatch_rejected(tmp_path):
-    pkg = _write_package(
-        tmp_path,
-        "demo_plugin",
-        init_source=_empty_register_source().replace("__PLUGIN_ID__", "demo_plugin"),
-    )
-    zip_path = tmp_path / "demo.zip"
-    _zip_package(pkg, zip_path)
-    with pytest.raises(PluginInstallError, match="sha256"):
-        PluginInstaller(tmp_path / "root").install(
-            zip_path, sha256="0" * 64
-        )
-
-
-def test_invalid_plugin_id_rejected(tmp_path):
-    pkg = _write_package(tmp_path, "bad-id", init_source="")
-    (pkg / "manifest.json").write_text(
-        json.dumps(
-            {
-                "plugin_id": "bad-id",
-                "display_name": "x",
-                "version": "1.0.0",
-                "host_api_version": 1,
-            }
-        ),
-        encoding="utf-8",
-    )
-    zip_path = tmp_path / "bad.zip"
-    _zip_package(pkg, zip_path)
-    with pytest.raises(PluginInstallError):
-        PluginInstaller(tmp_path / "root").install(zip_path)
-
-
-def test_update_preserves_data_and_rollback_restores(tmp_path):
-    root = tmp_path / "root"
-    source = _empty_register_source().replace("__PLUGIN_ID__", "demo_plugin")
-    pkg_v1 = _write_package(tmp_path, "demo_plugin", version="1.0.0", init_source=source)
-    zip_v1 = tmp_path / "demo-1.zip"
-    _zip_package(pkg_v1, zip_v1)
-    PluginInstaller(root).install(zip_v1)
-    data_file = root / "demo_plugin" / "data" / "state.json"
-    data_file.write_text('{"v": 1}', encoding="utf-8")
-
-    source_v2 = source.replace('version="1.0.0"', 'version="2.0.0"')
-    pkg_v2 = _write_package(tmp_path, "demo_plugin", version="2.0.0", init_source=source_v2)
-    zip_v2 = tmp_path / "demo-2.zip"
-    _zip_package(pkg_v2, zip_v2)
-    PluginInstaller(root).update("demo_plugin", zip_v2)
-
-    assert (root / "demo_plugin" / "data" / "state.json").read_text() == '{"v": 1}'
-    assert (root / "demo_plugin" / "manifest.json").read_text().find("2.0.0") != -1
-    assert (root / ".previous" / "demo_plugin").is_dir()
-
-    result = PluginInstaller(root).rollback("demo_plugin")
-    assert (root / "demo_plugin" / "manifest.json").read_text().find("1.0.0") != -1
-    assert (root / "demo_plugin" / "data" / "state.json").read_text() == '{"v": 1}'
-    # 单一快照语义：回滚后返回真实版本，快照即消费，不能再次回滚。
-    assert result.version == "1.0.0"
-    assert not (root / ".previous" / "demo_plugin").exists()
-    with pytest.raises(PluginInstallError):
-        PluginInstaller(root).rollback("demo_plugin")
-
-
-def test_update_rejects_downgrade(tmp_path):
-    root = tmp_path / "root"
-    source = _empty_register_source().replace("__PLUGIN_ID__", "demo_plugin")
-    pkg_v2 = _write_package(
-        tmp_path,
-        "demo_plugin",
-        version="2.0.0",
-        init_source=source.replace('version="1.0.0"', 'version="2.0.0"'),
-    )
-    zip_v2 = tmp_path / "demo-2.zip"
-    _zip_package(pkg_v2, zip_v2)
-    PluginInstaller(root).install(zip_v2)
-
-    pkg_v1 = _write_package(
-        tmp_path,
-        "demo_plugin",
-        version="1.0.0",
-        init_source=source,
-    )
-    zip_v1 = tmp_path / "demo-1.zip"
-    _zip_package(pkg_v1, zip_v1)
-    with pytest.raises(PluginInstallError, match="新版本必须高于当前版本"):
-        PluginInstaller(root).update("demo_plugin", zip_v1)
-
-
-def test_install_discards_packaged_data_dir(tmp_path):
-    root = tmp_path / "root"
-    source = _empty_register_source().replace("__PLUGIN_ID__", "demo_plugin")
-    pkg = _write_package(tmp_path, "demo_plugin", init_source=source)
-    data_dir = pkg / "data"
-    data_dir.mkdir()
-    (data_dir / "sneaky.py").write_text("x = 1", encoding="utf-8")
-    zip_path = tmp_path / "demo.zip"
-    with zipfile.ZipFile(zip_path, "w") as archive:
-        archive.write(pkg / "manifest.json", "manifest.json")
-        archive.write(pkg / "__init__.py", "__init__.py")
-        archive.write(data_dir / "sneaky.py", "data/sneaky.py")
-    PluginInstaller(root).install(zip_path)
-    assert (root / "demo_plugin" / "data").is_dir()
-    assert not (root / "demo_plugin" / "data" / "sneaky.py").exists()
-
-
-def test_loader_recovers_interrupted_publish(tmp_path):
-    root = tmp_path / "root"
-    source = _empty_register_source().replace("__PLUGIN_ID__", "demo_plugin")
-    pkg = _write_package(tmp_path, "demo_plugin", init_source=source)
-    zip_path = tmp_path / "demo.zip"
-    _zip_package(pkg, zip_path)
-    installer = PluginInstaller(root)
-    installer.install(zip_path)
-    # 模拟发布中断：正式目录已挪走，旧版本留在 .previous。
-    previous = root / ".previous" / "demo_plugin"
-    previous.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(root / "demo_plugin", previous)
-
-    loaded = load_enabled_plugins(Plugins(enabled=["demo_plugin"]), root_dir=root)
-    assert [registration.plugin_id for registration in loaded] == ["demo_plugin"]
-    assert (root / "demo_plugin" / "manifest.json").is_file()
-    assert not previous.exists()
-    assert PLUGIN_LOAD_ERRORS == {}
-
-
-def test_uninstall_moves_to_trash_and_purge_deletes(tmp_path):
-    root = tmp_path / "root"
-    source = _empty_register_source().replace("__PLUGIN_ID__", "demo_plugin")
-    pkg = _write_package(tmp_path, "demo_plugin", init_source=source)
-    zip_path = tmp_path / "demo.zip"
-    _zip_package(pkg, zip_path)
-    installer = PluginInstaller(root)
-    installer.install(zip_path)
-
-    installer.uninstall("demo_plugin")
-    assert not (root / "demo_plugin").exists()
-    assert list((root / ".trash" / "demo_plugin").iterdir())
-
-    pkg2 = _write_package(tmp_path, "demo_plugin", init_source=source)
-    zip_path2 = tmp_path / "demo2.zip"
-    _zip_package(pkg2, zip_path2)
-    installer.install(zip_path2)
-    installer.uninstall("demo_plugin", purge_data=True)
-    assert not (root / "demo_plugin").exists()
-    assert not (root / ".trash" / "demo_plugin").exists()
 
 
 def test_loader_isolates_broken_plugin(tmp_path):
@@ -317,16 +142,12 @@ def test_loader_isolates_broken_plugin(tmp_path):
         "def register(context):\n"
         "    raise RuntimeError('boom')\n"
     )
-    pkg_bad = _write_package(tmp_path, "bad_plugin", init_source=bad_source)
-    zip_bad = tmp_path / "bad.zip"
-    _zip_package(pkg_bad, zip_bad)
-    PluginInstaller(root).install(zip_bad)
-
-    good_source = _empty_register_source().replace("__PLUGIN_ID__", "good_plugin")
-    pkg_good = _write_package(tmp_path, "good_plugin", init_source=good_source)
-    zip_good = tmp_path / "good.zip"
-    _zip_package(pkg_good, zip_good)
-    PluginInstaller(root).install(zip_good)
+    _write_plugin_dir(root, "bad_plugin", init_source=bad_source)
+    _write_plugin_dir(
+        root,
+        "good_plugin",
+        init_source=_empty_register_source().replace("__PLUGIN_ID__", "good_plugin"),
+    )
 
     loaded = load_enabled_plugins(
         Plugins(enabled=["bad_plugin", "good_plugin"]),
@@ -336,42 +157,6 @@ def test_loader_isolates_broken_plugin(tmp_path):
     assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "register"
 
 
-def test_import_boundary_rejected(tmp_path):
-    root = tmp_path / "root"
-    bad_source = (
-        "from src.plugins import HOST_API_VERSION, PluginContext, PluginRegistration\n"
-        "import src.model\n"
-        "def register(context):\n"
-        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
-        "version='1.0.0', host_api_version=HOST_API_VERSION, jobs=())\n"
-    )
-    pkg = _write_package(tmp_path, "bad_plugin", init_source=bad_source)
-    zip_path = tmp_path / "bad.zip"
-    _zip_package(pkg, zip_path)
-    PluginInstaller(root).install(zip_path)
-
-    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
-    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "import_boundary"
-
-
-def test_import_guard_rejects_host_internal_modules(tmp_path):
-    root = tmp_path / "root"
-    bad_source = (
-        "from src.plugins import HOST_API_VERSION, PluginContext, PluginRegistration\n"
-        "import src.plugins.installer\n"
-        "def register(context):\n"
-        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
-        "version='1.0.0', host_api_version=HOST_API_VERSION, jobs=())\n"
-    )
-    pkg = _write_package(tmp_path, "bad_plugin", init_source=bad_source)
-    zip_path = tmp_path / "bad.zip"
-    _zip_package(pkg, zip_path)
-    PluginInstaller(root).install(zip_path)
-
-    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
-    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "import_boundary"
-
-
 def test_loader_clears_stale_error_on_success(tmp_path):
     root = tmp_path / "root"
     bad_source = (
@@ -379,18 +164,15 @@ def test_loader_clears_stale_error_on_success(tmp_path):
         "def register(context):\n"
         "    raise RuntimeError('boom')\n"
     )
-    pkg = _write_package(tmp_path, "bad_plugin", init_source=bad_source)
-    zip_path = tmp_path / "bad.zip"
-    _zip_package(pkg, zip_path)
-    PluginInstaller(root).install(zip_path)
-    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
-    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "register"
+    _write_plugin_dir(root, "demo_plugin", init_source=bad_source)
+    load_enabled_plugins(Plugins(enabled=["demo_plugin"]), root_dir=root)
+    assert PLUGIN_LOAD_ERRORS["demo_plugin"]["stage"] == "register"
 
     # 修复插件后再次加载：错误应被清除，且不残留旧模块状态。
-    good_source = _empty_register_source().replace("__PLUGIN_ID__", "bad_plugin")
-    (root / "bad_plugin" / "__init__.py").write_text(good_source, encoding="utf-8")
-    loaded = load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
-    assert [registration.plugin_id for registration in loaded] == ["bad_plugin"]
+    good_source = _empty_register_source().replace("__PLUGIN_ID__", "demo_plugin")
+    (root / "demo_plugin" / "__init__.py").write_text(good_source, encoding="utf-8")
+    loaded = load_enabled_plugins(Plugins(enabled=["demo_plugin"]), root_dir=root)
+    assert [registration.plugin_id for registration in loaded] == ["demo_plugin"]
     assert PLUGIN_LOAD_ERRORS == {}
 
 
@@ -402,10 +184,7 @@ def test_registration_version_mismatch_rejected(tmp_path):
         "    return PluginRegistration(plugin_id='demo_plugin', display_name='x', "
         "version='2.0.0', host_api_version=HOST_API_VERSION, jobs=())\n"
     )
-    pkg = _write_package(tmp_path, "demo_plugin", init_source=source)
-    zip_path = tmp_path / "demo.zip"
-    _zip_package(pkg, zip_path)
-    PluginInstaller(root).install(zip_path)
+    _write_plugin_dir(root, "demo_plugin", init_source=source)
 
     load_enabled_plugins(Plugins(enabled=["demo_plugin"]), root_dir=root)
     assert PLUGIN_LOAD_ERRORS["demo_plugin"]["stage"] == "validate_registration"
@@ -420,10 +199,7 @@ def test_plugin_settings_are_deeply_readonly(tmp_path):
         "str(context.settings['scrape']['overlap_days']), version='1.0.0', "
         "host_api_version=HOST_API_VERSION, jobs=())\n"
     )
-    pkg = _write_package(tmp_path, "demo_plugin", init_source=good_source)
-    zip_path = tmp_path / "demo.zip"
-    _zip_package(pkg, zip_path)
-    PluginInstaller(root).install(zip_path)
+    _write_plugin_dir(root, "demo_plugin", init_source=good_source)
     plugin_settings = Plugins(
         enabled=["demo_plugin"],
         settings={"demo_plugin": {"scrape": {"overlap_days": 7}}},
@@ -441,143 +217,27 @@ def test_plugin_settings_are_deeply_readonly(tmp_path):
     assert PLUGIN_LOAD_ERRORS["demo_plugin"]["stage"] == "register"
 
 
-def _fake_pip_install(package_name: str, version: str):
-    def fake(*, target, requirements, manifest, plugin_dir, timeout=600):
-        dist_info = target / f"{package_name}-{version}.dist-info"
-        dist_info.mkdir(parents=True, exist_ok=True)
-        (dist_info / "METADATA").write_text(
-            f"Metadata-Version: 2.1\nName: {package_name}\nVersion: {version}\n",
-            encoding="utf-8",
-        )
-        (dist_info / "RECORD").write_text("METADATA,,\n", encoding="utf-8")
+def test_check_plugin_dir_validates_and_cleans_modules(tmp_path):
+    good_source = _empty_register_source().replace("__PLUGIN_ID__", "demo_plugin")
+    plugin_dir = _write_plugin_dir(tmp_path, "demo_plugin", init_source=good_source)
 
-    return fake
+    registration = check_plugin_dir(plugin_dir=plugin_dir)
+    assert registration.plugin_id == "demo_plugin"
+    import sys
 
-
-def test_dependencies_host_reuse(tmp_path, monkeypatch):
-    root = tmp_path / "root"
-    pkg = _write_package(tmp_path, "demo_plugin", init_source=_empty_register_source())
-    (pkg / "manifest.json").write_text(
-        json.dumps(
-            {
-                "plugin_id": "demo_plugin",
-                "display_name": "x",
-                "version": "1.0.0",
-                "host_api_version": HOST_API_VERSION,
-                "dependencies": {"requirements": ["httpx>=0.28.1,<0.29"]},
-            }
-        ),
-        encoding="utf-8",
+    assert not any(
+        name.startswith("sakuramedia_plugins.demo_plugin")
+        for name in sys.modules
     )
-    zip_path = tmp_path / "demo.zip"
-    _zip_package(pkg, zip_path)
-    PluginInstaller(root).install(zip_path)
-    installed = json.loads(
-        (root / "demo_plugin" / "installed.json").read_text(encoding="utf-8")
+
+    bad_source = (
+        "from src.plugins import PluginContext, PluginRegistration\n"
+        "def register(context):\n"
+        "    raise RuntimeError('boom')\n"
     )
-    # 宿主已有 httpx：不安装副本，dists 为空。
-    assert installed["dists"] == {}
-    assert not (root / "demo_plugin" / "deps").exists()
-
-
-def test_dependencies_install_fresh_package(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "src.plugins.dependencies._pip_install",
-        _fake_pip_install("fake_plugin_dep", "1.2.3"),
-    )
-    root = tmp_path / "root"
-    pkg = _write_package(tmp_path, "demo_plugin", init_source=_empty_register_source())
-    (pkg / "manifest.json").write_text(
-        json.dumps(
-            {
-                "plugin_id": "demo_plugin",
-                "display_name": "x",
-                "version": "1.0.0",
-                "host_api_version": HOST_API_VERSION,
-                "dependencies": {"requirements": ["fake-plugin-dep>=1.0"]},
-            }
-        ),
-        encoding="utf-8",
-    )
-    zip_path = tmp_path / "demo.zip"
-    _zip_package(pkg, zip_path)
-    PluginInstaller(root).install(zip_path)
-    installed = json.loads(
-        (root / "demo_plugin" / "installed.json").read_text(encoding="utf-8")
-    )
-    assert installed["dists"] == {"fake-plugin-dep": "1.2.3"}
-    assert (root / "demo_plugin" / "deps" / "fake_plugin_dep-1.2.3.dist-info").is_dir()
-
-
-def test_dependencies_host_version_conflict_rejected(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "src.plugins.dependencies._pip_install",
-        _fake_pip_install("fake_plugin_dep", "2.0.0"),
-    )
-    monkeypatch.setattr(
-        "src.plugins.dependencies.host_distributions",
-        lambda: {"fake-plugin-dep": "1.0.0"},
-    )
-    root = tmp_path / "root"
-    pkg = _write_package(tmp_path, "demo_plugin", init_source=_empty_register_source())
-    (pkg / "manifest.json").write_text(
-        json.dumps(
-            {
-                "plugin_id": "demo_plugin",
-                "display_name": "x",
-                "version": "1.0.0",
-                "host_api_version": HOST_API_VERSION,
-                "dependencies": {"requirements": ["fake-plugin-dep>=2.0"]},
-            }
-        ),
-        encoding="utf-8",
-    )
-    zip_path = tmp_path / "demo.zip"
-    _zip_package(pkg, zip_path)
-    with pytest.raises(PluginInstallError, match="版本冲突"):
-        PluginInstaller(root).install(zip_path)
-
-
-def test_plugin_dep_conflict_between_plugins(tmp_path, monkeypatch):
-    def fake_pip(target, package, version):
-        dist_info = target / f"{package}-{version}.dist-info"
-        dist_info.mkdir(parents=True, exist_ok=True)
-        (dist_info / "METADATA").write_text(
-            f"Metadata-Version: 2.1\nName: {package}\nVersion: {version}\n",
-            encoding="utf-8",
-        )
-        (dist_info / "RECORD").write_text("METADATA,,\n", encoding="utf-8")
-
-    installs = {"a": ("shared_dep", "1.0.0"), "b": ("shared_dep", "2.0.0")}
-
-    def fake_pip_install(*, target, requirements, manifest, plugin_dir, timeout=600):
-        package, version = installs[manifest.plugin_id]
-        fake_pip(target, package, version)
-
-    monkeypatch.setattr("src.plugins.dependencies._pip_install", fake_pip_install)
-    root = tmp_path / "root"
-    for plugin_id in ("a", "b"):
-        source = _empty_register_source().replace("__PLUGIN_ID__", plugin_id)
-        pkg = _write_package(tmp_path, plugin_id, init_source=source)
-        (pkg / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "plugin_id": plugin_id,
-                    "display_name": plugin_id,
-                    "version": "1.0.0",
-                    "host_api_version": HOST_API_VERSION,
-                    "dependencies": {"requirements": ["shared-dep>=1.0"]},
-                }
-            ),
-            encoding="utf-8",
-        )
-        zip_path = tmp_path / f"{plugin_id}.zip"
-        _zip_package(pkg, zip_path)
-        PluginInstaller(root).install(zip_path)
-
-    loaded = load_enabled_plugins(Plugins(enabled=["a", "b"]), root_dir=root)
-    assert [registration.plugin_id for registration in loaded] == ["a"]
-    assert PLUGIN_LOAD_ERRORS["b"]["stage"] == "deps_conflict"
+    (plugin_dir / "__init__.py").write_text(bad_source, encoding="utf-8")
+    with pytest.raises(RuntimeError, match="register"):
+        check_plugin_dir(plugin_dir=plugin_dir)
 
 
 def test_job_params_validation_rules():
@@ -668,6 +328,67 @@ def test_registry_isolates_plugin_job_conflicting_with_builtin():
     jobs = _build_job_registry([builtin], (registration,))
     assert [job.task_key for job in jobs] == ["builtin_x"]
     assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "registry_conflict"
+
+
+def test_plugin_extension_validates_shape():
+    # key 必须符合点分命名空间格式
+    with pytest.raises(ValidationError):
+        PluginExtension(key="Bad.Key", data={"x": 1})
+    # data 不能为空
+    with pytest.raises(ValidationError):
+        PluginExtension(key="discovery.ranking_source", data=None)
+    # 合法声明通过
+    PluginExtension(key="discovery.ranking_source", data={"x": 1})
+
+
+def test_loader_rejects_unknown_extension_key(tmp_path):
+    root = tmp_path / "root"
+    source = (
+        "from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, "
+        "PluginRegistration\n"
+        "def register(context):\n"
+        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
+        "version='1.0.0', host_api_version=HOST_API_VERSION, "
+        "extensions=(PluginExtension(key='foo.bar', data={'x': 1}),))\n"
+    )
+    _write_plugin_dir(root, "bad_plugin", init_source=source)
+
+    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
+    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"
+
+
+def test_loader_rejects_duplicate_extension_key(tmp_path):
+    root = tmp_path / "root"
+    source = (
+        "from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, "
+        "PluginRegistration\n"
+        "def register(context):\n"
+        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
+        "version='1.0.0', host_api_version=HOST_API_VERSION, "
+        "extensions=(PluginExtension(key='foo.bar', data={'x': 1}), "
+        "PluginExtension(key='foo.bar', data={'y': 2})))\n"
+    )
+    _write_plugin_dir(root, "bad_plugin", init_source=source)
+
+    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
+    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"
+
+
+def test_loader_rejects_bad_ranking_extension_payload(tmp_path):
+    root = tmp_path / "root"
+    source = (
+        "from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, "
+        "PluginRegistration, RANKING_SOURCE_EXTENSION_KEY\n"
+        "def register(context):\n"
+        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
+        "version='1.0.0', host_api_version=HOST_API_VERSION, "
+        "extensions=(PluginExtension(key=RANKING_SOURCE_EXTENSION_KEY, "
+        "data={'source_key': 'bad', 'name': 'x', 'boards': []}),))\n"
+    )
+    _write_plugin_dir(root, "bad_plugin", init_source=source)
+
+    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
+    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"
 
 
 def test_plugin_ranking_board_validates_periods():
@@ -783,73 +504,3 @@ def test_apply_plugin_ranking_sources_merges_and_isolates_conflicts():
     apply_plugin_ranking_sources(())
     assert RANKING_SOURCES == {}
     assert RANKING_SOURCE_OWNERS == {}
-
-
-def test_plugin_extension_validates_shape():
-    # key 必须符合点分命名空间格式
-    with pytest.raises(ValidationError):
-        PluginExtension(key="Bad.Key", data={"x": 1})
-    # data 不能为空
-    with pytest.raises(ValidationError):
-        PluginExtension(key="discovery.ranking_source", data=None)
-    # 合法声明通过
-    PluginExtension(key="discovery.ranking_source", data={"x": 1})
-
-
-def test_loader_rejects_unknown_extension_key(tmp_path):
-    root = tmp_path / "root"
-    source = (
-        "from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, "
-        "PluginRegistration\n"
-        "def register(context):\n"
-        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
-        "version='1.0.0', host_api_version=HOST_API_VERSION, "
-        "extensions=(PluginExtension(key='foo.bar', data={'x': 1}),))\n"
-    )
-    pkg = _write_package(tmp_path, "bad_plugin", init_source=source)
-    zip_path = tmp_path / "bad.zip"
-    _zip_package(pkg, zip_path)
-    PluginInstaller(root).install(zip_path)
-
-    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
-    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"
-
-
-def test_loader_rejects_duplicate_extension_key(tmp_path):
-    root = tmp_path / "root"
-    source = (
-        "from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, "
-        "PluginRegistration\n"
-        "def register(context):\n"
-        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
-        "version='1.0.0', host_api_version=HOST_API_VERSION, "
-        "extensions=(PluginExtension(key='foo.bar', data={'x': 1}), "
-        "PluginExtension(key='foo.bar', data={'y': 2})))\n"
-    )
-    pkg = _write_package(tmp_path, "bad_plugin", init_source=source)
-    zip_path = tmp_path / "bad.zip"
-    _zip_package(pkg, zip_path)
-    PluginInstaller(root).install(zip_path)
-
-    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
-    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"
-
-
-def test_loader_rejects_bad_ranking_extension_payload(tmp_path):
-    root = tmp_path / "root"
-    source = (
-        "from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, "
-        "PluginRegistration, RANKING_SOURCE_EXTENSION_KEY\n"
-        "def register(context):\n"
-        "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
-        "version='1.0.0', host_api_version=HOST_API_VERSION, "
-        "extensions=(PluginExtension(key=RANKING_SOURCE_EXTENSION_KEY, "
-        "data={'source_key': 'bad', 'name': 'x', 'boards': []}),))\n"
-    )
-    pkg = _write_package(tmp_path, "bad_plugin", init_source=source)
-    zip_path = tmp_path / "bad.zip"
-    _zip_package(pkg, zip_path)
-    PluginInstaller(root).install(zip_path)
-
-    load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
-    assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"

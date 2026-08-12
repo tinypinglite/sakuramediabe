@@ -1,8 +1,8 @@
 """插件加载器。
 
-从插件根目录加载显式启用的插件：依赖就绪 → 静态白名单扫描 →
-import 包根 register() → 契约校验 → 注入 plugin_id 并发布注册表。
-单个插件失败记入 PLUGIN_LOAD_ERRORS 并跳过，服务与 CLI 照常启动。
+从插件根目录加载显式启用的插件：import 包根 register() → 契约校验 →
+注入 plugin_id 并返回注册声明。单个插件失败记入 PLUGIN_LOAD_ERRORS
+并跳过，服务与 CLI 照常启动。
 """
 
 from __future__ import annotations
@@ -14,8 +14,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from loguru import logger
-
 from src.config.config import Plugins
 from src.plugins.context import PluginContext
 from src.plugins.contracts import (
@@ -23,22 +21,13 @@ from src.plugins.contracts import (
     MIN_SUPPORTED_HOST_API_VERSION,
     PluginRegistration,
 )
-from src.plugins.dependencies import (
-    _INSERTED_DEPS_PATHS,
-    ensure_plugin_dependencies,
-    load_plugin_deps_into_syspath,
-    plugin_dep_conflict_message,
-    target_distributions,
-)
 from src.plugins.extensions import EXTENSION_VALIDATORS
-from src.plugins.import_guard import ImportBoundaryError, scan_plugin_imports
-from src.plugins.installer import PluginInstaller
 from src.plugins.manifest import MANIFEST_FILENAME, load_manifest_from_file
 from src.scheduler.contracts import JobDefinition
 
 PLUGIN_MODULE_NAMESPACE = "sakuramedia_plugins"
 
-# 插件加载错误登记：坏插件隔离，不拖垮整个服务；状态接口/CLI 据此展示。
+# 插件加载错误登记：坏插件隔离，不拖垮整个服务；CLI 据此展示。
 PLUGIN_LOAD_ERRORS: dict[str, dict[str, str]] = {}
 
 
@@ -148,25 +137,14 @@ def _load_plugin_dir(
     *,
     plugin_id: str,
     plugin_dir: Path,
-    root_dir: Path,
     plugin_settings: Plugins,
 ) -> PluginRegistration:
+    """加载单个插件目录：manifest → import → register → 契约校验。"""
     manifest = load_manifest_from_file(plugin_dir)
     if manifest.plugin_id != plugin_id:
         raise PluginLoadError(
             plugin_id, "resolve", f"manifest.plugin_id={manifest.plugin_id} 与启用项不一致"
         )
-
-    # 依赖就绪（缺失/变更自动重装）后把 deps 挂进 sys.path。
-    ensure_plugin_dependencies(
-        plugin_dir, manifest, root_dir=root_dir
-    )
-    load_plugin_deps_into_syspath(plugin_dir)
-
-    try:
-        scan_plugin_imports(plugin_dir, manifest)
-    except ImportBoundaryError as exc:
-        raise PluginLoadError(plugin_id, "import_boundary", str(exc)) from exc
 
     try:
         module = _import_plugin_package(plugin_dir, plugin_id)
@@ -233,31 +211,26 @@ def _load_plugin_dir(
     return registration.model_copy(update={"jobs": jobs})
 
 
-def _dry_run_plugin_dir(
+def check_plugin_dir(
     *,
-    plugin_id: str,
     plugin_dir: Path,
-    root_dir: Path,
-    plugin_settings: Plugins,
+    plugin_settings: Plugins | None = None,
 ) -> PluginRegistration:
-    """安装/升级前试加载插件并清理副作用，不污染运行期 sys.path / sys.modules。"""
+    """校验一个插件目录（import + register + 契约），供 ``plugins check`` 使用。
+
+    插件 ID 取目录名；失败抛 PluginLoadError。校验后清理该插件命名空间的
+    sys.modules 副作用，避免污染后续加载。
+    """
+    plugin_dir = Path(plugin_dir)
+    plugin_id = plugin_dir.name
     module_name = f"{PLUGIN_MODULE_NAMESPACE}.{plugin_id}"
     try:
         return _load_plugin_dir(
             plugin_id=plugin_id,
             plugin_dir=plugin_dir,
-            root_dir=root_dir,
-            plugin_settings=plugin_settings,
+            plugin_settings=plugin_settings or Plugins(),
         )
     finally:
-        deps_dir = plugin_dir / "deps"
-        if deps_dir.is_dir():
-            deps_key = str(deps_dir.resolve())
-            try:
-                sys.path.remove(deps_key)
-            except ValueError:
-                pass
-            _INSERTED_DEPS_PATHS.discard(deps_key)
         for name in [
             name
             for name in sys.modules
@@ -274,12 +247,10 @@ def load_enabled_plugins(
     """按 enabled 顺序加载插件；单个插件失败记入 PLUGIN_LOAD_ERRORS 并跳过。
 
     未启用插件不会被导入。坏插件隔离而不是整体 fail-fast：第三方插件出错时
-    服务与 CLI 仍可用，状态接口能看到错误原因并允许禁用/卸载。
+    服务与 CLI 仍可用，CLI 能看到错误原因并允许禁用/删除。
     """
     root = Path(root_dir)
     loaded: list[PluginRegistration] = []
-    loaded_deps: dict[str, tuple[str, str]] = {}
-    installer = PluginInstaller(root)
     # 只保留当前启用集合的加载错误，避免停用/修复后残留过期状态。
     enabled_ids = set(plugin_settings.enabled)
     for stale_id in list(PLUGIN_LOAD_ERRORS):
@@ -288,29 +259,13 @@ def load_enabled_plugins(
     for plugin_id in plugin_settings.enabled:
         plugin_dir = root / plugin_id
         try:
-            # 发布中断自愈：正式目录缺失但有 .previous 快照时恢复旧版本。
-            if (
-                not plugin_dir.exists()
-                and installer.recover_interrupted_publish(plugin_id)
-            ):
-                logger.warning(
-                    "插件发布中断，已从 .previous 恢复 plugin_id={}", plugin_id
-                )
             if not (plugin_dir / MANIFEST_FILENAME).is_file():
                 raise PluginLoadError(plugin_id, "resolve", "插件未安装（缺少 manifest.json）")
-            conflict = plugin_dep_conflict_message(plugin_id, plugin_dir, loaded_deps)
-            if conflict:
-                raise PluginLoadError(plugin_id, "deps_conflict", conflict)
             registration = _load_plugin_dir(
                 plugin_id=plugin_id,
                 plugin_dir=plugin_dir,
-                root_dir=root,
                 plugin_settings=plugin_settings,
             )
-            for name, version in target_distributions(
-                plugin_dir / "deps"
-            ).items():
-                loaded_deps[name] = (plugin_id, version)
             loaded.append(registration)
             PLUGIN_LOAD_ERRORS.pop(plugin_id, None)
         except PluginLoadError as exc:

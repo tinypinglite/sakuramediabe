@@ -18,7 +18,7 @@
   - `auth.secret_key` / `auth.file_signature_secret` 由 `ensure_runtime_config()` 首启自举生成随机值，运行时修改会立即作废所有 access token 或已下发的签名 URL，不该经通用配置接口暴露/修改。
   - `auth.algorithm` / `access_token_expire_minutes` / `refresh_token_expire_minutes` 属边缘可配，需要时直接改 `/data/config/config.toml` 并重启 api。
 - **`enable_docs` 顶层字段**：字段仍在 `Settings` 里（默认 `False` = 关闭 Swagger/ReDoc），排障时可通过手动改 `/data/config/config.toml` 或环境变量打开并重启 api 进程生效，通过接口不暴露也不修改，避免把开发调试开关混入用户可改的配置集合。
-- **`plugins` 节**：包含插件根目录（`root_dir`，默认 `/data/plugins`）、可信插件启用清单、任务 cron 覆盖及插件私有配置。API 与 APS 都在 import 阶段加载插件，且私有配置可能含凭据，因此本接口既不返回也不修改该节；安装/启停/升级/卸载统一走专用插件管理接口 `/system/plugins` 或 `plugins` CLI。具体开发契约见 [插件系统开发指南](./plugins.md)。
+- **`plugins` 节**：包含插件根目录（`root_dir`，默认 `/data/plugins`）、可信插件启用清单、任务 cron 覆盖及插件私有配置。API 与 APS 都在 import 阶段加载插件，且私有配置可能含凭据，因此本接口既不返回也不修改该节；安装/启停请走 `/system/plugins` 管理 API 或 `plugins` CLI，或直接编辑 `config.toml`。具体开发契约见 [插件系统开发指南](./plugins.md)。
 
 ## 生效方式（三档）
 
@@ -105,7 +105,7 @@
 | 错误码 | HTTP | 触发条件 |
 |---|---|---|
 | `empty_config_update` | 422 | 请求体为空对象 |
-| `readonly_config_key` | 422 | 修改了本接口不接管的顶层键（当前是 `auth` 节 / `enable_docs` / `plugins`），`details.field` 指出具体键名；插件配置请走 `/system/plugins` |
+| `readonly_config_key` | 422 | 修改了本接口不接管的顶层键（当前是 `auth` 节 / `enable_docs` / `plugins`），`details.field` 指出具体键名；插件安装/启停请走 `/system/plugins` 或 `plugins` CLI |
 | `unknown_config_field` | 422 | 顶层节或节内字段不存在（如拼错字段名），`details.field` 指出具体键 |
 | `invalid_config_value` | 422 | 类型不符、子节不是对象、cron 表达式非法、URL 格式非法等 |
 

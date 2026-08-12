@@ -1,23 +1,19 @@
-"""插件生命周期管理编排：安装/升级/回滚/启停/卸载/依赖重装与状态查询。
+"""插件管理编排：目录/zip 安装、移除、启停与状态查询。
 
-文件系统操作由 PluginInstaller 负责，配置写入复用统一配置持久化，
-本模块只做编排与状态汇总。
+插件就是插件根目录下的一个子目录（含 manifest.json + __init__.py）：
+安装 = 拷贝目录或解压 zip；移除 = 删除目录；启停 = 写配置 enabled 列表。
+没有依赖托管、回滚与回收站——升级前请自行备份目录。
 """
 
 from __future__ import annotations
 
-import json
-import os
+import shutil
 from pathlib import Path
 from typing import Any
 
 from src.config.config import Settings, settings, update_settings
-from src.plugins.dependencies import (
-    INSTALLED_JSON,
-    install_plugin_dependencies,
-)
-from src.plugins.installer import InstallResult, PluginInstaller
-from src.plugins.loader import PLUGIN_LOAD_ERRORS
+from src.plugins.installer import PluginInstaller, PluginInstallError
+from src.plugins.loader import PLUGIN_LOAD_ERRORS, PluginLoadError, check_plugin_dir
 from src.plugins.manifest import (
     MANIFEST_FILENAME,
     PluginManifest,
@@ -30,28 +26,30 @@ def _plugin_root() -> Path:
 
 
 class PluginManager:
-    """插件管理入口；所有写操作返回 pending_restart（插件在 import 期加载）。"""
+    """插件管理入口；启停写配置，目录操作即时生效但需重启加载。"""
 
     def __init__(self, root_dir: Path | None = None):
         self.root_dir = Path(root_dir) if root_dir is not None else _plugin_root()
-        self.installer = PluginInstaller(self.root_dir)
-
-    # ---- 状态 ----
 
     def _enabled_ids(self) -> list[str]:
         return list(settings.plugins.enabled)
+
+    def _plugin_dir(self, plugin_id: str) -> Path:
+        return self.root_dir / plugin_id
 
     @staticmethod
     def _load_manifest(
         plugin_dir: Path,
     ) -> tuple[PluginManifest | None, str | None]:
-        """读取插件 manifest；损坏时返回 (None, 错误信息)，不向调用方抛异常。"""
+        """读取 manifest；损坏时返回 (None, 错误信息)，不向调用方抛异常。"""
         if not (plugin_dir / MANIFEST_FILENAME).is_file():
             return None, None
         try:
             return load_manifest_from_file(plugin_dir), None
         except ValueError as exc:
             return None, str(exc)
+
+    # ---- 状态 ----
 
     def list_plugins(self) -> list[dict[str, Any]]:
         enabled_ids = set(self._enabled_ids())
@@ -61,29 +59,21 @@ class PluginManager:
         for plugin_dir in sorted(self.root_dir.iterdir()):
             if not plugin_dir.is_dir() or plugin_dir.name.startswith("."):
                 continue
-            if not (plugin_dir / MANIFEST_FILENAME).is_file():
-                continue
             manifest, manifest_error = self._load_manifest(plugin_dir)
+            if manifest is None and manifest_error is None:
+                continue
             plugin_id = plugin_dir.name if manifest is None else manifest.plugin_id
-            if manifest is not None:
-                display_name = manifest.display_name
-                version = manifest.version
-                host_api_version = manifest.host_api_version
-                deps_status = self._deps_status(plugin_dir, manifest)
-            else:
-                display_name = plugin_id
-                version = "unknown"
-                host_api_version = 0
-                deps_status = "unknown"
             plugins.append(
                 {
                     "plugin_id": plugin_id,
-                    "display_name": display_name,
-                    "version": version,
-                    "host_api_version": host_api_version,
+                    "display_name": (
+                        manifest.display_name if manifest is not None else plugin_id
+                    ),
+                    "version": manifest.version if manifest is not None else "unknown",
+                    "host_api_version": (
+                        manifest.host_api_version if manifest is not None else 0
+                    ),
                     "enabled": plugin_id in enabled_ids,
-                    "deps_status": deps_status,
-                    "installed_at": self._installed_at(plugin_dir),
                     "load_status": (
                         "error"
                         if manifest_error is not None
@@ -99,15 +89,12 @@ class PluginManager:
         return plugins
 
     def get_plugin(self, plugin_id: str) -> dict[str, Any] | None:
-        plugin_dir = self.root_dir / plugin_id
+        plugin_dir = self._plugin_dir(plugin_id)
         manifest, manifest_error = self._load_manifest(plugin_dir)
         if manifest is None and manifest_error is None:
             return None
         if manifest is None:
             plugin_id = plugin_dir.name
-        installed = self._read_installed(plugin_dir)
-        log_path = plugin_dir / "install.log"
-        enabled = plugin_id in set(self._enabled_ids())
         return {
             "plugin_id": plugin_id,
             "display_name": manifest.display_name if manifest else plugin_id,
@@ -116,119 +103,100 @@ class PluginManager:
             "requires_python": manifest.requires_python if manifest else None,
             "author": manifest.author if manifest else None,
             "homepage": manifest.homepage if manifest else None,
-            "dependencies": (
-                manifest.dependencies.model_dump() if manifest else {}
-            ),
             "manifest": manifest.model_dump() if manifest else {},
-            "enabled": enabled,
-            "deps_status": (
-                self._deps_status(plugin_dir, manifest) if manifest else "unknown"
-            ),
-            "dists": installed.get("dists", {}) if installed else {},
-            "installed_at": installed.get("installed_at") if installed else None,
-            "data_dir": str(plugin_dir / "data"),
-            "install_log_tail": self._log_tail(log_path, limit=2000),
+            "enabled": plugin_id in set(self._enabled_ids()),
             "load_status": (
                 "error"
-                if manifest_error is not None or plugin_id in PLUGIN_LOAD_ERRORS
+                if manifest_error is not None
+                or plugin_id in PLUGIN_LOAD_ERRORS
                 else "ok"
             ),
             "load_error": (
                 manifest_error
                 or PLUGIN_LOAD_ERRORS.get(plugin_id, {}).get("message")
             ),
+            "data_dir": str(plugin_dir / "data"),
         }
-
-    @staticmethod
-    def _read_installed(plugin_dir: Path) -> dict[str, Any] | None:
-        path = plugin_dir / INSTALLED_JSON
-        if not path.is_file():
-            return None
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
-
-    @classmethod
-    def _deps_status(cls, plugin_dir: Path, manifest: PluginManifest) -> str:
-        installed = cls._read_installed(plugin_dir)
-        if installed is None:
-            return "missing"
-        if installed.get("dists") and not (plugin_dir / "deps").is_dir():
-            return "missing"
-        if (
-            installed.get("manifest_dependencies_digest")
-            != manifest.dependencies_digest()
-        ):
-            return "stale"
-        return "ok"
-
-    @staticmethod
-    def _installed_at(plugin_dir: Path) -> str | None:
-        installed = PluginManager._read_installed(plugin_dir)
-        return installed.get("installed_at") if installed else None
-
-    @staticmethod
-    def _log_tail(log_path: Path, limit: int = 2000) -> str:
-        if not log_path.is_file():
-            return ""
-        try:
-            with log_path.open("rb") as handle:
-                handle.seek(0, os.SEEK_END)
-                size = handle.tell()
-                handle.seek(max(0, size - limit))
-                content = handle.read()
-        except OSError:
-            return ""
-        return content.decode("utf-8", errors="replace")
 
     # ---- 写操作 ----
 
-    def install(
+    def install(self, source_dir: Path, *, enable: bool = True) -> dict[str, str]:
+        """把插件目录拷贝进插件根目录；目标已存在时替换代码并保留 data/。"""
+        source_dir = Path(source_dir)
+        if not source_dir.is_dir():
+            raise ValueError(f"插件目录不存在: {source_dir}")
+        manifest = load_manifest_from_file(source_dir)
+        staging = self._staging_dir(manifest.plugin_id)
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        shutil.copytree(source_dir, staging)
+        return self._publish_staging(staging, manifest, enable=enable)
+
+    def install_zip(
         self,
         zip_path: Path,
         *,
         sha256: str | None = None,
         enable: bool = True,
-    ) -> InstallResult:
-        result = self.installer.install(
-            zip_path,
-            sha256=sha256,
-            plugin_settings=settings.plugins,
+    ) -> dict[str, str]:
+        """解压 zip 并发布到插件根目录；目标已存在时替换代码并保留 data/。"""
+        manifest, staging = PluginInstaller(self.root_dir).unpack(
+            zip_path, sha256=sha256
         )
-        if enable:
-            self._set_enabled(result.plugin_id, True)
-        return result
+        try:
+            # 发布前试加载：坏插件在安装期就被拒绝，而不是留到下次启动才报错。
+            check_plugin_dir(
+                plugin_dir=staging,
+                plugin_settings=settings.plugins,
+            )
+        except PluginLoadError as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise PluginInstallError(manifest.plugin_id, exc.stage, str(exc)) from exc
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        return self._publish_staging(staging, manifest, enable=enable)
 
-    def update(
+    def _staging_dir(self, plugin_id: str) -> Path:
+        return self.root_dir / ".staging" / plugin_id
+
+    def _publish_staging(
         self,
-        plugin_id: str,
-        zip_path: Path,
+        staging: Path,
+        manifest: PluginManifest,
         *,
-        sha256: str | None = None,
-    ) -> InstallResult:
-        return self.installer.update(
-            plugin_id,
-            zip_path,
-            sha256=sha256,
-            plugin_settings=settings.plugins,
-        )
+        enable: bool,
+    ) -> dict[str, str]:
+        """把暂存目录原子发布为正式插件目录，重复安装保留已有 data/。"""
+        plugin_id = manifest.plugin_id
+        target = self._plugin_dir(plugin_id)
+        try:
+            # data/ 是宿主托管目录：丢弃源目录自带 data，已有安装则沿用旧数据。
+            if (staging / "data").exists():
+                shutil.rmtree(staging / "data", ignore_errors=True)
+            if target.is_dir():
+                old_data = target / "data"
+                if old_data.is_dir():
+                    shutil.move(str(old_data), str(staging / "data"))
+                shutil.rmtree(target, ignore_errors=True)
+            shutil.move(str(staging), str(target))
+        except Exception as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise ValueError(f"插件目录发布失败: {plugin_id}") from exc
+        if enable:
+            self._set_enabled(plugin_id, True)
+        return {"plugin_id": plugin_id, "version": manifest.version}
 
-    def rollback(self, plugin_id: str) -> InstallResult:
-        return self.installer.rollback(plugin_id)
-
-    def reinstall_deps(self, plugin_id: str) -> None:
-        plugin_dir = self.root_dir / plugin_id
-        manifest = load_manifest_from_file(plugin_dir)
-        # “重装依赖”是强制动作：即使 installed.json 看似最新也重新安装。
-        install_plugin_dependencies(
-            plugin_dir,
-            manifest,
-            root_dir=self.root_dir,
-        )
+    def remove(self, plugin_id: str) -> None:
+        """删除插件目录（含 data/）；如需保留数据请先自行备份。"""
+        target = self._plugin_dir(plugin_id)
+        if not target.is_dir():
+            raise ValueError(f"插件未安装: {plugin_id}")
+        self._set_enabled(plugin_id, False)
+        shutil.rmtree(target, ignore_errors=True)
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> None:
-        if not (self.root_dir / plugin_id / MANIFEST_FILENAME).is_file():
+        if not (self._plugin_dir(plugin_id) / MANIFEST_FILENAME).is_file():
             raise ValueError(f"插件未安装: {plugin_id}")
         self._set_enabled(plugin_id, enabled)
 
@@ -243,7 +211,3 @@ class PluginManager:
             return
         current.plugins.enabled = enabled_ids
         update_settings(current)
-
-    def uninstall(self, plugin_id: str, *, purge_data: bool = False) -> InstallResult:
-        self._set_enabled(plugin_id, False)
-        return self.installer.uninstall(plugin_id, purge_data=purge_data)

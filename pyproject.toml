@@ -16,6 +16,8 @@ dependencies = [
     "xmltodict>=0.13.0,<0.14.0",
     "libtorrent>=2.0.9,<3.0.0",
     "python-multipart>=0.0.6,<0.0.7",
+    # 插件 zip 安装时校验 manifest.requires_python，统一走 PEP 440 解析。
+    "packaging>=23.0,<27",
     "bcrypt>=4.0.1,<5.0.0",
     "pydantic-settings>=2.2.1,<3.0.0",
     "apscheduler>=3.10.4,<4.0.0",

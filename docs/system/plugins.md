@@ -5,23 +5,26 @@
 
 ## 1. 插件是什么
 
-插件是一个 **zip 包**，交付给 SakuraMedia 部署者后由宿主统一安装、托管依赖并加载。
+插件就是**插件根目录下的一个子目录**：目录名是 `plugin_id`，目录内必须有
+`manifest.json` 与 `__init__.py`。把目录放进 `plugins.root_dir`（默认
+`/data/plugins`）、在 `plugins.enabled` 里写上 `plugin_id`、重启 api 与 aps，
+宿主就会在 import 阶段加载它。插件可以以目录形式直接拷贝/挂载，也可以
+打包成 zip 通过 `plugins install` CLI 或 `/system/plugins` API 安装。
+
 插件通过包根目录的 `register(context)` 向宿主声明自己，注册对象有两个通道：
 **后台任务**（`jobs`，宿主平台能力）和
 **扩展点声明**（`extensions`，业务领域扩展）。当前扩展点目录只登记了
 排行榜来源（`discovery.ranking_source`）；机制本身是通用的——核心只做
 结构校验，不解释任何领域的载荷，新增领域不需要改核心契约与加载器。
 
-宿主在 `api` 与 `aps` 两个进程的 **import 阶段**加载所有显式启用的插件：
+加载流程：
 
-1. 检查依赖就绪（缺失/变更自动重装）；
-2. 静态扫描插件代码的 import 白名单；
-3. import 插件包根并调用 `register(context)`；
-4. 校验 `PluginRegistration`、任务声明与扩展点声明；
-5. 把任务合并进 `JOB_REGISTRY`，进入任务中心统一调度。
+1. import 插件包根并调用 `register(context)`；
+2. 校验 `PluginRegistration`、任务声明与扩展点声明；
+3. 把任务合并进 `JOB_REGISTRY`，进入任务中心统一调度。
 
 单个插件加载失败不会拖垮服务：错误记入 `PLUGIN_LOAD_ERRORS`，
-管理接口与 CLI 可以查看原因，部署者可以选择禁用或卸载。
+`plugins list` 与管理 API 可以看到原因，部署者可以选择停用或删除该插件。
 
 ## 2. 能做什么 / 不能做什么
 
@@ -37,8 +40,6 @@
 注意：表格里的"抓榜单/抓字幕"都是**插件自己访问外部站点抓取**，宿主只提供
 写侧能力（影片元数据入库、字幕落盘登记、排行榜来源注册与同步编排），
 并不提供抓取链路。
-参数任务里可以传任意自定义参数（比如资源 ID），但参数只喂给插件自己的执行体，
-宿主侧没有"按主库资源 ID 通用处理"的方法。
 
 ### 2.2 宿主提供的稳定能力
 
@@ -54,8 +55,9 @@
   整榜写 `RankingItem` 与对外 API（见 6.6）；
 - **后台任务全链路**：任务进统一任务中心，天然获得任务级互斥、SSE 进度、
   运行记录、通知、崩溃恢复与 `business_recovery` 钩子；
-- **网络与数据处理**：插件可以使用自己的 Python 依赖（httpx 等），访问外部站点；
-- **持久化运行数据**：每个插件拥有独立的 `data/` 目录，升级不覆盖；
+- **网络与数据处理**：插件可以使用宿主 venv 已安装的依赖（httpx 等）与标准库
+  访问外部站点；
+- **持久化运行数据**：每个插件拥有独立的 `data/` 目录，重新安装不覆盖；
 - **只读私有配置**：插件可以读取部署者在 `plugins.settings.<plugin_id>` 下配置的内容。
 
 ### 2.3 当前不支持的能力
@@ -67,22 +69,23 @@
   只有 `import_movie_by_number` / `import_subtitle` 两个写侧入口）；
 - 查询主库业务状态（例如"哪些影片缺字幕/缺封面"），`list_existing_movie_numbers()`
   只能拿到全部番号集合；
-- 直接访问数据库，或 import 宿主内部 `src.model` / `src.service` / `src.metadata._providers`；
+- 直接访问数据库；
+- 安装第三方依赖（插件只能使用宿主 venv 已装依赖 + 标准库）；
 - 注册前端页面或 UI 组件。
 
-这些边界是**设计约束**：插件只能通过 `PluginContext` 与公开类型触碰宿主能力，
-安装与加载时由静态 import 白名单强制，宿主重构不会破坏插件。
+这些边界是**设计约束**：插件只应通过 `PluginContext` 与公开类型触碰宿主能力。
+插件与宿主同进程运行，代码可以 import 任何模块；但请**只依赖公开契约**，
+不要绑定宿主内部实现，否则宿主重构会破坏你的插件。
 
 ## 3. 快速开始：最小插件
 
 ### 3.1 目录结构
 
 ```text
-subtitle_fetch-1.0.0.zip
+<plugins_root>/subtitle_fetch/
 ├── manifest.json
 ├── __init__.py          # 必须暴露 register(context)
-├── plugin.py            # 插件实现，可按需自由组织
-└── wheels/              # 可选：离线依赖轮子
+└── plugin.py            # 插件实现，可按需自由组织
 ```
 
 ### 3.2 manifest.json
@@ -94,21 +97,10 @@ subtitle_fetch-1.0.0.zip
   "version": "1.0.0",
   "host_api_version": 1,
   "requires_python": ">=3.10",
-  "dependencies": {
-    "requirements": ["httpx>=0.28,<0.29"],
-    "bundled_wheels": true
-  },
   "author": "example",
-  "homepage": "https://example.com/subtitle_fetch",
-  "files": {
-    "__init__.py": "<sha256>",
-    "plugin.py": "<sha256>"
-  }
+  "homepage": "https://example.com/subtitle_fetch"
 }
 ```
-
-`files` 可以省略；如果提供，必须是包内文件相对路径对应的真实
-sha256（64 位十六进制），安装时会逐文件校验。
 
 ### 3.3 插件代码
 
@@ -120,79 +112,10 @@ from .plugin import register
 __all__ = ["register"]
 ```
 
-`plugin.py`：
+`plugin.py` 的最小实现：
 
 ```python
-from pydantic import BaseModel, Field
-
 from src.plugins import PluginContext, PluginRegistration
-from src.scheduler.contracts import JobDefinition
-
-
-class FetchSubtitleParams(BaseModel):
-    movie_number: str = Field(min_length=3, description="要抓字幕的番号")
-
-
-def _fetch_batch(context: PluginContext, reporter):
-    """定时批处理：遍历主库番号抓字幕。
-
-    宿主没有"查询哪些影片缺字幕"的接口，这里用 data_dir 维护已抓过清单，
-    避免对外部站点重复请求；即使重复抓取，宿主也会按内容指纹对同一部影片
-    去重，写入结果幂等。
-    """
-    state_path = context.data_dir / "state" / "fetched.txt"
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    fetched = set(
-        state_path.read_text().splitlines()
-    ) if state_path.exists() else set()
-    numbers = context.list_existing_movie_numbers()
-    total = len(numbers)
-    attempted = 0
-    imported = 0
-    for index, movie_number in enumerate(numbers, start=1):
-        if movie_number in fetched:
-            continue
-        reporter.emit(
-            current=index,
-            total=total,
-            text=f"processing {movie_number}",
-        )
-        content = _download_subtitle(movie_number)  # 插件自己的抓取逻辑
-        if content is None:
-            continue
-        result = context.import_subtitle(
-            movie_number,
-            content,
-            filename="default.srt",
-        )
-        if result.status == "imported":
-            imported += 1
-        # 影片不存在 / 格式不支持 / 重复都会以状态返回，不会抛异常
-        attempted += 1
-        fetched.add(movie_number)
-        state_path.write_text("\n".join(sorted(fetched)))
-    return {"attempted_movies": attempted, "imported_subtitles": imported}
-
-
-def _fetch_one(context: PluginContext, reporter, params: dict):
-    """手动带参执行体：只处理请求里指定的番号。"""
-    movie_number = params["movie_number"]
-    content = _download_subtitle(movie_number)  # 从外部站点抓取
-    if content is None:
-        reporter.emit(text=f"no subtitle found: {movie_number}")
-        return {"movie_number": movie_number, "status": "not_found"}
-    result = context.import_subtitle(
-        movie_number,
-        content,
-        filename="default.srt",
-    )
-    reporter.emit(text=f"subtitle result: {result.status}")
-    return {"movie_number": movie_number, "status": result.status}
-
-
-def _download_subtitle(movie_number: str) -> bytes | None:
-    """示例占位：在这里写你的外部抓取逻辑（httpx 等），找不到返回 None。"""
-    ...
 
 
 def register(context: PluginContext) -> PluginRegistration:
@@ -200,72 +123,73 @@ def register(context: PluginContext) -> PluginRegistration:
         plugin_id="subtitle_fetch",
         display_name="字幕抓取",
         version="1.0.0",
-        jobs=(
-            JobDefinition(
-                task_key="subtitle_fetch",
-                log_name="subtitle-fetch",
-                cli_name="fetch-subtitles",
-                cli_help="抓取影片字幕（定时全量 / 手动指定番号）",
-                default_cron="30 3 * * *",
-                service_factory=lambda reporter: _fetch_batch(context, reporter),
-                params_schema=FetchSubtitleParams,
-                params_handler=lambda reporter, params: _fetch_one(
-                    context, reporter, params
-                ),
-            ),
-        ),
     )
 ```
 
-### 3.4 打包与安装
+### 3.4 安装与加载
 
 ```bash
-cd subtitle_fetch
-zip -r ../subtitle_fetch-1.0.0.zip .
-shasum -a 256 ../subtitle_fetch-1.0.0.zip
+# 方式一：直接拷贝/挂载目录
+cp -r subtitle_fetch /data/plugins/
+
+# 方式二：CLI 安装目录或 zip（zip 支持 --sha256 完整性校验）
+cd subtitle_fetch && zip -r ../subtitle_fetch.zip .
+uv run python -m src.start.commands plugins install ../subtitle_fetch.zip
+
+# 启用（写入 plugins.enabled）
+uv run python -m src.start.commands plugins enable subtitle_fetch
+
+# 重启 api 与 aps 后生效
 ```
+
+插件作者可以用 `plugins check <目录>` 在部署前校验：
 
 ```bash
-# CLI 安装（--sha256 可选）
-uv run python -m src.start.commands plugins install subtitle_fetch-1.0.0.zip \
-  --sha256 <zip-sha256>
-
-# 安装完成后必须重启 api 与 aps 才会加载
+uv run python -m src.start.commands plugins check ./subtitle_fetch
 ```
 
-## 4. 插件包规范
+也可以通过 HTTP API 上传 zip 安装（需要登录鉴权）：
 
-### 4.1 包结构要求
+```bash
+curl -X POST http://host/api/system/plugins \
+  -H "Authorization: Bearer <token>" \
+  -F "file=@subtitle_fetch.zip" \
+  -F "sha256=<zip-sha256>" \
+  -F "enable=true"
+```
 
-- 包根必须有 `manifest.json` 与 `__init__.py`；
-- `__init__.py` 必须暴露可调用的 `register(context)`；
+## 4. 插件目录规范
+
+### 4.1 目录要求
+
+- 目录名必须等于 `manifest.plugin_id`，且满足 `^[a-z][a-z0-9_]*$`；
+- 目录内必须有 `manifest.json` 与 `__init__.py`；
 - 其余 `.py` / 资源文件由插件作者自由组织，支持包内相对导入；
-- `data/` 是宿主托管的运行数据目录：包内自带 `data/` 内容在安装时**一律丢弃**；
-- `wheels/` 可选：配合 `dependencies.bundled_wheels` 做离线依赖安装。
+- `data/` 是宿主托管的运行数据目录，插件不应把运行状态写进代码目录；
+- 插件目录可以是符号链接或 bind mount，宿主按目录名加载。
 
 ### 4.2 manifest.json 字段
 
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `plugin_id` | 是 | `^[a-z][a-z0-9_]*$`，与目录名、`plugins.enabled` 项一致 |
-| `display_name` | 是 | 管理界面展示名 |
-| `version` | 是 | 插件版本；升级必须严格高于当前版本（PEP 440） |
+| `display_name` | 是 | 展示名 |
+| `version` | 是 | 插件版本（PEP 440） |
 | `host_api_version` | 是 | 插件声明的宿主接口版本，必须满足 `MIN_SUPPORTED <= v <= HOST_API_VERSION`（当前均为 1） |
-| `requires_python` | 否 | 与宿主 Python 解释器（3.10）校验，例如 `>=3.10,<3.11` |
-| `dependencies` | 否 | 运行时依赖声明，见 [第 8 节](#8-依赖管理) |
-| `files` | 否 | `{相对文件名: sha256}`，解压后逐文件校验；键不允许含 `/` 或 `\` |
-| `author` / `homepage` | 否 | 管理界面展示 |
+| `requires_python` | 否 | 与宿主 Python 解释器（3.10）校验 |
+| `author` / `homepage` | 否 | 展示信息 |
 
 未知字段会被严格拒绝（`extra="forbid"`），不要随意添加自定义字段。
 
-### 4.3 安装限制与完整性
+### 4.3 zip 分发限制
 
-- zip 大小 ≤ 100MB，解压后 ≤ 500MB，文件数 ≤ 5000；
+- zip ≤ 100MB，解压后 ≤ 500MB，文件数 ≤ 5000；
 - 拒绝绝对路径、`..` 越界路径与符号链接成员；
-- zip 包 sha256（安装时可选传入）与 `manifest.files` 包内哈希都会校验；
-- `requires_python` 不满足、manifest 非法、包内文件缺失/哈希不符都会拒绝安装；
-- 安装与升级前宿主会**试加载**（真实执行 `register` 与白名单扫描），
-  坏插件在安装期就被拒绝，不会留到下次启动才报错。
+- 可选传入 zip sha256，宿主会校验完整性；`requires_python` 不满足也会拒绝；
+- 发布前宿主会**试加载**（真实 import + register + 契约校验），
+  坏插件在安装期就被拒绝，不会留到下次启动才报错；
+- zip 根必须是插件目录内容（`manifest.json` 与 `__init__.py` 在 zip 根），
+  没有文件哈希清单或依赖声明。
 
 ## 5. 插件契约
 
@@ -286,7 +210,7 @@ def register(context: PluginContext) -> PluginRegistration:
 | `display_name` | 展示名 |
 | `version` | 必须与 manifest 完全一致 |
 | `host_api_version` | 区间校验（当前必须为 1） |
-| `jobs` | `JobDefinition` 元组，允许为空（见 [零任务插件](#10-常见问题)） |
+| `jobs` | `JobDefinition` 元组，允许为空 |
 | `extensions` | `PluginExtension` 元组，允许为空；业务领域扩展声明，当前登记的扩展点见 6.6 |
 
 `register(context)` 在 api/aps 启动 import 阶段执行，**只应该做声明，不要做耗时操作**
@@ -315,7 +239,7 @@ from src.scheduler.contracts import JobDefinition
 | `cron_setting` | - | **插件禁止声明**（宿主 Scheduler 字段，由 loader 拒绝） |
 | `plugin_id` | - | **禁止自行声明**（loader 注入） |
 
-校验规则（违反则安装/加载失败）：
+校验规则（违反则加载失败并隔离该插件）：
 
 - 必须提供 `service_factory` 或 `params_handler` 至少一个；
 - cron 任务必须提供 `service_factory`；
@@ -372,8 +296,7 @@ JobDefinition(
 
 ### 5.5 手动触发与参数
 
-- `GET /system/jobs` 返回任务元数据，`params_schema` 以 JSON Schema 形式暴露，
-  前端可以据此渲染表单；
+- `GET /system/jobs` 返回任务元数据，`params_schema` 以 JSON Schema 形式暴露；
 - `POST /system/jobs/{task_key}/run` 带 JSON body 触发带参任务；
 - CLI 自动为每个任务注册 `aps <cli_name>` 子命令，带参任务额外支持
   `--params-json '{"movie_number": "ABP-123"}'`；
@@ -398,7 +321,7 @@ PluginExtension(
 )
 ```
 
-通用校验规则（违反则安装/加载失败）：
+通用校验规则（违反则加载失败并隔离该插件）：
 
 - `key` 必须匹配 `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$` 且长度 ≤ 128；
 - 同插件内 `key` 不能重复；
@@ -415,7 +338,7 @@ PluginExtension(
 |---|---|
 | `plugin_id` | 当前插件 ID |
 | `settings` | 插件私有配置（`plugins.settings.<plugin_id>` 的内容），**深冻结只读** |
-| `data_dir` | 插件专属数据目录 `<root>/<plugin_id>/data/`，自动创建、升级保留 |
+| `data_dir` | 插件专属数据目录 `<root>/<plugin_id>/data/`，自动创建、重装保留 |
 
 ### 6.2 context 方法
 
@@ -426,7 +349,7 @@ PluginExtension(
 | `build_catalog_import_service(skip_dmm=False)` | 构造目录入库服务；批量场景传 `skip_dmm=True` 跳过 DMM 简介抓取 |
 | `import_movie_by_number(movie_number, *, force_subscribed=False)` | 通过 JavDB 获取详情并复用宿主能力入库 |
 | `list_existing_movie_numbers() -> set[str]` | 主库全部影片番号（大写），用于 O(1) 存在性判断 |
-| `import_subtitle(movie_number, content, filename, language=None)` | 写入一段字幕字节内容，返回 `SubtitleImportResult`。只支持 `.srt/.ass/.ssa/.vtt`；去重粒度为**同一部影片内**的内容 sha256，跨影片相同内容不去重；`filename` 只取扩展名，落盘名由宿主生成（`<番号>-<N><ext>`）；`language` 是保留参数，当前版本不落库、不生效；影片不存在返回 `movie_not_found`，不抛异常；每次调用会扫描该影片已登记字幕文件计算哈希 |
+| `import_subtitle(movie_number, content, filename, language=None)` | 写入一段字幕字节内容，返回 `SubtitleImportResult`。只支持 `.srt/.ass/.ssa/.vtt`；去重粒度为**同一部影片内**的内容 sha256；`filename` 只取扩展名；影片不存在返回 `movie_not_found`，不抛异常 |
 | `sync_ranking_sources(progress_callback=None, task_run_id=None)` | 同步当前插件声明的全部排行榜来源，返回统计 dict |
 | `sync_ranking_board(source_key, board_key, period=None)` | 同步单个榜单；`source_key` 必须是本插件声明的来源 |
 | `get_task_logger(name)` | 获取绑定到任务日志文件的 loguru logger |
@@ -441,7 +364,7 @@ PluginExtension(
 
 ### 6.3 公开类型
 
-插件只允许从 `src.plugins.types` 导入宿主公开类型：
+插件从 `src.plugins` / `src.plugins.types` 导入公开类型：
 
 ```python
 from src.plugins.types import (
@@ -471,10 +394,6 @@ def handler(reporter, params):
         text="processing ...",
         summary_patch={"processed": 1},
     )
-    # 兼容旧式 payload 回调
-    reporter.progress_callback(
-        {"current": 1, "total": 10, "text": "...", "summary_patch": {"ok": 1}}
-    )
     return {"done": True}  # dict 会自动合并进任务结果统计
 ```
 
@@ -484,8 +403,7 @@ def handler(reporter, params):
 ### 6.5 日志
 
 - 每个任务按 `log_name` 自动写独立日志文件（`<scheduler.log_dir>/<log_name>.log`）；
-- 插件代码里可用 `context.get_task_logger(name)` 获取绑定的 loguru logger；
-- 任务日志文件开启诊断回溯关闭，敏感局部变量不会写入日志。
+- 插件代码里可用 `context.get_task_logger(name)` 获取绑定的 loguru logger。
 
 ### 6.6 排行榜来源扩展点（discovery.ranking_source）
 
@@ -563,9 +481,6 @@ def register(context: PluginContext) -> PluginRegistration:
   和同步管线，必须把插件的 `source_key` / boards 收编进自己的注册表，
   跨插件冲突由宿主裁决。
 
-新增业务扩展点时，在 `src/plugins/extensions/` 下实现领域载荷与校验器，
-并在 `EXTENSION_VALIDATORS` 登记；核心契约与加载器不需要改动。
-
 ## 7. 配置
 
 ```toml
@@ -580,77 +495,49 @@ subtitle_fetch = "15 3 * * *"
 overlap_days = 7
 ```
 
+- `plugins.root_dir`：插件根目录，默认 `/data/plugins`；
 - `plugins.enabled`：显式启用清单；不在清单里的插件不会被 import；
 - `plugins.job_crons.<plugin_id>.<task_key>`：覆盖任务的默认 cron；
 - `plugins.settings.<plugin_id>`：插件私有配置，`context.settings` 只读访问；
 - 整个 `plugins` 节对通用配置 API（`GET/PATCH /config`）隐藏，
-  只能通过插件管理接口/CLI 或直接编辑 `config.toml` 修改；
+  安装/启停请用 `plugins` CLI 或 `/system/plugins` 管理 API，
+  也可以直接编辑 `config.toml`；
 - 配置与启停都在启动期生效，修改后需要重启 api 与 aps。
 
 本地开发可以把 `root_dir` 指到 `./storage/plugins`，避免直接操作生产目录。
 
-## 8. 依赖管理
+## 8. 依赖
 
-### 8.1 声明
+插件**只能使用宿主 venv 已安装的包与标准库**（httpx、certifi、pydantic 等都在），
+宿主不提供任何依赖安装能力。插件作者在发布前应确认依赖在宿主环境中可用；
+如果将来有插件需要冷门包，再考虑增加最小依赖安装机制。
 
-```json
-{
-  "dependencies": {
-    "requirements": ["httpx>=0.28.1,<0.29", "certifi"],
-    "index_url": "https://pypi.tuna.tsinghua.edu.cn/simple",
-    "extra_index_urls": ["https://pypi.org/simple"],
-    "bundled_wheels": true
-  }
-}
-```
-
-- `requirements`：pip 需求列表，可带版本约束；
-- `index_url` / `extra_index_urls`：自定义 pip 源（国内镜像等）；
-- `bundled_wheels`：优先从包内 `wheels/` 目录安装，离线部署可用。
-
-### 8.2 安装与冲突策略
-
-- 依赖由宿主托管安装到插件私有 `<plugin_id>/deps/`，不要求部署者手动装；
-- 宿主已满足的直接需求会复用宿主，不装副本；
-- pip 解析结果中与宿主**同名同版本**的包复用宿主并剔除；
-- 与宿主**同名不同版本**直接安装失败（插件不能覆盖宿主依赖）；
-- 两个插件实际安装的同名顶层包（deps 分发物）也会互相冲突，加载时拒绝；
-- 依赖安装有 600s 超时，完整命令与输出写入 `install.log`。
-
-### 8.3 自动补装
-
-启动加载时若 `installed.json` 缺失、依赖声明摘要变化、平台/Python 版本变化，
-宿主会自动重装依赖；api/aps 双进程通过文件锁串行化，不会并发抢装。
-
-## 9. 分发、安装与生命周期管理
+## 9. 安装与管理
 
 ### 9.1 插件根目录布局
 
 ```text
-<root>/
+<plugins_root>/
   <plugin_id>/
     __init__.py
     manifest.json
-    deps/          # 宿主安装的运行时依赖
-    data/          # 插件运行数据（升级不覆盖）
-    installed.json # 安装状态（依赖摘要/平台/版本）
-    install.log    # 安装与依赖日志
-  .staging/        # 安装暂存区
-  .previous/       # 升级前的旧版本快照（回滚用）
-  .trash/          # 卸载回收站
+    data/          # 宿主托管的运行数据（重装保留）
+  .staging/        # 安装暂存区（zip 解压/上传临时文件，宿主自用）
 ```
 
 ### 9.2 CLI
 
 | 命令 | 说明 |
 |---|---|
-| `plugins list` | 列出已安装插件与启停/依赖/加载状态 |
-| `plugins install <zip> [--sha256 ...] [--no-enable]` | 安装（默认自动启用） |
-| `plugins update <id> <zip> [--sha256 ...]` | 升级（新版本必须更高） |
-| `plugins rollback <id>` | 回滚到上一个版本 |
-| `plugins enable <id>` / `plugins disable <id>` | 启停 |
-| `plugins uninstall <id> [--purge-data]` | 卸载；默认进 `.trash/` 可恢复 |
-| `plugins status <id>` | 查看 manifest/依赖/加载错误/日志尾部 |
+| `plugins list` | 列出已安装插件与启停/加载状态 |
+| `plugins install <目录或zip> [--sha256 ...] [--no-enable]` | 安装插件目录或 zip；已存在时替换代码并保留 `data/` |
+| `plugins remove <id>` | 删除插件目录（含 `data/`，请先自行备份） |
+| `plugins enable <id>` / `plugins disable <id>` | 启停（写入 `plugins.enabled`） |
+| `plugins check <目录>` | 校验插件目录（import + register + 契约），供插件作者使用 |
+
+安装方式等价于：把目录放到 `root_dir` 下、把 `plugin_id` 写进
+`plugins.enabled`、重启 api 与 aps。`plugins install` / API 安装只是
+这两步的便捷封装。
 
 ### 9.3 HTTP API（`/system/plugins`，需要登录鉴权）
 
@@ -658,35 +545,30 @@ overlap_days = 7
 |---|---|---|
 | `GET` | `/system/plugins` | 插件列表 |
 | `GET` | `/system/plugins/{id}` | 插件详情 |
-| `POST` | `/system/plugins` | multipart 上传 zip（`file` + 可选 `sha256` + `enable`） |
-| `POST` | `/system/plugins/{id}/update` | 升级 |
-| `POST` | `/system/plugins/{id}/rollback` | 回滚 |
-| `PATCH` | `/system/plugins/{id}` | `{"enabled": bool}` 启停 |
-| `POST` | `/system/plugins/{id}/deps/install` | 强制重装依赖 |
-| `DELETE` | `/system/plugins/{id}?purge_data=true` | 卸载；默认进回收站 |
+| `POST` | `/system/plugins` | multipart 上传 zip（`file` + 可选 `sha256` + `enable`），已存在时替换并保留 `data/` |
+| `PATCH` | `/system/plugins/{id}?enabled=true` | 启停 |
+| `DELETE` | `/system/plugins/{id}` | 删除插件目录（含 `data/`） |
+
+安装/启停/删除响应都会带 `pending_restart: ["api", "aps"]`。
 
 ### 9.4 生命周期要点
 
-- **安装**：校验介质 → 安全解压 → 校验包内哈希 → 校验 Python 版本 →
-  安装依赖 → 试加载（import + register + 白名单）→ 原子发布 → 默认写入 enabled；
-- **升级**：版本必须严格更高；`data/` 永远保留；旧版本进 `.previous/` 单一快照；
-  发布中断时下次启动自动从快照恢复；
-- **回滚**：用 `.previous/` 恢复上一个版本（含代码与 deps），回滚后快照即消费；
-- **卸载**：先禁用，再移入 `.trash/`；`purge_data` 才真删（DB 任务历史保留）；
-- **重启**：插件在 import 期加载，安装/升级/回滚/启停/依赖重装后
-  必须重启 **api 与 aps** 两个进程；写操作响应中的 `pending_restart`
-  就是这两个进程名。
+- **安装/升级**：替换目录即可；`data/` 会被保留。没有版本回滚，
+  升级前请自行备份目录；
+- **停用**：`plugins disable` 只从 `enabled` 移除，目录仍在根目录；
+- **删除**：`plugins remove` 直接删除整个目录（含运行数据）；
+- **重启**：插件在 import 期加载，所有安装/启停/删除操作后
+  必须重启 **api 与 aps** 两个进程。
 
 ## 10. 安全模型与边界
 
 - **同进程可信代码**：插件拥有与宿主相同的数据/网络/文件权限，
-  只应安装可信来源的插件；zip/文件哈希只能防篡改，不能防恶意代码；
-- **import 白名单**：安装与加载时用 AST 静态扫描插件全部 `.py`，
-  只允许标准库、`src.plugins`、`src.plugins.types`、`src.scheduler.contracts`、
-  `pydantic`、插件声明的依赖与插件自身相对导入；
-- 动态 import（`importlib.import_module` / `__import__`）无法被静态扫描覆盖，
-  插件作者不应依赖它绕过边界，也不要把宿主内部实现绑定进插件；
-- 插件不能 import 宿主内部模块，不能直接写库，不能注册 API/事件；
+  只应安装可信来源的插件；
+- **zip 有介质防护，无代码沙箱**：安装时拒绝越界路径/符号链接并限制大小，
+  可选 sha256 校验，但代码仍按可信代码执行；
+- 没有 import 白名单或沙箱：插件代码可以 import 任何模块，但请遵守
+  本文描述的公开契约，不要绑定宿主内部实现；
+- 插件不能直接写宿主数据库、不能注册 API/事件；
 - `plugins.settings` 可能存放凭据：插件作者不要把示例配置里的敏感值
   提交进公开仓库，也不要要求部署者把凭据写死在插件代码里。
 
@@ -707,13 +589,12 @@ enabled = ["subtitle_fetch"]
 
 | 症状 | 原因与处理 |
 |---|---|
-| 安装/升级被拒 | 试加载失败：看 `install.log` / 错误 stage（manifest 校验、白名单、register、任务冲突等） |
-| 启动后任务不在 `GET /system/jobs` | 插件未启用、加载失败或任务 key 冲突；`plugins list` / `plugins status` 看 `load_status` |
+| zip/API 安装被拒 | 介质校验或试加载失败：看错误 stage（zip 校验、manifest、requires_python、import、register、契约等） |
+| 启动后任务不在 `GET /system/jobs` | 插件未启用、目录缺 manifest/`__init__.py`、register 报错或任务 key 冲突；`plugins list` 看 `load_status` |
+| `plugins check` 报错 | register 抛异常或返回的契约不合法；按 stage 提示修复 |
 | `409 task_conflict` | 同一任务已在运行；等它结束或处理完成后重试 |
 | 定时任务被跳过 | 同一 task_key 正在运行，按 coalesce 丢弃本次触发 |
-| 依赖安装失败 | 看 `install.log` 的 pip 输出：版本冲突、超时、自定义源不可达 |
-| 依赖冲突 | 插件依赖与宿主同名但版本不一致，或两个插件声明了同名顶层包 |
-| import 越界 | 代码 import 了宿主内部模块/未声明依赖；改成 `PluginContext` 或声明依赖 |
+| 插件 import 报错 | 使用了宿主没有的第三方包；改成宿主 venv 已有依赖或标准库 |
 
 ### 11.3 仓库内参考实现与测试
 
@@ -721,10 +602,12 @@ enabled = ["subtitle_fetch"]
 - 扩展点目录与排行榜领域：`src/plugins/extensions/`、`src/plugins/extensions/ranking.py`；
 - 任务模型：`src/scheduler/contracts.py`；
 - 加载与隔离：`src/plugins/loader.py`；
-- 生命周期：`src/plugins/manager.py`、`src/plugins/installer.py`；
-- 排行榜装配：`src/scheduler/ranking_plugin_adapter.py`；
+- zip 安全解压：`src/plugins/installer.py`；
+- 目录管理：`src/plugins/manager.py`；
 - 管理接口：`src/api/routers/system/plugins.py`；
-- 测试：`tests/start/test_plugins.py`、`tests/start/test_plugin_manager.py`。
+- 排行榜装配：`src/scheduler/ranking_plugin_adapter.py`；
+- 测试：`tests/start/test_plugins.py`、`tests/start/test_plugin_manager.py`、
+  `tests/api/test_plugins_api.py`。
 
 ## 12. 常见问题
 
