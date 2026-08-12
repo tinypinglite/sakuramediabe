@@ -19,6 +19,8 @@
   写入 `RankingItem`，API 与前端查询协议不变
 - 同步节奏由排行榜插件自己注册的定时/手动任务驱动，宿主不再提供
   `aps sync-rankings` 命令
+- 需登录榜单（如 JavDB TOP250）的账号由插件在自己的
+  `plugins.settings.<plugin_id>` 中管理，宿主不感知账号配置
 - `source_key` 是稳定领域标识（如官方 JavDB 插件使用 `javdb`），由插件声明、
   全局唯一；两个插件声明相同 `source_key` 时，后加载的插件整插件隔离
 - `GET /ranking-sources` 返回的来源条目带 `plugin_id` 字段，标识来源由哪个插件提供

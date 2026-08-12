@@ -35,10 +35,14 @@ class PluginContext:
         return self.ensure_data_dir()
 
     @staticmethod
-    def build_javdb_provider():
+    def build_javdb_provider(
+        username: str | None = None,
+        password: str | None = None,
+    ):
+        """构建 JavDB provider；账号仅需登录的榜单（TOP250）需要，由插件从自身设置传入。"""
         from src.metadata.factory import build_javdb_provider
 
-        return build_javdb_provider()
+        return build_javdb_provider(username=username, password=password)
 
     @staticmethod
     def build_catalog_import_service(skip_dmm: bool = False):
@@ -94,7 +98,6 @@ class PluginContext:
     def sync_ranking_sources(
         self,
         progress_callback=None,
-        task_run_id: int | None = None,
     ) -> dict[str, int]:
         """同步当前插件声明的全部排行榜来源，返回统计 dict。"""
         from src.service.discovery.ranking_service import (
@@ -111,7 +114,6 @@ class PluginContext:
             raise RuntimeError(f"插件 {self.plugin_id} 未注册排行榜来源")
         return RankingSyncService().sync_all_rankings(
             progress_callback=progress_callback,
-            task_run_id=task_run_id,
             source_keys=source_keys,
         )
 

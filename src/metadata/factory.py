@@ -123,18 +123,22 @@ def refresh_gfriends_filetree(*, force: bool = False) -> dict[str, Any]:
     return resolver.refresh(force=force)
 
 
-def build_javdb_provider() -> GfriendsAvatarJavdbProvider:
+def build_javdb_provider(
+    username: str | None = None,
+    password: str | None = None,
+) -> GfriendsAvatarJavdbProvider:
     """构建 JavDB provider，演员头像继续优先 GFriends。
 
     JavDB 请求永远不走 metadata proxy：站点访问依托 ``settings.metadata.javdb_host``
     自身的直连/反代能力，叠加代理反而绕远路甚至失败。GFriends CDN 单独沿用
-    ``settings.metadata.normalized_proxy``，与 JavDB 无关。
+    ``settings.metadata.normalized_proxy``，与 JavDB 无关。账号只用于需登录的
+    TOP250 榜单，由排行榜插件从自身设置读入后显式传入；宿主常规链路构建无账号实例。
     """
     provider = JavdbProvider(
         host=settings.metadata.javdb_host,
         proxy=None,
-        username=settings.metadata.javdb_username,
-        password=settings.metadata.javdb_password,
+        username=username,
+        password=password,
     )
     return GfriendsAvatarJavdbProvider(
         provider=provider,

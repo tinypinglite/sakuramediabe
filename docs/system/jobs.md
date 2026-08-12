@@ -131,7 +131,7 @@
 {
   "error": {
     "code": "task_conflict",
-    "message": "任务“排行榜同步”已在运行中",
+    "message": "任务“影片热度更新”已在运行中",
     "details": {
       "blocking_task_run_id": 12,
       "blocking_trigger_type": "scheduled",

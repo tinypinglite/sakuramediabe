@@ -80,11 +80,12 @@ def test_build_javdb_provider_never_uses_metadata_proxy(monkeypatch):
     assert provider.provider.proxy is None
 
 
-def test_build_javdb_provider_passes_account_credentials(monkeypatch):
-    monkeypatch.setattr(settings.metadata, "javdb_username", "user@example.com")
-    monkeypatch.setattr(settings.metadata, "javdb_password", "secret")
-
-    provider = build_javdb_provider()
+def test_build_javdb_provider_passes_account_credentials():
+    # 账号不再属于宿主 metadata 配置，由排行榜插件显式注入；宿主默认构建无账号实例。
+    provider = build_javdb_provider(
+        username="user@example.com",
+        password="secret",
+    )
 
     assert provider.provider.username == "user@example.com"
     assert provider.provider.password == "secret"

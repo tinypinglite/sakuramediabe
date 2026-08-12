@@ -1463,6 +1463,104 @@ def test_run_pending_migrations_wipes_task_run_history(clean_db):
     assert "20260729_02_wipe_task_run_history" in _schema_migration_names(clean_db)
 
 
+def test_run_pending_migrations_wipes_ranking_history(clean_db):
+    """排行榜插件化（20260813_01）：清空榜单条目与 ranking_sync 全链台账，其它任务不受影响。"""
+    from src.model import Movie, RankingItem, SystemEvent, SystemNotification
+
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260813_01_wipe_ranking_history",),
+    )
+
+    movie = Movie.create(movie_number="ABP-001", javdb_id="m-1", title="t")
+    RankingItem.create(
+        source_key="javdb",
+        board_key="top250",
+        period="2018",
+        rank=1,
+        movie_number="ABP-001",
+        movie=movie.id,
+    )
+    ranking_run = BackgroundTaskRun.create(
+        task_key="ranking_sync",
+        task_name="排行榜同步",
+        trigger_type="scheduled",
+        state="completed",
+    )
+    SystemNotification.create(
+        category="warning",
+        title="JavDB 账号登录失败",
+        content="登录失败",
+        related_task_run=ranking_run.id,
+    )
+    SystemNotification.create(
+        category="warning",
+        title="JavDB 账号登录失败",
+        content="失去关联的孤儿通知",
+    )
+    SystemEvent.create(
+        event_type="task_run_updated",
+        resource_type="task_run",
+        resource_id=ranking_run.id,
+        payload={"task_key": "ranking_sync"},
+    )
+    other_run = BackgroundTaskRun.create(
+        task_key="movie_heat_update",
+        task_name="影片热度更新",
+        trigger_type="scheduled",
+        state="completed",
+    )
+    SystemEvent.create(
+        event_type="task_run_updated",
+        resource_type="task_run",
+        resource_id=other_run.id,
+        payload={"task_key": "movie_heat_update"},
+    )
+
+    run_pending_migrations(clean_db)
+
+    assert clean_db.execute_sql("SELECT count(*) FROM ranking_item").fetchone()[0] == 0
+    assert (
+        clean_db.execute_sql(
+            "SELECT count(*) FROM background_task_run WHERE task_key = %s",
+            ("ranking_sync",),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        clean_db.execute_sql(
+            "SELECT count(*) FROM background_task_run WHERE task_key = %s",
+            ("movie_heat_update",),
+        ).fetchone()[0]
+        == 1
+    )
+    assert (
+        clean_db.execute_sql(
+            "SELECT count(*) FROM system_notification WHERE title = %s",
+            ("JavDB 账号登录失败",),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        clean_db.execute_sql(
+            "SELECT count(*) FROM system_event WHERE resource_id = %s",
+            (ranking_run.id,),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        clean_db.execute_sql(
+            "SELECT count(*) FROM system_event WHERE resource_id = %s",
+            (other_run.id,),
+        ).fetchone()[0]
+        == 1
+    )
+    assert "20260813_01_wipe_ranking_history" in _schema_migration_names(clean_db)
+
+
 def test_run_pending_migrations_resets_interaction_sync_states_preserving_memory(clean_db):
     """互动同步迁 kernel（20260729_05）：保留 last_succeeded_at 记忆、清历史；未成功行删除。
 

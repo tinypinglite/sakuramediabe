@@ -35,7 +35,6 @@ def _to_definition(
                 name=board.name,
                 supported_periods=board.supported_periods,
                 default_period=board.default_period,
-                requires_account=board.requires_account,
                 should_fetch=board.should_fetch,
                 supported_periods_provider=board.supported_periods_provider,
                 fetch_numbers=board.fetch_numbers,

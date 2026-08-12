@@ -29,8 +29,6 @@ class PluginRankingBoard(BaseModel):
     # 静态周期；空元组表示单期榜（API 不接受 period）。与 supported_periods_provider 二选一。
     supported_periods: tuple[str, ...] = Field(default_factory=tuple)
     default_period: str | None = None
-    # 需要宿主 metadata 账号才抓；未配置账号时宿主跳过该 board，凭据不进插件。
-    requires_account: bool = False
     # 抓取前回调：(period, 该 board+period 是否已有数据) -> 是否抓。
     should_fetch: Callable[[str, bool], bool] | None = None
     # 动态周期提供者（如 top250 年份逐年滚动）；要求纯本地计算、幂等、无副作用。

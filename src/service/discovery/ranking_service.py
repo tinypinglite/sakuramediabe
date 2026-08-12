@@ -8,14 +8,12 @@ import peewee
 from loguru import logger
 
 from src.api.exception.errors import ApiError
-from src.common.runtime_time import runtime_now, utc_now_for_db
+from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     emit_progress,
     parse_special_tags_text,
     with_movie_card_relations,
 )
-from src.config.config import settings
-from src.metadata._providers.exceptions import JavdbAuthError
 from src.metadata.factory import build_javdb_provider
 from src.model import Media, Movie, RankingItem, get_database
 from src.schema.catalog.movies import MovieListItemResource
@@ -26,9 +24,6 @@ from src.schema.discovery import (
     RankingSourceResource,
 )
 from src.service.catalog.catalog_import_service import CatalogImportService
-from src.service.discovery.ranking_notifications import (
-    create_ranking_account_error_notification,
-)
 
 
 @dataclass(frozen=True)
@@ -37,8 +32,6 @@ class RankingBoardDefinition:
     name: str
     supported_periods: tuple[str, ...] = ()
     default_period: str | None = None
-    # 需要宿主 metadata 账号才抓；未配置账号时宿主跳过该 board。
-    requires_account: bool = False
     # 抓取前回调：(period, 该 board+period 是否已有数据) -> 是否抓。
     should_fetch: Callable[[str, bool], bool] | None = None
     # 动态周期提供者（如 top250 年份逐年滚动）；优先于 supported_periods。
@@ -465,30 +458,28 @@ class RankingSyncService:
         source_keys: tuple[str, ...] | None = None,
     ) -> list[tuple[RankingSourceDefinition, RankingBoardDefinition, str]]:
         # 收敛出本次真正要同步的目标：
-        #   1) requires_account 未配账号整 board 跳过；
-        #   2) should_fetch(period, has_items) 返回 False 则跳过（如历史年份已抓过）。
-        account_configured = settings.metadata.javdb_account_configured
+        #   should_fetch(period, has_items) 返回 False 则跳过；
+        #   账号是否配置、历史年份是否已抓过等前置判断全部由插件回调表达。
         targets: list[tuple[RankingSourceDefinition, RankingBoardDefinition, str]] = []
         for source in RANKING_SOURCES.values():
             if source_keys is not None and source.key not in source_keys:
                 continue
             for board in source.boards:
-                if board.requires_account and not account_configured:
-                    continue
                 for period in board_supported_periods(board) or ("",):
-                    if board.should_fetch is not None:
-                        if not board.should_fetch(
+                    if (
+                        board.should_fetch is not None
+                        and not board.should_fetch(
                             period,
                             cls._scope_has_items(source.key, board.key, period),
-                        ):
-                            continue
+                        )
+                    ):
+                        continue
                     targets.append((source, board, period))
         return targets
 
     def sync_all_rankings(
         self,
         progress_callback=None,
-        task_run_id: int | None = None,
         source_keys: tuple[str, ...] | None = None,
     ) -> dict[str, int]:
         targets = self._iter_sync_targets(source_keys=source_keys)
@@ -504,8 +495,6 @@ class RankingSyncService:
         }
         total_targets = len(targets)
         completed_targets = 0
-        # 登录失败只发一次通知，并跳过其余需登录的目标。
-        account_login_notified = False
         emit_progress(
             progress_callback,
             current=0,
@@ -520,27 +509,6 @@ class RankingSyncService:
                     board_key=board.key,
                     period=period,
                 )
-            except JavdbAuthError as exc:
-                # 登录失败：仅记日志、发一次通知、跳过该目标，不计入 failed_targets，
-                # 避免触发额外的“已完成但有失败”自动 warning，保证只有一条通知。
-                logger.warning(
-                    "Ranking sync skipped due to javdb auth failure board_key={} period={} detail={}",
-                    board.key,
-                    period,
-                    exc,
-                )
-                if not account_login_notified:
-                    account_login_notified = True
-                    self._notify_account_login_failed(task_run_id)
-                completed_targets += 1
-                emit_progress(
-                    progress_callback,
-                    current=completed_targets,
-                    total=total_targets,
-                    text=f"JavDB 账号登录失败，跳过 {source.name}-{board.name}-{period}",
-                    summary_patch=stats,
-                )
-                continue
             except Exception as exc:
                 stats["failed_targets"] += 1
                 logger.warning(
@@ -574,13 +542,3 @@ class RankingSyncService:
                 summary_patch=stats,
             )
         return stats
-
-    @staticmethod
-    def _notify_account_login_failed(task_run_id: int | None) -> None:
-        try:
-            create_ranking_account_error_notification(
-                related_task_run_id=task_run_id,
-            )
-        except Exception as exc:
-            # 通知失败不应影响主同步流程。
-            logger.warning("Create ranking account error notification failed detail={}", exc)

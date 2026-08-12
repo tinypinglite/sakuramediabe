@@ -276,7 +276,7 @@ def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(cl
 
     BackgroundTaskRun.create(
         task_key="movie_heat_update",
-        task_name="排行榜同步",
+        task_name="影片热度更新",
         trigger_type="scheduled",
         mutex_key="aps:movie_heat_update",
     )
@@ -284,7 +284,7 @@ def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(cl
     try:
         BackgroundTaskRun.create(
             task_key="movie_heat_update",
-            task_name="排行榜同步",
+            task_name="影片热度更新",
             trigger_type="manual",
             mutex_key="aps:movie_heat_update",
         )

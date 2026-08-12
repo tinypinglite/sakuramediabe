@@ -201,9 +201,6 @@ class MovieInfoTranslation(BaseModel):
 
 class Metadata(BaseModel):
     javdb_host: str = "jdforrepam.com"
-    # JavDB 账号，用于抓取需登录的榜单（年度 / 全部 / 片源类型 TOP250）；留空则不抓这些榜单。
-    javdb_username: str | None = None
-    javdb_password: str | None = None
     proxy: str | None = None
     gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
     gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
@@ -220,14 +217,6 @@ class Metadata(BaseModel):
     @classmethod
     def _check_gfriends_urls(cls, value: str, info: ValidationInfo) -> str:
         return _check_http_url(value, "gfriends URL", info)
-
-    @property
-    def javdb_account_configured(self) -> bool:
-        # 账号与密码都非空白才视为已配置，决定是否抓取需登录的 TOP250 榜单。
-        return bool(
-            (self.javdb_username or "").strip()
-            and (self.javdb_password or "").strip()
-        )
 
     @property
     def normalized_proxy(self) -> str | None:

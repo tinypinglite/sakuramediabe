@@ -345,12 +345,12 @@ PluginExtension(
 | 方法 | 说明 |
 |---|---|
 | `ensure_data_dir() -> Path` | 确保数据目录存在并返回路径（`data_dir` 属性等价） |
-| `build_javdb_provider()` | 构造 JavDB 元数据 provider |
+| `build_javdb_provider(username=None, password=None)` | 构造 JavDB 元数据 provider；账号仅需登录的榜单（TOP250）需要，由插件从自身设置传入 |
 | `build_catalog_import_service(skip_dmm=False)` | 构造目录入库服务；批量场景传 `skip_dmm=True` 跳过 DMM 简介抓取 |
 | `import_movie_by_number(movie_number, *, force_subscribed=False)` | 通过 JavDB 获取详情并复用宿主能力入库 |
 | `list_existing_movie_numbers() -> set[str]` | 主库全部影片番号（大写），用于 O(1) 存在性判断 |
 | `import_subtitle(movie_number, content, filename, language=None)` | 写入一段字幕字节内容，返回 `SubtitleImportResult`。只支持 `.srt/.ass/.ssa/.vtt`；去重粒度为**同一部影片内**的内容 sha256；`filename` 只取扩展名；影片不存在返回 `movie_not_found`，不抛异常 |
-| `sync_ranking_sources(progress_callback=None, task_run_id=None)` | 同步当前插件声明的全部排行榜来源，返回统计 dict |
+| `sync_ranking_sources(progress_callback=None)` | 同步当前插件声明的全部排行榜来源，返回统计 dict |
 | `sync_ranking_board(source_key, board_key, period=None)` | 同步单个榜单；`source_key` 必须是本插件声明的来源 |
 | `get_task_logger(name)` | 获取绑定到任务日志文件的 loguru logger |
 
@@ -459,9 +459,13 @@ def register(context: PluginContext) -> PluginRegistration:
 | `supported_periods` | 静态周期；空表示单期榜（API 不接受 period） |
 | `supported_periods_provider` | 动态周期回调（如 top250 年份逐年滚动）；与静态周期二选一，要求纯本地、幂等、无副作用 |
 | `default_period` | 可选，必须属于最终周期集合 |
-| `requires_account` | 需要宿主 metadata 的 JavDB 账号才抓；未配置账号时宿主跳过该 board |
 | `should_fetch(period, has_items)` | 抓取前回调，返回 `False` 则跳过（如历史年份已抓过） |
 | `fetch_numbers(period)` | 返回番号列表，顺序即 rank；异常冒泡给宿主统一处理 |
+
+需登录榜单的账号由插件自己管理：从 `plugins.settings.<plugin_id>` 读取账号、
+通过 `context.build_javdb_provider(username=..., password=...)` 构建 provider，
+并在 `should_fetch` 里表达「未配置账号就不抓」。宿主不感知账号状态，
+抓取失败的异常统一计入 `failed_targets`。
 
 同步节奏由插件自己表达：插件注册 cron/手动任务，执行体调用
 `context.sync_ranking_sources()`（全部来源）或
@@ -493,6 +497,10 @@ subtitle_fetch = "15 3 * * *"
 
 [plugins.settings.subtitle_fetch]
 overlap_days = 7
+
+[plugins.settings.javdb_ranking]
+javdb_username = "user@example.com"
+javdb_password = "secret"
 ```
 
 - `plugins.root_dir`：插件根目录，默认 `/data/plugins`；

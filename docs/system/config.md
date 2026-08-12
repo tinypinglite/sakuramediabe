@@ -18,7 +18,7 @@
   - `auth.secret_key` / `auth.file_signature_secret` 由 `ensure_runtime_config()` 首启自举生成随机值，运行时修改会立即作废所有 access token 或已下发的签名 URL，不该经通用配置接口暴露/修改。
   - `auth.algorithm` / `access_token_expire_minutes` / `refresh_token_expire_minutes` 属边缘可配，需要时直接改 `/data/config/config.toml` 并重启 api。
 - **`enable_docs` 顶层字段**：字段仍在 `Settings` 里（默认 `False` = 关闭 Swagger/ReDoc），排障时可通过手动改 `/data/config/config.toml` 或环境变量打开并重启 api 进程生效，通过接口不暴露也不修改，避免把开发调试开关混入用户可改的配置集合。
-- **`plugins` 节**：包含插件根目录（`root_dir`，默认 `/data/plugins`）、可信插件启用清单、任务 cron 覆盖及插件私有配置。API 与 APS 都在 import 阶段加载插件，且私有配置可能含凭据，因此本接口既不返回也不修改该节；安装/启停请走 `/system/plugins` 管理 API 或 `plugins` CLI，或直接编辑 `config.toml`。具体开发契约见 [插件系统开发指南](./plugins.md)。
+- **`plugins` 节**：包含插件根目录（`root_dir`，默认 `/data/plugins`）、可信插件启用清单、任务 cron 覆盖及插件私有配置。API 与 APS 都在 import 阶段加载插件，且私有配置可能含凭据，因此本接口既不返回也不修改该节；安装/启停请走 `/system/plugins` 管理 API 或 `plugins` CLI，或直接编辑 `config.toml`。JavDB 登录账号等榜单凭据按插件放在 `plugins.settings.<plugin_id>` 下，不再属于 `metadata` 节。具体开发契约见 [插件系统开发指南](./plugins.md)。
 
 ## 生效方式（三档）
 
