@@ -249,6 +249,23 @@ def test_create_tables_creates_current_schema_columns(clean_db, monkeypatch):
     assert "subscribed_at" in actor_columns
     assert BackgroundTaskRun.table_exists()
     assert ResourceTaskState.table_exists()
+    # v2-lite 字段主权两列：新库按模型渲染出 JSONB / BIGINT + 服务端默认值
+    # （与迁移 20260816_01 的 ALTER 同构，裸 INSERT 也有兜底）。
+    movie_columns = _column_names(database, "movie")
+    assert "field_owners" in movie_columns
+    assert "mutation_revision" in movie_columns
+    movie_column_types = {
+        column.name: column.data_type
+        for column in database.get_columns("movie")
+    }
+    assert movie_column_types["field_owners"] == "jsonb"
+    assert movie_column_types["mutation_revision"] == "bigint"
+    movie_column_defaults = {
+        column.name: column.default
+        for column in database.get_columns("movie")
+    }
+    assert movie_column_defaults["field_owners"] == "'{}'::jsonb"
+    assert movie_column_defaults["mutation_revision"] == "0"
 
 
 def test_create_tables_creates_resource_task_state_unique_constraint(clean_db, monkeypatch):

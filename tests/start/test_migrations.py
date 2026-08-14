@@ -2069,3 +2069,30 @@ def test_run_pending_migrations_merges_desc_without_desc_zh_column(clean_db):
     ).fetchall()
     assert rows == [("ABP-001", "日文标题", "日文简介")]
     assert "20260815_03_merge_movie_title_desc_fields" in _schema_migration_names(clean_db)
+
+
+def test_run_pending_migrations_adds_movie_field_owners_columns(clean_db):
+    """20260816_01：movie 增加 field_owners / mutation_revision（服务端默认值）。
+
+    存量行由 PostgreSQL 服务端 DEFAULT 自动填充 '{}' / 0，ALTER 走 metadata-only
+    fast path，不重写整表；新库由 initdb 的 create_tables 按模型渲染出同构列。"""
+    _create_movie_table_missing_title_zh(clean_db)
+    _insert_legacy_movie(clean_db, "ABP-001", "javdb-001", "A 系列")
+
+    run_pending_migrations(clean_db)
+
+    columns = {column.name for column in clean_db.get_columns("movie")}
+    assert "field_owners" in columns
+    assert "mutation_revision" in columns
+    # 服务端默认值对存量行生效（::text 避免 jsonb 解析适配差异）。
+    row = clean_db.execute_sql(
+        "SELECT field_owners::text, mutation_revision FROM movie WHERE movie_number = %s",
+        ("ABP-001",),
+    ).fetchone()
+    assert row[0] == "{}"
+    assert row[1] == 0
+    assert "20260816_01_add_movie_field_owners" in _schema_migration_names(clean_db)
+
+    # 幂等：重跑不改变数据，迁移记录已存在。
+    second_summary = run_pending_migrations(clean_db)
+    assert second_summary.applied_count == 0

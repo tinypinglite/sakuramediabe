@@ -275,6 +275,82 @@ def test_host_api_version_range_enforced():
         )
 
 
+def test_manifest_host_api_version_range_enforced(tmp_path):
+    """manifest 是版本唯一声明入口：声明越界直接拒绝加载（register 默认值会漂移）。"""
+    import json
+
+    from src.config.config import Plugins
+    from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
+
+    plugin_id = "v3_plugin"
+    pkg = tmp_path / plugin_id
+    pkg.mkdir()
+    (pkg / "manifest.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": plugin_id,
+                "display_name": "v3",
+                "version": "1.0.0",
+                "host_api_version": HOST_API_VERSION + 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (pkg / "__init__.py").write_text(
+        "from src.plugins import PluginContext, PluginRegistration\n"
+        "def register(context):\n"
+        f"    return PluginRegistration(plugin_id={plugin_id!r}, display_name='v3', version='1.0.0', jobs=())\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_enabled_plugins(
+        Plugins(enabled=[plugin_id]),
+        root_dir=tmp_path,
+    )
+    assert loaded == ()
+    assert PLUGIN_LOAD_ERRORS[plugin_id]["stage"] == "validate_registration"
+
+
+def test_manifest_register_version_mismatch_accepts_manifest(tmp_path):
+    """register 不显式传 host_api_version 时默认跟随宿主（v1 老插件漂移为 2）：
+
+    manifest 声明 1 仍以 manifest 为准正常加载，不静默拒绝（运行期行为按 v2 语义）。
+    """
+    import json
+
+    from src.config.config import Plugins
+    from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
+
+    plugin_id = "v1_legacy"
+    pkg = tmp_path / plugin_id
+    pkg.mkdir()
+    (pkg / "manifest.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": plugin_id,
+                "display_name": "legacy",
+                "version": "1.0.0",
+                "host_api_version": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (pkg / "__init__.py").write_text(
+        "from src.plugins import PluginContext, PluginRegistration\n"
+        "def register(context):\n"
+        "    # v1 时代的老插件不显式声明 host_api_version（默认跟随宿主）。\n"
+        f"    return PluginRegistration(plugin_id={plugin_id!r}, display_name='legacy', version='1.0.0', jobs=())\n",
+        encoding="utf-8",
+    )
+
+    loaded = load_enabled_plugins(
+        Plugins(enabled=[plugin_id]),
+        root_dir=tmp_path,
+    )
+    assert [registration.plugin_id for registration in loaded] == [plugin_id]
+    assert PLUGIN_LOAD_ERRORS == {}
+
+
 def test_registry_skips_plugin_job_conflicting_with_queue_key():
     def run(reporter):
         return {}

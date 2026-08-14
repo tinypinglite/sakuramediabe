@@ -1,0 +1,187 @@
+"""插件契约 v2 回归测试：MovieSnapshot / context.movies / import_movie_by_number。
+
+覆盖 v2-lite 设计文档第 4 节的保证：读取与导入只返回不可变快照、patch 走
+唯一网关、v1 插件（host_api_version=1）继续兼容加载。白名单当前真实开放
+title / summary。
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from src.model import Movie
+from src.plugins import MOVIE_SNAPSHOT_FIELDS, MovieSnapshot
+from src.plugins.context import MovieApi
+from src.plugins.contracts import HOST_API_VERSION, MIN_SUPPORTED_HOST_API_VERSION
+from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
+
+
+def _create_movie(test_db, **overrides) -> Movie:
+    fields = {
+        "javdb_id": "javdb-1",
+        "movie_number": "ABP-001",
+        "title": "旧标题",
+        "summary": "旧简介",
+    }
+    fields.update(overrides)
+    return Movie.create(**fields)
+
+
+def test_snapshot_contains_only_public_readonly_fields(test_db):
+    movie = _create_movie(test_db, extra={"secret": "x"}, heat=999)
+    snapshot = MovieApi._to_snapshot(movie)
+
+    assert isinstance(snapshot, MovieSnapshot)
+    assert set(snapshot.values) == set(MOVIE_SNAPSHOT_FIELDS)
+    # 新列（extra/heat 等）不会因默认行为意外暴露给插件。
+    assert "extra" not in snapshot.values
+    assert "heat" not in snapshot.values
+    assert "field_owners" not in snapshot.values
+    assert snapshot.values["title"] == "旧标题"
+    assert snapshot.movie_id == movie.id
+    assert snapshot.revision == 0
+    assert snapshot.owners == {}
+
+
+def test_snapshot_is_immutable(test_db):
+    from dataclasses import FrozenInstanceError
+
+    movie = _create_movie(test_db)
+    snapshot = MovieApi._to_snapshot(movie)
+
+    with pytest.raises(FrozenInstanceError):
+        snapshot.movie_id = 99
+    # values/owners 是拷贝：插件改坏快照不影响宿主对象。
+    snapshot.values["title"] = "被插件改坏"
+    fresh = Movie.get_by_id(movie.id)
+    assert fresh.title == "旧标题"
+
+
+def test_movies_get_returns_snapshot_or_none(test_db):
+    movie = _create_movie(test_db)
+    api = MovieApi("demo_plugin")
+
+    snapshot = api.get(movie.id)
+    assert snapshot is not None
+    assert snapshot.values["movie_number"] == "ABP-001"
+    assert api.get(999999) is None
+
+
+def test_movies_find_by_numbers_is_case_and_separator_insensitive(test_db):
+    _create_movie(test_db, movie_number="ABP-001")
+    _create_movie(test_db, javdb_id="javdb-2", movie_number="072625_001")
+    api = MovieApi("demo_plugin")
+
+    # 大小写不敏感 + 下划线/连字符候选，与人工输入点查同语义。
+    snapshots = api.find_by_numbers(["abp-001"])
+    assert [snapshot.values["movie_number"] for snapshot in snapshots] == ["ABP-001"]
+
+    snapshots = api.find_by_numbers(["072625-001"])
+    assert [snapshot.values["movie_number"] for snapshot in snapshots] == ["072625_001"]
+
+    # 找不到的番号跳过；重复番号按输入顺序去重。
+    snapshots = api.find_by_numbers(["abp-001", "ZZZ-999", "ABP-001"])
+    assert [snapshot.values["movie_number"] for snapshot in snapshots] == ["ABP-001"]
+
+
+def test_movies_patch_goes_through_gateway(test_db):
+    movie = _create_movie(test_db)
+    api = MovieApi("demo_plugin")
+
+    assert api.patch(movie.id, {"title": "插件标题"}, expected_revision=0) is True
+    snapshot = api.get(movie.id)
+    assert snapshot.values["title"] == "插件标题"
+    assert snapshot.owners == {"title": "plugin:demo_plugin"}
+    assert snapshot.revision == 1
+
+    # 陈旧 revision：返回 False 且零修改。
+    assert api.patch(movie.id, {"title": "再次写入"}, expected_revision=0) is False
+    assert api.get(movie.id).values["title"] == "插件标题"
+
+    # 非法字段（不在白名单）直接抛错，不静默。
+    with pytest.raises(ValueError, match="非受保护字段"):
+        api.patch(movie.id, {"heat": 999}, expected_revision=1)
+
+
+def test_import_movie_by_number_returns_snapshot(monkeypatch):
+    from types import SimpleNamespace
+
+    import src.plugins.context as context_module
+
+    movie = Movie(
+        javdb_id="javdb-1",
+        movie_number="ABP-001",
+        title="导入标题",
+        summary="导入简介",
+    )
+    movie.id = 7
+
+    def fake_provider(self):
+        return provider
+
+    def fake_import_service(self):
+        return importer
+
+    provider = SimpleNamespace(get_movie_by_number=lambda number: {"title": number})
+    importer = SimpleNamespace(
+        import_movie_if_missing=lambda detail, force_subscribed=False: (movie, True)
+    )
+
+    monkeypatch.setattr(context_module.PluginContext, "build_javdb_provider", fake_provider)
+    monkeypatch.setattr(context_module.PluginContext, "build_catalog_import_service", fake_import_service)
+
+    from src.plugins.context import PluginContext
+
+    context = PluginContext(plugin_id="demo_plugin", settings={}, data_dir="")
+    snapshot = context.import_movie_by_number("ABP-001")
+
+    assert isinstance(snapshot, MovieSnapshot)
+    assert snapshot.movie_id == 7
+    assert snapshot.values["title"] == "导入标题"
+    assert snapshot.values["movie_number"] == "ABP-001"
+    assert snapshot.revision == 0
+    assert snapshot.owners == {}
+    # 返回值不再携带任何可写 ORM 句柄。
+    assert not hasattr(snapshot, "save")
+
+
+def test_host_api_v2_and_v1_compatibility(tmp_path):
+    """契约 v2 是纯加法：v2 插件默认加载，v1 插件（MIN=1）继续兼容加载。"""
+    import json
+
+    from src.config.config import Plugins
+
+    assert HOST_API_VERSION == 2
+    assert MIN_SUPPORTED_HOST_API_VERSION == 1
+
+    for plugin_id, declared in (("v1_plugin", 1), ("v2_plugin", 2)):
+        pkg = tmp_path / plugin_id
+        pkg.mkdir(parents=True, exist_ok=True)
+        (pkg / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "plugin_id": plugin_id,
+                    "display_name": plugin_id,
+                    "version": "1.0.0",
+                    "host_api_version": declared,
+                }
+            ),
+            encoding="utf-8",
+        )
+        source = (
+            "from src.plugins import HOST_API_VERSION, PluginContext, PluginRegistration\n"
+            "def register(context):\n"
+            f"    return PluginRegistration(plugin_id={plugin_id!r}, display_name='x', version='1.0.0', "
+            f"host_api_version={declared}, jobs=())\n"
+        )
+        (pkg / "__init__.py").write_text(source, encoding="utf-8")
+
+    loaded = load_enabled_plugins(
+        Plugins(enabled=["v1_plugin", "v2_plugin"]),
+        root_dir=tmp_path,
+    )
+    assert [registration.plugin_id for registration in loaded] == [
+        "v1_plugin",
+        "v2_plugin",
+    ]
+    assert PLUGIN_LOAD_ERRORS == {}

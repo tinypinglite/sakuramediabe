@@ -469,6 +469,36 @@ def plugins_check(plugin_dir: Path):
     click.echo(f"插件 {plugin_dir.name} 校验通过")
 
 
+@plugins_group.command("clear-field-owners")
+@click.option("--plugin-id", required=True, type=str, help="解除接管的目标插件 id。")
+@click.option(
+    "--field",
+    "fields",
+    multiple=True,
+    type=str,
+    help="只清除指定字段的 owner（可重复）；不传则清除该插件全部字段 owner。",
+)
+def plugins_clear_field_owners(plugin_id: str, fields: tuple[str, ...]):
+    """解除插件对 Movie 受保护字段的接管（插件被删除后其字段会冻结，用本命令释放回宿主）。"""
+    from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
+
+    _ensure_database_ready()
+    try:
+        affected = MovieOwnershipGateway.release_plugin_owners(
+            plugin_id,
+            fields=fields if fields else None,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except Exception:
+        logger.exception("CLI plugins clear-field-owners crashed plugin_id={}", plugin_id)
+        raise
+    if fields:
+        click.echo(f"已解除插件 {plugin_id} 对字段 {', '.join(fields)} 的接管，共 {affected} 行")
+    else:
+        click.echo(f"已解除插件 {plugin_id} 的全部字段接管，共 {affected} 行")
+
+
 # ---------------------------------------------------------------------------
 # 非 APS 命令（保持不变）
 # ---------------------------------------------------------------------------

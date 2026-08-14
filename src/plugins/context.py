@@ -11,6 +11,76 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from src.plugins.types import MOVIE_SNAPSHOT_FIELDS, MovieSnapshot
+
+
+class MovieApi:
+    """``context.movies``：影片只读快照与受保护字段 patch（v2-lite 契约 v2）。
+
+    读取和 patch 都不暴露 ORM 对象；写入只经 MovieOwnershipGateway，插件拿不到
+    任何可写句柄。字段 owner 与 revision 语义见 v2-lite 设计文档第 3/4 节。
+    """
+
+    def __init__(self, plugin_id: str):
+        self._plugin_id = plugin_id
+
+    @staticmethod
+    def _to_snapshot(movie) -> MovieSnapshot:
+        return MovieSnapshot(
+            movie_id=movie.id,
+            revision=movie.mutation_revision,
+            values={
+                name: getattr(movie, name) for name in MOVIE_SNAPSHOT_FIELDS
+            },
+            owners=dict(movie.field_owners or {}),
+        )
+
+    def get(self, movie_id: int) -> MovieSnapshot | None:
+        """按内部 id 读取影片快照；不存在返回 None。"""
+        from src.model import Movie
+
+        movie = Movie.get_or_none(Movie.id == movie_id)
+        if movie is None:
+            return None
+        return self._to_snapshot(movie)
+
+    def find_by_numbers(self, numbers) -> list[MovieSnapshot]:
+        """按番号批量查找（大小写不敏感 + 分隔符候选，与人工输入点查同语义）。
+
+        结果按输入顺序去重返回；找不到的番号跳过。
+        """
+        from src.common.service_helpers import find_movie_by_number
+
+        snapshots: list[MovieSnapshot] = []
+        seen_ids: set[int] = set()
+        for number in numbers:
+            movie = find_movie_by_number(number)
+            if movie is None or movie.id in seen_ids:
+                continue
+            seen_ids.add(movie.id)
+            snapshots.append(self._to_snapshot(movie))
+        return snapshots
+
+    def patch(
+        self,
+        movie_id: int,
+        fields: dict[str, Any],
+        expected_revision: int,
+    ) -> bool:
+        """写受保护字段（白名单内）并取得/续持 owner，乐观并发提交。
+
+        revision 不匹配或字段已被其他插件接管时返回 False 且整次零修改；
+        插件应重新读取 snapshot 后决定是否重试。
+        """
+        from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
+
+        return MovieOwnershipGateway.patch_plugin(
+            movie_id,
+            self._plugin_id,
+            fields,
+            expected_revision,
+        )
+
 
 @dataclass(frozen=True, init=False)
 class PluginContext:
@@ -34,6 +104,11 @@ class PluginContext:
     def data_dir(self) -> Path:
         return self.ensure_data_dir()
 
+    @property
+    def movies(self) -> MovieApi:
+        """影片只读快照与受保护字段写入出口（v2-lite 契约 v2）。"""
+        return MovieApi(self.plugin_id)
+
     @staticmethod
     def build_javdb_provider(
         username: str | None = None,
@@ -56,9 +131,11 @@ class PluginContext:
         movie_number: str,
         *,
         force_subscribed: bool = False,
-    ):
+    ) -> MovieSnapshot:
         """通过 JavDB 获取影片详情并复用核心目录入库能力；已存在影片跳过不更新。
 
+        返回不可变 MovieSnapshot（不暴露 ORM 对象）；插件要更新既有字段，必须
+        重新取得 snapshot 并单独调用 ``context.movies.patch``。
         批量任务应分别构造并复用 provider/importer，避免每个番号重复创建客户端。
         """
         provider = self.build_javdb_provider()
@@ -68,7 +145,7 @@ class PluginContext:
             detail,
             force_subscribed=force_subscribed,
         )
-        return movie
+        return MovieApi._to_snapshot(movie)
 
     def list_existing_movie_numbers(self) -> set[str]:
         """主库全部影片番号的大写集合，供插件做 O(1) 存在性判定。"""

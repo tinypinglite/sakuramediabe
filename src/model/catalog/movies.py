@@ -1,10 +1,28 @@
 import peewee
+from peewee import SQL
 
-from src.model.base import BaseModel, CaseSensitiveCharField, JsonTextField
+from src.model.base import BaseModel, CaseSensitiveCharField, JsonbField, JsonTextField
 from src.model.catalog.actors import Actor
 from src.model.catalog.images import Image
 from src.model.catalog.tags import Tag
 from src.model.mixins import TimestampedMixin
+
+# 受保护字段白名单（v2-lite 字段主权）：插件可写字段的宿主固定名单。
+# 当前开放 title / summary / maker_name / director_name（宿主严格刷新已收敛走
+# gateway，插件可补充/修正文案与厂商/导演信息）；后续每个可写字段必须由第一个
+# 真实插件提出、补 MOVIE_FIELD_CODECS 类型校验、并收敛对应宿主写点后才加入。
+# 白名单非空后，已持久化 Movie 的裸 save() 会被护栏拒绝。
+PROTECTED_MOVIE_FIELDS: frozenset[str] = frozenset(
+    {"title", "summary", "maker_name", "director_name"}
+)
+
+# 受保护字段 codec：字段名 -> 接受的值类型；开放写入前必须补上（v2-lite 文档约定）。
+MOVIE_FIELD_CODECS: dict[str, type] = {
+    "title": str,
+    "summary": str,
+    "maker_name": str,
+    "director_name": str,
+}
 
 
 class MovieSeries(TimestampedMixin, BaseModel):
@@ -60,6 +78,22 @@ class Movie(TimestampedMixin, BaseModel):
     is_subscribed = peewee.BooleanField(null=False, default=False, index=True)
     subscribed_at = peewee.DateTimeField(null=True, index=True)
     extra = JsonTextField(null=True, default=None, verbose_name="额外元数据")
+    # v2-lite 字段主权：字段 -> "plugin:<id>" 的 owner 映射（缺键代表宿主管理）；
+    # mutation_revision 只表示受保护字段及其 owner 的版本，不是整条 Movie 的全局版本。
+    # constraints 里的服务端 DEFAULT 与迁移 20260816_01 对齐，保证新库（initdb 渲染）
+    # 与存量库（迁移 ALTER）schema 同构，裸 INSERT 也有兜底。
+    field_owners = JsonbField(
+        null=False,
+        default=dict,
+        constraints=[SQL("DEFAULT '{}'::jsonb")],
+        verbose_name="受保护字段 owner 映射",
+    )
+    mutation_revision = peewee.BigIntegerField(
+        null=False,
+        default=0,
+        constraints=[SQL("DEFAULT 0")],
+        verbose_name="受保护字段版本",
+    )
 
     @staticmethod
     def resolve_series(series_name: str | None) -> MovieSeries | None:
@@ -83,7 +117,53 @@ class Movie(TimestampedMixin, BaseModel):
         # 人工输入的匹配统一走 service_helpers.find_movie_by_number（大小写不敏感 + 分隔符候选）。
         self.javdb_id = (self.javdb_id or "").strip()
         self.movie_number = (self.movie_number or "").strip()
+        self._guard_protected_field_write(
+            only=kwargs.get("only"),
+            force_insert=kwargs.get("force_insert", False),
+        )
         return super().save(*args, **kwargs)
+
+    @classmethod
+    def update(cls, *args, **kwargs):
+        # 与 save(only=...) 同级的运行时护栏：批量 UPDATE 同样禁止写受保护字段，
+        # 白名单为空时惰性放行（v2-lite 阶段一不开放任何字段）。
+        # peewee 的 __data dict 与 kwargs 会合并，两侧都要检查，杜绝混合调用绕过。
+        written_fields: set[str] = set()
+        if args and isinstance(args[0], dict):
+            written_fields.update(
+                key.name if isinstance(key, peewee.Field) else key
+                for key in args[0]
+            )
+        written_fields.update(kwargs)
+        protected = PROTECTED_MOVIE_FIELDS & written_fields
+        if protected:
+            raise RuntimeError(
+                f"受保护字段禁止直接 UPDATE: {sorted(protected)}"
+            )
+        return super().update(*args, **kwargs)
+
+    def _guard_protected_field_write(self, *, only, force_insert: bool) -> None:
+        # 护栏只约束已持久化行的写路径：新建 INSERT 由 DB 服务端默认值兜底，不受此限。
+        if force_insert or self._pk is None or not PROTECTED_MOVIE_FIELDS:
+            return
+        if not only:
+            # 未传 only 的 save() 会把 _data 全列写回，可能覆盖插件刚写入的受保护字段，
+            # 因此一旦开放任何字段就必须显式窄更新。白名单为空时无保护对象，放行。
+            raise RuntimeError(
+                f"已持久化 Movie 的 save() 必须传 only（受保护字段: {sorted(PROTECTED_MOVIE_FIELDS)}）"
+            )
+        written_field_names: set[str] = set()
+        for field in only:
+            if isinstance(field, peewee.Field):
+                written_field_names.add(field.name)
+            elif isinstance(field, str):
+                # peewee 的 save(only=...) 接受字段名字符串，同样纳入护栏。
+                written_field_names.add(field)
+        protected = PROTECTED_MOVIE_FIELDS & written_field_names
+        if protected:
+            raise RuntimeError(
+                f"受保护字段禁止直接写入: {sorted(protected)}"
+            )
 
     @property
     def series_name(self) -> str | None:

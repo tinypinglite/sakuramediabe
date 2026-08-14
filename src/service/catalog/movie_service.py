@@ -707,7 +707,8 @@ class MovieService:
                 movie.subscribed_at = utc_now_for_db()
         else:
             movie.subscribed_at = None
-        movie.save()
+        # 窄更新：受保护字段白名单开放后裸 save() 会被护栏拒绝，订阅状态与标题无关。
+        movie.save(only=[Movie.is_subscribed, Movie.subscribed_at])
         if subscribed and not was_subscribed:
             cls._reset_search_state_for_new_subscriptions([movie.id])
 
@@ -729,7 +730,7 @@ class MovieService:
 
         movie.is_subscribed = False
         movie.subscribed_at = None
-        movie.save()
+        movie.save(only=[Movie.is_subscribed, Movie.subscribed_at])
 
     @staticmethod
     def _dedup_movie_number_keys(
@@ -785,7 +786,7 @@ class MovieService:
             movie.is_subscribed = True
             if not was_subscribed or movie.subscribed_at is None:
                 movie.subscribed_at = utc_now_for_db()
-            movie.save()
+            movie.save(only=[Movie.is_subscribed, Movie.subscribed_at])
             if not was_subscribed:
                 newly_subscribed_ids.append(movie.id)
         cls._reset_search_state_for_new_subscriptions(newly_subscribed_ids)
@@ -849,7 +850,7 @@ class MovieService:
                 continue
             movie.is_subscribed = False
             movie.subscribed_at = None
-            movie.save()
+            movie.save(only=[Movie.is_subscribed, Movie.subscribed_at])
             updated_count += 1
 
         return MovieSubscriptionBatchResponse(

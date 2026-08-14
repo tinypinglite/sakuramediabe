@@ -30,6 +30,7 @@ from src.model import (
     Tag,
     get_database,
 )
+from src.model.catalog.movies import PROTECTED_MOVIE_FIELDS
 from src.service.catalog.movie_collection_service import MovieCollectionService
 from src.service.catalog.movie_heat_service import MovieHeatService
 from src.service.catalog.movie_image_service import (
@@ -39,7 +40,7 @@ from src.service.catalog.movie_image_service import (
     PreparedImageFile,
     ThinCoverResolution,
 )
-from src.service.system.resource_task_state_service import ResourceTaskStateService
+from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
 
 # 兼容既有导入路径：ImageDownloadError 等类型历史上从本模块导出，且多处 `except ImageDownloadError`
 # 依赖同一个类对象，这里显式再导出保证类身份唯一。
@@ -333,15 +334,49 @@ class CatalogImportService:
             raise ValueError(f"不支持的字段: {', '.join(invalid_fields)}")
         movie, created = self.import_movie_if_missing(detail)
         # 变更检测：只写值真正变化的字段，避免无意义 UPDATE，也支撑调用方的 updated/unchanged 计数。
+        previous_values: dict[str, Any] = {}
         changed_fields: list[str] = []
         for field_name in normalized_fields:
             target_value = self._MOVIE_FIELD_UPDATE_MAP[field_name](detail)
-            if getattr(movie, field_name) == target_value:
+            previous_value = getattr(movie, field_name)
+            if previous_value == target_value:
                 continue
+            previous_values[field_name] = previous_value
             setattr(movie, field_name, target_value)
             changed_fields.append(field_name)
         if changed_fields:
-            movie.save(only=[Movie._meta.fields[field_name] for field_name in changed_fields])
+            # 受保护字段（白名单内，如 title/summary）分流到唯一写入网关，宿主侧
+            # 只更新未接管字段；其余字段保持窄更新。已持久化对象不能裸 save（护栏）。
+            protected_changed = [
+                field_name
+                for field_name in changed_fields
+                if field_name in PROTECTED_MOVIE_FIELDS
+            ]
+            host_changed = [
+                field_name
+                for field_name in changed_fields
+                if field_name not in PROTECTED_MOVIE_FIELDS
+            ]
+            if host_changed:
+                movie.save(
+                    only=[Movie._meta.fields[field_name] for field_name in host_changed]
+                )
+            if protected_changed:
+                MovieOwnershipGateway.update_host_unowned(
+                    movie.id,
+                    {
+                        field_name: getattr(movie, field_name)
+                        for field_name in protected_changed
+                    },
+                )
+                # 被插件接管的字段未落库：重读该行并把实际落库变更回流到结果，
+                # 保证返回对象与库内真实状态一致、updated 字段不虚报。
+                movie = Movie.get_by_id(movie.id)
+                changed_fields = [
+                    field_name
+                    for field_name in changed_fields
+                    if getattr(movie, field_name) != previous_values[field_name]
+                ]
         return movie, created, tuple(changed_fields)
 
     def refresh_movie_metadata_strict(
@@ -420,7 +455,14 @@ class CatalogImportService:
         plot_tasks: list[ImagePersistTask],
         actor_image_tasks_by_javdb_id: dict[str, ImagePersistTask],
     ) -> tuple[Movie, set[str]]:
-        movie = Movie.get_by_id(movie.id)
+        # 事务内先锁行重读（v2-lite 字段主权）：锁定期间当前 owner 状态稳定，
+        # 之后受保护字段写入以本次读取为准，杜绝旧快照覆盖插件刚写入的值。
+        movie = (
+            Movie.select()
+            .where(Movie.id == movie.id)
+            .for_update()
+            .get()
+        )
         obsolete_paths: set[str] = set()
 
         old_cover_image = movie.cover_image
@@ -470,7 +512,38 @@ class CatalogImportService:
         movie.javdb_id = detail.javdb_id
         movie.title = detail.title
         movie.cover_image = self.image_service.persist_refreshed_image_record(cover_task)
-        movie.save()
+
+        # 受保护字段（白名单内）不允许随宿主窄更新落库，改走唯一写入网关
+        # （update_host_unowned 只更新未接管字段）；其余字段显式窄更新。
+        host_field_names = (
+            "release_date",
+            "duration_minutes",
+            "score",
+            "score_number",
+            "watched_count",
+            "want_watch_count",
+            "comment_count",
+            "summary",
+            "series",
+            "maker_name",
+            "director_name",
+            "extra",
+            "javdb_id",
+            "title",
+            "cover_image",
+        )
+        protected_field_names = set(PROTECTED_MOVIE_FIELDS) & set(host_field_names)
+        narrow_columns = [
+            Movie._meta.fields[name]
+            for name in host_field_names
+            if name not in protected_field_names
+        ]
+        movie.save(only=narrow_columns)
+        if protected_field_names:
+            MovieOwnershipGateway.update_host_unowned(
+                movie.id,
+                {name: getattr(movie, name) for name in protected_field_names},
+            )
 
         seen_actor_ids: set[str] = set()
         for actor_resource in actors:
@@ -514,6 +587,9 @@ class CatalogImportService:
             )
         )
 
+        # 受保护字段可能未全部落库（被插件接管的字段保留插件值）：重读该行，
+        # 保证返回对象与库内真实状态一致（内存中的远端值不得外泄给调用方）。
+        movie = Movie.get_by_id(movie.id)
         return movie, obsolete_paths
 
     def _refresh_actor_from_javdb_resource_strict(

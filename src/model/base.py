@@ -70,6 +70,24 @@ class JsonTextField(TextField):
         return json.loads(value)
 
 
+class JsonbField(TextField):
+    """PostgreSQL JSONB 列；存量 JSONB 字段结构迁移等场景使用（列类型按文档约定为 jsonb）。"""
+
+    field_type = "JSONB"
+
+    def db_value(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        return json.dumps(value, ensure_ascii=False)
+
+    def python_value(self, value: Any) -> Any:
+        if value is None or value == "":
+            return None
+        if isinstance(value, (dict, list)):
+            return value
+        return json.loads(value)
+
+
 class BaseModel(Model):
     class Meta:
         database = database_proxy
