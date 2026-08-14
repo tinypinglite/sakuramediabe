@@ -508,8 +508,8 @@ javdb_password = "secret"
 - `plugins.job_crons.<plugin_id>.<task_key>`：覆盖任务的默认 cron；
 - `plugins.settings.<plugin_id>`：插件私有配置，`context.settings` 只读访问；
 - 整个 `plugins` 节对通用配置 API（`GET/PATCH /config`）隐藏，
-  安装/启停请用 `plugins` CLI 或 `/system/plugins` 管理 API，
-  也可以直接编辑 `config.toml`；
+  安装/启停请用 `plugins` CLI，私有配置读写请用 `/system/plugins` 管理 API
+  （前端「系统设置 → 插件」页即封装该 API），也可以直接编辑 `config.toml`；
 - 配置与启停都在启动期生效，修改后需要重启 api 与 aps。
 
 本地开发可以把 `root_dir` 指到 `./storage/plugins`，避免直接操作生产目录。
@@ -556,8 +556,10 @@ javdb_password = "secret"
 | `POST` | `/system/plugins` | multipart 上传 zip（`file` + 可选 `sha256` + `enable`），已存在时替换并保留 `data/` |
 | `PATCH` | `/system/plugins/{id}?enabled=true` | 启停 |
 | `DELETE` | `/system/plugins/{id}` | 删除插件目录（含 `data/`） |
+| `GET` | `/system/plugins/{id}/settings` | 读取插件私有配置（`plugins.settings.<id>`） |
+| `PUT` | `/system/plugins/{id}/settings` | 整体替换插件私有配置（JSON），不支持 null 值 |
 
-安装/启停/删除响应都会带 `pending_restart: ["api", "aps"]`。
+安装/启停/删除/配置修改响应都会带 `pending_restart: ["api", "aps"]`。
 
 ### 9.4 生命周期要点
 
