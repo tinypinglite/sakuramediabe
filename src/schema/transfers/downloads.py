@@ -332,3 +332,20 @@ class DownloadTaskImportResponse(SchemaModel):
     import_job_id: int
     task_run_id: int
     status: str
+
+
+class DownloadTaskFileResource(SchemaModel):
+    """下载任务里的单个文件（qB / 115 统一归一化后的结构）。"""
+
+    name: str
+    size: int
+    # 115 侧目录条目用 is_dir 区分；qB 的文件列表恒为文件。
+    is_dir: bool = False
+    # 115 相对任务目录的路径（qB 直接给种子内路径，与 name 相同，置 None 少带冗余）。
+    path: str | None = None
+
+
+class DownloadTaskFilesResponse(SchemaModel):
+    task_id: int
+    client_kind: str
+    files: list[DownloadTaskFileResource] = []

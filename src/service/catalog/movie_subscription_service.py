@@ -281,6 +281,7 @@ class MovieSubscriptionService:
                 ImportJob.failed_count,
                 ImportJob.failed_files,
                 DownloadTask.movie,
+                DownloadTask.id,
             )
             .join(DownloadTask, on=(ImportJob.download_task == DownloadTask.id))
             .where(DownloadTask.movie.in_(movie_numbers))
@@ -288,7 +289,16 @@ class MovieSubscriptionService:
             .tuples()
         )
         operations: dict[str, MovieSubscriptionImportOperationResource] = {}
-        for job_id, state, imported, skipped, failed, failed_files, movie_number in rows:
+        for (
+            job_id,
+            state,
+            imported,
+            skipped,
+            failed,
+            failed_files,
+            movie_number,
+            download_task_id,
+        ) in rows:
             if movie_number in operations:
                 continue
             try:
@@ -301,19 +311,45 @@ class MovieSubscriptionService:
                 if isinstance(item, dict)
                 and BaseImportJobService._entry_kind(item) == "file"
             )
+            # 首条带 reason 的失败条目作为本作业的失败摘要；没有条目时保持 None，
+            # 前端据此决定是否渲染原因行（对"零产出"类失败这行就是唯一的解释）。
+            first_failure = next(
+                (
+                    item
+                    for item in failure_items
+                    if isinstance(item, dict)
+                    and (item.get("reason") or "").strip()
+                ),
+                None,
+            )
             available_actions = ["open_import_job"]
+            if download_task_id is not None:
+                # 订阅行可复用下载中心的删除任务语义：删掉失败记录后影片会重新
+                # 参与自动下载（等下一轮 cron），这是"忽略这条下载记录"的入口。
+                available_actions.append("delete_failed_download")
             if state in TERMINAL_JOB_STATES:
                 if retryable_file_count:
                     available_actions.append("retry_failed_files")
                 available_actions.append("rerun_import")
             operations[movie_number] = MovieSubscriptionImportOperationResource(
                 import_job_id=job_id,
+                download_task_id=download_task_id,
                 state=state,
                 imported_count=imported,
                 skipped_count=skipped,
                 failed_count=failed,
                 retryable_file_count=retryable_file_count,
                 available_actions=available_actions,
+                failure_reason=(
+                    str(first_failure.get("reason")).strip() or None
+                    if first_failure is not None
+                    else None
+                ),
+                failure_detail=(
+                    str(first_failure.get("detail") or "").strip()
+                    if first_failure is not None
+                    else None
+                ),
             )
         return operations
 

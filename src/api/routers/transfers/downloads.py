@@ -20,6 +20,7 @@ from src.schema.transfers.downloads import (
     DownloadRequestCreateRequest,
     DownloadRequestCreateResponse,
     DownloadTaskActionResponse,
+    DownloadTaskFilesResponse,
     DownloadTaskResource,
     DownloadTasksQuery,
 )
@@ -134,6 +135,14 @@ def list_download_tasks(
         download_state=download_state,
         sort=query.sort,
     )
+
+
+@router.get(
+    "/download-tasks/{task_id}/files",
+    response_model=DownloadTaskFilesResponse,
+)
+def list_download_task_files(task_id: int, current_user=Depends(get_current_user)):
+    return DownloadTaskService.list_task_files(task_id)
 
 
 @router.get("/download-tasks/stream")

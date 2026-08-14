@@ -21,6 +21,8 @@ from src.model.enums import DownloadClientKind
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
     DownloadTaskActionResponse,
+    DownloadTaskFileResource,
+    DownloadTaskFilesResponse,
     DownloadTaskImportResponse,
     DownloadTaskResource,
 )
@@ -88,6 +90,134 @@ class DownloadTaskService:
             page=page,
             page_size=page_size,
             total=total,
+        )
+
+    @classmethod
+    def list_task_files(
+        cls,
+        task_id: int,
+        *,
+        qbittorrent_client_cls=QBittorrentClient,
+    ) -> DownloadTaskFilesResponse:
+        """按任务实时拉取文件列表：qB 走 Web API，cloud115 走 SDK 递归列目录。
+
+        刻意不做提交时快照落库——列表是查看型数据，实时拉取永远反映远端现状，
+        也不需要为新增列做迁移。任务在远端已不存在时按对应客户端语义报 404。
+        """
+        task = require_task(task_id)
+        if task.client.kind == DownloadClientKind.CLOUD115.value:
+            return cls._list_cloud115_task_files(task)
+        return cls._list_qbittorrent_task_files(
+            task, qbittorrent_client_cls=qbittorrent_client_cls
+        )
+
+    @classmethod
+    def _list_qbittorrent_task_files(
+        cls,
+        task,
+        *,
+        qbittorrent_client_cls,
+    ) -> DownloadTaskFilesResponse:
+        qb_client = qbittorrent_client_cls.from_download_client(task.client)
+        try:
+            files = qb_client.list_managed_torrent_files(
+                task.info_hash,
+                client_id=task.client_id,
+            )
+        except QBittorrentTorrentNotFoundError as exc:
+            # 本地行还在但 qB 侧已被人工清理（幽灵任务）：给 404 让前端说清楚，
+            # 不要包装成"读取失败"这类 5xx，用户会误以为是暂时性故障。
+            raise ApiError(
+                404,
+                "download_task_remote_missing",
+                "qBittorrent 中已找不到该下载任务",
+                {"task_id": task.id},
+            ) from exc
+        except QBittorrentTorrentNotManagedError as exc:
+            raise ApiError(
+                409,
+                "download_task_not_managed",
+                "qBittorrent torrent is not managed by this download client",
+                {"task_id": task.id},
+            ) from exc
+        except QBittorrentClientError as exc:
+            raise ApiError(
+                502,
+                "download_task_files_failed",
+                "读取 qBittorrent 文件列表失败",
+                {"task_id": task.id, "detail": str(exc)},
+            ) from exc
+        return DownloadTaskFilesResponse(
+            task_id=task.id,
+            client_kind=task.client.kind,
+            files=[
+                DownloadTaskFileResource(
+                    name=file.get("name") or "",
+                    size=int(file.get("size") or 0),
+                )
+                for file in files
+            ],
+        )
+
+    @classmethod
+    def _list_cloud115_task_files(cls, task) -> DownloadTaskFilesResponse:
+        target_ref = task.target_ref or {}
+        source_cid = target_ref.get("cid")
+        if not source_cid:
+            # 与 115 对账链路同一判例：缺 cid 属数据缺陷，重试不可恢复，直接明确报错。
+            raise ApiError(
+                422,
+                "cloud115_download_task_missing_target_ref",
+                "cloud115 下载任务缺少 target_ref.cid，无法读取文件列表",
+                {"task_id": task.id},
+            )
+
+        import asyncio
+
+        from src.lib.cloud115 import Cloud115Error
+        from src.service.cloud115 import cloud115_client_for, map_cloud115_error
+        from src.service.transfers.cloud115.importer.common import (
+            collect_cloud115_source_files,
+        )
+
+        async def _fetch():
+            async with cloud115_client_for(task.client.media_library) as sdk_client:
+                return await collect_cloud115_source_files(
+                    sdk_client,
+                    source_cid,
+                    # 全量枚举：文件列表要展示所有条目，不做后缀预筛。
+                    needs_rel_path=lambda entry: True,
+                )
+
+        try:
+            entries, rel_dirs = asyncio.run(_fetch())
+        except Cloud115Error as exc:
+            raise map_cloud115_error(exc) from exc
+        except Exception as exc:
+            raise ApiError(
+                502,
+                "cloud115_download_task_files_failed",
+                "读取 115 文件列表失败",
+                {"task_id": task.id, "detail": str(exc)},
+            ) from exc
+
+        files: list[DownloadTaskFileResource] = []
+        for entry in entries:
+            if entry.is_dir:
+                continue
+            rel_dir_parts = rel_dirs.get(entry.parent_id) or ()
+            files.append(
+                DownloadTaskFileResource(
+                    name=entry.name,
+                    size=entry.size,
+                    path="/".join([*rel_dir_parts, entry.name]),
+                )
+            )
+        files.sort(key=lambda item: item.name.lower())
+        return DownloadTaskFilesResponse(
+            task_id=task.id,
+            client_kind=task.client.kind,
+            files=files,
         )
 
     @staticmethod

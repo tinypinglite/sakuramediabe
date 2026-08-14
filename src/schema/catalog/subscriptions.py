@@ -58,10 +58,18 @@ class MovieSubscriptionImportOperationResource(SchemaModel):
     """最新相关导入作业的操作上下文（仅 import_failed 档返回）。
 
     available_actions 由后端按作业状态计算，前端只按枚举渲染：
-    open_import_job / retry_failed_files / rerun_import。
+    open_import_job / retry_failed_files / rerun_import / delete_failed_download。
+
+    failure_reason / failure_detail 来自最新导入作业 failed_files 的首条失败条目：
+    让订阅行能直接展示"为什么没导进去"，无需前端再跳导入中心猜。
+
+    download_task_id 是这条失败导入关联的下载任务：订阅行据此复用下载中心的
+    "删除下载记录"逻辑（删任务后可重新参与自动下载）。
     """
 
     import_job_id: int
+    # 关联下载任务 id；导入作业为手动目录导入（无 download_task）时为 None。
+    download_task_id: int | None = None
     state: str
     imported_count: int = 0
     skipped_count: int = 0
@@ -69,6 +77,10 @@ class MovieSubscriptionImportOperationResource(SchemaModel):
     # failed_files 里 kind=file 的可重导条目数（retry_failed_files 是否可用的依据）。
     retryable_file_count: int = 0
     available_actions: list[str] = []
+    # 失败原因原始码（no_media_files_found 等），没有失败条目时为 None。
+    failure_reason: str | None = None
+    # 失败详情文案（例如"下载目录中没有扫描到可导入的视频"），可能为空串。
+    failure_detail: str | None = None
 
 
 class MovieSubscriptionListItemResource(SchemaModel):

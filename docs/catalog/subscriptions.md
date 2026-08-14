@@ -120,6 +120,17 @@ Query：
 
 响应：`PageResponse<MovieSubscriptionListItemResource>`。
 
+`import_failed` 档的 `import_operation` 除作业 id、计数与 `available_actions` 外，
+还返回首条失败条目的 `failure_reason`（原始码，如 `no_media_files_found`）与
+`failure_detail`（如"下载目录中没有扫描到可导入的视频"），供订阅行直接展示
+"为什么没导进去"；没有失败条目时两者为 `null`。详细 `failed_files`（含每条路径）
+仍在导入作业详情接口 `GET /media-imports/import-jobs/{import_job_id}` 返回。
+
+`import_operation.download_task_id` 是该失败导入关联的下载任务 id；存在时
+`available_actions` 额外下发 `delete_failed_download`——订阅行据此复用下载中心的
+删除任务语义：删除后影片不再有活跃下载任务，状态回到「缺资源」，下一轮自动下载
+cron 会重新找种（内容闸门会避开原盘类候选）。
+
 ### `GET /movie-subscriptions/status-counts`
 
 ```json

@@ -158,8 +158,22 @@ class QBittorrentClient:
         return names
 
     def list_torrent_files(self, info_hash: str) -> list[dict]:
-        # 取单个种子的文件列表，归一化成业务侧需要的字段，屏蔽 qbittorrentapi 的对象结构。
+        # 取单个种子的文件列表（不含"是否受管"校验，供内部清理任务使用）。
         self._login()
+        return self._fetch_torrent_files(info_hash)
+
+    def list_managed_torrent_files(self, info_hash: str, *, client_id: int) -> list[dict]:
+        # 面向 UI 的文件列表：先确认种子存在且属于当前下载客户端，再取文件清单，
+        # 与 pause/resume/delete 走同一套存在性 + 标签校验语义，避免把别人的种子文件暴露出来。
+        self._login()
+        torrent = self.get_torrent(info_hash, allow_missing=True)
+        if torrent is None:
+            raise QBittorrentTorrentNotFoundError("torrent not found")
+        self._ensure_managed_torrent(torrent, client_id)
+        return self._fetch_torrent_files(info_hash)
+
+    def _fetch_torrent_files(self, info_hash: str) -> list[dict]:
+        # 归一化成业务侧需要的字段，屏蔽 qbittorrentapi 的对象结构。
         try:
             files = self.client.torrents_files(torrent_hash=info_hash)
         except Exception as exc:

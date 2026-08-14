@@ -459,9 +459,17 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 
 - `POST /download-tasks/{task_id}/pause`
 - `POST /download-tasks/{task_id}/resume`
+- `GET /download-tasks/{task_id}/files`
 - `DELETE /download-tasks/{task_id}?delete_files=false&confirm_delete_files=false`
 
 `delete_files` 默认为 `false`。要连同 qB 下载文件删除，必须同时传 `delete_files=true` 和 `confirm_delete_files=true`；处于本地导入中的任务不能删除，避免与导入线程争用文件。删除成功后本地 `DownloadTask` 会被移除，已完成的媒体导入记录保持不变。
+
+`GET /download-tasks/{task_id}/files` 按任务实时拉取文件列表（不落库快照）：
+qBittorrent kind 走 qB Web API 并校验种子仍属于当前下载客户端；cloud115 kind 走
+115 SDK 递归列任务目录（`target_ref.cid`）。两种来源统一返回
+`{name, size, is_dir, path}` 结构，供下载任务页展示"这个任务里到底有哪些文件"——
+导入失败时（如只有 `.iso` 原盘）用户无需翻盘即可确认原因。任务在远端已不存在时
+返回 404（qB）/ 404（115 目录已删），cookies 失效等按 115 统一错误映射返回。
 
 进度轮询周期：qBittorrent 由 `[downloads].progress_stream_poll_interval_seconds` 配置，默认 `1.0` 秒（允许 `0.2` 至 `10` 秒，修改后需重启 API）；cloud115 由 `[downloads].cloud115_progress_poll_interval_seconds` 配置，默认 `8.0` 秒（允许 `2` 至 `60` 秒，每轮现读、热生效）。Cloud115 SSE 始终从数据库构造完整快照，仅在存在 `queued/downloading` 任务时拉 115 离线列表补进度；没有活跃任务时零 115 请求。`abandoned` 任务仍保留在快照中，状态变化广播一次后不再请求远端进度。
 
@@ -522,6 +530,7 @@ SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改�
 | `POST` | `/download-requests` | 向指定客户端提交下载 |
 | `GET` | `/download-tasks` | 分页查询全部下载历史 |
 | `GET` | `/download-tasks/stream` | 订阅 qBittorrent 实时进度 SSE |
+| `GET` | `/download-tasks/{task_id}/files` | 按任务实时拉取文件列表（qB / 115） |
 | `POST` | `/download-tasks/{task_id}/pause` | 暂停受管下载任务 |
 | `POST` | `/download-tasks/{task_id}/resume` | 恢复受管下载任务 |
 | `DELETE` | `/download-tasks/{task_id}` | 移除受管种子与本地任务镜像 |
