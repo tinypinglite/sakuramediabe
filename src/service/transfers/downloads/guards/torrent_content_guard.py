@@ -5,11 +5,15 @@
 丢弃的"，两边不会漂移；将来支持新容器格式或调整体积阈值，闸门自动跟随，不需要在这里维护
 任何格式关键词表。合集判定额外复用导入侧的番号解析函数（见 ``count_distinct_movie_numbers``）。
 
-拦住的是两类真实存在、且靠标题和体积都判不出来的资源：
+拦住的是三类真实存在、且靠标题和体积都判不出来的资源：
 - 蓝光/DVD 原盘：正片是单个 ``.iso``，合格视频数为 0。实测原盘与压制版标题可以逐字相同，
   体积也和 4K 压制重叠（20G 的 mp4 是正片，28G 的 iso 是原盘），只有文件列表能分辨。
 - 演员合集包：几十上百部影片塞进一个种子，文件名能解析出多个不同番号，靠番号数识别；
   单部影片的多分卷（VR / FC2 的 A、B、C）解析出的是同一个番号，不受影响。
+
+另外在提交阶段补一道**番号一致性**判据：种子内容能解析出番号、但与请求番号不一致时
+（例如搜索 JOB-033 拿到内容为 CJOB-033 的种子），导入侧必然会把文件归到别的影片，
+必须提交前拒绝；标题级过滤在搜索阶段已经做过一遍，这里是权威兜底。
 """
 
 from __future__ import annotations
@@ -75,8 +79,8 @@ def count_qualified_videos(files: Sequence[tuple[str, int]]) -> int:
     )
 
 
-def count_distinct_movie_numbers(files: Sequence[tuple[str, int]]) -> int:
-    """统计合格视频解析出的**不同番号**数，作为合集判定依据。
+def collect_distinct_movie_numbers(files: Sequence[tuple[str, int]]) -> set[str]:
+    """收集合格视频解析出的**不同番号**集合，作为合集判定与番号一致性校验依据。
 
     与导入侧扫描共用 ``parse_movie_number_from_scan_path``（只看父目录 + 文件名最后两段），
     并对种子内相对路径垫一个虚拟根段，使解析口径与落盘后的绝对路径完全对齐：
@@ -99,7 +103,25 @@ def count_distinct_movie_numbers(files: Sequence[tuple[str, int]]) -> int:
         movie_number = parse_movie_number_from_scan_path(f"root/{file_path}")
         if movie_number:
             distinct_numbers.add(movie_number)
-    return len(distinct_numbers)
+    return distinct_numbers
+
+
+def count_distinct_movie_numbers(files: Sequence[tuple[str, int]]) -> int:
+    """统计合格视频解析出的不同番号数，作为合集判定依据。"""
+    return len(collect_distinct_movie_numbers(files))
+
+
+def content_movie_numbers_match(movie_number: str, content_movie_numbers: set[str]) -> bool:
+    """内容番号是否命中请求番号（严格原串大写比较，不做分隔符折叠）。
+
+    解析不出番号（集合为空）时放行：单文件种子可能靠落盘后的父目录番号兜底，
+    与导入侧路径解析口径一致。``_``/``-`` 形态代表不同影片（一本道 / 加勒比），
+    因此不能走 ``normalize_movie_number`` 折叠后再比较。
+    """
+    requested = (movie_number or "").strip().upper()
+    if not requested or not content_movie_numbers:
+        return True
+    return requested in {number.strip().upper() for number in content_movie_numbers}
 
 
 @dataclass(frozen=True)
@@ -166,6 +188,7 @@ def fetch_torrent_files(
 
 def assert_candidate_content_importable(
     *,
+    movie_number: str,
     title: str,
     torrent_url: str,
     magnet_url: str,
@@ -173,6 +196,8 @@ def assert_candidate_content_importable(
 ) -> str:
     """提交下载前的硬闸门：种子内容不可导入时拒绝提交。
 
+    ``movie_number`` 是请求方期望的影片番号：内容能解析出番号但集合不包含它时，
+    说明提交后导入侧也会把文件归到别的影片，属于确定性错配，必须拒绝。
     内容通过时返回从 .torrent 解析出的 canonical info_hash（torrent-only 候选的身份
     只能在提交前这一拉里廉价确定，调用方用它做死种黑名单比对）。
 
@@ -197,7 +222,7 @@ def assert_candidate_content_importable(
     inspection = fetch_torrent_files(normalized_torrent_url, http_client=http_client)
     files = inspection.files
     qualified_count = count_qualified_videos(files)
-    distinct_numbers = count_distinct_movie_numbers(files)
+    distinct_numbers = collect_distinct_movie_numbers(files)
 
     if qualified_count == 0:
         logger.info(
@@ -217,12 +242,31 @@ def assert_candidate_content_importable(
             },
         )
 
-    if distinct_numbers > 1:
+    if distinct_numbers and not content_movie_numbers_match(movie_number, distinct_numbers):
         logger.info(
-            "Download candidate rejected: too many distinct movie numbers title={} qualified={} distinct={} total_files={}",
+            "Download candidate rejected: content movie number mismatch title={} requested={} content={}",
             title,
+            movie_number,
+            sorted(distinct_numbers),
+        )
+        raise ApiError(
+            422,
+            ERROR_CODE_CONTENT_REJECTED,
+            "资源内容番号与目标不一致",
+            {
+                "title": title,
+                "requested_movie_number": movie_number,
+                "content_movie_numbers": sorted(distinct_numbers),
+            },
+        )
+
+    if len(distinct_numbers) > 1:
+        logger.info(
+            "Download candidate rejected: too many distinct movie numbers title={} requested={} qualified={} distinct={} total_files={}",
+            title,
+            movie_number,
             qualified_count,
-            distinct_numbers,
+            sorted(distinct_numbers),
             len(files),
         )
         raise ApiError(
@@ -231,25 +275,29 @@ def assert_candidate_content_importable(
             "该资源包含多部影片，疑似合集包",
             {
                 "title": title,
+                "requested_movie_number": movie_number,
                 "total_files": len(files),
                 "qualified_videos": qualified_count,
-                "distinct_movie_numbers": distinct_numbers,
+                "distinct_movie_numbers": sorted(distinct_numbers),
             },
         )
 
     if distinct_numbers == 0:
         logger.warning(
-            "Download candidate has no parseable movie number title={} qualified={} total_files={} "
+            "Download candidate has no parseable movie number movie_number={} title={} qualified={} total_files={} "
             "import may fail after download",
+            movie_number,
             title,
             qualified_count,
             len(files),
         )
     else:
         logger.info(
-            "Download candidate content accepted title={} qualified={} total_files={}",
+            "Download candidate content accepted movie_number={} title={} qualified={} content={} total_files={}",
+            movie_number,
             title,
             qualified_count,
+            sorted(distinct_numbers),
             len(files),
         )
     return inspection.info_hash

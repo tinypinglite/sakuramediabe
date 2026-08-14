@@ -64,6 +64,7 @@ class DownloadRequestService:
         # 拦在这一层才能保证"不可导入的资源永远不会被真正提交出去"。
         # torrent-only 候选的身份只在这次 .torrent 解析里廉价可得，一并取出来做死种黑名单比对。
         resolved_info_hash = assert_candidate_content_importable(
+            movie_number=movie_number,
             title=payload.candidate.title,
             torrent_url=(payload.candidate.torrent_url or "").strip(),
             magnet_url=(payload.candidate.magnet_url or "").strip(),
