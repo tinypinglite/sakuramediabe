@@ -146,11 +146,12 @@ GET /tags/1
 ### Query Params
 
 - `year`: 发行年份
-- `status`: 按影片状态过滤（可选，`all | subscribed | playable`，默认 `all`）
+- `status`: 按影片状态过滤（可选，`all | subscribed | unsubscribed | playable`，默认 `all`）
 - `collection_type`: 按合集类型过滤（可选，`all | single`，默认 `all`）
 - `special_tag`: 按特殊标签过滤（可选，`4k | uncensored | vr`）
 - `director_name`: 按导演名称精确过滤（可选；会先 `strip`）
 - `maker_name`: 按厂商名称精确过滤（可选；会先 `strip`）
+- `heat_min` / `heat_max`: 热度范围过滤（可选，闭区间，详见 `GET /movies`）
 - `sort`: 排序规则，详见 `GET /movies`
 - `page`: 页码
 - `page_size`: 每页数量

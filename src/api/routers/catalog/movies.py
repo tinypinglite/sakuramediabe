@@ -59,6 +59,8 @@ def list_movies(
     sort: str | None = Query(default=None),
     director_name: str | None = Query(default=None),
     maker_name: str | None = Query(default=None),
+    heat_min: int | None = Query(default=None, ge=0),
+    heat_max: int | None = Query(default=None, ge=0),
     page: int = 1,
     page_size: int = 20,
 ):
@@ -78,6 +80,8 @@ def list_movies(
         maker_name=parse_optional_exact_text(
             maker_name, "maker_name", error_code="invalid_movie_filter"
         ),
+        heat_min=heat_min,
+        heat_max=heat_max,
         page=page,
         page_size=page_size,
     )

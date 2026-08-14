@@ -82,6 +82,8 @@ class TagService:
         sort: str | None = None,
         director_name: str | None = None,
         maker_name: str | None = None,
+        heat_min: int | None = None,
+        heat_max: int | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> PageResponse[MovieListItemResource]:
@@ -95,6 +97,8 @@ class TagService:
             sort=sort,
             director_name=director_name,
             maker_name=maker_name,
+            heat_min=heat_min,
+            heat_max=heat_max,
             page=page,
             page_size=page_size,
         )

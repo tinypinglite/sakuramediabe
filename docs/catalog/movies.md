@@ -685,9 +685,11 @@ data: {"success":false,"reason":"local_series_not_found","movies":[]}
   - `director_name`：按导演名称精确过滤（可选；会先 `strip`）
   - `maker_name`：按厂商名称精确过滤（可选；会先 `strip`）
   - `year`：按发行年份过滤（可选，只支持单个年份）
-  - `status`：按影片状态过滤（可选，`all | subscribed | playable`，默认 `all`）
+  - `status`：按影片状态过滤（可选，`all | subscribed | unsubscribed | playable`，默认 `all`）
   - `collection_type`：按合集类型过滤（可选，`all | single`，默认 `all`；`single` 表示 `is_collection=false`）
   - `special_tag`：按特殊标签过滤（可选，`4k | uncensored | vr`）
+  - `heat_min`：热度下限（可选，整数且 `>= 0`，闭区间）；与 `heat_max` 配合实现热度范围过滤，如 `heat_min=1000&heat_max=2000`；仅传下限时表示热度无上界，未同步热度（`heat=0`）的影片会被排除
+  - `heat_max`：热度上限（可选，整数且 `>= 0`，闭区间）；仅传上限时会把未同步热度（`heat=0`）的影片一并包含，需要明确下界时请配合 `heat_min`
   - `sort`：排序表达式（可选，格式 `field:direction`）
     - `field` 支持：`release_date`、`added_at`、`subscribed_at`、`comment_count`、`score_number`、`want_watch_count`、`heat`
     - `direction` 支持：`asc | desc`
@@ -703,9 +705,11 @@ data: {"success":false,"reason":"local_series_not_found","movies":[]}
   - `director_name`、`maker_name` 均为精确匹配，空白值返回 422 `invalid_movie_filter`
   - `year` 只返回 `release_date` 落在该自然年的影片
   - `status=subscribed` 只返回已订阅影片
+  - `status=unsubscribed` 只返回未订阅影片
   - `status=playable` 只返回存在有效媒体的影片
   - `collection_type=single` 只返回 `is_collection=false` 的影片
   - `special_tag=4k` 只返回存在有效 `4K` 媒体的影片；`uncensored`、`vr` 同理
+  - `heat_min` / `heat_max` 只返回热度落在 `[heat_min, heat_max]` 闭区间内的影片；`heat_min > heat_max` 返回 422 `invalid_movie_filter`
 
 示例请求：
 
@@ -719,6 +723,10 @@ GET /movies?status=subscribed&page=1&page_size=20
 
 ```http
 GET /movies?actor_id=1&status=playable&page=1&page_size=20
+```
+
+```http
+GET /movies?status=unsubscribed&heat_min=1000&heat_max=2000&sort=heat:desc&page=1&page_size=20
 ```
 
 ```http

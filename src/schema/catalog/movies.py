@@ -12,6 +12,7 @@ from src.schema.common.playlists import PlaylistSummaryResource
 class MovieListStatus(str, Enum):
     ALL = "all"
     SUBSCRIBED = "subscribed"
+    UNSUBSCRIBED = "unsubscribed"
     PLAYABLE = "playable"
 
 
