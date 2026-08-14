@@ -116,6 +116,26 @@
 - **启动加载**（`Settings()` 从 toml 加载）为宽松档，非法值仅打 warning、保留原值，避免存量非法配置让进程启动即崩。
 - **本接口写入**（`Settings.model_validate(..., context={"strict": True})`）为严格档，非法值直接 422，阻止落盘。
 
+## 代理配置
+
+外部站点请求的代理有**两套互不冲突的配置途径**，按需选用：
+
+### 1. `metadata.proxy`（本接口 / config.toml）
+
+- 仅作用于**显式接收代理的链路**：DMM 页面请求、GFriends filetree / 头像解析（构造时传入 `normalized_proxy`）。
+- JavDB 链路**不叠加**该值：站点访问依托 `metadata.javdb_host` 自身的直连/反代能力，避免配置节代理绕远路。
+- 显式配置的 proxy **优先于**环境变量（httpx 行为）。
+
+### 2. 容器环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`（推荐容器部署用）
+
+- 作用于所有**未显式配置 proxy** 的 httpx 请求：JavDB API、JavDB 图片下载（jdbstatic.com 封面/剧照/头像）、DMM、GFriends。
+- 由部署方自行分流：设 `HTTP_PROXY` 指向代理软件（如 clash 混合端口）后，可在 `NO_PROXY` 排除直连域名，或交给代理软件自身的规则引擎分流，项目代码不做任何判断。`NO_PROXY` 遵循 curl 语义：`example.com`（不带点）排除该域自身及子域，`.example.com`（带点）只排除子域、不排除主域自身（如 `.jdbstatic.com` 不能排除 `jdbstatic.com` 本域）。
+- 未设置环境变量时行为与以前完全一致（全部直连），老部署零感知。
+
+> 注意：qbittorrent / torznab / cloud115 等下载与网盘链路显式关闭了环境变量读取（`trust_env=False`），不受容器全局代理影响，保持直连。
+>
+> Linux 容器内访问宿主机代理端口需在 compose 加 `extra_hosts: "host.docker.internal:host-gateway"`，或直接用宿主机局域网 IP。
+
 ## 注意事项
 
 - `database.url` 明文包含数据库密码，随 `GET /config` 返回，请确保接口经鉴权且走 HTTPS。

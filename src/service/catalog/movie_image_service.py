@@ -74,9 +74,10 @@ class MovieImageService:
     def __init__(self, image_downloader: Callable[[str, Path], None] | None = None):
         # http_client 急切构造：下载单测会在实例上 monkeypatch http_client.request，
         # 懒建会让 patch 定位不到真正发请求的 client。
+        # 不显式关闭 trust_env：未配置代理时直连；容器层配置 HTTP_PROXY/NO_PROXY
+        # 环境变量时跟随部署方分流，与 metadata 链路保持一致。
         self.http_client = httpx.Client(
             timeout=self.IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
-            trust_env=False,
         )
         self.image_downloader = image_downloader or self._download_image
 

@@ -129,9 +129,11 @@ def build_javdb_provider(
 ) -> GfriendsAvatarJavdbProvider:
     """构建 JavDB provider，演员头像继续优先 GFriends。
 
-    JavDB 请求永远不走 metadata proxy：站点访问依托 ``settings.metadata.javdb_host``
-    自身的直连/反代能力，叠加代理反而绕远路甚至失败。GFriends CDN 单独沿用
-    ``settings.metadata.normalized_proxy``，与 JavDB 无关。账号只用于需登录的
+    JavDB provider 不叠加 ``settings.metadata.proxy``：站点访问依托
+    ``settings.metadata.javdb_host`` 自身的直连/反代能力，避免配置节代理绕远路。
+    是否走代理由部署方在容器层通过 HTTP_PROXY / HTTPS_PROXY / NO_PROXY 环境变量
+    自行分流（httpx trust_env 默认开启，未显式 proxy 时跟随环境变量）。GFriends CDN
+    单独沿用 ``settings.metadata.normalized_proxy``，与 JavDB 无关。账号只用于需登录的
     TOP250 榜单，由排行榜插件从自身设置读入后显式传入；宿主常规链路构建无账号实例。
     """
     provider = JavdbProvider(

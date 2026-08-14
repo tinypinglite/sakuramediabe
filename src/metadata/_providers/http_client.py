@@ -23,7 +23,10 @@ class MetadataRequestClient:
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
     ):
-        client_kwargs: dict[str, Any] = {"trust_env": False}
+        # trust_env 保持默认 True：未显式配置 proxy 时跟随容器环境变量
+        # （HTTP_PROXY / HTTPS_PROXY / NO_PROXY），由部署方自行决定哪些请求走代理；
+        # 显式 proxy 参数优先于环境变量（httpx 0.28 实测行为）。
+        client_kwargs: dict[str, Any] = {}
         if proxy:
             client_kwargs["proxy"] = proxy
         self.proxy = proxy

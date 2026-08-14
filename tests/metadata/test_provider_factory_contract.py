@@ -69,8 +69,9 @@ def test_build_dmm_provider_passes_site_proxy(monkeypatch):
 
 
 def test_build_javdb_provider_never_uses_metadata_proxy(monkeypatch):
-    # JavDB 请求永远直连：配了 metadata proxy 也不能叠加到 JavDB 上，
-    # 站点访问依托 javdb_host 自身的直连/反代能力。
+    # JavDB 不叠加 config 的 metadata proxy：站点访问依托 javdb_host 自身的
+    # 直连/反代能力；是否走代理由容器层 HTTP_PROXY/NO_PROXY 环境变量决定，
+    # 与 config proxy 无耦合。
     monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
 
     provider = build_javdb_provider()
