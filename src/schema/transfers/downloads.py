@@ -277,9 +277,6 @@ class DownloadTasksQuery(SchemaModel):
     page_size: int = Field(default=20, ge=1, le=100)
     client_id: int | None = Field(default=None, gt=0)
     movie_number: str | None = None
-    # 按下载状态筛选，支持多值（重复参数，如 ?download_state=downloading&download_state=stalled）。
-    # 取值集合与 ALLOWED_DOWNLOAD_STATES 一致；空列表 / 未传表示不过滤。
-    download_state: list[str] | None = None
     sort: str | None = None
 
 

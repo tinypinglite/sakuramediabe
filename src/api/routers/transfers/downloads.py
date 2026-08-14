@@ -121,6 +121,9 @@ def create_download_request(
 @router.get("/download-tasks", response_model=PageResponse[DownloadTaskResource])
 def list_download_tasks(
     query: DownloadTasksQuery = Depends(),
+    # 显式 Query 声明：FastAPI 0.110 下模型依赖里的 list 字段会被当作 body 参数，
+    # query 里的 download_state 会被静默忽略；必须单独声明才能走 query 多值解析。
+    download_state: list[str] | None = Query(default=None),
     current_user=Depends(get_current_user),
 ):
     return DownloadTaskService.list_tasks(
@@ -128,7 +131,7 @@ def list_download_tasks(
         page_size=query.page_size,
         client_id=query.client_id,
         movie_number=query.movie_number,
-        download_state=query.download_state,
+        download_state=download_state,
         sort=query.sort,
     )
 

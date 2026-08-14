@@ -437,6 +437,10 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 
 客户端先通过 `GET /download-tasks` 分页加载全部历史记录，再以 `GET /download-tasks/stream` 订阅 qBittorrent 的实时状态。两个接口都支持 `client_id` 与 `movie_number` 筛选；SSE 首次为每个匹配下载客户端发送 `snapshot`，随后发送：
 
+`GET /download-tasks` 还支持按下载状态筛选：`download_state` 可重复传多个取值（如
+`?download_state=downloading&download_state=stalled`），命中的是并集；未传或传空表示不过滤。
+取值集合与下文 `download_state` 枚举一致，非法取值返回 422。
+
 - `download_task_updated`：进度、速度、总大小、已下载量、ETA 与 qB 原始/归一化状态
 - `download_task_removed`：qB 中任务被移除或本系统删除任务
 - `download_client_status`：qB 客户端可用性，以及整体上下行速度
