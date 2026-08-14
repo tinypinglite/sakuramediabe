@@ -7,6 +7,7 @@ storage
 *.lock
 server/docs/plans
 docs/plans
+docs/others
 test_media_source_dir
 .pytest_cache
 .testmondata*
