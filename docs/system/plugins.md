@@ -1,7 +1,7 @@
 # SakuraMedia 插件系统开发指南
 
 > 本文面向插件开发者，描述当前版本的稳定契约
-> （插件通过 `host_api_version` 与宿主协商兼容版本，当前为 1）。
+> （插件通过 `host_api_version` 与宿主协商兼容版本，当前为 2）。
 
 ## 1. 插件是什么
 
@@ -67,8 +67,9 @@
 - 新增 HTTP 路由 / API 端点；
 - 注册事件钩子、中间件或 Webhook；
 - 扩展 JavDB/GFriends 等 metadata provider 与索引器；
-- 按主库资源 ID 做通用处理（插件没有按 ID 查询/更新主库任意资源的方法，
-  只有 `import_movie_by_number` / `import_subtitle` 两个写侧入口）；
+- 按主库资源 ID 做通用处理（插件不能按条件批量查询/更新主库任意资源；
+  写侧入口只有 `import_movie_by_number` / `import_subtitle` / `movies.patch` 三个，
+  `movies.get` / `find_by_numbers` 只能按 id / 番号单点读取快照）；
 - 查询主库业务状态（例如"哪些影片缺字幕/缺封面"），`list_existing_movie_numbers()`
   只能拿到全部番号集合；
 - 直接访问数据库；
@@ -97,7 +98,7 @@
   "plugin_id": "subtitle_fetch",
   "display_name": "字幕抓取",
   "version": "1.0.0",
-  "host_api_version": 1,
+  "host_api_version": 2,
   "requires_python": ">=3.10",
   "author": "example",
   "homepage": "https://example.com/subtitle_fetch"
@@ -189,7 +190,7 @@ uv run python -m src.start.commands plugins clear-field-owners \
 | `plugin_id` | 是 | `^[a-z][a-z0-9_]*$`，与目录名、`plugins.enabled` 项一致 |
 | `display_name` | 是 | 展示名 |
 | `version` | 是 | 插件版本（PEP 440） |
-| `host_api_version` | 是 | 插件声明的宿主接口版本，必须满足 `MIN_SUPPORTED <= v <= HOST_API_VERSION`（当前均为 1） |
+| `host_api_version` | 是 | 插件声明的宿主接口版本，必须满足 `MIN_SUPPORTED <= v <= HOST_API_VERSION`（当前 `MIN_SUPPORTED=1`、`HOST_API_VERSION=2`；以 manifest 声明为准） |
 | `requires_python` | 否 | 与宿主 Python 解释器（3.10）校验 |
 | `author` / `homepage` | 否 | 展示信息 |
 
@@ -223,7 +224,7 @@ def register(context: PluginContext) -> PluginRegistration:
 | `plugin_id` | 必须与 manifest / 目录名一致 |
 | `display_name` | 展示名 |
 | `version` | 必须与 manifest 完全一致 |
-| `host_api_version` | 区间校验（当前必须为 1） |
+| `host_api_version` | 区间校验（当前 `[1, 2]`，以 manifest 声明为准；与 register 声明不一致时告警但以 manifest 为准，见 4.2） |
 | `jobs` | `JobDefinition` 元组，允许为空 |
 | `extensions` | `PluginExtension` 元组，允许为空；业务领域扩展声明，当前登记的扩展点见 6.6 |
 
@@ -691,8 +692,9 @@ enabled = ["subtitle_fetch"]
 
 **宿主升级会破坏我的插件吗？**
 
-`host_api_version` 区间校验提供了兼容信号：宿主只在不破坏现有契约时
-提高 `HOST_API_VERSION`，只有破坏性变更才提高 `MIN_SUPPORTED_HOST_API_VERSION`。
+`host_api_version` 区间校验提供了兼容信号：契约只增不减时提高
+`HOST_API_VERSION`；破坏性行为变更不会强制提高 `MIN_SUPPORTED_HOST_API_VERSION`
+（v1 插件仍可加载，但运行期行为按最新版本语义执行，见 6.8 的 v2 说明）。
 插件应只依赖本文描述的公开契约，不绑定宿主内部实现。
 
 **插件任务会并发运行吗？**
