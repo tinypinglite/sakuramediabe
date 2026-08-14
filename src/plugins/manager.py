@@ -16,9 +16,14 @@ from src.plugins.installer import PluginInstaller, PluginInstallError
 from src.plugins.loader import PLUGIN_LOAD_ERRORS, PluginLoadError, check_plugin_dir
 from src.plugins.manifest import (
     MANIFEST_FILENAME,
+    PLUGIN_ID_PATTERN,
     PluginManifest,
     load_manifest_from_file,
 )
+
+
+class PluginSettingsValidationError(ValueError):
+    """插件私有配置不合法（如包含 null），区别于「插件不存在」。"""
 
 
 def _plugin_root() -> Path:
@@ -211,3 +216,39 @@ class PluginManager:
             return
         current.plugins.enabled = enabled_ids
         update_settings(current)
+
+    # ---- 配置 ----
+
+    def get_plugin_settings(self, plugin_id: str) -> dict[str, Any]:
+        """读取插件私有配置；未安装返回 [ValueError]，调用方负责映射为 404。"""
+        if self.get_plugin(plugin_id) is None:
+            raise ValueError(f"插件未安装: {plugin_id}")
+        return dict(settings.plugins.settings.get(plugin_id, {}))
+
+    def set_plugin_settings(
+        self,
+        plugin_id: str,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        """整体替换插件私有配置并落盘；未安装返回 [ValueError]。"""
+        if not PLUGIN_ID_PATTERN.fullmatch(plugin_id):
+            raise ValueError(f"非法插件 ID: {plugin_id}")
+        if self.get_plugin(plugin_id) is None:
+            raise ValueError(f"插件未安装: {plugin_id}")
+        self._reject_none_values(values)
+        current = Settings.model_validate(settings.model_dump())
+        current.plugins.settings[plugin_id] = values
+        update_settings(current)
+        return dict(values)
+
+    @staticmethod
+    def _reject_none_values(values: Any, path: str = "settings") -> None:
+        """递归拒绝 null：TOML 落盘会静默丢键或把 null 写成 "None"。"""
+        if values is None:
+            raise PluginSettingsValidationError(f"插件配置不支持 null: {path}")
+        if isinstance(values, dict):
+            for key, item in values.items():
+                PluginManager._reject_none_values(item, f"{path}.{key}")
+        elif isinstance(values, list):
+            for index, item in enumerate(values):
+                PluginManager._reject_none_values(item, f"{path}[{index}]")

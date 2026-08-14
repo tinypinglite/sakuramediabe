@@ -11,16 +11,19 @@ import shutil
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Request, UploadFile
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
 from src.plugins.installer import MAX_ARCHIVE_BYTES
-from src.plugins.manager import PluginManager
+from src.plugins.manager import PluginManager, PluginSettingsValidationError
 from src.schema.system.plugins import (
     PluginDetailResource,
     PluginInstallResponse,
+    PluginSettingsResource,
+    PluginSettingsUpdateResource,
     PluginSummaryResource,
 )
 
@@ -73,6 +76,31 @@ def get_plugin(plugin_id: str):
     if detail is None:
         raise ApiError(404, "plugin_not_found", f"未知插件 plugin_id={plugin_id}")
     return detail
+
+
+@router.get("/{plugin_id}/settings", response_model=PluginSettingsResource)
+def get_plugin_settings(plugin_id: str):
+    manager = PluginManager()
+    try:
+        settings_values = manager.get_plugin_settings(plugin_id)
+    except ValueError as exc:
+        raise ApiError(404, "plugin_not_found", str(exc)) from exc
+    return PluginSettingsResource(settings=settings_values)
+
+
+@router.put("/{plugin_id}/settings", response_model=PluginSettingsUpdateResource)
+def update_plugin_settings(plugin_id: str, payload: dict[str, Any] = Body(...)):
+    manager = PluginManager()
+    try:
+        settings_values = manager.set_plugin_settings(plugin_id, payload)
+    except PluginSettingsValidationError as exc:
+        raise ApiError(422, "invalid_plugin_settings", str(exc)) from exc
+    except ValueError as exc:
+        raise ApiError(404, "plugin_not_found", str(exc)) from exc
+    return PluginSettingsUpdateResource(
+        settings=settings_values,
+        pending_restart=["api", "aps"],
+    )
 
 
 @router.post("", response_model=PluginInstallResponse, status_code=201)

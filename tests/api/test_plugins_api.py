@@ -127,3 +127,73 @@ def test_install_plugin_rejects_invalid_zip(
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "plugin_install_failed"
+
+
+def test_plugin_settings_endpoints(
+    client,
+    account_user,
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "plugins"
+    monkeypatch.setattr("src.plugins.manager._plugin_root", lambda: root)
+    monkeypatch.setattr(
+        "src.plugins.manager.update_settings",
+        lambda new_settings: setattr(settings, "plugins", new_settings.plugins),
+    )
+    token = _login(client, username=account_user.username)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.post(
+        "/system/plugins",
+        headers=headers,
+        files={"file": ("demo.zip", _zip_bytes(), "application/zip")},
+        data={"enable": "true"},
+    )
+    assert response.status_code == 201
+
+    response = client.get("/system/plugins/api_plugin/settings", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"settings": {}}
+
+    payload = {"overlap_days": 7, "tags": ["4k", "sub"]}
+    response = client.put(
+        "/system/plugins/api_plugin/settings",
+        headers=headers,
+        json=payload,
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "settings": payload,
+        "pending_restart": ["api", "aps"],
+    }
+
+    response = client.get("/system/plugins/api_plugin/settings", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"settings": payload}
+
+    response = client.put(
+        "/system/plugins/api_plugin/settings",
+        headers=headers,
+        json={"secret": None, "tags": ["4k", None]},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_plugin_settings"
+    response = client.get("/system/plugins/api_plugin/settings", headers=headers)
+    assert response.json() == {"settings": payload}
+
+    response = client.get("/system/plugins/missing_plugin/settings", headers=headers)
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "plugin_not_found"
+
+    response = client.put(
+        "/system/plugins/missing_plugin/settings",
+        headers=headers,
+        json={"x": 1},
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "plugin_not_found"
+
+    # 清理全局配置，避免影响同进程内的其它测试。
+    settings.plugins.enabled = []
+    settings.plugins.settings = {}

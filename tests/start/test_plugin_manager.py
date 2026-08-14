@@ -11,7 +11,7 @@ from click.testing import CliRunner
 
 from src.config.config import settings
 from src.plugins.installer import PluginInstallError
-from src.plugins.manager import PluginManager
+from src.plugins.manager import PluginManager, PluginSettingsValidationError
 from src.start.commands import main
 
 
@@ -106,6 +106,43 @@ def test_manager_set_enabled_persists_via_config(monkeypatch, tmp_path):
     assert captured["enabled"] == ["demo_plugin"]
     manager.set_enabled("demo_plugin", False)
     assert captured["enabled"] == []
+
+
+def test_manager_plugin_settings_roundtrip_persists(monkeypatch, tmp_path):
+    root = tmp_path / "root"
+    manager = PluginManager(root_dir=root)
+    manager.install(_make_plugin_dir(tmp_path), enable=False)
+    captured = {}
+
+    def fake_update_settings(new_settings):
+        captured["settings"] = dict(new_settings.plugins.settings)
+        settings.plugins.settings = dict(new_settings.plugins.settings)
+
+    monkeypatch.setattr("src.plugins.manager.update_settings", fake_update_settings)
+
+    assert manager.get_plugin_settings("demo_plugin") == {}
+
+    values = {"overlap_days": 7, "tags": ["4k"]}
+    result = manager.set_plugin_settings("demo_plugin", values)
+    assert result == values
+    assert captured["settings"]["demo_plugin"] == values
+    assert manager.get_plugin_settings("demo_plugin") == values
+
+    with pytest.raises(PluginSettingsValidationError, match="null"):
+        manager.set_plugin_settings("demo_plugin", {"secret": None})
+    with pytest.raises(PluginSettingsValidationError, match="null"):
+        manager.set_plugin_settings(
+            "demo_plugin",
+            {"tags": ["4k", None]},
+        )
+    with pytest.raises(ValueError, match="非法插件 ID"):
+        manager.set_plugin_settings("bad-id!", {})
+    with pytest.raises(ValueError, match="插件未安装"):
+        manager.set_plugin_settings("missing_plugin", {})
+    with pytest.raises(ValueError, match="插件未安装"):
+        manager.get_plugin_settings("missing_plugin")
+
+    settings.plugins.settings = {}
 
 
 def test_manager_install_replaces_code_and_preserves_data(tmp_path):
