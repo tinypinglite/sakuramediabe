@@ -163,7 +163,8 @@ torrent-only 候选的 `info_hash` 做死种黑名单比对。被内容闸门或
 ### 种子内容闸门
 
 `POST /download-requests` 对应的 `DownloadRequestService.create_request` 在分派下载器**之前**，
-先拉取候选的 `.torrent` 并解析文件列表，内容不可导入时直接拒绝提交。实现在
+先拉取候选的 `.torrent` 并解析文件列表，内容不可导入时直接拒绝提交；**只有磁力链的候选
+直接放行**（内容校验推迟到导入阶段，见下）。实现在
 `src/service/transfers/downloads/guards/torrent_content_guard.py`。qB 与 115 共用这个入口，自动下载与手动提交
 也都走它，因此这是唯一需要维护的拦截点。
 
@@ -203,7 +204,8 @@ torrent-only 候选的 `info_hash` 做死种黑名单比对。被内容闸门或
 两类错误码，区别只体现在给 HTTP 调用方的语义上；**自动下载对两者一视同仁地换种**：
 
 - `download_candidate_content_rejected`（422）：内容确定不合格
-- `download_candidate_content_unverifiable`（502）：拿不到或解析不了种子文件
+- `download_candidate_content_unverifiable`（502）：有 `.torrent` 地址但拿不到或解析不了种子文件
+  （纯磁力候选已不抛此错误——直接放行，见下）
 
 不可校验之所以也换种而不是中止该影片：中止要走 `consumes_budget=False`，而它会回滚重试计数且
 **永不判 exhausted**（`ResourceTaskRunner._finish_failed`），稳定复现的坏候选会让这部影片每轮
@@ -221,10 +223,14 @@ torrent-only 候选的 `info_hash` 做死种黑名单比对。被内容闸门或
 query 里；httpx 的异常字符串也会内嵌完整 URL，而 `details` 会被 API 层原样返回给调用方。
 因此 URL 一律经 `_redact_url` 去 query，异常一律经 `_describe_fetch_error` 压成「类型名 / HTTP 状态码」。
 
-**只有磁力链的候选一律判为不可校验。** 磁力本身不含文件列表，要拿到只能走 BEP-9 从 swarm 换
-metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 67 秒），做不了提交前的同步闸门。
-链接分流**按内容而非字段名**，与 `QBittorrentClient.add_candidate` / `resolve_magnet_from_links`
-保持一致：索引器会把磁力塞进 `torrent_url` 字段，照字段名处理会拿 `magnet:` 当 HTTP 地址去 GET。
+**只有磁力链的候选直接放行。** 磁力本身不含文件列表，要拿到只能走 BEP-9 从 swarm 换
+metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 67 秒），做不了提交前的同步
+闸门，因此不拦、内容校验推迟到下载完成后的导入阶段：原盘（只有 `.iso`）导入时扫不到
+合格视频会明确失败（`ImportJob` failed + `DownloadTask.import_status=failed`），合集包会
+混入媒体库，由用户删任务清理。放行路径的种子身份从磁力 btih 解析——btih 与 `.torrent`
+的 `info_hash` 是同一值，选种黑名单语义不变。链接分流**按内容而非字段名**，与
+`QBittorrentClient.add_candidate` / `resolve_magnet_from_links` 保持一致：索引器会把磁力
+塞进 `torrent_url` 字段，照字段名处理会拿 `magnet:` 当 HTTP 地址去 GET。
 
 #### 选种黑名单
 
@@ -232,7 +238,8 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 
 - 黑名单 = 该番号下所有已判死 `DownloadTask` 的 `info_hash`
 - 候选侧已知的 `info_hash`（torznab infohash / 磁力链）在选种阶段纯内存比对，**零网络请求**；
-  torrent-only 候选在提交阶段由内容闸门解析 `.torrent` 后确认，命中的死种按「不合格候选」换下一个
+  torrent-only 候选在提交阶段由内容闸门解析 `.torrent` 后确认，纯磁力候选在提交阶段由闸门
+  从磁力 btih 解析（放行路径顺带完成），命中的死种按「不合格候选」换下一个
 - 排除后无候选 = 本轮没找到资源，正常计入本轮没找到次数
 - **黑名单是永久的，重置查询状态不放开它。** `info_hash` 是内容寻址的——同一个 hash 就是同一个
   swarm，换个索引器它照样是死的；用户重置后真正想要的是找一个**别的**种子，而黑名单本来就不挡这个。

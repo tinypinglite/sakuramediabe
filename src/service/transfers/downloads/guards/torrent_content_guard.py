@@ -1,9 +1,17 @@
 """种子内容闸门：提交下载前先看清种子里到底有没有能导入的视频。
 
-判据建立在导入侧既有的约束上——受支持的视频后缀（``SUPPORTED_VIDEO_EXTENSIONS``）
-与最小视频体积（``allowed_min_video_file_size``）——因此"选种阶段拒绝的"恒等于"导入阶段会
-丢弃的"，两边不会漂移；将来支持新容器格式或调整体积阈值，闸门自动跟随，不需要在这里维护
-任何格式关键词表。合集判定额外复用导入侧的番号解析函数（见 ``count_distinct_movie_numbers``）。
+闸门是"尽力而为的预检"而不是硬闸门：**候选能拿到 .torrent 文件列表时才校验**，
+只有磁力链的候选直接放行、内容校验推迟到下载完成后的导入阶段（磁力本身不含文件列表，
+要拿到只能走 BEP-9 从 swarm 换 metadata，冷门种子实测几十秒到几分钟都换不到，做不了
+提交前的同步闸门）。放行的代价是原盘/合集包会真实下载下来：原盘导入时无合格视频会
+明确失败（`ImportJob` failed + `DownloadTask.import_status=failed`），合集包会混入媒体库，
+由用户删任务清理。
+
+有文件列表时的判据建立在导入侧既有的约束上——受支持的视频后缀
+（``SUPPORTED_VIDEO_EXTENSIONS``）与最小视频体积（``allowed_min_video_file_size``）——
+因此"选种阶段拒绝的"恒等于"导入阶段会丢弃的"，两边不会漂移；将来支持新容器格式或调整
+体积阈值，闸门自动跟随，不需要在这里维护任何格式关键词表。合集判定额外复用导入侧的
+番号解析函数（见 ``count_distinct_movie_numbers``）。
 
 拦住的是三类真实存在、且靠标题和体积都判不出来的资源：
 - 蓝光/DVD 原盘：正片是单个 ``.iso``，合格视频数为 0。实测原盘与压制版标题可以逐字相同，
@@ -28,9 +36,14 @@ from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS, video_suffix
 from src.config.config import settings
+from src.service.transfers.downloads.clients.qbittorrent import (
+    QBittorrentClient,
+    QBittorrentClientError,
+)
 from src.service.transfers.imports.source_scanner import (
     parse_movie_number_from_scan_path,
 )
+from src.service.transfers.shared.common import canonicalize_btih
 
 # 内容确定不合格：换一个候选就能解决，调用方应据此重选。
 ERROR_CODE_CONTENT_REJECTED = "download_candidate_content_rejected"
@@ -201,23 +214,42 @@ def assert_candidate_content_importable(
     内容通过时返回从 .torrent 解析出的 canonical info_hash（torrent-only 候选的身份
     只能在提交前这一拉里廉价确定，调用方用它做死种黑名单比对）。
 
-    只有磁力链的候选一律判为不可校验：磁力本身不含文件列表，要拿到只能走 BEP-9 从 swarm
-    换 metadata，实测冷门种子经常几分钟都换不到，做不了提交前的同步闸门。
+    **只有磁力链的候选直接放行**：磁力本身不含文件列表，要拿到只能走 BEP-9 从 swarm
+    换 metadata，冷门种子实测几十秒到几分钟都换不到，做不了提交前的同步闸门。
+    放行时内容校验推迟到下载完成后的导入阶段（原盘无合格视频会明确导入失败），
+    种子身份改从磁力 btih 解析——btih 与 .torrent 的 info_hash 是同一值，死种黑名单
+    语义不变。
 
     与下游提交器一致**按内容而非字段名**分流（见 ``QBittorrentClient.add_candidate`` 与
     ``resolve_magnet_from_links``）：索引器会把磁力塞进 torrent_url 字段，照字段名处理会拿
     ``magnet:`` 当 HTTP 地址去 GET，白白重试到超时再报一个与真实原因无关的错误。
     """
     normalized_torrent_url = (torrent_url or "").strip()
+    magnet_link = (magnet_url or "").strip()
     if normalized_torrent_url.lower().startswith("magnet:"):
+        magnet_link = magnet_link or normalized_torrent_url
         normalized_torrent_url = ""
     if not normalized_torrent_url:
-        raise ApiError(
-            502,
-            ERROR_CODE_CONTENT_UNVERIFIABLE,
-            "候选只提供了磁力链，无法在下载前校验资源内容",
-            {"title": title, "has_magnet": bool((magnet_url or "").strip())},
-        )
+        # 纯磁力候选：内容不可预检，直接放行；身份从磁力 btih 提取。
+        # 磁力链必有 btih，解析不出来就不是合法磁力，下游（115 / qB）同样提交不了，拒绝合理。
+        try:
+            raw_hash = QBittorrentClient.parse_hash_from_magnet(magnet_link)
+        except QBittorrentClientError as exc:
+            raise ApiError(
+                422,
+                "invalid_download_request_candidate",
+                "候选磁力链缺少可解析的 btih",
+                {"title": title},
+            ) from exc
+        try:
+            return canonicalize_btih(raw_hash)
+        except ValueError as exc:
+            raise ApiError(
+                422,
+                "invalid_download_request_candidate",
+                "候选磁力链 btih 无法解析",
+                {"title": title, "detail": str(exc)},
+            ) from exc
 
     inspection = fetch_torrent_files(normalized_torrent_url, http_client=http_client)
     files = inspection.files
