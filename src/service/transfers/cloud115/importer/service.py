@@ -39,8 +39,8 @@ from src.common.media_import_status import (
     IMPORT_JOB_STATE_RUNNING,
     make_failure_item,
 )
-from src.common.service_helpers import emit_progress, rest_between_requests_async
 from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import emit_progress, rest_between_requests_async
 from src.lib.cloud115 import Cloud115Client
 from src.model import ImportJob, MediaLibrary, Movie
 from src.service.cloud115 import (
@@ -473,13 +473,18 @@ class Cloud115ImportService:
 
         三重前提缺一不可：
         1. 仅限软件自建的离线缓冲区来源，用户手动选的目录一律不动；
-        2. 本次无失败项——番号识别不出的视频计入 failed，因此不会误删还需重导的内容；
+        2. 本次无失败项；有媒体产出时可以清理，番号识别不出的视频计入 failed，
+           零产出但有 skipped 的候选必须保留，便于查看文件和重导；
         3. 来源不是缓冲区根目录本身（防御性兜底，执行阶段已校验过归属）。
 
         非视频残留（nfo / 封面 / 种子 / 判定过小的样本）一并删除，回收站提供误删缓冲。
         删除失败只记告警：文件已入库，不该把作业翻成失败。
         """
-        if not managed_download_source or stats["failed"] > 0:
+        if (
+            not managed_download_source
+            or stats["failed"] > 0
+            or (stats["imported"] == 0 and stats["skipped"] > 0)
+        ):
             return
         download_root_cid = str(config.get("download_root_cid") or "")
         if not download_root_cid or source_cid == download_root_cid:
@@ -546,4 +551,3 @@ class Cloud115ImportService:
             "failed_count": stats["failed"],
             "new_playable_movies": list(new_playable_movies.values()),
         }
-

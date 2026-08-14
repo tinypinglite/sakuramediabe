@@ -4,6 +4,7 @@ import pytest
 from src.lib.cloud115 import (
     Cloud115AuthError,
     Cloud115Client,
+    Cloud115NotFoundError,
     Cloud115RequestError,
     Cloud115RiskControlError,
     DirectUrl,
@@ -74,6 +75,51 @@ async def test_transport_retries_get_but_not_post() -> None:
         assert post_attempts == 1
     finally:
         await post_http_client.aclose()
+
+
+async def test_list_dir_rejects_115_root_fallback_for_missing_cid() -> None:
+    async_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "state": True,
+                    "cid": "0",
+                    "data": [],
+                    "count": 0,
+                },
+            )
+        )
+    )
+    client = Cloud115Client(MOCK_COOKIES, http_client=async_client)
+    try:
+        with pytest.raises(Cloud115NotFoundError):
+            await client.list_dir("missing-cid")
+    finally:
+        await async_client.aclose()
+
+
+async def test_iter_files_recursive_rejects_115_root_fallback_for_missing_cid() -> None:
+    async_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "state": True,
+                    "cid": "0",
+                    "data": [],
+                    "count": 0,
+                },
+            )
+        )
+    )
+    client = Cloud115Client(MOCK_COOKIES, http_client=async_client)
+    try:
+        with pytest.raises(Cloud115NotFoundError):
+            async for _entry in client.iter_files_recursive("missing-cid"):
+                pass
+    finally:
+        await async_client.aclose()
 
 
 async def test_transport_maps_waf_405_to_risk_control() -> None:

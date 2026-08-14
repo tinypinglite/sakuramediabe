@@ -10,6 +10,8 @@
    读的是同一个"活跃任务"集合，两边一旦脱节就会出现"页面说缺资源、调度说别搜"。
 """
 
+import json
+
 import pytest
 
 from src.common.media_import_status import (
@@ -18,7 +20,14 @@ from src.common.media_import_status import (
     IMPORT_STATUS_PENDING,
     IMPORT_STATUS_RUNNING,
 )
-from src.model import DownloadClient, DownloadTask, Media, MediaLibrary, Movie
+from src.model import (
+    DownloadClient,
+    DownloadTask,
+    ImportJob,
+    Media,
+    MediaLibrary,
+    Movie,
+)
 from src.schema.catalog.subscriptions import MovieSubscriptionStatus
 from src.service.catalog import MovieSubscriptionService
 
@@ -85,6 +94,61 @@ def test_finished_import_without_media_is_import_failed(client, import_status):
     )
 
     assert _status_of("ABP-001") == MovieSubscriptionStatus.IMPORT_FAILED.value
+
+
+def test_zero_output_import_operation_is_marked_no_media(client):
+    _subscribe("ABP-005")
+    task = _task(
+        client,
+        "ABP-005",
+        download_state="completed",
+        import_status=IMPORT_STATUS_COMPLETED,
+    )
+    ImportJob.create(
+        source_path="cloud115:source-005",
+        source_cid="source-005",
+        library=client.media_library,
+        download_task=task,
+        state="completed",
+        imported_count=0,
+        skipped_count=6,
+        failed_count=0,
+        failed_files=json.dumps([{"path": "sample.mp4", "reason": "file_too_small"}]),
+    )
+
+    operation = MovieSubscriptionService._load_latest_import_operations(
+        ["ABP-005"]
+    )["ABP-005"]
+
+    assert operation.outcome == "no_media"
+
+
+def test_malformed_failed_files_json_shape_does_not_break_import_operation(client):
+    _subscribe("ABP-006")
+    task = _task(
+        client,
+        "ABP-006",
+        download_state="completed",
+        import_status=IMPORT_STATUS_COMPLETED,
+    )
+    ImportJob.create(
+        source_path="cloud115:source-006",
+        source_cid="source-006",
+        library=client.media_library,
+        download_task=task,
+        state="completed",
+        imported_count=0,
+        skipped_count=0,
+        failed_count=0,
+        failed_files="null",
+    )
+
+    operation = MovieSubscriptionService._load_latest_import_operations(
+        ["ABP-006"]
+    )["ABP-006"]
+
+    assert operation.retryable_file_count == 0
+    assert operation.failure_reason is None
 
 
 @pytest.mark.parametrize(
@@ -323,5 +387,3 @@ def test_search_state_branches_map_kernel_vocabulary(client):
     assert _status_of("SRCH-003") == MovieSubscriptionStatus.FAILED.value
     assert _status_of("SRCH-004") == MovieSubscriptionStatus.MISSING.value
     assert _status_of("SRCH-005") == MovieSubscriptionStatus.PENDING.value
-
-

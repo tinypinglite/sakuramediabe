@@ -3,7 +3,15 @@ from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call
 
-from src.lib.cloud115 import DirBreadcrumb, DirEntry, DirMeta
+from src.api.exception.errors import ApiError
+from src.lib.cloud115 import (
+    Cloud115Error,
+    Cloud115NotFoundError,
+    DirBreadcrumb,
+    DirEntry,
+    DirMeta,
+)
+from src.lib.cloud115.transport import Cloud115Transport
 from src.service.transfers.cloud115.importer.common import (
     Cloud115TargetDirCache,
     Cloud115TargetDirResolver,
@@ -87,6 +95,76 @@ class _FakeSourceTreeClient:
 
 def _is_video(entry):
     return entry.name.endswith(".mp4")
+
+
+def test_deleted_cloud115_directory_error_is_not_found():
+    error = Cloud115Transport._map_errno(
+        {"state": False, "errNo": 70005, "error": "文件不存在或已删除"},
+        endpoint="https://webapi.115.com/category/get",
+    )
+
+    assert isinstance(error, Cloud115NotFoundError)
+
+
+def test_cloud115_errno_1001_is_parameter_error_not_not_found():
+    error = Cloud115Transport._map_errno(
+        {"state": False, "errNo": 1001, "error": "参数错误"},
+        endpoint="https://webapi.115.com/category/get",
+    )
+
+    assert type(error) is Cloud115Error
+
+
+def test_cloud115_category_not_found_errno_is_endpoint_scoped():
+    error = Cloud115Transport._map_errno(
+        {"state": False, "errNo": 70005, "error": "文件不存在或已删除"},
+        endpoint="https://webapi.115.com/files/get_info",
+    )
+
+    assert type(error) is Cloud115Error
+
+
+def test_cloud115_files_get_info_not_found_errno_is_endpoint_scoped():
+    error = Cloud115Transport._map_errno(
+        {"state": False, "errNo": 20018, "error": "文件不存在或已删除"},
+        endpoint="https://webapi.115.com/files/get_info",
+    )
+
+    assert isinstance(error, Cloud115NotFoundError)
+
+
+def test_download_task_files_validates_cloud115_source_directory(monkeypatch):
+    import pytest as _pytest
+
+    client = SimpleNamespace()
+
+    @asynccontextmanager
+    async def fake_client_for(_library):
+        yield client
+
+    collect_files = AsyncMock(
+        side_effect=Cloud115NotFoundError("source directory missing")
+    )
+    monkeypatch.setattr("src.service.cloud115.cloud115_client_for", fake_client_for)
+    monkeypatch.setattr(
+        "src.service.transfers.cloud115.importer.common.collect_cloud115_source_files",
+        collect_files,
+    )
+
+    from src.service.transfers.downloads.task_service import DownloadTaskService
+
+    task = SimpleNamespace(
+        id=123,
+        target_ref={"cid": "missing"},
+        client=SimpleNamespace(media_library=object()),
+    )
+
+    with _pytest.raises(ApiError) as exc_info:
+        DownloadTaskService._list_cloud115_task_files(task)
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.code == "cloud115_download_task_source_unavailable"
+    collect_files.assert_awaited_once()
 
 
 def test_source_scan_resolves_only_direct_parents_without_touching_empty_dirs():
@@ -1236,6 +1314,8 @@ class _FakeDeleteClient:
 def _run_source_cleanup(
     *,
     managed: bool,
+    imported: int = 1,
+    skipped: int = 0,
     failed: int = 0,
     source_cid: str = "task-dir",
     download_root_cid: str | None = "downloads-root",
@@ -1243,7 +1323,7 @@ def _run_source_cleanup(
 ):
     client = client or _FakeDeleteClient()
     failure_items: list[dict] = []
-    stats = {"imported": 1, "skipped": 0, "failed": failed}
+    stats = {"imported": imported, "skipped": skipped, "failed": failed}
     config = {}
     if download_root_cid is not None:
         config["download_root_cid"] = download_root_cid
@@ -1275,6 +1355,14 @@ def test_manual_import_never_deletes_its_source_dir():
 def test_source_dir_is_kept_when_any_file_failed():
     """有失败项说明还需重导（如番号识别不出），源必须留着。"""
     client, _failure_items, _stats = _run_source_cleanup(managed=True, failed=1)
+    assert client.deleted == []
+
+
+def test_source_dir_is_kept_when_no_media_was_imported():
+    """零产出但有跳过候选时保留源目录，供用户查看和重导。"""
+    client, _failure_items, _stats = _run_source_cleanup(
+        managed=True, imported=0, skipped=6
+    )
     assert client.deleted == []
 
 

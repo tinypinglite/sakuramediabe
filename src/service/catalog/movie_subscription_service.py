@@ -34,15 +34,15 @@ from src.schema.catalog.subscriptions import (
     MovieSubscriptionStatusCountsResource,
 )
 from src.schema.common.pagination import PageResponse
-from src.service.transfers.shared.common import (
-    active_download_task_exists_expression,
-    download_task_dead_expression,
-    unfinished_import_download_task_exists_expression,
-)
 from src.service.transfers.downloads.auto_subscribed.search_state_service import (
     ERROR_CODE_NO_CANDIDATE,
     SubscribedMovieSearchStateService,
     search_state_join_condition,
+)
+from src.service.transfers.shared.common import (
+    active_download_task_exists_expression,
+    download_task_dead_expression,
+    unfinished_import_download_task_exists_expression,
 )
 
 # 这些 transfers 域导入可以写在模块级，前提是 transfers 侧一律**从子模块而非 src.service.catalog
@@ -265,7 +265,9 @@ class MovieSubscriptionService:
 
         from src.common.media_import_status import TERMINAL_JOB_STATES
         from src.model import ImportJob
-        from src.service.transfers.shared.base_import_job_service import BaseImportJobService
+        from src.service.transfers.shared.base_import_job_service import (
+            BaseImportJobService,
+        )
 
         rows = (
             ImportJob.select(
@@ -300,6 +302,9 @@ class MovieSubscriptionService:
                 failure_items = json.loads(failed_files) if failed_files else []
             except (TypeError, ValueError):
                 failure_items = []
+            if not isinstance(failure_items, list):
+                # 合法 JSON 也可能是 null/对象/标量，不能让脏历史数据打挂订阅列表。
+                failure_items = []
             retryable_file_count = sum(
                 1
                 for item in failure_items
@@ -326,10 +331,12 @@ class MovieSubscriptionService:
                 if retryable_file_count:
                     available_actions.append("retry_failed_files")
                 available_actions.append("rerun_import")
+            outcome = "no_media" if imported == 0 and failed == 0 else "failed"
             operations[movie_number] = MovieSubscriptionImportOperationResource(
                 import_job_id=job_id,
                 download_task_id=download_task_id,
                 state=state,
+                outcome=outcome,
                 imported_count=imported,
                 skipped_count=skipped,
                 failed_count=failed,

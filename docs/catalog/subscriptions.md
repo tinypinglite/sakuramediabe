@@ -53,9 +53,9 @@
 七项由服务端**一个** SQL CASE 表达式判定（`MovieSubscriptionService._status_expression()`），
 筛选、计数、列表展示共用它。因此各状态严格互斥，`/status-counts` 各项之和恒等于 `total`。
 
-⚠️ **`import_failed`（导入失败）与 `failed`（查询出错）是两回事**：前者是种子下完了、文件已经在
-盘上，卡在入库那一步；后者是索引器调用出错、压根还没找到资源。前端文案必须分别念作「导入失败」
-与「查询出错」，别都写成「失败」。
+⚠️ **`import_failed` 是「未入库」操作桶，不等于每条都发生了异常**：其中可能是真正导入失败，
+也可能是导入作业正常结束但零媒体产出（例如全部候选都被跳过）。前者在行内显示「导入失败」，
+后者显示「未产出媒体」；`failed`（查询出错）仍是另一件事。
 
 `downloading` 与 `import_failed` 是对「有活跃下载任务」这一集合的**二分**——两者并集恒等于该集合，
 所以这次细分不改变任何影片的归属，只是把原来的一个桶一分为二。这条不变量必须守住：
@@ -120,7 +120,8 @@ Query：
 响应：`PageResponse<MovieSubscriptionListItemResource>`。
 
 `import_failed` 档的 `import_operation` 除作业 id、计数与 `available_actions` 外，
-还返回首条失败条目的 `failure_reason`（原始码，如 `no_media_files_found`）与
+还返回 `outcome`（`failed` / `no_media`），用于区分真正失败与零产出，以及首条失败条目的
+`failure_reason`（原始码，如 `no_media_files_found`）与
 `failure_detail`（如"下载目录中没有扫描到可导入的视频"），供订阅行直接展示
 "为什么没导进去"；没有失败条目时两者为 `null`。详细 `failed_files`（含每条路径）
 仍在导入作业详情接口 `GET /media-imports/import-jobs/{import_job_id}` 返回。

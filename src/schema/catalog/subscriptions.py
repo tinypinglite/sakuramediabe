@@ -71,6 +71,8 @@ class MovieSubscriptionImportOperationResource(SchemaModel):
     # 关联下载任务 id；导入作业为手动目录导入（无 download_task）时为 None。
     download_task_id: int | None = None
     state: str
+    # 导入作业已结束但没有 Media 产出时标记为 no_media；真正存在失败项时为 failed。
+    outcome: str = "failed"
     imported_count: int = 0
     skipped_count: int = 0
     failed_count: int = 0

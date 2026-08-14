@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.lib.cloud115.capabilities.base import Cloud115Capability
 from src.common.service_helpers import poll_until
+from src.lib.cloud115.capabilities.base import Cloud115Capability
 from src.lib.cloud115.exceptions import Cloud115NotFoundError, Cloud115RequestError
 from src.lib.cloud115.types import DirBreadcrumb, DirEntry, DirMeta, FileMeta
 
@@ -41,6 +41,7 @@ class FilesCapability(Cloud115Capability):
         if not payload.get("state"):
             # state=False 时统一按 errno 映射（990002 = 父目录不存在 -> NotFound；auth 类 -> AuthError）
             raise self._map_errno(payload, endpoint=url)
+        self._ensure_listing_scope(payload, cid, endpoint=url)
         entries = [self._parse_dir_entry(raw) for raw in (payload.get("data") or [])]
         total = int(payload.get("count", 0))
         return entries, total
@@ -115,8 +116,8 @@ class FilesCapability(Cloud115Capability):
             )
         url = f"{self._BASE_WEBAPI}/category/get"
         payload = await self._request_json("GET", url, params={"cid": cid})
-        # category/get 的失败态：state=false + errNo=1001 参数错 / cid 不存在
-        # 与 list_dir 的 state 判定风格保持一致
+        # category/get 的失败态：cid=0 等参数错误返回 errNo=1001；已删除/不存在 cid
+        # 返回 errNo=70005，统一交给 transport 按 endpoint 映射。
         if not payload.get("state"):
             raise self._map_errno(payload, endpoint=url)
         return self._parse_dir_meta(cid, payload)
@@ -194,6 +195,7 @@ class FilesCapability(Cloud115Capability):
             payload = await self._request_json("GET", url, params=params)
             if not payload.get("state"):
                 raise self._map_errno(payload, endpoint=url)
+            self._ensure_listing_scope(payload, cid, endpoint=url)
             batch = [self._parse_dir_entry(raw) for raw in (payload.get("data") or [])]
             total = int(payload.get("count", 0))
             if not batch:
@@ -321,6 +323,17 @@ class FilesCapability(Cloud115Capability):
             play_long=int(float(play_long_raw)) if play_long_raw not in (None, "") else None,
             ic=int(ic_raw) if ic_raw not in (None, "") else None,
         )
+
+    @staticmethod
+    def _ensure_listing_scope(
+        payload: dict[str, Any], cid: str, *, endpoint: str
+    ) -> None:
+        """拦截 115 将不存在的 cid 静默按根目录处理的响应。"""
+        response_cid = payload.get("cid")
+        if response_cid is not None and str(response_cid) != str(cid):
+            raise Cloud115NotFoundError(
+                f"cid={cid} resolved as cid={response_cid}", endpoint=endpoint
+            )
 
     @staticmethod
     def _parse_file_meta(raw: dict[str, Any]) -> FileMeta:

@@ -28,6 +28,12 @@ from src.schema.transfers.downloads import (
 )
 from src.service.system import ActivityService
 from src.service.system.task_queue_service import TaskQueueService
+from src.service.transfers.downloads.clients.qbittorrent import (
+    QBittorrentClient,
+    QBittorrentClientError,
+    QBittorrentTorrentNotFoundError,
+    QBittorrentTorrentNotManagedError,
+)
 from src.service.transfers.downloads.common import (
     ALLOWED_DOWNLOAD_STATES,
     build_task_movie_filter,
@@ -38,15 +44,9 @@ from src.service.transfers.downloads.common import (
     resolve_task_sort,
     validate_page,
 )
+from src.service.transfers.imports.import_service import MediaImportService
 from src.service.transfers.shared.common import canonicalize_btih
 from src.service.transfers.shared.import_notifications import create_new_media_reminder
-from src.service.transfers.imports.import_service import MediaImportService
-from src.service.transfers.downloads.clients.qbittorrent import (
-    QBittorrentClient,
-    QBittorrentClientError,
-    QBittorrentTorrentNotFoundError,
-    QBittorrentTorrentNotManagedError,
-)
 
 
 class DownloadTaskService:
@@ -174,7 +174,7 @@ class DownloadTaskService:
 
         import asyncio
 
-        from src.lib.cloud115 import Cloud115Error
+        from src.lib.cloud115 import Cloud115Error, Cloud115NotFoundError
         from src.service.cloud115 import cloud115_client_for, map_cloud115_error
         from src.service.transfers.cloud115.importer.common import (
             collect_cloud115_source_files,
@@ -191,6 +191,15 @@ class DownloadTaskService:
 
         try:
             entries, rel_dirs = asyncio.run(_fetch())
+        except Cloud115NotFoundError as exc:
+            # 115 cleanup-source 成功后源目录会被移入回收站；这不是可重试的上游故障，
+            # 明确告诉调用方源目录已不可用，避免把已清理任务包装成 502。
+            raise ApiError(
+                404,
+                "cloud115_download_task_source_unavailable",
+                "115 下载任务的源目录已不存在，可能已被清理或手动删除，无法读取文件列表",
+                {"task_id": task.id},
+            ) from exc
         except Cloud115Error as exc:
             raise map_cloud115_error(exc) from exc
         except Exception as exc:

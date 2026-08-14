@@ -24,7 +24,10 @@ from src.lib.cloud115.exceptions import (
 from src.lib.cloud115.session import Cloud115Session
 
 _AUTH_ERRNOS = frozenset({50003, 50004, 99, 911, 20130827, 99999, 990009, 990017})
+# category/get 对已删除或不存在的 cid 返回 errNo=70005；1001 是参数错误，不能全局映射为 NotFound。
 _NOT_FOUND_ERRNOS = frozenset({20121, 20125, 990002, 4100003, 4100008})
+_CATEGORY_GET_NOT_FOUND_ERRNOS = frozenset({70005})
+_FILES_GET_INFO_NOT_FOUND_ERRNOS = frozenset({20018})
 _REQUEST_ERRNOS = frozenset({990005})
 _MEMBERSHIP_REQUIRED_ERRNOS = frozenset({406})
 _OFFLINE_QUOTA_EXCEEDED_ERRNOS = frozenset({10004, 10008})
@@ -399,7 +402,14 @@ class Cloud115Transport:
             return Cloud115DuplicateNameError(
                 f"{message} (errno={errno_int})", errno=errno_int, endpoint=endpoint
             )
-        if errno_int in _NOT_FOUND_ERRNOS:
+        endpoint_path = urlsplit(endpoint).path
+        if errno_int in _NOT_FOUND_ERRNOS or (
+            endpoint_path == "/category/get"
+            and errno_int in _CATEGORY_GET_NOT_FOUND_ERRNOS
+        ) or (
+            endpoint_path == "/files/get_info"
+            and errno_int in _FILES_GET_INFO_NOT_FOUND_ERRNOS
+        ):
             return Cloud115NotFoundError(
                 f"{message} (errno={errno_int})", errno=errno_int, endpoint=endpoint
             )

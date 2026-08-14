@@ -476,7 +476,9 @@ qBittorrent kind 走 qB Web API 并校验种子仍属于当前下载客户端；
 115 SDK 递归列任务目录（`target_ref.cid`）。两种来源统一返回
 `{name, size, is_dir, path}` 结构，供下载任务页展示"这个任务里到底有哪些文件"——
 导入失败时（如只有 `.iso` 原盘）用户无需翻盘即可确认原因。任务在远端已不存在时
-返回 404（qB）/ 404（115 目录已删），cookies 失效等按 115 统一错误映射返回。
+返回 404（qB）/ `cloud115_download_task_source_unavailable`（115 目录已删），cookies
+失效等按 115 统一错误映射返回。cleanup-source 导入在没有失败项且有媒体产出（或没有可导入候选）
+时清理受管源目录；零产出但有跳过候选的目录会保留，供查看和重导。
 
 进度轮询周期：qBittorrent 由 `[downloads].progress_stream_poll_interval_seconds` 配置，默认 `1.0` 秒（允许 `0.2` 至 `10` 秒，修改后需重启 API）；cloud115 由 `[downloads].cloud115_progress_poll_interval_seconds` 配置，默认 `8.0` 秒（允许 `2` 至 `60` 秒，每轮现读、热生效）。Cloud115 SSE 始终从数据库构造完整快照，仅在存在 `queued/downloading` 任务时拉 115 离线列表补进度；没有活跃任务时零 115 请求。`abandoned` 任务仍保留在快照中，状态变化广播一次后不再请求远端进度。
 

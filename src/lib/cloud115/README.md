@@ -197,6 +197,7 @@ for e in entries:
 
 **异常**：
 - `state=False` + `errno=990002`（父目录不存在）→ `Cloud115NotFoundError`
+- 115 将不存在的 `cid` 静默按根目录处理时，SDK 检查响应 `cid` 不一致并抛 `Cloud115NotFoundError`
 - `state=False` + auth 类 errno → `Cloud115AuthError`
 - 5xx → 内部重试最多 2 次后 `Cloud115RequestError`
 - 429 → `Cloud115RateLimitedError`
@@ -228,6 +229,7 @@ print(meta.name, meta.size, meta.sha1, meta.pickcode)
 **注意**：`file_info` 只接 `file_id`。**业务侧持久化的 ID 通常是 pickcode**（跨会话稳定，file_id 会因 115 内部存储位置变动而变），这种场景请用下面的 `pickcode_info`。
 
 **异常**：
+- `state=False` + `errNo=20018`（文件不存在或已删除）→ `Cloud115NotFoundError`
 - `data` 数组为空 → `Cloud115NotFoundError`（file_id 不存在）
 - 其它异常同 `list_dir`
 
@@ -267,6 +269,8 @@ for crumb in d.paths:
 - `cid`：目录 category_id 字符串；空串抛 `ValueError`
 
 **异常**：
+- `state=False` + `errNo=70005`（目录不存在或已删除）→ `Cloud115NotFoundError`
+- `state=False` + `errNo=1001`（参数错误）→ `Cloud115Error`
 - `state=False` + 未知 `errno` → `Cloud115Error`（基类，未识别的 errno 不吞）
 - auth 类 errno → `Cloud115AuthError`
 
@@ -327,6 +331,7 @@ print(du.user_agent)   # 回传给你，用于后续 Range GET
 - 固定 `o=file_name & asc=1` 排序，保证大目录跨页分页一致
 - **每条只带 parent cid，拿不到父目录名** → cid→目录名映射由上层用 `list_dir` 遍历目录结构自行维护（目录数远小于文件数）
 - `DirEntry.play_long`（已转码视频时长秒）与 `DirEntry.ic`（违规封禁标记，1=封禁）在本响应白给；未带时为 `None`
+- 115 对无效 `cid` 可能返回根目录成功响应；SDK 检查响应 `cid`，不一致时抛 `Cloud115NotFoundError`，不会把根目录内容当作请求目录返回
 
 ### `copy_files(fids, *, pid) -> None`
 
