@@ -11,7 +11,7 @@ def _create_movie(movie_number: str, **counts) -> Movie:
     )
 
 
-def test_movie_heat_v5_uses_fixed_linear_references(test_db):
+def test_movie_heat_v6_uses_fixed_linear_references(test_db):
     _create_movie("ZERO-001")
     _create_movie(
         "WATCHED-001",
@@ -35,9 +35,9 @@ def test_movie_heat_v5_uses_fixed_linear_references(test_db):
 
     result = MovieHeatService.update_movie_heat()
 
-    assert result["formula_version"] == "v5"
+    assert result["formula_version"] == "v6"
     assert Movie.get(Movie.movie_number == "ZERO-001").heat == 0
-    assert Movie.get(Movie.movie_number == "WATCHED-001").heat == 1750
-    assert Movie.get(Movie.movie_number == "WATCHED-DOUBLE-001").heat == 3500
-    assert Movie.get(Movie.movie_number == "COMMENT-001").heat == 750
-    assert Movie.get(Movie.movie_number == "ALL-001").heat == 5000
+    assert Movie.get(Movie.movie_number == "WATCHED-001").heat == 638
+    assert Movie.get(Movie.movie_number == "WATCHED-DOUBLE-001").heat == 1276
+    assert Movie.get(Movie.movie_number == "COMMENT-001").heat == 1550
+    assert Movie.get(Movie.movie_number == "ALL-001").heat == 3100
