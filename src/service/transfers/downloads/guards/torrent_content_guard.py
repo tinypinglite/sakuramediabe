@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import httpx
 import libtorrent as lt
@@ -23,7 +24,9 @@ from loguru import logger
 from src.api.exception.errors import ApiError
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS, video_suffix
 from src.config.config import settings
-from src.service.transfers.imports.source_scanner import parse_movie_number_from_scan_path
+from src.service.transfers.imports.source_scanner import (
+    parse_movie_number_from_scan_path,
+)
 
 # 内容确定不合格：换一个候选就能解决，调用方应据此重选。
 ERROR_CODE_CONTENT_REJECTED = "download_candidate_content_rejected"
@@ -32,7 +35,7 @@ ERROR_CODE_CONTENT_UNVERIFIABLE = "download_candidate_content_unverifiable"
 
 # Torznab 聚合器（如 Jackett）的 /dl/ 下载端点要回源到上游站点，偶发超时是常态（实测 30 次里有几次），重试即可恢复。
 # 次数与超时压得紧是因为调用方拿到失败后会换下一个候选：单候选的最坏耗时会被换种次数放大，
-# 自动下载一部影片最多 MAX_CONTENT_REJECTED_CANDIDATES 轮，不能让每轮都耗满退避。
+# 自动下载一部影片最多 MAX_REJECTED_CANDIDATES 轮，不能让每轮都耗满退避。
 FETCH_ATTEMPTS = 2
 FETCH_TIMEOUT_SECONDS = 20.0
 
@@ -99,12 +102,20 @@ def count_distinct_movie_numbers(files: Sequence[tuple[str, int]]) -> int:
     return len(distinct_numbers)
 
 
+@dataclass(frozen=True)
+class TorrentInspection:
+    """一次 .torrent 解析的产物：种子身份 + 文件清单。"""
+
+    info_hash: str
+    files: list[tuple[str, int]]
+
+
 def fetch_torrent_files(
     torrent_url: str,
     *,
     http_client: httpx.Client | None = None,
-) -> list[tuple[str, int]]:
-    """拉取 .torrent 并解出 (文件相对路径, 字节数) 列表。
+) -> TorrentInspection:
+    """拉取 .torrent 并解出种子 info_hash 与 (文件相对路径, 字节数) 列表。
 
     只读取 metadata，不加种、不连 DHT、不产生任何下载行为。取不到时抛
     ``ERROR_CODE_CONTENT_UNVERIFIABLE``，由调用方决定是中止还是换候选。
@@ -132,11 +143,15 @@ def fetch_torrent_files(
                     last_error,
                 )
                 continue
+            info_hash = str(torrent_info.info_hash()).lower()
             file_storage = torrent_info.files()
-            return [
-                (file_storage.file_path(index), file_storage.file_size(index))
-                for index in range(file_storage.num_files())
-            ]
+            return TorrentInspection(
+                info_hash=info_hash,
+                files=[
+                    (file_storage.file_path(index), file_storage.file_size(index))
+                    for index in range(file_storage.num_files())
+                ],
+            )
     finally:
         if owns_client:
             client.close()
@@ -155,8 +170,11 @@ def assert_candidate_content_importable(
     torrent_url: str,
     magnet_url: str,
     http_client: httpx.Client | None = None,
-) -> None:
+) -> str:
     """提交下载前的硬闸门：种子内容不可导入时拒绝提交。
+
+    内容通过时返回从 .torrent 解析出的 canonical info_hash（torrent-only 候选的身份
+    只能在提交前这一拉里廉价确定，调用方用它做死种黑名单比对）。
 
     只有磁力链的候选一律判为不可校验：磁力本身不含文件列表，要拿到只能走 BEP-9 从 swarm
     换 metadata，实测冷门种子经常几分钟都换不到，做不了提交前的同步闸门。
@@ -176,7 +194,8 @@ def assert_candidate_content_importable(
             {"title": title, "has_magnet": bool((magnet_url or "").strip())},
         )
 
-    files = fetch_torrent_files(normalized_torrent_url, http_client=http_client)
+    inspection = fetch_torrent_files(normalized_torrent_url, http_client=http_client)
+    files = inspection.files
     qualified_count = count_qualified_videos(files)
     distinct_numbers = count_distinct_movie_numbers(files)
 
@@ -233,3 +252,4 @@ def assert_candidate_content_importable(
             qualified_count,
             len(files),
         )
+    return inspection.info_hash

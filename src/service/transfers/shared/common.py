@@ -55,6 +55,10 @@ _DOWNLOAD_DEAD_STATES = frozenset({"failed", "abandoned", "stalled_dead"})
 # 公开别名：清理服务需要在原子 UPDATE 里做"非死态"守卫（in_(...) 需要排序保证参数稳定）。
 DOWNLOAD_DEAD_STATES = _DOWNLOAD_DEAD_STATES
 
+# 候选在提交前被确认命中该影片的死种黑名单（torrent-only 候选需先解析 .torrent 才能得知身份）。
+# 自动下载把它当作"不合格候选"换下一个，而不是当作提交故障消耗预算。
+ERROR_CODE_CANDIDATE_DEAD = "download_candidate_dead"
+
 
 def _download_task_movie_match_expression():
     """DownloadTask 与 Movie 的番号关联条件。

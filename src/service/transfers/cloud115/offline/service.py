@@ -33,10 +33,14 @@ from src.service.cloud115 import (
     find_or_create_subdir,
     map_cloud115_error,
 )
-from src.service.transfers.shared.common import canonicalize_btih
 from src.service.transfers.downloads.clients.qbittorrent import (
     QBittorrentClient,
     QBittorrentClientError,
+)
+from src.service.transfers.shared.common import (
+    DOWNLOAD_DEAD_STATES,
+    ERROR_CODE_CANDIDATE_DEAD,
+    canonicalize_btih,
 )
 
 
@@ -168,7 +172,8 @@ class Cloud115OfflineDownloadService:
     ) -> tuple[DownloadTask, bool]:
         """向 115 提交离线磁力任务并登记本地 DownloadTask，返回 (task, created)。
 
-        幂等性：任务键是 (client, info_hash)。本地已有记录直接复用；115 侧报"任务已存在"
+        幂等性：任务键是 (client, info_hash)。本地已有记录直接复用；已判死的记录抛
+        ``download_candidate_dead``，绝不当作可复用任务静默跳过。115 侧报"任务已存在"
         （良性重复，不扣配额）时同样落回 get_or_create 对齐远端。
         """
         magnet, info_hash = resolve_magnet_from_links(
@@ -181,6 +186,17 @@ class Cloud115OfflineDownloadService:
             (DownloadTask.client == download_client.id) & (DownloadTask.info_hash == info_hash)
         )
         if existing is not None:
+            if existing.download_state in DOWNLOAD_DEAD_STATES:
+                raise ApiError(
+                    409,
+                    ERROR_CODE_CANDIDATE_DEAD,
+                    "该种子已判死，不会重复提交；如需重试请先删除原下载任务",
+                    {
+                        "movie_number": movie_number,
+                        "info_hash": info_hash,
+                        "download_task_id": existing.id,
+                    },
+                )
             return existing, False
 
         library = download_client.media_library

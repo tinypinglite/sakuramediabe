@@ -201,6 +201,9 @@ class DownloadCandidateCreatePayload(SchemaModel):
     seeders: int
     magnet_url: str = ""
     torrent_url: str = ""
+    # 选种阶段已知的种子身份（torznab infohash / 磁力链）。为空时提交链路会在内容闸门
+    # 解析 .torrent 后补全，不要求调用方一定给。
+    info_hash: str = ""
     tags: list[str] = []
 
 

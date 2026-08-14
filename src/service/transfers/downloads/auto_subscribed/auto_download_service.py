@@ -24,13 +24,6 @@ from src.service.system.resource_task_runner import (
     RetryPolicy,
     TaskItemError,
 )
-from src.service.transfers.shared.common import (
-    active_download_task_exists_expression,
-    canonicalize_btih,
-    download_task_dead_expression,
-)
-from src.service.transfers.downloads.request_service import DownloadRequestService
-from src.service.transfers.downloads.search_service import DownloadSearchService
 from src.service.transfers.downloads.auto_subscribed.search_state_service import (
     ERROR_CODE_NO_CANDIDATE,
     TASK_KEY,
@@ -41,6 +34,14 @@ from src.service.transfers.downloads.guards.tag_rules import SUBTITLE_TAG
 from src.service.transfers.downloads.guards.torrent_content_guard import (
     ERROR_CODE_CONTENT_REJECTED,
     ERROR_CODE_CONTENT_UNVERIFIABLE,
+)
+from src.service.transfers.downloads.request_service import DownloadRequestService
+from src.service.transfers.downloads.search_service import DownloadSearchService
+from src.service.transfers.shared.common import (
+    ERROR_CODE_CANDIDATE_DEAD,
+    active_download_task_exists_expression,
+    canonicalize_btih,
+    download_task_dead_expression,
 )
 
 MIN_SIZE_BYTES = 1 * 1024 * 1024 * 1024
@@ -55,12 +56,16 @@ SUBTITLE_BONUS_BYTES = 2 * 1024 * 1024 * 1024
 # 与导入侧的番号间休息（MANUAL_GROUP_REST_*）保持同一量级。
 SUBMIT_REST_MIN_SECONDS = 10.0
 SUBMIT_REST_MAX_SECONDS = 30.0
-# 一部影片本轮最多因内容闸门换几次种。资源池里原盘通常只占头部一两条，给到 5 已经很宽；
-# 设上限是为了兜住"整池全是原盘"的病态情形——否则会把几十个候选逐个拉一遍种子文件。
-MAX_CONTENT_REJECTED_CANDIDATES = 5
-# 内容闸门给出的两种拒绝，在换种这件事上等价处理（区别只体现在给调用方的 HTTP 语义上）。
-CONTENT_GUARD_ERROR_CODES = frozenset(
-    {ERROR_CODE_CONTENT_REJECTED, ERROR_CODE_CONTENT_UNVERIFIABLE}
+# 一部影片本轮最多因内容闸门/死种确认换几次种。资源池里原盘通常只占头部一两条，给到 5 已经很宽；
+# 设上限是为了兜住"整池全是坏候选"的病态情形——否则会把几十个候选逐个拉一遍种子文件。
+MAX_REJECTED_CANDIDATES = 5
+# 内容闸门与死种黑名单给出的拒绝，在换种这件事上等价处理（区别只体现在给调用方的 HTTP 语义上）。
+CANDIDATE_REJECTION_ERROR_CODES = frozenset(
+    {
+        ERROR_CODE_CONTENT_REJECTED,
+        ERROR_CODE_CONTENT_UNVERIFIABLE,
+        ERROR_CODE_CANDIDATE_DEAD,
+    }
 )
 
 
@@ -99,6 +104,7 @@ class SubscribedMovieAutoDownloadService:
             "no_candidate_movies": 0,
             "skipped_movies": 0,
             "content_rejected_candidates": 0,
+            "dead_rejected_candidates": 0,
             "submitted_movie_numbers": [],
             "no_candidate_movie_numbers": [],
             "failed_items": [],
@@ -127,12 +133,14 @@ class SubscribedMovieAutoDownloadService:
 
         # 该影片已经试过并判死的种子：重查时必须排除，否则确定性排序会把同一个死种反复选中。
         excluded_info_hashes = self._list_dead_info_hashes(movie_number)
-        # 本轮被内容闸门拒绝的候选。这里不能复用 info_hash 黑名单：PT 索引器的 torznab 响应
-        # 既不给 infohash 也不给磁力，候选身份恒为空串，而原盘恰恰主要出现在 PT 站。
+        # 本轮被内容闸门/死种黑名单拒绝的候选。PT 索引器的 torznab 响应可能既不给 infohash
+        # 也不给磁力，候选身份恒为空串，只能靠提交链路解析 .torrent 后确认是否死种。
         # 拒绝记录只在本轮内有效——跨轮记忆需要持久化台账，等这个闸门跑稳再说。
         rejected_keys: set[tuple] = set()
+        content_rejected_candidates = 0
+        dead_rejected_candidates = 0
         response = None
-        for _ in range(MAX_CONTENT_REJECTED_CANDIDATES):
+        for _ in range(MAX_REJECTED_CANDIDATES):
             candidate = self._pick_best_candidate(
                 [
                     item
@@ -164,26 +172,39 @@ class SubscribedMovieAutoDownloadService:
                 response = self.download_request_service.create_request(payload)
                 break
             except ApiError as exc:
-                if exc.code not in CONTENT_GUARD_ERROR_CODES:
+                if exc.code not in CANDIDATE_REJECTION_ERROR_CODES:
                     self._raise_submit_failed(shared, movie_number, candidate, exc)
-                # 内容闸门在分派下载器之前就拦下了，本次没有碰过 115，不需要补休息。
+                # 内容闸门/死种黑名单在分派下载器之前就拦下了，本次没有碰过 115，不需要补休息。
                 #
-                # 校验不了（拿不到 .torrent）与内容不合格在这里一视同仁地换种，不能中止本影片：
+                # 校验不了（拿不到 .torrent）、内容不合格、确认是死种在这里一视同仁地换种，不能中止本影片：
                 # 中止走的是 consumes_budget=False，而它会回滚重试计数且永不判 exhausted
                 # （见 ResourceTaskRunner._finish_failed），稳定复现的坏候选会让这部影片每轮
                 # 重来、永远放弃不掉。换种则会在候选耗尽时落到 no_candidate，正常消耗预算收敛。
                 # 索引器整体故障不会走到这里——那种情况 search_candidates 先失败。
                 rejected_keys.add(self._candidate_key(candidate))
-                shared["content_rejected_candidates"] += 1
-                logger.info(
-                    "Auto download candidate rejected by content guard "
-                    "movie_number={} title={} size_bytes={} code={} detail={}",
-                    movie_number,
-                    candidate.title,
-                    candidate.size_bytes,
-                    exc.code,
-                    exc.details,
-                )
+                if exc.code == ERROR_CODE_CANDIDATE_DEAD:
+                    shared["dead_rejected_candidates"] += 1
+                    dead_rejected_candidates += 1
+                    logger.info(
+                        "Auto download candidate rejected as dead "
+                        "movie_number={} title={} size_bytes={} detail={}",
+                        movie_number,
+                        candidate.title,
+                        candidate.size_bytes,
+                        exc.details,
+                    )
+                else:
+                    shared["content_rejected_candidates"] += 1
+                    content_rejected_candidates += 1
+                    logger.info(
+                        "Auto download candidate rejected by content guard "
+                        "movie_number={} title={} size_bytes={} code={} detail={}",
+                        movie_number,
+                        candidate.title,
+                        candidate.size_bytes,
+                        exc.code,
+                        exc.details,
+                    )
             except Exception as exc:
                 self._raise_submit_failed(shared, movie_number, candidate, exc)
 
@@ -192,16 +213,17 @@ class SubscribedMovieAutoDownloadService:
             shared["no_candidate_movie_numbers"].append(movie_number)
             logger.info(
                 "Auto download found no usable candidate movie_number={} "
-                "excluded_dead={} content_rejected={}",
+                "excluded_dead={} confirmed_dead={} content_rejected={}",
                 movie_number,
                 len(excluded_info_hashes),
-                len(rejected_keys),
+                dead_rejected_candidates,
+                content_rejected_candidates,
             )
             # 消耗预算（老片跑满即 exhausted；新片由 RetryPolicy.exempt 豁免不计次）。
             raise TaskItemError(
                 ERROR_CODE_NO_CANDIDATE,
                 f"未找到可用资源（已排除死种 {len(excluded_info_hashes)} 个、"
-                f"内容不合格 {len(rejected_keys)} 个）",
+                f"已确认死种 {dead_rejected_candidates} 个、内容不合格 {content_rejected_candidates} 个）",
             )
 
         # 只有真正向 115 发过请求才需要为下一个排队等待：qB 提交不碰 115；
@@ -255,6 +277,7 @@ class SubscribedMovieAutoDownloadService:
             "submitted_movies": shared.get("submitted_movies", 0),
             "no_candidate_movies": shared.get("no_candidate_movies", 0),
             "content_rejected_candidates": shared.get("content_rejected_candidates", 0),
+            "dead_rejected_candidates": shared.get("dead_rejected_candidates", 0),
             "newly_exhausted_movies": stats["exhausted_count"],
             "skipped_movies": shared.get("skipped_movies", 0),
             "failed_movies": len(shared.get("failed_items", [])),
@@ -338,9 +361,9 @@ class SubscribedMovieAutoDownloadService:
     def _candidate_key(candidate: DownloadCandidateResource) -> tuple:
         """本轮内标识一个候选。
 
-        不用 info_hash：PT 索引器的 torznab 响应不带 infohash 也不带磁力，候选身份恒为空串，
-        而内容闸门要拦的原盘主要就来自 PT 站。索引器名 + 标题 + 体积在一次搜索结果里足以区分，
-        也与 ``_candidate_sort_key`` 的确定性排序口径一致。
+        不用 info_hash：PT 索引器的 torznab 响应可能不带 infohash 也不带磁力，候选身份恒为
+        空串，身份确认交给提交阶段内容闸门解析 .torrent 后完成。索引器名 + 标题 + 体积在
+        一次搜索结果里足以区分，也与 ``_candidate_sort_key`` 的确定性排序口径一致。
         """
         return (candidate.indexer_name, candidate.title, candidate.size_bytes)
 
@@ -382,10 +405,9 @@ class SubscribedMovieAutoDownloadService:
             if not (MIN_SIZE_BYTES <= candidate.size_bytes <= MAX_SIZE_BYTES):
                 filtered_size += 1
                 continue
-            # 候选的 info_hash 在解析索引器响应时就已确定（torznab infohash 属性 / 磁力链），
-            # 这里纯内存比对，不产生任何网络请求。身份未知的候选照常放行：它可能压根不是死种，
-            # 为一个不确定的判断去拉 .torrent 文件不值得——真是死种的话，下一轮它带着
-            # DownloadTask 行回来，那时身份就是确定的了。
+            # 已知身份的候选（torznab infohash / 磁力链）纯内存比对，不产生网络请求。
+            # 身份未知的 torrent-only 候选照常放行，提交链路会在内容闸门解析 .torrent 后
+            # 确认死种并换下一个，避免选种阶段逐个拉文件。
             if candidate.info_hash and candidate.info_hash in excluded:
                 filtered_blacklist += 1
                 continue
@@ -428,5 +450,6 @@ class SubscribedMovieAutoDownloadService:
             seeders=candidate.seeders,
             magnet_url=candidate.magnet_url,
             torrent_url=candidate.torrent_url,
+            info_hash=candidate.info_hash,
             tags=list(candidate.tags or []),
         )
