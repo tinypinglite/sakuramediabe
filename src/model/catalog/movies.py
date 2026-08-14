@@ -118,6 +118,31 @@ Movie.add_index(
     )
 )
 
+# 影片卡片列表排序用的复合索引：nullable 排序字段（release_date / subscribed_at）经
+# build_ordered_expressions 渲染为 ``DESC NULLS LAST``，索引与排序表达式同向，planner 直接
+# Index Scan 取页内行，避免全表扫 + 全量排序；反向扫描同时服务 asc 方向。
+# 索引名必须与迁移 20260815_02_add_movie_sort_indexes 一致。
+Movie.add_index(
+    peewee.ModelIndex(
+        Movie,
+        (
+            peewee.Ordering(Movie.release_date, "DESC", nulls="last"),
+            peewee.Ordering(Movie.id, "DESC", nulls="last"),
+        ),
+        name="movie_release_date_sort",
+    )
+)
+Movie.add_index(
+    peewee.ModelIndex(
+        Movie,
+        (
+            peewee.Ordering(Movie.subscribed_at, "DESC", nulls="last"),
+            peewee.Ordering(Movie.id, "DESC", nulls="last"),
+        ),
+        name="movie_subscribed_at_sort",
+    )
+)
+
 
 class MovieActor(BaseModel):
     movie = peewee.ForeignKeyField(Movie, backref="movie_actor_links", on_delete="CASCADE")

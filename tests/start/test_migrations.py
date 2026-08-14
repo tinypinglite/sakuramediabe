@@ -1328,6 +1328,37 @@ def test_run_pending_migrations_adds_movie_number_upper_index(clean_db):
     assert "20260728_01_add_movie_number_upper_index" in _schema_migration_names(clean_db)
 
 
+def test_run_pending_migrations_adds_movie_sort_indexes(clean_db):
+    """20260815_02：存量库补影片列表排序复合索引（NULLS LAST 同向）。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260815_02_add_movie_sort_indexes",),
+    )
+    # 模拟存量库：先删掉 initdb 建出的同名索引，让迁移补齐。
+    clean_db.execute_sql("DROP INDEX IF EXISTS movie_release_date_sort")
+    clean_db.execute_sql("DROP INDEX IF EXISTS movie_subscribed_at_sort")
+
+    run_pending_migrations(clean_db)
+
+    indexed_definitions = {
+        row[0]: row[1]
+        for row in clean_db.execute_sql(
+            "SELECT indexname, indexdef FROM pg_indexes"
+            " WHERE schemaname = current_schema() AND indexname IN"
+            " ('movie_release_date_sort', 'movie_subscribed_at_sort')"
+        ).fetchall()
+    }
+    # 排序表达式必须与 build_ordered_expressions 的 NULLS LAST 输出同向，
+    # planner 才能用索引服务排序（反向扫描再服务 asc）。
+    assert "release_date DESC NULLS LAST" in indexed_definitions["movie_release_date_sort"]
+    assert "id DESC NULLS LAST" in indexed_definitions["movie_release_date_sort"]
+    assert "subscribed_at DESC NULLS LAST" in indexed_definitions["movie_subscribed_at_sort"]
+    assert "20260815_02_add_movie_sort_indexes" in _schema_migration_names(clean_db)
+
+
 def test_run_pending_migrations_drops_movie_similarity_table(clean_db):
     """Qdrant 接管相似度查询后，存量结果表不再保留。"""
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
