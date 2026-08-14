@@ -60,23 +60,6 @@ def _check_http_url(value: str, label: str, info: ValidationInfo | None) -> str:
     return value
 
 
-def _check_proxy_url(value: str | None, info: ValidationInfo | None) -> str | None:
-    # 代理允许 http/https 与 socks5(h)；None 或空串视为未配置，直接放行。
-    if value is None:
-        return None
-    normalized = value.strip()
-    if not normalized:
-        return value
-    parsed = urlparse(normalized)
-    if parsed.scheme in {"http", "https", "socks5", "socks5h"} and parsed.netloc:
-        return value
-    message = "proxy 必须是 http/https/socks5/socks5h URL"
-    if _validation_is_strict(info):
-        raise ValueError(message)
-    logger.warning("配置 proxy 不是合法的 http/https/socks5(h) URL（当前值={!r}），将原样保留使用", value)
-    return value
-
-
 class DatabaseEngine(str, Enum):
     POSTGRES = "postgres"
 
@@ -200,28 +183,20 @@ class MovieInfoTranslation(BaseModel):
 
 
 class Metadata(BaseModel):
+    # 不再提供显式代理配置：所有外部站点请求统一跟随容器环境变量
+    # HTTP_PROXY / HTTPS_PROXY / NO_PROXY 分流（httpx trust_env 默认开启）。
     javdb_host: str = "jdforrepam.com"
-    proxy: str | None = None
     gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
     gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
     gfriends_filetree_cache_path: str = "/data/cache/gfriends/gfriends-filetree.json"
     gfriends_filetree_cache_ttl_hours: int = 24 * 7
     import_metadata_max_workers: int = 3
 
-    @field_validator("proxy")
-    @classmethod
-    def _check_proxy(cls, value: str | None, info: ValidationInfo) -> str | None:
-        return _check_proxy_url(value, info)
-
     @field_validator("gfriends_filetree_url", "gfriends_cdn_base_url")
     @classmethod
     def _check_gfriends_urls(cls, value: str, info: ValidationInfo) -> str:
         return _check_http_url(value, "gfriends URL", info)
 
-    @property
-    def normalized_proxy(self) -> str | None:
-        # 统一在配置层做代理值归一化（去空白，空串归一为 None）。
-        return (self.proxy or "").strip() or None
 
 
 _PLUGIN_ID_PATTERN = PLUGIN_ID_PATTERN

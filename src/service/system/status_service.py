@@ -224,7 +224,7 @@ class StatusService:
 
     @classmethod
     def _test_dmm_provider(cls, *, start_at: float) -> StatusMetadataProviderTestResource:
-        # DMM 联通性以真实搜索详情页并成功解析简介为准，代理沿用统一 metadata.proxy。
+        # DMM 联通性以真实搜索详情页并成功解析简介为准，请求代理跟随容器环境变量分流。
         description = build_dmm_provider().get_movie_desc(cls.METADATA_PROVIDER_TEST_MOVIE_NUMBER)
         return StatusMetadataProviderTestResource(
             healthy=True,

@@ -265,5 +265,5 @@ DMM 示例响应：
 - `movie_number`: 固定测试番号，当前为 `SSNI-888`
 - `elapsed_ms`: 本次检测耗时（毫秒）
 - `error.type`: `metadata_request_error`、`metadata_not_found` 或 `unexpected_error`
-- `javdb.*`: JavDB 成功时返回的详情摘要；站点请求由内置 Provider 提供，JavDB 默认不走 `settings.metadata.proxy`
-- `dmm.*`: DMM 成功时返回的简介摘要；站点请求由内置 Provider 提供，代理沿用统一的 `settings.metadata.proxy` 配置
+- `javdb.*`: JavDB 成功时返回的详情摘要；站点请求由内置 Provider 提供，代理跟随容器环境变量分流
+- `dmm.*`: DMM 成功时返回的简介摘要；站点请求由内置 Provider 提供，代理跟随容器环境变量分流

@@ -24,9 +24,8 @@ class GfriendsActorImageResolver(MetadataRequestClient):
         cdn_base_url: str,
         cache_path: str,
         cache_ttl_hours: int,
-        proxy: str | None = None,
     ):
-        MetadataRequestClient.__init__(self, proxy=proxy, timeout=self.FILETREE_REQUEST_TIMEOUT)
+        MetadataRequestClient.__init__(self, timeout=self.FILETREE_REQUEST_TIMEOUT)
         self.filetree_url = filetree_url
         self.cdn_base_url = cdn_base_url.rstrip("/")
         self.cache_path = Path(cache_path).expanduser()

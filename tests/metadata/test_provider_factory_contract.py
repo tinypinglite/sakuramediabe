@@ -58,27 +58,23 @@ def _build_detail(actors: list[JavdbMovieActorResource]):
     )
 
 
-def test_build_dmm_provider_passes_site_proxy(monkeypatch):
-    monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
-
-    provider = build_dmm_provider()
-
-    assert provider is not None
-    assert isinstance(provider, DmmProvider)
-    assert provider.proxy == "http://site-proxy:7890"
-
-
-def test_build_javdb_provider_never_uses_metadata_proxy(monkeypatch):
-    # JavDB 不叠加 config 的 metadata proxy：站点访问依托 javdb_host 自身的
-    # 直连/反代能力；是否走代理由容器层 HTTP_PROXY/NO_PROXY 环境变量决定，
-    # 与 config proxy 无耦合。
-    monkeypatch.setattr(settings.metadata, "proxy", "  http://site-proxy:7890  ")
-
+def test_build_javdb_provider_never_uses_explicit_proxy():
+    # JavDB provider 不接收任何显式代理：是否走代理由容器层
+    # HTTP_PROXY / NO_PROXY 环境变量决定，与 config 无耦合。
     provider = build_javdb_provider()
 
     assert isinstance(provider, GfriendsAvatarJavdbProvider)
     assert provider.provider.host == settings.metadata.javdb_host
-    assert provider.provider.proxy is None
+    # 显式代理配置已整体移除，client 上不应再出现 proxy 概念。
+    assert not hasattr(provider.provider, "proxy")
+
+
+def test_build_dmm_provider_no_explicit_proxy():
+    # DMM provider 同样不再接收显式代理，统一跟随环境变量分流。
+    provider = build_dmm_provider()
+
+    assert isinstance(provider, DmmProvider)
+    assert not hasattr(provider, "proxy")
 
 
 def test_build_javdb_provider_passes_account_credentials():
@@ -117,42 +113,27 @@ def test_javdb_adapter_prefers_gfriends_avatar():
     assert resolver.candidate_names == ["Arina Hashimoto", "桥本有菜"]
 
 
-def test_gfriends_resolver_is_singleton_per_config_key(monkeypatch):
-    monkeypatch.setattr(settings.metadata, "proxy", None)
-
+def test_gfriends_resolver_is_singleton_per_config_key():
     provider_a = build_javdb_provider()
     provider_b = build_javdb_provider()
 
-    # 同一 (url, cdn, cache_path, ttl, proxy) 组合下应命中缓存返回同实例，
+    # 同一 (url, cdn, cache_path, ttl) 组合下应命中缓存返回同实例，
     # 让预热任务写入的内存 index 能被业务侧直接看到。
     assert provider_a.actor_image_resolver is provider_b.actor_image_resolver
 
 
-def test_gfriends_resolver_rebuilt_when_proxy_changes(monkeypatch):
-    # GFriends 沿用 metadata.proxy；配置换代时 resolver 应重建，防止 stale 代理。
-    monkeypatch.setattr(settings.metadata, "proxy", None)
-    resolver_no_proxy = build_javdb_provider().actor_image_resolver
-
-    monkeypatch.setattr(settings.metadata, "proxy", "http://site-proxy:7890")
-    resolver_with_proxy = build_javdb_provider().actor_image_resolver
-
-    assert resolver_no_proxy is not resolver_with_proxy
-
-
 def test_gfriends_resolver_cache_evicts_previous_config(monkeypatch):
     # 配置换代后旧实例必须被 evict，避免长期热更新累积无引用的 resolver 内存。
-    monkeypatch.setattr(settings.metadata, "proxy", None)
+    monkeypatch.setattr(settings.metadata, "gfriends_filetree_url", "https://cdn.example/a/Filetree.json")
     build_javdb_provider()
 
-    monkeypatch.setattr(settings.metadata, "proxy", "http://site-proxy:7890")
+    monkeypatch.setattr(settings.metadata, "gfriends_filetree_url", "https://cdn.example/b/Filetree.json")
     build_javdb_provider()
 
     assert len(factory_module._resolver_cache) == 1
 
 
 def test_refresh_gfriends_filetree_delegates_to_resolver(monkeypatch):
-    monkeypatch.setattr(settings.metadata, "proxy", None)
-
     calls: list[bool] = []
 
     def _fake_refresh(*, force: bool):

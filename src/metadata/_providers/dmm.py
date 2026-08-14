@@ -25,11 +25,9 @@ class DmmMovieDescNotFoundError(MetadataNotFoundError):
 
 
 class DmmProvider(MetadataRequestClient):
-    def __init__(self, *, proxy: str | None = None):
-        MetadataRequestClient.__init__(
-            self,
-            proxy=proxy,
-        )
+    def __init__(self):
+        MetadataRequestClient.__init__(self)
+
 
     SEARCH_URL_TEMPLATE = "https://www.dmm.co.jp/search/=/searchstr={movie_number}/limit=30/sort=date/"
     BACKEND_DETAIL_URL_PATTERN = re.compile(

@@ -114,14 +114,10 @@ class JavdbProvider(MetadataRequestClient):
         self,
         host: str,
         *,
-        proxy: str | None = None,
         username: str | None = None,
         password: str | None = None,
     ):
-        MetadataRequestClient.__init__(
-            self,
-            proxy=proxy,
-        )
+        MetadataRequestClient.__init__(self)
         self.host = host
         self.username = username
         self.password = password
@@ -129,9 +125,8 @@ class JavdbProvider(MetadataRequestClient):
         self._token: str | None = None
         self._login_failed = False
         logger.info(
-            "JavdbProvider initialized host={} proxy_enabled={} account_configured={}",
+            "JavdbProvider initialized host={} account_configured={}",
             host,
-            bool(proxy),
             bool(username and password),
         )
 
