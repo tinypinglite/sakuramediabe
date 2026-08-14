@@ -100,7 +100,7 @@ class SubscribedActorMovieSyncService:
                 try:
                     # 单片导入失败按影片跳过，避免阻断该演员剩余影片和后续演员的同步。
                     detail = self.provider.get_movie_by_javdb_id(movie_item.javdb_id)
-                    self.import_service.upsert_movie_from_javdb_detail(detail)
+                    self.import_service.import_movie_if_missing(detail)
                     imported_movies += 1
                     logger.info(
                         "Subscribed actor sync imported actor_id={} actor_javdb_id={} movie_javdb_id={} movie_number={}",

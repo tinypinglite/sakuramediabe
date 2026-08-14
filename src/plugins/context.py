@@ -57,17 +57,18 @@ class PluginContext:
         *,
         force_subscribed: bool = False,
     ):
-        """通过 JavDB 获取影片详情并复用核心目录入库能力。
+        """通过 JavDB 获取影片详情并复用核心目录入库能力；已存在影片跳过不更新。
 
         批量任务应分别构造并复用 provider/importer，避免每个番号重复创建客户端。
         """
         provider = self.build_javdb_provider()
         importer = self.build_catalog_import_service()
         detail = provider.get_movie_by_number(movie_number)
-        return importer.upsert_movie_from_javdb_detail(
+        movie, _created = importer.import_movie_if_missing(
             detail,
             force_subscribed=force_subscribed,
         )
+        return movie
 
     def list_existing_movie_numbers(self) -> set[str]:
         """主库全部影片番号的大写集合，供插件做 O(1) 存在性判定。"""

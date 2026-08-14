@@ -44,9 +44,11 @@
 ### 2.2 宿主提供的稳定能力
 
 - **影片元数据入库**：`import_movie_by_number()` 通过 JavDB 获取详情并完整落库
-  （Movie/Actor/Tag/Image，含图片下载；番号或 javdb_id 命中即更新）；批量任务应复用
+  （Movie/Actor/Tag/Image，含图片下载；**纯新建语义——番号或 javdb_id 已存在则跳过、
+  不更新任何字段**）；批量任务应复用
   `build_javdb_provider()` + `build_catalog_import_service()`，并用
-  `list_existing_movie_numbers()` 做主库存在性判断；
+  `list_existing_movie_numbers()` 做主库存在性判断；已存在影片的元数据刷新唯一入口
+  是手动刷新接口（全量覆盖）；
 - **字幕资产写入**：`import_subtitle()` 接受插件准备好的字幕字节内容，宿主统一做
   扩展名白名单校验（`.srt/.ass/.ssa/.vtt`）、同影片内容指纹去重、原子落盘与登记；
   **抓取/下载由插件自己负责**，宿主不提供抓字幕的链路；
@@ -347,7 +349,7 @@ PluginExtension(
 | `ensure_data_dir() -> Path` | 确保数据目录存在并返回路径（`data_dir` 属性等价） |
 | `build_javdb_provider(username=None, password=None)` | 构造 JavDB 元数据 provider；账号仅需登录的榜单（TOP250）需要，由插件从自身设置传入 |
 | `build_catalog_import_service()` | 构造目录入库服务 |
-| `import_movie_by_number(movie_number, *, force_subscribed=False)` | 通过 JavDB 获取详情并复用宿主能力入库 |
+| `import_movie_by_number(movie_number, *, force_subscribed=False)` | 通过 JavDB 获取详情并复用宿主能力入库；**已存在影片跳过不更新**（纯新建语义），返回影片对象 |
 | `list_existing_movie_numbers() -> set[str]` | 主库全部影片番号（大写），用于 O(1) 存在性判断 |
 | `import_subtitle(movie_number, content, filename, language=None)` | 写入一段字幕字节内容，返回 `SubtitleImportResult`。只支持 `.srt/.ass/.ssa/.vtt`；去重粒度为**同一部影片内**的内容 sha256；`filename` 只取扩展名；影片不存在返回 `movie_not_found`，不抛异常 |
 | `sync_ranking_sources(progress_callback=None)` | 同步当前插件声明的全部排行榜来源，返回统计 dict |

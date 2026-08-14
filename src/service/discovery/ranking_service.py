@@ -393,7 +393,7 @@ class RankingSyncService:
                 # 本地没有的番号才走 JavDB 详情入库
                 try:
                     detail = self._get_movie_detail(source_key, movie_number)
-                    movie = self.import_service.upsert_movie_from_javdb_detail(detail)
+                    movie, _created = self.import_service.import_movie_if_missing(detail)
                 except Exception as exc:
                     skipped_count += 1
                     logger.warning(

@@ -2,12 +2,15 @@
 
 负责把 JavDB 返回的影片/演员详情转换成本地目录数据。图片下载与图片记录持久化已抽到
 ``MovieImageService``，本 service 只做元数据编排，图片相关能力统一委托 ``self.image_service``。
-阅读入口建议从 ``upsert_movie_from_javdb_detail`` 开始。
+阅读入口建议从导入语义的三个方法开始：
+``import_movie_if_missing``（纯新建）、``refresh_movie_metadata_strict``（纯覆盖）、
+``update_movie_fields``（指定字段更新）。
 """
 
 from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -116,17 +119,36 @@ class CatalogImportService:
             return set()
         return self.image_service.delete_image_record_if_unused(old_thin_cover_image)
 
-    def upsert_movie_from_javdb_detail(
+    def import_movie_if_missing(
         self,
         detail: JavdbMovieDetailResource,
         force_subscribed: bool = False,
-    ) -> Movie:
-        """把一份 JavDB 影片详情完整落到本地 Movie/Actor/Tag/Image 关系中。"""
+    ) -> tuple[Movie, bool]:
+        """纯新建语义：影片已存在（movie_number 或 javdb_id 命中）时跳过，不写任何字段。
+
+        返回 ``(movie, created)``。已存在影片的元数据刷新唯一入口是
+        ``refresh_movie_metadata_strict``（手动刷新接口）；指定字段更新走
+        ``update_movie_fields``。
+        """
+        # 快路径：已存在直接返回，零图片 IO。图片下载期间可能被并发导入抢先建好，
+        # 事务内会二次确认（图片路径按番号确定性派生，双方下载内容一致，无孤儿文件问题）。
+        existing_movie = Movie.get_or_none(
+            (Movie.movie_number == detail.movie_number)
+            | (Movie.javdb_id == detail.javdb_id)
+        )
+        if existing_movie is not None:
+            logger.debug(
+                "Catalog import skipped existing movie movie_id={} movie_number={}",
+                existing_movie.id,
+                existing_movie.movie_number,
+            )
+            return existing_movie, False
+
         actors = detail.actors or []
         tags = detail.tags or []
         plot_images = detail.plot_images or []
         logger.info(
-            "Catalog upsert start movie_number={} javdb_id={} actors={} tags={} plot_images={}",
+            "Catalog import start movie_number={} javdb_id={} actors={} tags={} plot_images={}",
             detail.movie_number,
             detail.javdb_id,
             len(actors),
@@ -136,7 +158,7 @@ class CatalogImportService:
         plot_urls = self._unique_preserve_order(plot_images)
         if len(plot_urls) != len(plot_images):
             logger.debug(
-                "Catalog upsert deduplicated plot images movie_number={} original={} deduplicated={}",
+                "Catalog import deduplicated plot images movie_number={} original={} deduplicated={}",
                 detail.movie_number,
                 len(plot_images),
                 len(plot_urls),
@@ -165,17 +187,24 @@ class CatalogImportService:
         lock_context = self.persist_lock or nullcontext()
         obsolete_paths: set[str] = set()
         with lock_context, get_database().atomic():
-            # movie_number 和 javdb_id 任一命中都视为同一影片，保证重复导入时走更新。
-            movie = Movie.get_or_none((Movie.movie_number == detail.movie_number) | (Movie.javdb_id == detail.javdb_id))
-            created_movie = movie is None
-            if movie is None:
-                movie = Movie(
-                    movie_number=detail.movie_number,
-                    javdb_id=detail.javdb_id,
-                    title=detail.title,
+            # 二次确认：图片下载期间并发导入可能已建好该影片，此时跳过写入。
+            movie = Movie.get_or_none(
+                (Movie.movie_number == detail.movie_number)
+                | (Movie.javdb_id == detail.javdb_id)
+            )
+            if movie is not None:
+                logger.debug(
+                    "Catalog import concurrent created movie movie_id={} movie_number={}",
+                    movie.id,
+                    movie.movie_number,
                 )
-            old_thin_cover_image = movie.thin_cover_image
-            was_subscribed = bool(movie.is_subscribed)
+                return movie, False
+            movie = Movie(
+                movie_number=detail.movie_number,
+                javdb_id=detail.javdb_id,
+                title=detail.title,
+            )
+            # 纯新建路径：无旧封面/订阅状态可继承，直接按详情写入。
             target_is_subscribed = True if force_subscribed else detail.is_subscribed
 
             if cover_task is not None:
@@ -195,8 +224,7 @@ class CatalogImportService:
             if target_is_subscribed is not None:
                 movie.is_subscribed = target_is_subscribed
                 if target_is_subscribed:
-                    if not was_subscribed or movie.subscribed_at is None:
-                        movie.subscribed_at = utc_now_for_db()
+                    movie.subscribed_at = utc_now_for_db()
                 else:
                     movie.subscribed_at = None
             movie.extra = detail.extra
@@ -210,10 +238,9 @@ class CatalogImportService:
                 )
             movie.save()
             logger.debug(
-                "Catalog upsert movie saved movie_id={} movie_number={} created={}",
+                "Catalog import movie saved movie_id={} movie_number={}",
                 movie.id,
                 movie.movie_number,
-                created_movie,
             )
 
             # 演员、标签、剧照关系都使用 get_or_create，避免多次导入产生重复关联。
@@ -224,7 +251,7 @@ class CatalogImportService:
                 )
                 MovieActor.get_or_create(movie=movie, actor=actor)
                 logger.debug(
-                    "Catalog upsert actor linked movie_id={} actor_id={} actor_javdb_id={}",
+                    "Catalog import actor linked movie_id={} actor_id={} actor_javdb_id={}",
                     movie.id,
                     actor.id,
                     actor.javdb_id,
@@ -233,7 +260,12 @@ class CatalogImportService:
             for tag_resource in tags:
                 tag, _ = Tag.get_or_create(name=tag_resource.name)
                 MovieTag.get_or_create(movie=movie, tag=tag)
-                logger.debug("Catalog upsert tag linked movie_id={} tag_id={} tag_name={}", movie.id, tag.id, tag.name)
+                logger.debug(
+                    "Catalog import tag linked movie_id={} tag_id={} tag_name={}",
+                    movie.id,
+                    tag.id,
+                    tag.name,
+                )
 
             plot_images_by_index: dict[int, Image] = {}
             # 剧照整批一次 upsert，避免逐张 get_or_none + create 的 2N 次往返。
@@ -245,7 +277,7 @@ class CatalogImportService:
                         plot_images_by_index[int(plot_task.plot_index)] = plot_image
                     MoviePlotImage.get_or_create(movie=movie, image=plot_image)
                     logger.debug(
-                        "Catalog upsert plot image linked movie_id={} image_id={} index={}",
+                        "Catalog import plot image linked movie_id={} image_id={} index={}",
                         movie.id,
                         plot_image.id,
                         plot_task.plot_index,
@@ -253,7 +285,7 @@ class CatalogImportService:
             obsolete_paths.update(
                 self._apply_thin_cover_resolution(
                     movie,
-                    old_thin_cover_image,
+                    None,
                     thin_cover_resolution,
                     plot_images_by_index,
                     refreshed=False,
@@ -262,15 +294,65 @@ class CatalogImportService:
 
         self.image_service.delete_obsolete_image_files(obsolete_paths)
         MovieHeatService.update_single_movie_heat(movie.id)
-        logger.info("Catalog upsert finished movie_id={} movie_number={}", movie.id, movie.movie_number)
-        return movie
+        logger.info(
+            "Catalog import finished movie_id={} movie_number={}",
+            movie.id,
+            movie.movie_number,
+        )
+        return movie, True
+
+    # ③ 允许更新的字段白名单 -> detail 取值器；heat 是推导列不允许直接写，
+    # 图片/演员/标签/剧照等关联字段不在本机制内（新建时由 import_movie_if_missing 完整导入）。
+    _MOVIE_FIELD_UPDATE_MAP: dict[str, Callable[[JavdbMovieDetailResource], Any]] = {
+        "score": lambda detail: detail.score or 0,
+        "score_number": lambda detail: detail.score_number,
+        "watched_count": lambda detail: detail.watched_count,
+        "want_watch_count": lambda detail: detail.want_watch_count,
+        "comment_count": lambda detail: detail.comment_count,
+        "title": lambda detail: detail.title,
+        "summary": lambda detail: detail.summary,
+        "maker_name": lambda detail: detail.maker_name,
+        "director_name": lambda detail: detail.director_name,
+    }
+
+    def update_movie_fields(
+        self,
+        detail: JavdbMovieDetailResource,
+        fields: tuple[str, ...],
+    ) -> tuple[Movie, bool, tuple[str, ...]]:
+        """指定字段更新：影片不存在先完整导入（import_movie_if_missing），存在则只更新指定字段。
+
+        返回 ``(movie, created, updated_fields)``，updated_fields 是实际发生变化的字段
+        （变更检测：值一致的字段跳过不写）；heat 联动由调用方负责（本方法不感知热度公式）。
+        """
+        if not fields:
+            raise ValueError("fields 不能为空")
+        normalized_fields = tuple(dict.fromkeys(fields))
+        invalid_fields = sorted(set(normalized_fields) - set(self._MOVIE_FIELD_UPDATE_MAP))
+        if invalid_fields:
+            raise ValueError(f"不支持的字段: {', '.join(invalid_fields)}")
+        movie, created = self.import_movie_if_missing(detail)
+        # 变更检测：只写值真正变化的字段，避免无意义 UPDATE，也支撑调用方的 updated/unchanged 计数。
+        changed_fields: list[str] = []
+        for field_name in normalized_fields:
+            target_value = self._MOVIE_FIELD_UPDATE_MAP[field_name](detail)
+            if getattr(movie, field_name) == target_value:
+                continue
+            setattr(movie, field_name, target_value)
+            changed_fields.append(field_name)
+        if changed_fields:
+            movie.save(only=[Movie._meta.fields[field_name] for field_name in changed_fields])
+        return movie, created, tuple(changed_fields)
 
     def refresh_movie_metadata_strict(
         self,
         movie: Movie,
         detail: JavdbMovieDetailResource,
     ) -> Movie:
-        """按远端详情严格刷新影片元数据，不触碰描述、订阅与番号字段。"""
+        """纯覆盖语义：按远端详情全量覆盖已存在影片的元数据（含 title/summary/互动数/图片/演员/标签），不触碰订阅与番号字段。
+
+        是已存在影片元数据刷新的唯一入口（手动刷新接口），影片必须已存在。
+        """
         actors = detail.actors or []
         tags = detail.tags or []
         plot_images = detail.plot_images or []

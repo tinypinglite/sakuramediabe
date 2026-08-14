@@ -147,7 +147,7 @@ class MediaImportService:
             )
 
         try:
-            movie = catalog_import_service.upsert_movie_from_javdb_detail(
+            movie, _created = catalog_import_service.import_movie_if_missing(
                 detail,
                 force_subscribed=True,
             )

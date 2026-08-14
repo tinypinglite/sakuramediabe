@@ -8,9 +8,9 @@ from src.common.runtime_time import utc_now_for_db
 from src.metadata._providers.exceptions import MetadataRequestError
 from src.metadata.factory import build_javdb_provider
 from src.metadata._providers.javdb import JavdbProvider
-from src.metadata._providers.models import JavdbMovieDetailResource
 from src.metadata.provider import MetadataNotFoundError
 from src.model import Movie, ResourceTaskState, get_database
+from src.service.catalog.catalog_import_service import CatalogImportService
 from src.service.catalog.movie_heat_service import MovieHeatService
 from src.service.system.resource_task_runner import (
     STATE_EXHAUSTED,
@@ -34,6 +34,14 @@ class MovieInteractionSyncService:
     """
 
     TASK_KEY = "movie_interaction_sync"
+    # 互动数写入的字段集合（与 CatalogImportService.update_movie_fields 白名单一致）。
+    INTERACTION_FIELDS = (
+        "score",
+        "score_number",
+        "watched_count",
+        "want_watch_count",
+        "comment_count",
+    )
     INTERRUPTED_SYNC_ERROR_MESSAGE = "影片互动数同步任务中断，等待重试"
     # 分层策略：
     #   1. 从未同步过的影片：seed 一次，之后按下面分层决定是否再刷。
@@ -50,8 +58,14 @@ class MovieInteractionSyncService:
         max_attempts=5, backoff_base_seconds=3600, backoff_max_seconds=86400
     )
 
-    def __init__(self, provider: JavdbProvider | None = None):
+    def __init__(
+        self,
+        provider: JavdbProvider | None = None,
+        catalog_import_service: CatalogImportService | None = None,
+    ):
         self.provider = provider or build_javdb_provider()
+        # 字段写入统一走 CatalogImportService.update_movie_fields（不存在先完整导入，存在只更新指定字段）。
+        self.catalog_import_service = catalog_import_service or CatalogImportService()
 
     @staticmethod
     @classmethod
@@ -188,16 +202,6 @@ class MovieInteractionSyncService:
                 candidates.append(movie)
         return candidates
 
-    @classmethod
-    def _build_interaction_payload(cls, detail: JavdbMovieDetailResource) -> dict[str, int | float]:
-        return {
-            "score": detail.score or 0,
-            "score_number": detail.score_number,
-            "watched_count": detail.watched_count,
-            "want_watch_count": detail.want_watch_count,
-            "comment_count": detail.comment_count,
-        }
-
     def _fetch_and_apply(self, movie: Movie) -> tuple[bool, int]:
         """抓详情并落库互动数 + 联动热度；失败抛带 error_code 的 TaskItemError。"""
         try:
@@ -208,23 +212,17 @@ class MovieInteractionSyncService:
         except MetadataRequestError as exc:
             raise TaskItemError("javdb_request_error", str(exc)) from exc
 
-        interaction_payload = self._build_interaction_payload(detail)
-        updated_fields = []
-        interaction_changed = False
-        for field_name, target_value in interaction_payload.items():
-            if getattr(movie, field_name) == target_value:
-                continue
-            interaction_changed = True
-            setattr(movie, field_name, target_value)
-            updated_fields.append(Movie._meta.fields[field_name])
-
-        heat_updated_count = 0
+        # 变更检测已内置于 update_movie_fields（值一致的字段跳过）；无实际变更时不重算 heat。
+        # 互动数写入与 heat 重算包在同一事务，避免中间崩溃留下不一致窗口。
         with get_database().atomic():
+            updated_movie, _created, updated_fields = self.catalog_import_service.update_movie_fields(
+                detail,
+                self.INTERACTION_FIELDS,
+            )
+            heat_updated_count = 0
             if updated_fields:
-                movie.save(only=updated_fields)
-            if interaction_changed:
-                heat_updated_count = MovieHeatService.update_single_movie_heat(movie.id)
-        return interaction_changed, heat_updated_count
+                heat_updated_count = MovieHeatService.update_single_movie_heat(updated_movie.id)
+        return bool(updated_fields), heat_updated_count
 
     def _process_one(self, ctx, movie: Movie) -> None:
         latest_movie = Movie.get_by_id(movie.id)

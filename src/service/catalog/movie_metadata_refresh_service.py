@@ -251,18 +251,15 @@ class MovieMetadataRefreshService:
             "failed_count": failed_count,
         }
 
-        existed_before_upsert = Movie.get_or_none(
-            (Movie.movie_number == detail.movie_number) | (Movie.javdb_id == detail.javdb_id)
-        ) is not None
         try:
-            # upsert 成功后重新走列表查询，确保响应里带上封面和 can_play 等派生字段。
-            movie = cls._build_catalog_import_service().upsert_movie_from_javdb_detail(detail)
+            # 纯新建语义：已存在影片跳过不更新；重新走列表查询确保响应里带上封面和 can_play 等派生字段。
+            movie, created = cls._build_catalog_import_service().import_movie_if_missing(detail)
             movie_with_cover = MovieService.movie_list_query().where(Movie.id == movie.id).get_or_none() or movie
             imported_movies.append(MovieListItemResource.from_attributes_model(movie_with_cover))
-            if existed_before_upsert:
-                already_exists_count += 1
-            else:
+            if created:
                 created_count += 1
+            else:
+                already_exists_count += 1
         except ImageDownloadError as exc:
             failed_count += 1
             logger.warning(
@@ -280,7 +277,7 @@ class MovieMetadataRefreshService:
         except Exception as exc:
             failed_count += 1
             logger.exception(
-                "Javdb movie upsert failed movie_number={} detail={}",
+                "Javdb movie import failed movie_number={} detail={}",
                 normalized_movie_number,
                 exc,
             )
@@ -427,9 +424,9 @@ class MovieMetadataRefreshService:
                 "total": total,
             }
             try:
-                # 列表项信息不完整，入库前必须再拉详情复用统一导入链路。
+                # 列表项信息不完整，入库前必须再拉详情复用统一导入链路；外层已跳过已存在影片。
                 detail = provider.get_movie_by_javdb_id(movie_item.javdb_id)
-                movie = import_service.upsert_movie_from_javdb_detail(detail)
+                movie, _created = import_service.import_movie_if_missing(detail)
                 movie_with_cover = MovieService.movie_list_query().where(Movie.id == movie.id).get_or_none() or movie
                 imported_movies.append(MovieListItemResource.from_attributes_model(movie_with_cover))
                 created_count += 1
@@ -474,7 +471,7 @@ class MovieMetadataRefreshService:
             except Exception as exc:
                 failed_count += 1
                 logger.exception(
-                    "Javdb series movie upsert failed series_id={} javdb_id={} detail={}",
+                    "Javdb series movie import failed series_id={} javdb_id={} detail={}",
                     series_id,
                     movie_item.javdb_id,
                     exc,

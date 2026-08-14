@@ -240,7 +240,7 @@ class HotReviewSyncService:
                     try:
                         # 每抓到一条评论即尝试影片入库，避免先全量抓完再入库。
                         detail = provider.get_movie_by_number(movie_number)
-                        movie_by_number[movie_number] = self.import_service.upsert_movie_from_javdb_detail(detail)
+                        movie_by_number[movie_number] = self.import_service.import_movie_if_missing(detail)[0]
                         imported_movies += 1
                     except Exception as exc:
                         movie_by_number[movie_number] = None

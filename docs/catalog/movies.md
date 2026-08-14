@@ -531,6 +531,8 @@ Authorization: Bearer <token>
   - `200 OK`
   - `Content-Type: text/event-stream`
   - 事件顺序与演员流式接口一致，最终结果看 `completed`
+- 导入语义：**纯新建**——影片已存在时跳过不更新任何字段（`already_exists_count` 计数），
+  需要按 JavDB 全量刷新已存在影片请用 `POST /movies/{movie_number}/metadata-refresh`。
 - 事件顺序：
   - `search_started`
   - `movie_found`
