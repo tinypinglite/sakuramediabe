@@ -5,7 +5,7 @@ from src.model.base import get_database
 
 
 class MovieHeatService:
-    FORMULA_VERSION = "v3"
+    FORMULA_VERSION = "v4"
 
     # 参考值取当前业务库各互动字段的 P99，固定后避免全库分布变化导致历史热度漂移。
     WATCHED_COUNT_REFERENCE = 1308
@@ -16,30 +16,14 @@ class MovieHeatService:
 
     @classmethod
     def build_heat_expression(cls):
-        # 对数压缩累计计数，降低极端头部的碾压，同时保留计数越高热度越高的单调性。
+        # 按固定 P99 参考值做线性累计，保留头部原始计数差异，不设置热度上限。
         normalized_heat = (
-            0.30
-            * (
-                fn.LN((Movie.watched_count + 1).cast("REAL"))
-                / fn.LN(cls.WATCHED_COUNT_REFERENCE + 1)
-            )
-            + 0.30
-            * (
-                fn.LN((Movie.want_watch_count + 1).cast("REAL"))
-                / fn.LN(cls.WANT_WATCH_COUNT_REFERENCE + 1)
-            )
-            + 0.10
-            * (
-                fn.LN((Movie.comment_count + 1).cast("REAL"))
-                / fn.LN(cls.COMMENT_COUNT_REFERENCE + 1)
-            )
-            + 0.30
-            * (
-                fn.LN((Movie.score_number + 1).cast("REAL"))
-                / fn.LN(cls.SCORE_NUMBER_REFERENCE + 1)
-            )
+            0.35 * Movie.watched_count.cast("REAL") / cls.WATCHED_COUNT_REFERENCE
+            + 0.25 * Movie.want_watch_count.cast("REAL") / cls.WANT_WATCH_COUNT_REFERENCE
+            + 0.15 * Movie.comment_count.cast("REAL") / cls.COMMENT_COUNT_REFERENCE
+            + 0.25 * Movie.score_number.cast("REAL") / cls.SCORE_NUMBER_REFERENCE
         )
-        # 不设置硬上限，保留参考值以上极端头部影片之间的排序差异。
+        # HEAT_SCALE 只是 P99 附近的展示基准，参考值以上继续线性增长。
         return fn.ROUND(normalized_heat * cls.HEAT_SCALE).cast("INTEGER")
 
     @classmethod
