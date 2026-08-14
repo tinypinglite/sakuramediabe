@@ -124,5 +124,3 @@ class StatusMetadataProviderTestResource(SchemaModel):
     title: str | None = None
     actors_count: int | None = None
     tags_count: int | None = None
-    description_length: int | None = None
-    description_excerpt: str | None = None

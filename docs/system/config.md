@@ -9,7 +9,7 @@
 - 修改经由 `Settings` 模型校验（类型 + cron/URL 语义），通过后**落盘 toml 并热更新 api 进程内存**（复用 `update_settings`）。
 - 每个配置项带**生效方式**标注，接口如实告知「即时生效 / 需重启」，不制造「改了以为生效」的假象。
 
-与现有 `/indexer-settings`（承载 DB `Indexer` 表明细）与 `/movie-desc-translation-settings/test`（翻译连通性探测）**并存**：那些能力不属于纯 toml 字段读写，统一配置接口不接管。`media.others_number_features`（原 `/collection-number-features`）的规范化已下沉到 `Media` 模型层，改动统一走 `PATCH /config`。
+与现有 `/indexer-settings`（承载 DB `Indexer` 表明细）**并存**：该能力不属于纯 toml 字段读写，统一配置接口不接管。`media.others_number_features`（原 `/collection-number-features`）的规范化已下沉到 `Media` 模型层，改动统一走 `PATCH /config`。
 
 **本 API 不接管的键**：以下顶层键既不出现在 `GET /config` 的响应中，`PATCH /config` 收到也会直接返回 `readonly_config_key`：
 
@@ -34,11 +34,11 @@
 
 | 配置节 | 生效方式 |
 |---|---|
-| `media` `movie_info_translation` `metadata` `media_import` `image_search` `qdrant` | `hot` |
+| `media` `metadata` `media_import` `image_search` `qdrant` | `hot` |
 | `database` `logging` | `restart_api` |
 | `scheduler` `downloads` | `restart_scheduler` |
 
-> 注：`hot` 节中被定时任务消费的部分（如翻译、图搜、下载清理），其**定时执行路径**实为「需重启 aps」，只有 api 进程内的交互 / 手动触发才真正即时。
+> 注：`hot` 节中被定时任务消费的部分（如图搜、下载清理），其**定时执行路径**实为「需重启 aps」，只有 api 进程内的交互 / 手动触发才真正即时。
 
 ## 端点列表总览
 
@@ -110,7 +110,7 @@
 | `invalid_config_value` | 422 | 类型不符、子节不是对象、cron 表达式非法、URL 格式非法等 |
 
 - **cron**：`scheduler.*_cron` 必须能被 APScheduler 解析，否则拒绝——避免非法 cron 落盘后拖垮 aps 进程重启。
-- **URL**：`movie_info_translation.base_url`、`qdrant.url`、`image_search.inference_base_url`、`metadata.gfriends_*_url` 必须是 http/https。
+- **URL**：`qdrant.url`、`image_search.inference_base_url`、`metadata.gfriends_*_url` 必须是 http/https。
 
 这些语义校验分档执行：
 - **启动加载**（`Settings()` 从 toml 加载）为宽松档，非法值仅打 warning、保留原值，避免存量非法配置让进程启动即崩。
@@ -122,10 +122,10 @@
 
 ### 环境变量 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`（推荐容器部署用）
 
-- 作用于全部 metadata 链路：JavDB API、JavDB 图片下载（jdbstatic.com 封面/剧照/头像）、DMM 页面请求、GFriends filetree / 头像解析。
+- 作用于全部 metadata 链路：JavDB API、JavDB 图片下载（jdbstatic.com 封面/剧照/头像）、GFriends filetree / 头像解析。
 - 由部署方自行分流：设 `HTTP_PROXY` 指向代理软件（如 clash 混合端口）后，可在 `NO_PROXY` 排除直连域名，或交给代理软件自身的规则引擎分流，项目代码不做任何判断。`NO_PROXY` 遵循 curl 语义：`example.com`（不带点）排除该域自身及子域，`.example.com`（带点）只排除子域、不排除主域自身（如 `.jdbstatic.com` 不能排除 `jdbstatic.com` 本域）。
 - 未设置环境变量时行为与以前完全一致（全部直连），老部署零感知。
-- **存量迁移**：此前依赖 `metadata.proxy` 的部署，删除该配置后必须改用环境变量，否则原本走代理的 DMM / GFriends 请求会转为直连。
+- **存量迁移**：此前依赖 `metadata.proxy` 的部署，删除该配置后必须改用环境变量，否则原本走代理的 GFriends 请求会转为直连。
 
 > 注意：qbittorrent / torznab / cloud115 等下载与网盘链路显式关闭了环境变量读取（`trust_env=False`），不受容器全局代理影响，保持直连。
 >

@@ -20,7 +20,6 @@ from src.api.routers.system import (
     activity,
     auth,
     indexer_settings,
-    movie_desc_translation_settings,
     plugins,
     status,
 )
@@ -122,15 +121,6 @@ def test_indexer_settings_router_uses_db_deps_as_router_level_dependency():
         isinstance(dependency.dependency, type(deps.db_deps))
         or dependency.dependency is deps.db_deps
         for dependency in indexer_settings.router.dependencies
-    )
-
-
-def test_movie_desc_translation_settings_router_uses_db_deps_as_router_level_dependency():
-    assert hasattr(deps, "db_deps")
-    assert any(
-        isinstance(dependency.dependency, type(deps.db_deps))
-        or dependency.dependency is deps.db_deps
-        for dependency in movie_desc_translation_settings.router.dependencies
     )
 
 
@@ -297,8 +287,8 @@ def test_create_app_registers_image_search_routes():
     assert "/movies/{movie_number}/interaction-sync" not in paths
     assert "/movies/{movie_number}/heat-recompute" in paths
     assert "/movies/series/{series_id}/javdb/import/stream" in paths
-    # GET/PATCH 已剔除；此路由现在只暴露连通性探测端点。
-    assert "/movie-desc-translation-settings/test" in paths
+    # 翻译链路已整体下线：设置探测端点一并移除。
+    assert "/movie-desc-translation-settings/test" not in paths
     assert "/system/activity/bootstrap" in paths
     assert "/system/notifications" in paths
     assert "/system/task-runs" in paths
@@ -630,48 +620,6 @@ def test_create_app_initializes_database_proxy_before_runtime_startup_jobs(monke
     assert events == [
         "db.ready",
         "recover",
-    ]
-
-
-def test_create_app_recovers_task_related_business_running_states_on_startup(monkeypatch):
-    events = []
-
-    def fake_recover_interrupted_task_runs(**kwargs):
-        events.append(("recover", kwargs["trigger_type"]))
-        if kwargs["trigger_type"] == "startup":
-            return [type("TaskRun", (), {"task_key": "movie_desc_sync"})()]
-        if kwargs["trigger_type"] == "manual":
-            return [type("TaskRun", (), {"task_key": "movie_desc_translation"})()]
-        if kwargs["trigger_type"] == "internal":
-            return [type("TaskRun", (), {"task_key": "download_task_import"})()]
-        return []
-
-    monkeypatch.setattr("src.start.recovery.ActivityService.recover_interrupted_task_runs", fake_recover_interrupted_task_runs)
-    monkeypatch.setattr(
-        "src.start.recovery.MovieDescSyncService.recover_interrupted_running_movies",
-        lambda **kwargs: events.append(("recover_desc", kwargs["error_message"])) or 1,
-    )
-    monkeypatch.setattr(
-        "src.start.recovery.MovieDescTranslationService.recover_interrupted_running_movies",
-        lambda **kwargs: events.append(("recover_translation", kwargs["error_message"])) or 1,
-    )
-    monkeypatch.setattr(
-        "src.start.recovery.DownloadSyncService.recover_orphaned_imports_only",
-        lambda self: events.append(("recover_import", True)) or {"recovered_count": 1},
-    )
-
-    app = create_app()
-
-    with TestClient(app):
-        pass
-
-    assert events == [
-        ("recover", "startup"),
-        ("recover", "manual"),
-        ("recover", "internal"),
-        ("recover_desc", "影片描述抓取任务中断，等待重试"),
-        ("recover_translation", "影片简介翻译任务中断，等待重试"),
-        ("recover_import", True),
     ]
 
 

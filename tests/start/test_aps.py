@@ -354,57 +354,6 @@ def test_aps_auto_download_subscribed_movies_command_invokes_job(monkeypatch):
     )
 
 
-def test_aps_sync_movie_desc_command_invokes_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "sync-movie-desc",
-        {
-            "candidate_movies": 3,
-            "processed_movies": 3,
-            "succeeded_movies": 2,
-            "failed_movies": 1,
-            "updated_movies": 2,
-            "skipped_movies": 0,
-        },
-        "movie desc sync finished: candidate_movies=3 processed_movies=3 "
-        "succeeded_movies=2 failed_movies=1 updated_movies=2 skipped_movies=0",
-    )
-
-
-def test_aps_translate_movie_desc_command_invokes_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "translate-movie-desc",
-        {
-            "candidate_movies": 3,
-            "processed_movies": 3,
-            "succeeded_movies": 2,
-            "failed_movies": 1,
-            "updated_movies": 2,
-            "skipped_movies": 0,
-        },
-        "movie desc translation finished: candidate_movies=3 processed_movies=3 "
-        "succeeded_movies=2 failed_movies=1 updated_movies=2 skipped_movies=0",
-    )
-
-
-def test_aps_translate_movie_title_command_invokes_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "translate-movie-title",
-        {
-            "candidate_movies": 3,
-            "processed_movies": 3,
-            "succeeded_movies": 2,
-            "failed_movies": 1,
-            "updated_movies": 2,
-            "skipped_movies": 0,
-        },
-        "movie title translation finished: candidate_movies=3 processed_movies=3 "
-        "succeeded_movies=2 failed_movies=1 updated_movies=2 skipped_movies=0",
-    )
-
-
 # ---------------------------------------------------------------------------
 # build_scheduler 测试
 # ---------------------------------------------------------------------------
@@ -421,10 +370,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_small_file_cleanup_cron", "*/5 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_collection_sync_cron", "0 1 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_file_scan_cron", "0 */6 * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.movie_desc_sync_cron", "0 4 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_interaction_sync_cron", "0 5 * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.movie_desc_translation_cron", "15 4 * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.movie_title_translation_cron", "20 4 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_thumbnail_cron", "*/5 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.image_search_index_cron", "*/10 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.image_search_optimize_cron", "0 */6 * * *")
@@ -449,10 +395,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert str(scheduler.get_job("subscribed_movie_auto_download").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='30']"
     assert str(scheduler.get_job("movie_collection_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='1', minute='0']"
     assert str(scheduler.get_job("hot_review_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='1', minute='20']"
-    assert str(scheduler.get_job("movie_desc_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='0']"
     assert str(scheduler.get_job("movie_interaction_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"
-    assert str(scheduler.get_job("movie_desc_translation").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='15']"
-    assert str(scheduler.get_job("movie_title_translation").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='20']"
     assert str(scheduler.get_job("movie_heat_update").trigger) == "cron[month='*', day='*', day_of_week='*', hour='0', minute='15']"
     assert str(scheduler.get_job("download_task_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/15']"
     assert str(scheduler.get_job("download_task_auto_import").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"
@@ -576,21 +519,17 @@ def test_aps_recovers_task_related_business_running_states(monkeypatch):
     def fake_recover_interrupted_task_runs(**kwargs):
         events.append(("recover", kwargs["trigger_type"]))
         if kwargs["trigger_type"] == "scheduled":
-            return [type("TaskRun", (), {"task_key": "movie_desc_sync"})()]
+            return [type("TaskRun", (), {"task_key": "movie_interaction_sync"})()]
         if kwargs["trigger_type"] == "manual":
-            return [type("TaskRun", (), {"task_key": "movie_desc_translation"})()]
+            return [type("TaskRun", (), {"task_key": "download_task_import"})()]
         if kwargs["trigger_type"] == "internal":
             return [type("TaskRun", (), {"task_key": "download_task_import"})()]
         return []
 
     monkeypatch.setattr("src.start.recovery.ActivityService.recover_interrupted_task_runs", fake_recover_interrupted_task_runs)
     monkeypatch.setattr(
-        "src.start.recovery.MovieDescSyncService.recover_interrupted_running_movies",
-        lambda **kwargs: events.append(("recover_desc", kwargs["error_message"])) or 1,
-    )
-    monkeypatch.setattr(
-        "src.start.recovery.MovieDescTranslationService.recover_interrupted_running_movies",
-        lambda **kwargs: events.append(("recover_translation", kwargs["error_message"])) or 2,
+        "src.start.recovery.MovieInteractionSyncService.recover_interrupted_running_movies",
+        lambda **kwargs: events.append(("recover_interaction", kwargs["error_message"])) or 2,
     )
     monkeypatch.setattr(
         "src.start.recovery.DownloadSyncService.recover_orphaned_imports_only",
@@ -609,8 +548,7 @@ def test_aps_recovers_task_related_business_running_states(monkeypatch):
         ("recover", "manual"),
         ("recover", "internal"),
         ("recover", "startup"),
-        ("recover_desc", "影片描述抓取任务中断，等待重试"),
-        ("recover_translation", "影片简介翻译任务中断，等待重试"),
+        ("recover_interaction", "影片互动数同步任务中断，等待重试"),
         ("recover_import", True),
         "build",
         "scheduler.start",
@@ -693,63 +631,6 @@ def test_run_job_ensures_database_and_calls_activity_service(monkeypatch):
         "allow_null_owner": True,
     }
     assert events == ["ready", ("run_task", "movie_heat_update", "movie-heat-update", "aps:movie_heat_update", "skip")]
-
-
-def test_run_job_movie_desc_sync_with_recovery(monkeypatch):
-    events = []
-
-    def fake_ensure_database_ready():
-        events.append("ready")
-
-    def fake_run_task(
-        *,
-        task_key,
-        trigger_type,
-        func,
-        task_name=None,
-        task_run_id=None,
-        log_task_name=None,
-        extra_callbacks=None,
-        mutex_key=None,
-        conflict_policy="raise",
-    ):
-        events.append(("run_task", task_key))
-        return func(_FakeReporter())
-
-    monkeypatch.setattr("src.start.aps.ensure_database_ready", fake_ensure_database_ready)
-    monkeypatch.setattr("src.start.aps.ActivityService.run_task", fake_run_task)
-    recovered_payload = _mock_recover_interrupted_task_runs(monkeypatch, recovered_task_runs=[object()])
-
-    class FakeMovieDescSyncService:
-        INTERRUPTED_FETCH_ERROR_MESSAGE = "影片描述抓取任务中断，等待重试"
-
-        @classmethod
-        def recover_interrupted_running_movies(cls, **kwargs):
-            return 2
-
-        def run(self, *, reporter=None, only_ids=None):
-            return {
-                "candidate_movies": 2,
-                "processed_movies": 2,
-                "succeeded_movies": 1,
-                "failed_movies": 1,
-                "updated_movies": 1,
-                "skipped_movies": 0,
-            }
-
-    monkeypatch.setattr("src.scheduler.registry.MovieDescSyncService", FakeMovieDescSyncService)
-
-    job_def = JOB_REGISTRY_BY_KEY["movie_desc_sync"]
-    result = run_job(job_def)
-
-    assert result["processed_movies"] == 2
-    assert result["recovered_task_runs"] == 1
-    assert result["recovered_running_movies"] == 2
-    assert recovered_payload == {
-        "task_key": "movie_desc_sync",
-        "error_message": INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
-        "allow_null_owner": True,
-    }
 
 
 def test_run_job_manual_uses_raise_conflict_policy(monkeypatch):
@@ -1116,28 +997,28 @@ def test_task_worker_single_movie_params_beats_cron_factory(test_db, monkeypatch
     batch_calls = []
     monkeypatch.setitem(
         QUEUE_TASK_REGISTRY,
-        "movie_desc_translation",
+        "movie_interaction_sync",
         QueueTaskDefinition(
-            task_key="movie_desc_translation",
-            log_name="movie-desc-translation",
+            task_key="movie_interaction_sync",
+            log_name="movie-interaction-sync",
             handler=lambda reporter, params: single_calls.append(params) or {},
         ),
     )
-    job_def = JOB_REGISTRY_BY_KEY["movie_desc_translation"]
+    job_def = JOB_REGISTRY_BY_KEY["movie_interaction_sync"]
     fake_def = job_def.model_copy(
         update={"service_factory": lambda _reporter: batch_calls.append(1) or {}}
     )
-    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, "movie_desc_translation", fake_def)
+    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, "movie_interaction_sync", fake_def)
 
     ActivityService.create_task_run(
-        task_key="movie_desc_translation",
+        task_key="movie_interaction_sync",
         trigger_type="manual",
         params={"movie_id": 42},
         scheduled_at=utc_now_for_db(),
     )
     TaskWorker()._execute(TaskQueueService.claim_next())
     ActivityService.create_task_run(
-        task_key="movie_desc_translation",
+        task_key="movie_interaction_sync",
         trigger_type="scheduled",
         scheduled_at=utc_now_for_db(),
     )

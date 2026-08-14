@@ -196,7 +196,7 @@ def test_runner_deferred_keeps_state_and_budget(test_db):
 def test_runner_abort_rolls_back_current_and_reraises(test_db):
     first = _create_movie("KER-006")
     second = _create_movie("KER-007")
-    spec = _build_spec({first.id: TaskAbortError("upstream_fused", "DMM 连续失败熔断")})
+    spec = _build_spec({first.id: TaskAbortError("upstream_fused", "上游连续失败熔断")})
 
     with pytest.raises(TaskAbortError):
         ResourceTaskRunner.run(spec, StubReporter())

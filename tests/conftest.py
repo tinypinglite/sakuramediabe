@@ -23,7 +23,6 @@ from src.common.file_signatures import (
     FILE_SIGNATURE_EXPIRE_SECONDS,
 )
 from src.config.config import Database, settings
-from src.metadata.provider import MetadataNotFoundError
 from src.model import (
     Actor,
     BackgroundTaskRun,
@@ -321,21 +320,6 @@ def clean_db(_worker_test_database_url, _prepared_test_database):
             model.bind(database_proxy, bind_refs=False, bind_backrefs=False)
         database_proxy.initialize(session_database)
         session_database.create_tables(TEST_MODELS)
-
-
-@pytest.fixture(autouse=True)
-def fake_default_dmm_provider(monkeypatch):
-    from src.service.catalog.catalog_import_service import CatalogImportService
-
-    class _FakeDmmProvider:
-        def get_movie_desc(self, movie_number: str) -> str:
-            raise MetadataNotFoundError("movie_desc", movie_number)
-
-    monkeypatch.setattr(
-        CatalogImportService,
-        "_build_dmm_provider",
-        staticmethod(lambda: _FakeDmmProvider()),
-    )
 
 
 @pytest.fixture()

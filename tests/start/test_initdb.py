@@ -255,13 +255,13 @@ def test_create_tables_creates_resource_task_state_unique_constraint(clean_db, m
     create_tables()
 
     ResourceTaskState.create(
-        task_key="movie_desc_sync",
+        task_key="movie_interaction_sync",
         resource_type="movie",
         resource_id=1,
     )
     try:
         ResourceTaskState.create(
-            task_key="movie_desc_sync",
+            task_key="movie_interaction_sync",
             resource_type="movie",
             resource_id=1,
         )
@@ -323,7 +323,7 @@ def test_create_tables_creates_task_queue_and_attempt_schema(clean_db, monkeypat
     # last_task_run_id 外键化：悬空引用必须被数据库拒绝。
     with pytest.raises(IntegrityError):
         ResourceTaskState.create(
-            task_key="movie_desc_sync",
+            task_key="movie_interaction_sync",
             resource_type="movie",
             resource_id=42,
             last_task_run_id=999_999,

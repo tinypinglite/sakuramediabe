@@ -13,13 +13,19 @@ from src.service.system.resource_task_actions_registry import (
 )
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 
-TASK_KEY = "movie_desc_translation"
+TASK_KEY = "movie_interaction_sync"
 
 
-def _movie(number: str, *, desc: str = "原始简介", is_subscribed: bool = False) -> Movie:
+def _movie(
+    number: str,
+    *,
+    desc: str = "原始简介",
+    is_subscribed: bool = False,
+    javdb_id: str | None = None,
+) -> Movie:
     return Movie.create(
         movie_number=number,
-        javdb_id=f"javdb-{number}",
+        javdb_id=javdb_id if javdb_id is not None else f"javdb-{number}",
         title=number,
         desc=desc,
         is_subscribed=is_subscribed,
@@ -41,7 +47,7 @@ def _state(
         state=state,
         attempt_count=attempt_count,
         retry_round=retry_round,
-        error_code="translation_rejected",
+        error_code="interaction_sync_rejected",
         last_error="上游拒绝",
     )
 
@@ -111,21 +117,21 @@ def test_retry_now_enqueues_subset_run_with_partial_success(test_db):
 
 
 def test_domain_eligibility_hook_skips_before_state_transition(test_db):
-    # movie_desc_translation 的合格性钩子要求原始简介非空。
-    no_desc = _movie("ACT-005", desc="")
-    _state(no_desc, state="failed_retryable")
+    # movie_interaction_sync 的合格性钩子要求 javdb_id 非空。
+    no_javdb = _movie("ACT-005", javdb_id="")
+    _state(no_javdb, state="failed_retryable")
 
     outcome = ResourceTaskActionService.apply(
-        task_key=TASK_KEY, action="retry_now", resource_ids=[no_desc.id]
+        task_key=TASK_KEY, action="retry_now", resource_ids=[no_javdb.id]
     )
 
     assert outcome.accepted_resource_ids == []
     assert outcome.skipped == [
-        {"resource_id": no_desc.id, "reason": "movie_desc_missing"}
+        {"resource_id": no_javdb.id, "reason": "movie_javdb_id_missing"}
     ]
     assert outcome.task_run_id is None
     # 状态未被动过。
-    untouched = ResourceTaskState.get(ResourceTaskState.resource_id == no_desc.id)
+    untouched = ResourceTaskState.get(ResourceTaskState.resource_id == no_javdb.id)
     assert untouched.state == "failed_retryable"
 
 

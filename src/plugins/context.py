@@ -45,11 +45,11 @@ class PluginContext:
         return build_javdb_provider(username=username, password=password)
 
     @staticmethod
-    def build_catalog_import_service(skip_dmm: bool = False):
-        """构造目录导入服务；skip_dmm=True 跳过 DMM 简介抓取（批量场景提速）。"""
+    def build_catalog_import_service():
+        """构造目录导入服务。"""
         from src.service.catalog import CatalogImportService
 
-        return CatalogImportService(skip_dmm=skip_dmm)
+        return CatalogImportService()
 
     def import_movie_by_number(
         self,

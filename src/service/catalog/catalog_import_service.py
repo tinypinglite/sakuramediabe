@@ -12,12 +12,6 @@ from pathlib import Path
 from loguru import logger
 
 from src.common.runtime_time import utc_now_for_db
-from src.metadata._providers.dmm import (
-    DmmMovieDescNotFoundError,
-    DmmMovieNumberNotFoundError,
-    DmmProvider,
-)
-from src.metadata._providers.exceptions import MetadataRequestError
 from src.metadata._providers.models import (
     JavdbMovieActorResource,
     JavdbMovieDetailResource,
@@ -42,13 +36,6 @@ from src.service.catalog.movie_image_service import (
     PreparedImageFile,
     ThinCoverResolution,
 )
-from src.service.system.resource_task_runner import (
-    STATE_FAILED_TERMINAL,
-    ResourceTaskLedger,
-    RetryPolicy,
-    TaskAbortError,
-    TaskItemError,
-)
 from src.service.system.resource_task_state_service import ResourceTaskStateService
 
 # 兼容既有导入路径：ImageDownloadError 等类型历史上从本模块导出，且多处 `except ImageDownloadError`
@@ -64,38 +51,15 @@ __all__ = [
 
 class CatalogImportService:
     """承接远端元数据到本地目录模型的 upsert。"""
-    TASK_KEY = "movie_desc_sync"
-
-    # DMM 简介为次要补充：连续请求失败到达该阈值即判定 DMM 当前不可用，
-    # 本 service 实例后续直接跳过抓取，避免每部影片都重复走超时+重试拖慢同步。
-    DMM_UNAVAILABLE_FAILURE_THRESHOLD = 3
-
-    # movie_desc_sync 重试预算（kernel 记账）：网络性失败按小时级指数退避，
-    # 5 次后 exhausted；DMM 确认无此番号/无简介为 failed_terminal 不进预算。
-    DESC_SYNC_RETRY_POLICY = RetryPolicy(
-        max_attempts=5, backoff_base_seconds=3600, backoff_max_seconds=86400
-    )
 
     def __init__(
         self,
         image_downloader: Callable[[str, Path], None] | None = None,
         persist_lock=None,
-        dmm_provider: DmmProvider | None = None,
-        skip_dmm: bool = False,
     ):
         # 图片子系统统一交由 MovieImageService，downloader 透传下去保住 media_import 的注入接缝。
         self.image_service = MovieImageService(image_downloader=image_downloader)
         self.persist_lock = persist_lock
-        self.dmm_provider = dmm_provider or self._build_dmm_provider()
-        # DMM 熔断状态：连续连通性失败计数与是否已判定不可用（仅在本实例生命周期内有效）。
-        self._dmm_request_failures = 0
-        # 插件/批量导入可显式跳过 DMM 简介抓取（每部省 ~1.8s），由调用方按需开启。
-        self._dmm_circuit_open = skip_dmm
-
-    @staticmethod
-    def _build_dmm_provider() -> DmmProvider:
-        from src.metadata.factory import build_dmm_provider
-        return build_dmm_provider()
 
     @staticmethod
     def _split_actor_alias_name(alias_name: str) -> list[str]:
@@ -298,8 +262,6 @@ class CatalogImportService:
 
         self.image_service.delete_obsolete_image_files(obsolete_paths)
         MovieHeatService.update_single_movie_heat(movie.id)
-        # 主入库先完成，再补 DMM 描述，避免第三方页面波动影响影片基础数据入库。
-        self.sync_movie_desc(movie)
         logger.info("Catalog upsert finished movie_id={} movie_number={}", movie.id, movie.movie_number)
         return movie
 
@@ -363,113 +325,6 @@ class CatalogImportService:
         finally:
             if not finalized:
                 self.image_service.cleanup_prepared_image_files(prepared_files)
-
-    def sync_movie_desc(self, movie: Movie) -> bool:
-        """公共入口（热评同步、影片导入等 upsert 链路复用）：kernel 记账的单资源执行。"""
-        task_state = ResourceTaskStateService.get_state(self.TASK_KEY, movie.id)
-        if task_state is not None and task_state.state == STATE_FAILED_TERMINAL:
-            # 终态必须在公共入口统一拦截，避免 upsert 链路绕过候选过滤反复请求 DMM。
-            logger.info(
-                "Catalog movie desc sync skipped terminal failure movie_id={} movie_number={}",
-                movie.id,
-                movie.movie_number,
-            )
-            return False
-
-        # DMM 已在本实例生命周期内判定不可用：直接跳过，不发请求也不消耗预算，
-        # 状态保持原样，留待网络恢复后的定时任务补抓。
-        if self._dmm_circuit_open:
-            return False
-
-        from src.service.system.activity_service import ActivityService
-
-        run_context = ActivityService.get_task_run_context()
-        lock_context = self.persist_lock or nullcontext()
-        with lock_context:
-            claim = ResourceTaskLedger.begin_attempt(
-                task_key=self.TASK_KEY,
-                resource_type="movie",
-                resource_id=movie.id,
-                trigger_type=getattr(run_context, "trigger_type", None),
-                task_run_id=getattr(run_context, "task_run_id", None),
-            )
-        if claim is None:
-            # 行级领取失败：该影片正被其它 run（批跑/子集跑）抓取中，本次跳过。
-            logger.info(
-                "Catalog movie desc sync skipped, movie busy in another run movie_id={} movie_number={}",
-                movie.id,
-                movie.movie_number,
-            )
-            return False
-        attempt, record, _prior_state = claim
-        try:
-            movie_desc = self.fetch_movie_desc_strict(movie)
-        except TaskItemError as exc:
-            with lock_context:
-                ResourceTaskLedger.finish_failure(
-                    attempt,
-                    record,
-                    error_code=exc.error_code,
-                    error_message=str(exc),
-                    retryable=exc.retryable,
-                    policy=self.DESC_SYNC_RETRY_POLICY,
-                )
-            logger.warning(
-                "Catalog movie desc fetch failed movie_id={} movie_number={} code={} retryable={}",
-                movie.id,
-                movie.movie_number,
-                exc.error_code,
-                exc.retryable,
-            )
-            return False
-        with lock_context:
-            self._apply_movie_desc(movie, movie_desc)
-            ResourceTaskLedger.finish_success(attempt, record)
-        return True
-
-    def fetch_movie_desc_strict(self, movie: Movie) -> str:
-        """只抓不记账：维护熔断计数，失败一律抛带 error_code 的 TaskItemError。"""
-        try:
-            movie_desc = self.dmm_provider.get_movie_desc(movie.movie_number)
-        except DmmMovieNumberNotFoundError as exc:
-            # 业务性失败说明 DMM 仍可用：清零熔断计数，判终态。
-            self._dmm_request_failures = 0
-            raise TaskItemError(
-                "dmm_movie_number_not_found", str(exc), retryable=False
-            ) from exc
-        except DmmMovieDescNotFoundError as exc:
-            self._dmm_request_failures = 0
-            raise TaskItemError(
-                "dmm_movie_desc_not_found", str(exc), retryable=False
-            ) from exc
-        except MetadataRequestError as exc:
-            # 连通性失败（已重试耗尽）计入熔断。
-            self._dmm_request_failures += 1
-            if self._dmm_request_failures >= self.DMM_UNAVAILABLE_FAILURE_THRESHOLD:
-                self._dmm_circuit_open = True
-                logger.warning(
-                    "DMM marked unavailable after {} consecutive request failures, "
-                    "skip desc sync for the rest of this run",
-                    self._dmm_request_failures,
-                )
-            raise TaskItemError("dmm_request_error", str(exc)) from exc
-        except Exception as exc:
-            self._dmm_request_failures = 0
-            raise TaskItemError("dmm_fetch_failed", str(exc)) from exc
-        self._dmm_request_failures = 0
-        return movie_desc
-
-    def ensure_dmm_available_or_abort(self) -> None:
-        """cron runner 的逐资源前置检查：熔断已开则中止整轮（剩余资源不耗预算）。"""
-        if self._dmm_circuit_open:
-            raise TaskAbortError(
-                "dmm_unavailable", "DMM 连续请求失败已熔断，本轮剩余影片中止"
-            )
-
-    @staticmethod
-    def _apply_movie_desc(movie: Movie, movie_desc: str) -> None:
-        movie.desc = movie_desc
-        movie.save(only=[Movie.desc])
 
     def _refresh_movie_metadata_records_strict(
         self,

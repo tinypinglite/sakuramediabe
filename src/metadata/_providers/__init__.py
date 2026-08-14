@@ -1,4 +1,3 @@
-from .dmm import DmmMovieDescNotFoundError, DmmMovieNumberNotFoundError, DmmProvider
 from .exceptions import (
     MetadataNotFoundError,
     MetadataProviderError,
@@ -17,9 +16,6 @@ from .models import (
 )
 
 __all__ = [
-    "DmmMovieDescNotFoundError",
-    "DmmMovieNumberNotFoundError",
-    "DmmProvider",
     "JavdbMovieActorResource",
     "JavdbMovieDetailResource",
     "JavdbMovieListItemResource",

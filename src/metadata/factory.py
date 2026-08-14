@@ -9,7 +9,6 @@ from typing import Any
 from loguru import logger
 
 from src.config.config import settings
-from src.metadata._providers.dmm import DmmProvider
 from src.metadata._providers.javdb import JavdbProvider
 from src.metadata.gfriends import GfriendsActorImageResolver
 
@@ -127,7 +126,7 @@ def build_javdb_provider(
 ) -> GfriendsAvatarJavdbProvider:
     """构建 JavDB provider，演员头像继续优先 GFriends。
 
-    JavDB / GFriends / DMM 均不再接收显式代理配置：外部站点请求统一跟随容器
+    JavDB / GFriends 均不再接收显式代理配置：外部站点请求统一跟随容器
     环境变量 HTTP_PROXY / HTTPS_PROXY / NO_PROXY 分流（httpx trust_env 默认开启），
     由部署方自行决定哪些域名走代理、哪些直连。站点访问依托 ``settings.metadata.javdb_host``
     自身的直连/反代能力。账号只用于需登录的 TOP250 榜单，由排行榜插件从自身设置读入后
@@ -142,7 +141,3 @@ def build_javdb_provider(
         provider=provider,
         actor_image_resolver=_build_gfriends_resolver(),
     )
-
-
-def build_dmm_provider() -> DmmProvider:
-    return DmmProvider()

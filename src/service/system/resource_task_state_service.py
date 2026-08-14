@@ -77,14 +77,6 @@ class ResourceTaskStateService:
         "updated_at:asc": (ResourceTaskState.updated_at.asc(), ResourceTaskState.id.asc()),
     }
     TASK_REGISTRY = {
-        "movie_desc_sync": ResourceTaskDefinition(
-            task_key="movie_desc_sync",
-            resource_type="movie",
-            display_name="影片描述回填",
-            default_sort="last_attempted_at:desc",
-            resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
-            check_actionable=build_movie_actionable_check(),
-        ),
         "movie_interaction_sync": ResourceTaskDefinition(
             task_key="movie_interaction_sync",
             resource_type="movie",
@@ -94,28 +86,6 @@ class ResourceTaskStateService:
             check_actionable=build_movie_actionable_check(
                 required_attr="javdb_id",
                 missing_reason="movie_javdb_id_missing",
-            ),
-        ),
-        "movie_desc_translation": ResourceTaskDefinition(
-            task_key="movie_desc_translation",
-            resource_type="movie",
-            display_name="影片简介翻译",
-            default_sort="last_attempted_at:desc",
-            resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
-            check_actionable=build_movie_actionable_check(
-                required_attr="desc",
-                missing_reason="movie_desc_missing",
-            ),
-        ),
-        "movie_title_translation": ResourceTaskDefinition(
-            task_key="movie_title_translation",
-            resource_type="movie",
-            display_name="影片标题翻译",
-            default_sort="last_attempted_at:desc",
-            resource_resolver=MOVIE_TASK_RECORD_RESOLVER,
-            check_actionable=build_movie_actionable_check(
-                required_attr="title",
-                missing_reason="movie_title_missing",
             ),
         ),
         "media_thumbnail_generation": ResourceTaskDefinition(

@@ -41,7 +41,7 @@
 | `GET` | `/status` | 获取系统汇总统计 |
 | `GET` | `/status/media-libraries/cloud115` | 实时探测所有 115 媒体库的 cookies 状态 |
 | `GET` | `/status/image-search` | 获取 JoyTag/Qdrant 运行状态与索引计数 |
-| `GET` | `/status/metadata-providers/{provider}/test` | 测试内置 Provider 提供的 JavDB/DMM 外部站点实际可用性 |
+| `GET` | `/status/metadata-providers/{provider}/test` | 测试内置 Provider 提供的 JavDB 外部站点实际可用性 |
 
 ## `GET /status`
 
@@ -184,14 +184,13 @@
 `provider` 仅支持：
 
 - `javdb`
-- `dmm`
 
 该接口用于联调和排障，会真实发起外部网络请求，不会写数据库、不会创建任务记录。当前固定使用测试番号 `SSNI-888`，不接收请求参数。
 
 成功响应：
 
 - `200 OK`: 始终返回检测结果；外部站点异常通过 `healthy=false` 与 `error` 字段表达
-- `422 invalid_metadata_provider`: `provider` 不是 `javdb` 或 `dmm`
+- `422 invalid_metadata_provider`: `provider` 不是 `javdb`
 
 JavDB 示例响应：
 
@@ -206,28 +205,7 @@ JavDB 示例响应：
   "javdb_id": "abc123",
   "title": "SSNI-888",
   "actors_count": 2,
-  "tags_count": 12,
-  "description_length": null,
-  "description_excerpt": null
-}
-```
-
-DMM 示例响应：
-
-```json
-{
-  "healthy": true,
-  "checked_at": "2026-04-26T14:30:00",
-  "provider": "dmm",
-  "movie_number": "SSNI-888",
-  "elapsed_ms": 1350,
-  "error": null,
-  "javdb_id": null,
-  "title": null,
-  "actors_count": null,
-  "tags_count": null,
-  "description_length": 180,
-  "description_excerpt": "简介前 120 个字符"
+  "tags_count": 12
 }
 ```
 
@@ -251,9 +229,7 @@ DMM 示例响应：
   "javdb_id": null,
   "title": null,
   "actors_count": null,
-  "tags_count": null,
-  "description_length": null,
-  "description_excerpt": null
+  "tags_count": null
 }
 ```
 
@@ -261,9 +237,8 @@ DMM 示例响应：
 
 - `healthy`: 是否成功按固定番号拉取并解析到目标数据
 - `checked_at`: 本次检测时间
-- `provider`: 当前测试的外部站点，值为 `javdb` 或 `dmm`
+- `provider`: 当前测试的外部站点，值为 `javdb`
 - `movie_number`: 固定测试番号，当前为 `SSNI-888`
 - `elapsed_ms`: 本次检测耗时（毫秒）
 - `error.type`: `metadata_request_error`、`metadata_not_found` 或 `unexpected_error`
 - `javdb.*`: JavDB 成功时返回的详情摘要；站点请求由内置 Provider 提供，代理跟随容器环境变量分流
-- `dmm.*`: DMM 成功时返回的简介摘要；站点请求由内置 Provider 提供，代理跟随容器环境变量分流

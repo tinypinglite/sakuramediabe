@@ -71,34 +71,12 @@ def _run_media_rapid_upload(reporter, params: dict) -> dict:
     return MediaRapidUploadService.execute_batch_from_queue(reporter, params)
 
 
-def _run_movie_desc_translation_subset(reporter, params: dict) -> dict:
-    from src.service.catalog.movie_desc_translation_service import (
-        MovieDescTranslationService,
-    )
-
-    return MovieDescTranslationService().run(reporter=reporter, only_ids=params.get("only_ids"))
-
-
 def _run_movie_interaction_sync_subset(reporter, params: dict) -> dict:
     from src.service.catalog.movie_interaction_sync_service import (
         MovieInteractionSyncService,
     )
 
     return MovieInteractionSyncService().run(reporter=reporter, only_ids=params.get("only_ids"))
-
-
-def _run_movie_title_translation_subset(reporter, params: dict) -> dict:
-    from src.service.catalog.movie_title_translation_service import (
-        MovieTitleTranslationService,
-    )
-
-    return MovieTitleTranslationService().run(reporter=reporter, only_ids=params.get("only_ids"))
-
-
-def _run_movie_desc_sync_subset(reporter, params: dict) -> dict:
-    from src.service.catalog.movie_desc_sync_service import MovieDescSyncService
-
-    return MovieDescSyncService().run(reporter=reporter, only_ids=params.get("only_ids"))
 
 
 def _run_media_thumbnail_generation_subset(reporter, params: dict) -> dict:
@@ -157,24 +135,9 @@ QUEUE_TASK_REGISTRY: dict[str, QueueTaskDefinition] = {
         # 子集手动任务：与 cron 批任务同 key，仅当运行带 params 时命中
         # （统一 action 端点的 retry_now/rerun 走这里；only_ids 即强制语义）。
         QueueTaskDefinition(
-            task_key="movie_desc_translation",
-            log_name="movie-desc-translation",
-            handler=_run_movie_desc_translation_subset,
-        ),
-        QueueTaskDefinition(
             task_key="movie_interaction_sync",
             log_name="movie-interaction-sync",
             handler=_run_movie_interaction_sync_subset,
-        ),
-        QueueTaskDefinition(
-            task_key="movie_title_translation",
-            log_name="movie-title-translation",
-            handler=_run_movie_title_translation_subset,
-        ),
-        QueueTaskDefinition(
-            task_key="movie_desc_sync",
-            log_name="movie-desc-sync",
-            handler=_run_movie_desc_sync_subset,
         ),
         QueueTaskDefinition(
             task_key="media_thumbnail_generation",

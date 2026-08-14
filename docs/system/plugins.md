@@ -64,7 +64,7 @@
 
 - 新增 HTTP 路由 / API 端点；
 - 注册事件钩子、中间件或 Webhook；
-- 扩展 JavDB/DMM/GFriends 等 metadata provider 与索引器；
+- 扩展 JavDB/GFriends 等 metadata provider 与索引器；
 - 按主库资源 ID 做通用处理（插件没有按 ID 查询/更新主库任意资源的方法，
   只有 `import_movie_by_number` / `import_subtitle` 两个写侧入口）；
 - 查询主库业务状态（例如"哪些影片缺字幕/缺封面"），`list_existing_movie_numbers()`
@@ -346,7 +346,7 @@ PluginExtension(
 |---|---|
 | `ensure_data_dir() -> Path` | 确保数据目录存在并返回路径（`data_dir` 属性等价） |
 | `build_javdb_provider(username=None, password=None)` | 构造 JavDB 元数据 provider；账号仅需登录的榜单（TOP250）需要，由插件从自身设置传入 |
-| `build_catalog_import_service(skip_dmm=False)` | 构造目录入库服务；批量场景传 `skip_dmm=True` 跳过 DMM 简介抓取 |
+| `build_catalog_import_service()` | 构造目录入库服务 |
 | `import_movie_by_number(movie_number, *, force_subscribed=False)` | 通过 JavDB 获取详情并复用宿主能力入库 |
 | `list_existing_movie_numbers() -> set[str]` | 主库全部影片番号（大写），用于 O(1) 存在性判断 |
 | `import_subtitle(movie_number, content, filename, language=None)` | 写入一段字幕字节内容，返回 `SubtitleImportResult`。只支持 `.srt/.ass/.ssa/.vtt`；去重粒度为**同一部影片内**的内容 sha256；`filename` 只取扩展名；影片不存在返回 `movie_not_found`，不抛异常 |

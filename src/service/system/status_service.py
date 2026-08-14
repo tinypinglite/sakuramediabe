@@ -7,7 +7,7 @@ from peewee import fn
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115AuthError, Cloud115CookieStatus
-from src.metadata.factory import build_dmm_provider, build_javdb_provider
+from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Actor, Media, MediaLibrary, MediaThumbnail, Movie
 from src.model.enums import MediaLibraryBackend
@@ -42,7 +42,6 @@ class StatusService:
     BACKEND_VERSION_ENV_KEY = "SAKURAMEDIA_BACKEND_VERSION"
     BACKEND_VERSION_DEFAULT = "dev-local"
     METADATA_PROVIDER_TEST_MOVIE_NUMBER = "SSNI-888"
-    METADATA_PROVIDER_DESCRIPTION_EXCERPT_LENGTH = 120
 
     @classmethod
     def get_status(cls) -> StatusResource:
@@ -169,8 +168,6 @@ class StatusService:
         try:
             if normalized_provider == "javdb":
                 return cls._test_javdb_provider(start_at=start_at)
-            if normalized_provider == "dmm":
-                return cls._test_dmm_provider(start_at=start_at)
             raise ValueError(f"unsupported metadata provider: {provider}")
         except MetadataNotFoundError as exc:
             return cls._build_metadata_provider_failure(
@@ -220,20 +217,6 @@ class StatusService:
             title=detail.title,
             actors_count=len(detail.actors),
             tags_count=len(detail.tags),
-        )
-
-    @classmethod
-    def _test_dmm_provider(cls, *, start_at: float) -> StatusMetadataProviderTestResource:
-        # DMM 联通性以真实搜索详情页并成功解析简介为准，请求代理跟随容器环境变量分流。
-        description = build_dmm_provider().get_movie_desc(cls.METADATA_PROVIDER_TEST_MOVIE_NUMBER)
-        return StatusMetadataProviderTestResource(
-            healthy=True,
-            checked_at=utc_now_for_db(),
-            provider="dmm",
-            movie_number=cls.METADATA_PROVIDER_TEST_MOVIE_NUMBER,
-            elapsed_ms=cls._elapsed_ms(start_at),
-            description_length=len(description),
-            description_excerpt=description[: cls.METADATA_PROVIDER_DESCRIPTION_EXCERPT_LENGTH],
         )
 
     @classmethod

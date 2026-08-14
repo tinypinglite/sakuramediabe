@@ -12,7 +12,7 @@ import src.common.logging as app_logging
 from src.api.exception.errors import ApiError
 from src.common.logging import configure_logging
 from src.config.config import settings
-from src.metadata.factory import build_dmm_provider, build_javdb_provider
+from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import init_database
 from src.model.enums import MediaLibraryBackend
@@ -22,13 +22,6 @@ from src.schema.playback.media_libraries import MediaLibraryCreateRequest
 from src.service.catalog import MovieThinCoverBackfillService
 from src.service.catalog.movie_asset_shard_migration_service import (
     MovieAssetShardMigrationService,
-)
-from src.service.catalog.movie_desc_translation_client import (
-    MovieDescTranslationClient,
-    MovieDescTranslationClientError,
-)
-from src.service.catalog.movie_desc_translation_test_support import (
-    DEFAULT_TEST_TRANSLATION_PROMPT,
 )
 from src.service.catalog.movie_subtitle_unify_migration_service import (
     MovieSubtitleUnifyMigrationService,
@@ -117,42 +110,6 @@ def _echo_json(payload: dict) -> None:
     click.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-def _load_required_text_input(
-    *,
-    direct_value: str | None,
-    file_value: str | None,
-    direct_option_name: str,
-    file_option_name: str,
-) -> str:
-    # 文本输入要求二选一，避免命令在“直接传参”和“文件读入”之间出现歧义。
-    has_direct_value = bool((direct_value or "").strip())
-    has_file_value = bool((file_value or "").strip())
-    if has_direct_value == has_file_value:
-        raise click.ClickException(f"must provide exactly one of {direct_option_name} or {file_option_name}")
-    if has_direct_value:
-        return str(direct_value).strip()
-    return Path(str(file_value)).read_text(encoding="utf-8").strip()
-
-
-def _load_optional_text_input(
-    *,
-    direct_value: str | None,
-    file_value: str | None,
-    default_value: str,
-    direct_option_name: str,
-    file_option_name: str,
-) -> str:
-    has_direct_value = bool((direct_value or "").strip())
-    has_file_value = bool((file_value or "").strip())
-    if has_direct_value and has_file_value:
-        raise click.ClickException(f"cannot provide both {direct_option_name} and {file_option_name}")
-    if has_direct_value:
-        return str(direct_value).strip()
-    if has_file_value:
-        return Path(str(file_value)).read_text(encoding="utf-8").strip()
-    return default_value
-
-
 def _fail_command(*, output_json: bool, message: str, error: dict | None = None) -> None:
     normalized_message = str(message).strip()
     if output_json:
@@ -165,19 +122,6 @@ def _fail_command(*, output_json: bool, message: str, error: dict | None = None)
         _echo_json(payload)
         raise click.exceptions.Exit(1)
     raise click.ClickException(normalized_message)
-
-
-def _fail_for_translation_error(*, exc: MovieDescTranslationClientError, output_json: bool) -> None:
-    _fail_command(
-        output_json=output_json,
-        message=exc.message,
-        error={
-            "type": "translation_client_error",
-            "status_code": exc.status_code,
-            "error_code": exc.error_code,
-            "message": exc.message,
-        },
-    )
 
 
 def _fail_for_metadata_error(*, exc: Exception, output_json: bool) -> None:
@@ -315,93 +259,6 @@ def wait_db(timeout_seconds: float, interval_seconds: float):
         time.sleep(interval_seconds)
 
 
-@main.command(name="test-trans")
-@click.option("--text", type=str, help="Text to translate.")
-@click.option(
-    "--text-file",
-    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=str),
-    help="Read source text from file.",
-)
-@click.option("--prompt", type=str, help="Custom translation prompt.")
-@click.option(
-    "--prompt-file",
-    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=str),
-    help="Read custom prompt from file.",
-)
-@click.option("--base-url", type=str, help="Override translation base URL.")
-@click.option("--api-key", type=str, help="Override translation API key.")
-@click.option("--model", type=str, help="Override translation model.")
-@click.option("--json", "output_json", is_flag=True, help="Print structured JSON output.")
-def test_translation(
-    text: str | None,
-    text_file: str | None,
-    prompt: str | None,
-    prompt_file: str | None,
-    base_url: str | None,
-    api_key: str | None,
-    model: str | None,
-    output_json: bool,
-):
-    with _suppress_logs_for_json_output(output_json):
-        if not output_json:
-            logger.info(
-                "CLI test-trans start base_url={} model={}",
-                base_url or settings.movie_info_translation.base_url,
-                model or settings.movie_info_translation.model,
-            )
-        try:
-            source_text = _load_required_text_input(
-                direct_value=text,
-                file_value=text_file,
-                direct_option_name="--text",
-                file_option_name="--text-file",
-            )
-            system_prompt = _load_optional_text_input(
-                direct_value=prompt,
-                file_value=prompt_file,
-                default_value=DEFAULT_TEST_TRANSLATION_PROMPT,
-                direct_option_name="--prompt",
-                file_option_name="--prompt-file",
-            )
-        except click.ClickException as exc:
-            _fail_command(output_json=output_json, message=exc.message)
-            return
-
-        client = MovieDescTranslationClient(
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-        )
-        try:
-            translated_text = client.translate(system_prompt=system_prompt, source_text=source_text)
-        except MovieDescTranslationClientError as exc:
-            _fail_for_translation_error(exc=exc, output_json=output_json)
-            return
-
-        payload = {
-            "ok": True,
-            "service": "translation",
-            "base_url": client.base_url,
-            "model": client.model,
-            "source_text": source_text,
-            "system_prompt": system_prompt,
-            "translated_text": translated_text,
-        }
-        _emit_command_success(
-            output_json=output_json,
-            payload=payload,
-            summary_title="translation test succeeded:",
-            inline_fields=[
-                ("base_url", client.base_url),
-                ("model", client.model),
-            ],
-            multiline_fields=[
-                ("source_text", source_text),
-                ("translated_text", translated_text),
-            ],
-        )
-
-
 @main.command(name="test-javdb")
 @click.option("--movie-number", required=True, type=str, help="Movie number to query from JavDB.")
 @click.option("--json", "output_json", is_flag=True, help="Print structured JSON output.")
@@ -440,35 +297,6 @@ def test_javdb(movie_number: str, output_json: bool):
                 ("tags", len(detail.tags)),
             ],
             multiline_fields=[("summary", summary_excerpt)],
-        )
-
-
-@main.command(name="test-dmm")
-@click.option("--movie-number", required=True, type=str, help="Movie number to query from DMM.")
-@click.option("--json", "output_json", is_flag=True, help="Print structured JSON output.")
-def test_dmm(movie_number: str, output_json: bool):
-    with _suppress_logs_for_json_output(output_json):
-        if not output_json:
-            logger.info("CLI test-dmm start movie_number={}", movie_number)
-        provider = build_dmm_provider()
-        try:
-            description = provider.get_movie_desc(movie_number)
-        except (MetadataNotFoundError, MetadataRequestError) as exc:
-            _fail_for_metadata_error(exc=exc, output_json=output_json)
-            return
-
-        payload = {
-            "ok": True,
-            "service": "dmm",
-            "movie_number": movie_number,
-            "description": description,
-        }
-        _emit_command_success(
-            output_json=output_json,
-            payload=payload,
-            summary_title="dmm test succeeded:",
-            inline_fields=[("movie_number", movie_number)],
-            multiline_fields=[("description", description)],
         )
 
 

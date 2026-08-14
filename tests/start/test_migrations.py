@@ -1827,3 +1827,87 @@ def test_run_pending_migrations_adds_download_task_started_at(clean_db):
 
     # 幂等：再跑一次不重复建列。
     run_pending_migrations(clean_db)
+
+
+def test_run_pending_migrations_cleans_removed_movie_task_records(clean_db):
+    """20260815_01：删除已下线任务（movie_desc_sync / 两个翻译任务）的
+    状态行、尝试历史、运行记录与关联通知，其余 task_key 不受影响。"""
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    run_pending_migrations(clean_db)
+    clean_db.execute_sql(
+        "DELETE FROM schema_migration WHERE name = %s",
+        ("20260815_01_cleanup_removed_movie_task_records",),
+    )
+    # 播种：三个已下线 task_key + 一个保留 task_key 的 state / attempt / run / notification。
+    # 注意：run id 依赖空表 INSERT 顺序（1-4），下方通知/事件用硬编码 id 引用它们。
+    clean_db.execute_sql(
+        "INSERT INTO resource_task_state"
+        " (created_at, updated_at, task_key, resource_type, resource_id, state,"
+        "  attempt_count, retry_round)"
+        " VALUES"
+        " (now(), now(), 'movie_desc_sync', 'movie', 1, 'pending', 0, 0),"
+        " (now(), now(), 'movie_desc_translation', 'movie', 2, 'failed', 3, 0),"
+        " (now(), now(), 'movie_title_translation', 'movie', 3, 'succeeded', 1, 0),"
+        " (now(), now(), 'movie_interaction_sync', 'movie', 4, 'succeeded', 1, 0)"
+    )
+    clean_db.execute_sql(
+        "INSERT INTO resource_task_attempt"
+        " (created_at, updated_at, task_key, resource_type, resource_id, attempt_no,"
+        "  state, retryable)"
+        " VALUES"
+        " (now(), now(), 'movie_desc_sync', 'movie', 1, 1, 'failed', false),"
+        " (now(), now(), 'movie_desc_translation', 'movie', 2, 1, 'failed', true),"
+        " (now(), now(), 'movie_title_translation', 'movie', 3, 1, 'succeeded', null),"
+        " (now(), now(), 'movie_interaction_sync', 'movie', 4, 1, 'succeeded', null)"
+    )
+    clean_db.execute_sql(
+        "INSERT INTO background_task_run"
+        " (created_at, updated_at, task_key, task_name, trigger_type, state, result_summary)"
+        " VALUES"
+        " (now(), now(), 'movie_desc_sync', '影片描述回填', 'scheduled', 'completed', '{}'),"
+        " (now(), now(), 'movie_desc_translation', '影片简介翻译', 'scheduled', 'completed', '{}'),"
+        " (now(), now(), 'movie_title_translation', '影片标题翻译', 'scheduled', 'completed', '{}'),"
+        " (now(), now(), 'movie_interaction_sync', '影片互动数同步', 'scheduled', 'completed', '{}')"
+    )
+    # 通知：一条指向已删任务 run（应删除），一条指向保留任务 run（应保留）。
+    clean_db.execute_sql(
+        "INSERT INTO system_notification (created_at, updated_at, category, title, content,"
+        " is_read, related_task_run_id)"
+        " VALUES"
+        " (now(), now(), 'task_result', '简介翻译完成', 'body', false, 2),"
+        " (now(), now(), 'task_result', '互动同步完成', 'body', false, 4)"
+    )
+    # 事件：两条指向已删任务 run 的 task_run 事件（应删除）、一条指向保留任务 run（应保留）、
+    # 一条非 task_run 事件（resource_type 过滤，应保留）。
+    clean_db.execute_sql(
+        "INSERT INTO system_event (created_at, updated_at, event_type, resource_type,"
+        " resource_id, payload, emitted_at)"
+        " VALUES"
+        " (now(), now(), 'task_run_started', 'task_run', 1, '{}', now()),"
+        " (now(), now(), 'task_run_finished', 'task_run', 3, '{}', now()),"
+        " (now(), now(), 'task_run_finished', 'task_run', 4, '{}', now()),"
+        " (now(), now(), 'movie_created', 'movie', 42, '{}', now())"
+    )
+
+    run_pending_migrations(clean_db)
+
+    # 已删 task_key 的行全部清掉；保留的 movie_interaction_sync 不受影响。
+    assert clean_db.execute_sql(
+        "SELECT task_key FROM resource_task_state ORDER BY task_key"
+    ).fetchall() == [("movie_interaction_sync",)]
+    assert clean_db.execute_sql(
+        "SELECT task_key FROM resource_task_attempt ORDER BY task_key"
+    ).fetchall() == [("movie_interaction_sync",)]
+    assert clean_db.execute_sql(
+        "SELECT task_key FROM background_task_run ORDER BY task_key"
+    ).fetchall() == [("movie_interaction_sync",)]
+    # 指向已删任务的通知删除；指向保留任务的通知保留。
+    assert clean_db.execute_sql(
+        "SELECT related_task_run_id FROM system_notification"
+    ).fetchall() == [(4,)]
+    # 指向已删 run 的 task_run 事件删除；指向保留 run 的事件与非 task_run 事件保留。
+    assert clean_db.execute_sql(
+        "SELECT resource_type, resource_id FROM system_event ORDER BY resource_type, resource_id"
+    ).fetchall() == [("movie", 42), ("task_run", 4)]
+    assert "20260815_01_cleanup_removed_movie_task_records" in _schema_migration_names(clean_db)

@@ -1,4 +1,3 @@
-from src.metadata._providers.dmm import DmmProvider
 from src.metadata._providers.exceptions import (
     MetadataProviderError,
     MetadataProviderUnavailable,
@@ -13,7 +12,6 @@ from src.metadata.provider import (
 )
 
 __all__ = [
-    "DmmProvider",
     "GfriendsActorImageResolver",
     "JavdbProvider",
     "MetadataError",

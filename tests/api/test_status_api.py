@@ -390,41 +390,6 @@ def test_metadata_provider_test_endpoint_returns_javdb_success_payload(
     assert payload["error"] is None
 
 
-def test_metadata_provider_test_endpoint_returns_dmm_success_payload(
-    client,
-    account_user,
-    monkeypatch,
-):
-    token = _login(client, username=account_user.username)
-    requested_movie_numbers = []
-    description = "这是 DMM 简介" * 20
-
-    class _FakeDmmProvider:
-        def get_movie_desc(self, movie_number: str):
-            requested_movie_numbers.append(movie_number)
-            return description
-
-    monkeypatch.setattr(
-        "src.service.system.status_service.build_dmm_provider",
-        lambda: _FakeDmmProvider(),
-    )
-
-    response = client.get(
-        "/status/metadata-providers/dmm/test",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert requested_movie_numbers == [StatusService.METADATA_PROVIDER_TEST_MOVIE_NUMBER]
-    assert payload["healthy"] is True
-    assert payload["provider"] == "dmm"
-    assert payload["movie_number"] == "SSNI-888"
-    assert payload["description_length"] == len(description)
-    assert payload["description_excerpt"] == description[:120]
-    assert payload["error"] is None
-
-
 def test_metadata_provider_test_endpoint_returns_request_failure_payload(
     client,
     account_user,
@@ -464,23 +429,23 @@ def test_metadata_provider_test_endpoint_returns_not_found_failure_payload(
     token = _login(client, username=account_user.username)
 
     class _FailingProvider:
-        def get_movie_desc(self, movie_number: str):
+        def get_movie_by_number(self, movie_number: str):
             raise MetadataNotFoundError("movie", movie_number)
 
     monkeypatch.setattr(
-        "src.service.system.status_service.build_dmm_provider",
+        "src.service.system.status_service.build_javdb_provider",
         lambda: _FailingProvider(),
     )
 
     response = client.get(
-        "/status/metadata-providers/dmm/test",
+        "/status/metadata-providers/javdb/test",
         headers={"Authorization": f"Bearer {token}"},
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["healthy"] is False
-    assert payload["provider"] == "dmm"
+    assert payload["provider"] == "javdb"
     assert payload["error"]["type"] == "metadata_not_found"
     assert payload["error"]["resource"] == "movie"
     assert payload["error"]["lookup_value"] == "SSNI-888"

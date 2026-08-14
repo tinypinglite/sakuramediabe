@@ -41,11 +41,11 @@ def get_image_search_status():
 )
 def test_metadata_provider(provider: str):
     normalized_provider = provider.strip().lower()
-    if normalized_provider not in {"javdb", "dmm"}:
+    if normalized_provider not in {"javdb"}:
         raise ApiError(
             422,
             "invalid_metadata_provider",
-            "Metadata provider must be javdb or dmm",
+            "Metadata provider must be javdb",
             {"provider": provider},
         )
     return StatusService.test_metadata_provider(normalized_provider)

@@ -12,11 +12,8 @@ from src.scheduler.contracts import JobDefinition
 from src.scheduler.queue_tasks import QUEUE_TASK_REGISTRY
 from src.service.catalog import (
     MovieCollectionService,
-    MovieDescSyncService,
-    MovieDescTranslationService,
     MovieHeatService,
     MovieInteractionSyncService,
-    MovieTitleTranslationService,
     SubscribedActorMovieSyncService,
 )
 from src.service.discovery import (
@@ -63,17 +60,6 @@ def _build_stats_formatter(
         return f"{prefix} {' '.join(formatted_fields)}"
 
     return _formatter
-
-
-# movie kernel 三任务（desc sync / desc translation / title translation）共用同一组统计字段。
-MOVIE_KERNEL_STATS_FIELDS = (
-    "candidate_movies",
-    "processed_movies",
-    "succeeded_movies",
-    "failed_movies",
-    "updated_movies",
-    "skipped_movies",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -277,60 +263,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
             # 远端清单枚举失败的 cloud115 库数：非 0 时该库媒体本轮未做 valid 判定，
             # 结果与"全部正常"同形，必须单独出数。
             "cloud115_index_failed_libraries",
-        ),
-    ),
-    JobDefinition(
-        task_key="movie_desc_sync",
-        log_name="movie-desc-sync",
-        cli_name="sync-movie-desc",
-        cli_help="执行一次影片描述回填",
-        cron_setting="movie_desc_sync_cron",
-        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
-        service_factory=lambda reporter: MovieDescSyncService().run(reporter=reporter),
-        business_recovery=lambda: {
-            "recovered_running_movies": MovieDescSyncService.recover_interrupted_running_movies(
-                error_message=MovieDescSyncService.INTERRUPTED_FETCH_ERROR_MESSAGE,
-            )
-        },
-        format_stats=_build_stats_formatter(
-            "movie desc sync finished:",
-            *MOVIE_KERNEL_STATS_FIELDS,
-        ),
-    ),
-    JobDefinition(
-        task_key="movie_desc_translation",
-        log_name="movie-desc-translation",
-        cli_name="translate-movie-desc",
-        cli_help="执行一次影片简介翻译",
-        cron_setting="movie_desc_translation_cron",
-        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
-        service_factory=lambda reporter: MovieDescTranslationService().run(reporter=reporter),
-        business_recovery=lambda: {
-            "recovered_running_movies": MovieDescTranslationService.recover_interrupted_running_movies(
-                error_message=MovieDescTranslationService.INTERRUPTED_TRANSLATION_ERROR_MESSAGE,
-            )
-        },
-        format_stats=_build_stats_formatter(
-            "movie desc translation finished:",
-            *MOVIE_KERNEL_STATS_FIELDS,
-        ),
-    ),
-    JobDefinition(
-        task_key="movie_title_translation",
-        log_name="movie-title-translation",
-        cli_name="translate-movie-title",
-        cli_help="执行一次影片标题翻译",
-        cron_setting="movie_title_translation_cron",
-        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
-        service_factory=lambda reporter: MovieTitleTranslationService().run(reporter=reporter),
-        business_recovery=lambda: {
-            "recovered_running_movies": MovieTitleTranslationService.recover_interrupted_running_movies(
-                error_message=MovieTitleTranslationService.INTERRUPTED_TRANSLATION_ERROR_MESSAGE,
-            )
-        },
-        format_stats=_build_stats_formatter(
-            "movie title translation finished:",
-            *MOVIE_KERNEL_STATS_FIELDS,
         ),
     ),
     JobDefinition(

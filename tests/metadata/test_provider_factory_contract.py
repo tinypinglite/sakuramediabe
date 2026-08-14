@@ -4,14 +4,12 @@ import pytest
 
 from src.config.config import settings
 from src.metadata import factory as factory_module
-from src.metadata._providers.dmm import DmmProvider
 from src.metadata._providers.models import (
     JavdbMovieActorResource,
     JavdbMovieDetailResource,
 )
 from src.metadata.factory import (
     GfriendsAvatarJavdbProvider,
-    build_dmm_provider,
     build_javdb_provider,
     refresh_gfriends_filetree,
 )
@@ -67,14 +65,6 @@ def test_build_javdb_provider_never_uses_explicit_proxy():
     assert provider.provider.host == settings.metadata.javdb_host
     # 显式代理配置已整体移除，client 上不应再出现 proxy 概念。
     assert not hasattr(provider.provider, "proxy")
-
-
-def test_build_dmm_provider_no_explicit_proxy():
-    # DMM provider 同样不再接收显式代理，统一跟随环境变量分流。
-    provider = build_dmm_provider()
-
-    assert isinstance(provider, DmmProvider)
-    assert not hasattr(provider, "proxy")
 
 
 def test_build_javdb_provider_passes_account_credentials():

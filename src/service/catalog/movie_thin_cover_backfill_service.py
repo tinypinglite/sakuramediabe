@@ -4,16 +4,11 @@ from src.model import Movie
 from src.service.catalog.catalog_import_service import CatalogImportService
 
 
-class _NoopDmmProvider:
-    def get_movie_desc(self, movie_number: str) -> str:
-        raise RuntimeError(f"movie_desc_not_supported:{movie_number}")
-
-
 class MovieThinCoverBackfillService:
     """批量为已有影片补算竖封面图。"""
 
     def __init__(self, import_service: CatalogImportService | None = None):
-        self.import_service = import_service or CatalogImportService(dmm_provider=_NoopDmmProvider())
+        self.import_service = import_service or CatalogImportService()
 
     def backfill_missing_thin_cover_images(self) -> dict[str, int]:
         stats = {

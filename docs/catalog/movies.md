@@ -18,7 +18,7 @@
 - `POST /movies/{movie_number}/metadata-refresh`：严格刷新本地已有影片的远端元数据
 - `POST /movies/{movie_number}/heat-recompute`：手动重算单部影片热度
 
-> 单片翻译 / 互动同步端点已删除：统一走 `POST /system/resource-task-actions` 的
+> 单片互动同步端点已删除：统一走 `POST /system/resource-task-actions` 的
 > `rerun`（`resource_ids=[movie_id]`，202 入队语义），见
 > [任务中心文档](../system/task-runs.md)。
 - `GET /movies`：分页查询影片列表
@@ -84,8 +84,8 @@
 - `actors`: `MovieActorResource[]`
 - `tags`: `TagResource[]`
 - `summary`: `string`
-- `desc`: `string`（日文原文描述）
-- `desc_zh`: `string`（中文翻译描述）
+- `desc`: `string`（日文原文描述；DMM 简介抓取与翻译链路已下线，新入库影片恒为空，存量数据保留）
+- `desc_zh`: `string`（中文翻译描述；翻译链路已下线，恒为空，存量数据保留）
 - `maker_name`: `string | null`（厂商名称）
 - `director_name`: `string | null`（导演名称）
 - `plot_images`: `ImageResource[]`
@@ -99,7 +99,7 @@
 - `series_name`: 系列名称，可为 `null`
 - `series_id`: 系列 ID，可为 `null`；系列名来自独立 `movie_series` 表
 - `title`：原始标题
-- `title_zh`：中文标题；为空字符串表示尚未翻译
+- `title_zh`：中文标题；翻译链路已下线，恒为空，存量数据保留
 - `thin_cover_image`：优先由封面图裁切生成；若裁切失败，则回退到前两张剧情图中的第一张竖图；若仍未命中则为 `null`
 - `heat`: 影片热度值，整数且非空；默认 `0`
 - `score`、`score_number`、`watched_count`、`want_watch_count`、`comment_count` 会由定时互动同步任务定期从 JavDB 回刷
@@ -459,15 +459,14 @@ Authorization: Bearer <token>
 }
 ```
 
-### 单片翻译 / 互动同步（已并入统一 action 协议）
+### 单片互动同步（已并入统一 action 协议）
 
-`POST /movies/{movie_number}/desc-translation` 与
-`POST /movies/{movie_number}/interaction-sync` 已删除。对等调用：
+`POST /movies/{movie_number}/interaction-sync` 已删除（影片简介翻译链路整体下线）。对等调用：
 
 ```json
 POST /system/resource-task-actions
 {
-  "task_key": "movie_desc_translation",
+  "task_key": "movie_interaction_sync",
   "action": "rerun",
   "resource_ids": [movie_id]
 }
@@ -475,12 +474,10 @@ POST /system/resource-task-actions
 
 - `resource_ids` 收整数影片主键，取影片摘要 / 详情响应里的 `id` 字段（不是 `movie_number`，
   也不是 `javdb_id`）
-- `rerun` 是强制语义：已翻译影片会重新翻译并覆盖 `desc_zh`；互动同步不受批量调度
-  刷新窗口限制（`task_key` 换 `movie_interaction_sync`）
+- `rerun` 是强制语义：互动同步不受批量调度刷新窗口限制
 - 202 入队语义：执行在 worker，响应携带 `task_run_id`，前端经 SSE / 单条查询跟进后
   刷新影片详情
-- 影片缺原始简介 / 缺 JavDB ID 由合格性钩子逐条跳过（`movie_desc_missing` /
-  `movie_javdb_id_missing`），不再返回 422
+- 影片缺 JavDB ID 由合格性钩子逐条跳过（`movie_javdb_id_missing`），不再返回 422
 
 ### `POST /movies/{movie_number}/heat-recompute`
 
@@ -1339,8 +1336,6 @@ GET /movies/ABC-001
 常见错误码：
 
 - `movie_not_found`：影片不存在（404）
-- `movie_desc_missing`：影片缺少可翻译的原始简介（422）
-- `movie_desc_translation_unavailable`：影片简介翻译服务不可达（503，实际错误码以上游返回为准）
 - `movie_interaction_sync_failed`：影片互动数同步失败（502）
 - `movie_javdb_id_missing`：影片缺少 JavDB ID，无法同步互动数（422）
 - `movie_heat_recompute_failed`：影片热度重算失败（500）

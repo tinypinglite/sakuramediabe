@@ -5,10 +5,7 @@ from collections.abc import Callable
 from loguru import logger
 
 from src.service.catalog import (
-    MovieDescSyncService,
-    MovieDescTranslationService,
     MovieInteractionSyncService,
-    MovieTitleTranslationService,
     SubtitleImportJobService,
 )
 from src.service.playback import MediaThumbnailService
@@ -35,15 +32,6 @@ def _recover_media_directory_imports() -> dict:
 BUSINESS_RECOVERY_HANDLERS: dict[str, Callable[[], object]] = {
     "movie_interaction_sync": lambda: MovieInteractionSyncService.recover_interrupted_running_movies(
         error_message=MovieInteractionSyncService.INTERRUPTED_SYNC_ERROR_MESSAGE,
-    ),
-    "movie_desc_sync": lambda: MovieDescSyncService.recover_interrupted_running_movies(
-        error_message=MovieDescSyncService.INTERRUPTED_FETCH_ERROR_MESSAGE,
-    ),
-    "movie_desc_translation": lambda: MovieDescTranslationService.recover_interrupted_running_movies(
-        error_message=MovieDescTranslationService.INTERRUPTED_TRANSLATION_ERROR_MESSAGE,
-    ),
-    "movie_title_translation": lambda: MovieTitleTranslationService.recover_interrupted_running_movies(
-        error_message=MovieTitleTranslationService.INTERRUPTED_TRANSLATION_ERROR_MESSAGE,
     ),
     "media_thumbnail_generation": lambda: MediaThumbnailService.recover_interrupted_running_media(
         error_message=MediaThumbnailService.INTERRUPTED_GENERATION_ERROR_MESSAGE,

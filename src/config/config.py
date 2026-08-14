@@ -12,7 +12,6 @@ import toml
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger
 from pydantic import (
-    AliasChoices,
     BaseModel,
     Field,
     ValidationInfo,
@@ -168,20 +167,6 @@ class Media(BaseModel):
         return normalized
 
 
-class MovieInfoTranslation(BaseModel):
-    enabled: bool = False
-    base_url: str = "http://localhost:8000"
-    api_key: str = ""
-    model: str = "gpt-4o-mini"
-    timeout_seconds: float = 300.0
-    connect_timeout_seconds: float = 3.0
-
-    @field_validator("base_url")
-    @classmethod
-    def _check_base_url(cls, value: str, info: ValidationInfo) -> str:
-        return _check_http_url(value, "base_url", info)
-
-
 class Metadata(BaseModel):
     # 不再提供显式代理配置：所有外部站点请求统一跟随容器环境变量
     # HTTP_PROXY / HTTPS_PROXY / NO_PROXY 分流（httpx trust_env 默认开启）。
@@ -257,9 +242,6 @@ class Scheduler(BaseModel):
     hot_review_sync_cron: str = "20 1 * * *"
     # 全量巡检会 stat 媒体库里每个文件，放到每天凌晨集中一次，避免高频唤醒媒体盘。
     media_file_scan_cron: str = "0 4 * * *"
-    movie_desc_sync_cron: str = "0 4 * * *"
-    movie_desc_translation_cron: str = "15 4 * * *"
-    movie_title_translation_cron: str = "20 4 * * *"
     # 空跑只查 DB 不读盘，30 分钟一次足够；有新导入时缩略图会在同一活跃窗口内跟上。
     media_thumbnail_cron: str = "*/30 * * * *"
     image_search_index_cron: str = "0 0 * * *"
@@ -413,10 +395,6 @@ class Settings(BaseSettings):
     database: Database = Field(default_factory=Database)
     auth: Auth = Field(default_factory=Auth)
     media: Media = Field(default_factory=Media)
-    movie_info_translation: MovieInfoTranslation = Field(
-        default_factory=MovieInfoTranslation,
-        validation_alias=AliasChoices("movie_info_translation", "movie_desc_translation"),
-    )
     metadata: Metadata = Field(default_factory=Metadata)
     plugins: Plugins = Field(default_factory=Plugins)
     scheduler: Scheduler = Field(default_factory=Scheduler)
@@ -434,15 +412,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="before")
     @classmethod
-    def _upgrade_legacy_movie_translation_settings(cls, data: Any):
+    def _upgrade_legacy_settings(cls, data: Any):
         if not isinstance(data, dict):
             return data
         normalized_data = dict(data)
         # 兼容历史遗留的媒体音频识别配置节，读取时直接忽略，避免旧 config.toml 导致启动失败。
         normalized_data.pop("media_asr", None)
-        if "movie_info_translation" not in normalized_data and "movie_desc_translation" in normalized_data:
-            # 兼容旧配置节名称，统一映射到新的共享翻译配置上。
-            normalized_data["movie_info_translation"] = normalized_data["movie_desc_translation"]
         return normalized_data
 
     @classmethod
