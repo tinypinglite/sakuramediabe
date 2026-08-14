@@ -101,6 +101,19 @@
 - `score`、`score_number`、`watched_count`、`want_watch_count`、`comment_count` 会由定时互动同步任务定期从 JavDB 回刷
 - `maker_name`、`director_name` 仅在详情接口返回，列表接口不返回这些字段
 
+影片热度使用累计关注度公式（当前版本 `v2`）：
+
+```text
+W = ln(1 + watched_count) / ln(1309)
+I = ln(1 + want_watch_count) / ln(4992)
+C = ln(1 + comment_count) / ln(42)
+R = ln(1 + score_number) / ln(6292)
+
+heat = ROUND(100 × (0.30 × W + 0.30 × I + 0.10 × C + 0.30 × R))
+```
+
+参考值固定为当前业务库互动数据的 P99，不随每日全库重算动态变化；不设置硬上限，P99 以上的影片仍会保留排序差异。`score` 本身表示评分质量，不参与关注度计算。
+
 `MovieMediaResource`：
 
 - `media_id`: 媒体 ID
@@ -676,7 +689,7 @@ data: {"success":false,"reason":"local_series_not_found","movies":[]}
   - `status`：按影片状态过滤（可选，`all | subscribed | unsubscribed | playable`，默认 `all`）
   - `collection_type`：按合集类型过滤（可选，`all | single`，默认 `all`；`single` 表示 `is_collection=false`）
   - `special_tag`：按特殊标签过滤（可选，`4k | uncensored | vr`）
-  - `heat_min`：热度下限（可选，整数且 `>= 0`，闭区间）；与 `heat_max` 配合实现热度范围过滤，如 `heat_min=1000&heat_max=2000`；仅传下限时表示热度无上界，未同步热度（`heat=0`）的影片会被排除
+  - `heat_min`：热度下限（可选，整数且 `>= 0`，闭区间）；与 `heat_max` 配合实现热度范围过滤，如 `heat_min=40&heat_max=80`；仅传下限时表示热度无上界，未同步热度（`heat=0`）的影片会被排除
   - `heat_max`：热度上限（可选，整数且 `>= 0`，闭区间）；仅传上限时会把未同步热度（`heat=0`）的影片一并包含，需要明确下界时请配合 `heat_min`
   - `sort`：排序表达式（可选，格式 `field:direction`）
     - `field` 支持：`release_date`、`added_at`、`subscribed_at`、`comment_count`、`score_number`、`want_watch_count`、`heat`
@@ -714,7 +727,7 @@ GET /movies?actor_id=1&status=playable&page=1&page_size=20
 ```
 
 ```http
-GET /movies?status=unsubscribed&heat_min=1000&heat_max=2000&sort=heat:desc&page=1&page_size=20
+GET /movies?status=unsubscribed&heat_min=40&heat_max=80&sort=heat:desc&page=1&page_size=20
 ```
 
 ```http
