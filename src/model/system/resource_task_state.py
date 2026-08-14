@@ -29,7 +29,8 @@ class ResourceTaskState(TimestampedMixin, BaseModel):
     extra = JsonTextField(null=True, default=None)
     # 任务架构 Wave 0 扩展列（见 docs/development/task-architecture.md）：
     # next_retry_at 让重试节奏与 cron 解耦；error_code 取代解析 last_error 字符串与
-    # extra.terminal 子串匹配；retry_round 重开预算时递增、attempt_count 保留终身累计。
+    # extra.terminal 子串匹配；retry_round 重开预算时递增、attempt_count 只记本轮
+    # 失败次数（成功清零、基础设施失败回滚，终身次数看 attempt 表）。
     next_retry_at = peewee.DateTimeField(null=True)
     error_code = peewee.CharField(max_length=64, null=True)
     retry_round = peewee.IntegerField(default=0)

@@ -34,9 +34,9 @@ class MovieSubscriptionStatus(str, Enum):
     # **注意与下面的 FAILED 区分**：FAILED 是"索引器查询出错"，两者都叫 failed 但语义完全
     # 不同，前端文案必须分别念作「导入失败」与「查询出错」。
     IMPORT_FAILED = "import_failed"
-    # 已放弃：老片查询次数用尽，不再自动查，需要用户手动重置。
+    # 已放弃：老片本轮没找到次数达到上限（默认 3），不再自动查，需要用户手动重置。
     EXHAUSTED = "exhausted"
-    # 查询出错：索引器调用失败，不消耗查询次数，下一轮会重试。
+    # 查询出错：索引器调用失败，不计入本轮没找到次数，下一轮会重试。
     FAILED = "failed"
     # 缺资源：查过但一直没找到可用资源，仍在继续查。
     MISSING = "missing"
@@ -83,7 +83,8 @@ class MovieSubscriptionListItemResource(SchemaModel):
     status: MovieSubscriptionStatus
     # 是否算新片（按发布时间判定）。新片每轮都查、不计次数、永不放弃，因此下面那对计数对它无意义。
     is_fresh: bool = False
-    # 老片已查次数 / 上限。is_fresh=true 时 attempt_count 恒为 0。
+    # 老片本轮没找到资源的次数 / 放弃阈值（默认 3）。成功找到资源后计数清零，
+    # 所以下载中 / 已入库等状态恒为 0；is_fresh=true 时恒为 0。
     attempt_count: int = 0
     attempt_limit: int = 0
     last_searched_at: datetime | None = None

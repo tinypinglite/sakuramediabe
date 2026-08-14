@@ -59,6 +59,7 @@
   - `succeeded`
   - `failed`
 - `attempt_count`
+  - 本轮失败次数：成功即清零、基础设施失败回滚；终身次数看 `resource_task_attempt` 表
 - `last_attempted_at`
 - `last_succeeded_at`
 - `last_error`

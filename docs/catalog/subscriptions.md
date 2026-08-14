@@ -12,7 +12,7 @@
 `POST /movies/unsubscriptions`。**批量取消订阅就用那边的 `POST /movies/unsubscriptions`**，本域
 不另造一套；要连本地媒体文件一起删的走 `DELETE /media/{media_id}`。
 
-资源查询本身的行为（查询次数与放弃、死种判定、选种黑名单）见
+资源查询本身的行为（没找到次数与放弃、死种判定、选种黑名单）见
 [transfers/downloads.md](../transfers/downloads.md) 的「内部定时任务」。
 
 ## 资源模型
@@ -44,7 +44,8 @@
 - `status`：资源状态，取值见下表
 - `is_fresh`：是否算新片（`release_date` 在 90 天内，含未来日期）。新片每轮都查、**不计次数、
   永不放弃**，所以它为 `true` 时 `attempt_count` 恒为 `0`，前端该展示「持续查询中」而不是次数
-- `attempt_count` / `attempt_limit`：老片已查次数与上限（默认 3）
+- `attempt_count` / `attempt_limit`：老片本轮没找到资源的次数与放弃阈值（默认 3）。
+  成功找到资源后计数清零，所以下载中 / 已入库等状态恒为 0
 - `dead_download_task_count`：该影片试过并判死的种子数
 - `last_error`：仅 `status=failed` 时有值，为索引器调用的错误详情
 
@@ -78,8 +79,8 @@
 | `imported` | 已入库 | 存在 `Media` |
 | `downloading` | 下载中 | 无 `Media`，存在活跃 `DownloadTask` 且其中有 `import_status=pending/running` 的 |
 | `import_failed` | 导入失败 | 无 `Media`，存在活跃 `DownloadTask` 但没有一个还在途（导入跑完了，库里没有） |
-| `exhausted` | 已放弃 | 老片查询次数用尽，需手动重置 |
-| `failed` | 查询出错 | 索引器调用失败，不消耗次数，下轮重试 |
+| `exhausted` | 已放弃 | 老片本轮没找到次数达到上限（默认 3），需手动重置 |
+| `failed` | 查询出错 | 索引器调用失败，不计入本轮没找到次数，下轮重试 |
 | `missing` | 缺资源 | 查过但没找到可用资源，下轮继续查 |
 | `pending` | 待查 | 从未查过资源 |
 
