@@ -11,7 +11,7 @@ def _create_movie(movie_number: str, **counts) -> Movie:
     )
 
 
-def test_movie_heat_v2_uses_fixed_log_references(test_db):
+def test_movie_heat_v3_uses_fixed_log_references(test_db):
     _create_movie("ZERO-001")
     _create_movie(
         "WATCHED-001",
@@ -31,8 +31,8 @@ def test_movie_heat_v2_uses_fixed_log_references(test_db):
 
     result = MovieHeatService.update_movie_heat()
 
-    assert result["formula_version"] == "v2"
+    assert result["formula_version"] == "v3"
     assert Movie.get(Movie.movie_number == "ZERO-001").heat == 0
-    assert Movie.get(Movie.movie_number == "WATCHED-001").heat == 30
-    assert Movie.get(Movie.movie_number == "COMMENT-001").heat == 10
-    assert Movie.get(Movie.movie_number == "ALL-001").heat == 100
+    assert Movie.get(Movie.movie_number == "WATCHED-001").heat == 6000
+    assert Movie.get(Movie.movie_number == "COMMENT-001").heat == 2000
+    assert Movie.get(Movie.movie_number == "ALL-001").heat == 20000

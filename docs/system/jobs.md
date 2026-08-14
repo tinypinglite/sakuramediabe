@@ -32,7 +32,7 @@
     "progress_total": null,
     "progress_text": null,
     "result_text": null,
-    "result_summary": {"candidate_count": 120, "updated_count": 96, "formula_version": "v2"},
+    "result_summary": {"candidate_count": 120, "updated_count": 96, "formula_version": "v3"},
     "error_message": null,
     "started_at": "2026-05-13T02:00:00",
     "finished_at": "2026-05-13T02:03:12",

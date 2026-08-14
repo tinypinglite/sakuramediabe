@@ -5,14 +5,14 @@ from src.model.base import get_database
 
 
 class MovieHeatService:
-    FORMULA_VERSION = "v2"
+    FORMULA_VERSION = "v3"
 
     # 参考值取当前业务库各互动字段的 P99，固定后避免全库分布变化导致历史热度漂移。
     WATCHED_COUNT_REFERENCE = 1308
     WANT_WATCH_COUNT_REFERENCE = 4991
     COMMENT_COUNT_REFERENCE = 41
     SCORE_NUMBER_REFERENCE = 6291
-    HEAT_SCALE = 100
+    HEAT_SCALE = 20_000
 
     @classmethod
     def build_heat_expression(cls):

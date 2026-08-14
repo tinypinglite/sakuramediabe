@@ -101,7 +101,7 @@
 - `score`、`score_number`、`watched_count`、`want_watch_count`、`comment_count` 会由定时互动同步任务定期从 JavDB 回刷
 - `maker_name`、`director_name` 仅在详情接口返回，列表接口不返回这些字段
 
-影片热度使用累计关注度公式（当前版本 `v2`）：
+影片热度使用累计关注度公式（当前版本 `v3`）：
 
 ```text
 W = ln(1 + watched_count) / ln(1309)
@@ -109,7 +109,7 @@ I = ln(1 + want_watch_count) / ln(4992)
 C = ln(1 + comment_count) / ln(42)
 R = ln(1 + score_number) / ln(6292)
 
-heat = ROUND(100 × (0.30 × W + 0.30 × I + 0.10 × C + 0.30 × R))
+heat = ROUND(20000 × (0.30 × W + 0.30 × I + 0.10 × C + 0.30 × R))
 ```
 
 参考值固定为当前业务库互动数据的 P99，不随每日全库重算动态变化；不设置硬上限，P99 以上的影片仍会保留排序差异。`score` 本身表示评分质量，不参与关注度计算。

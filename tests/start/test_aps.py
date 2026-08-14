@@ -96,8 +96,8 @@ def test_aps_update_movie_heat_command_runs_job(monkeypatch):
     _test_cli_command(
         monkeypatch,
         "update-movie-heat",
-        {"candidate_count": 4, "updated_count": 3, "formula_version": "v2"},
-        "heat update finished: candidate_count=4 updated_count=3 formula_version=v2",
+        {"candidate_count": 4, "updated_count": 3, "formula_version": "v3"},
+        "heat update finished: candidate_count=4 updated_count=3 formula_version=v3",
     )
 
 
@@ -129,7 +129,7 @@ def test_aps_subcommand_prepares_database_before_running_job(monkeypatch):
         job_def, *, trigger_type="scheduled", extra_callbacks=None, params=None
     ):
         events.append(("job", trigger_type))
-        return {"candidate_count": 1, "updated_count": 1, "formula_version": "v2"}
+        return {"candidate_count": 1, "updated_count": 1, "formula_version": "v3"}
 
     runner = CliRunner()
     monkeypatch.setattr("src.start.commands._ensure_database_ready", fake_prepare_database)
@@ -618,7 +618,7 @@ def test_run_job_ensures_database_and_calls_activity_service(monkeypatch):
     monkeypatch.setattr(
         "src.scheduler.registry.MovieHeatService.update_movie_heat",
         lambda: {
-            "candidate_count": 12, "updated_count": 11, "formula_version": "v2",
+            "candidate_count": 12, "updated_count": 11, "formula_version": "v3",
         },
     )
 
@@ -736,7 +736,7 @@ def test_run_job_recovers_task_runs_for_job_without_business_recovery(monkeypatc
     recovered_payload = _mock_recover_interrupted_task_runs(monkeypatch, recovered_task_runs=[object()])
     monkeypatch.setattr(
         "src.scheduler.registry.MovieHeatService.update_movie_heat",
-        lambda: {"candidate_count": 1, "updated_count": 1, "formula_version": "v2"},
+        lambda: {"candidate_count": 1, "updated_count": 1, "formula_version": "v3"},
     )
 
     result = run_job(JOB_REGISTRY_BY_KEY["movie_heat_update"])
