@@ -63,7 +63,6 @@ Authorization: Bearer <token>
         "javdb_id": "abc-id",
         "movie_number": "ABC-001",
         "title": "Movie title",
-        "title_zh": "",
         "series_id": null,
         "series_name": null,
         "cover_image": null,

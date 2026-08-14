@@ -22,7 +22,6 @@
   "movie_id": 123,
   "movie_number": "ABP-123",
   "title": "…",
-  "title_zh": "…",
   "cover_image": { "id": 1, "origin": "…", "small": "…", "medium": "…", "large": "…" },
   "release_date": "2019-05-01",
   "subscribed_at": "2026-01-02T03:04:05",

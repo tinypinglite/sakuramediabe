@@ -160,11 +160,7 @@ class MovieSubscriptionService:
         normalized_search = (search or "").strip()
         if normalized_search:
             keyword = f"%{normalized_search}%"
-            query = query.where(
-                (Movie.movie_number ** keyword)
-                | (Movie.title ** keyword)
-                | (Movie.title_zh ** keyword)
-            )
+            query = query.where((Movie.movie_number ** keyword) | (Movie.title ** keyword))
 
         total = query.count()
         start = (page - 1) * page_size
@@ -236,7 +232,6 @@ class MovieSubscriptionService:
                     movie_id=movie.id,
                     movie_number=movie.movie_number,
                     title=movie.title,
-                    title_zh=movie.title_zh or "",
                     cover_image=cover_images.get(movie.cover_image_id),
                     release_date=movie.release_date,
                     subscribed_at=movie.subscribed_at,

@@ -75,7 +75,6 @@ class MovieListItemResource(SchemaModel):
     javdb_id: str = Field()
     movie_number: str
     title: str
-    title_zh: str = ""
     series_id: int | None = None
     series_name: str | None = None
     cover_image: ImageResource | None = None
@@ -163,8 +162,6 @@ class MovieDetailResource(MovieListItemResource):
     actors: list[MovieActorResource]
     tags: list[TagResource]
     summary: str
-    desc: str = ""
-    desc_zh: str = ""
     maker_name: str | None = None
     director_name: str | None = None
     plot_images: list[ImageResource] = Field(default_factory=list)

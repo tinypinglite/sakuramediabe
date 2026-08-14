@@ -47,7 +47,6 @@
   "javdb_id": "MovieA1",
   "movie_number": "ABC-001",
   "title": "Movie 1",
-  "title_zh": "电影 1",
   "series_id": 1,
   "series_name": "Series 1",
   "cover_image": {
@@ -79,13 +78,11 @@
 }
 ```
 
-影片详情（`MovieDetailResource`）沿用摘要中的 `title_zh`、`cover_image`、`thin_cover_image`，并额外增加：
+影片详情（`MovieDetailResource`）沿用摘要中的 `cover_image`、`thin_cover_image`，并额外增加：
 
 - `actors`: `MovieActorResource[]`
 - `tags`: `TagResource[]`
-- `summary`: `string`
-- `desc`: `string`（日文原文描述；DMM 简介抓取与翻译链路已下线，新入库影片恒为空，存量数据保留）
-- `desc_zh`: `string`（中文翻译描述；翻译链路已下线，恒为空，存量数据保留）
+- `summary`: `string`（摘要；`desc` / `desc_zh` 存量数据已迁移至此，中文描述优先）
 - `maker_name`: `string | null`（厂商名称）
 - `director_name`: `string | null`（导演名称）
 - `plot_images`: `ImageResource[]`
@@ -98,12 +95,11 @@
   （`POST /system/resource-task-actions` 的 `resource_ids`）收的是这个 id，列表与详情都会返回
 - `series_name`: 系列名称，可为 `null`
 - `series_id`: 系列 ID，可为 `null`；系列名来自独立 `movie_series` 表
-- `title`：原始标题
-- `title_zh`：中文标题；翻译链路已下线，恒为空，存量数据保留
+- `title`：标题；翻译链路下线后，存量 `title_zh`（中文标题）已合并进本字段
 - `thin_cover_image`：优先由封面图裁切生成；若裁切失败，则回退到前两张剧情图中的第一张竖图；若仍未命中则为 `null`
 - `heat`: 影片热度值，整数且非空；默认 `0`
 - `score`、`score_number`、`watched_count`、`want_watch_count`、`comment_count` 会由定时互动同步任务定期从 JavDB 回刷
-- `desc`、`desc_zh`、`maker_name`、`director_name` 仅在详情接口返回，列表接口不返回这些字段
+- `maker_name`、`director_name` 仅在详情接口返回，列表接口不返回这些字段
 
 `MovieMediaResource`：
 
@@ -276,7 +272,6 @@ Authorization: Bearer <token>
     "javdb_id": "MovieA1",
     "movie_number": "FC2-PPV-123456",
     "title": "Movie 1",
-    "title_zh": "电影 1",
     "series_name": null,
     "cover_image": null,
     "thin_cover_image": null,
@@ -323,7 +318,6 @@ Authorization: Bearer <token>
     "javdb_id": "MovieA2",
     "movie_number": "FC2-PPV-654321",
     "title": "Movie 2",
-    "title_zh": "电影 2",
     "series_name": null,
     "cover_image": null,
     "thin_cover_image": null,
@@ -397,8 +391,6 @@ Content-Type: application/json
     - 封面、剧情图、当前演员列表中的演员头像会强制重下，不复用旧文件
     - `thin_cover_image` 会基于最新封面和剧情图重新计算：优先裁切封面，失败时回退到前两张剧情图中的第一张竖图；仍未命中则清空
   - 不会刷新：
-    - `desc`
-    - `desc_zh`
     - `movie_number`
     - 订阅状态、合集状态、热度等本地状态字段
   - 远端查不到番号时返回 `404 movie_metadata_not_found`
@@ -423,7 +415,6 @@ Authorization: Bearer <token>
   "javdb_id": "MovieA1",
   "movie_number": "ABP-123",
   "title": "Movie 1",
-  "title_zh": "电影 1",
   "series_id": 1,
   "series_name": "Series 1",
   "cover_image": {
@@ -448,8 +439,6 @@ Authorization: Bearer <token>
   "actors": [],
   "tags": [],
   "summary": "summary",
-  "desc": "",
-  "desc_zh": "",
   "maker_name": "maker",
   "director_name": "director",
   "thin_cover_image": null,
@@ -577,7 +566,7 @@ event: upsert_finished
 data: {"total":1,"created_count":1,"already_exists_count":0,"failed_count":0}
 
 event: completed
-data: {"success":true,"movies":[{"javdb_id":"javdb-ABP-123","movie_number":"ABP-123","title":"title-ABP-123","title_zh":"","cover_image":null,"thin_cover_image":null,"release_date":null,"duration_minutes":0,"score":0.0,"watched_count":0,"want_watch_count":0,"comment_count":0,"score_number":0,"is_collection":false,"is_subscribed":false}],"failed_items":[],"stats":{"total":1,"created_count":1,"already_exists_count":0,"failed_count":0}}
+data: {"success":true,"movies":[{"javdb_id":"javdb-ABP-123","movie_number":"ABP-123","title":"title-ABP-123","cover_image":null,"thin_cover_image":null,"release_date":null,"duration_minutes":0,"score":0.0,"watched_count":0,"want_watch_count":0,"comment_count":0,"score_number":0,"is_collection":false,"is_subscribed":false}],"failed_items":[],"stats":{"total":1,"created_count":1,"already_exists_count":0,"failed_count":0}}
 ```
 
 未找到事件流示例：
@@ -659,7 +648,7 @@ event: upsert_finished
 data: {"total":2,"created_count":1,"already_exists_count":1,"failed_count":0}
 
 event: completed
-data: {"success":true,"movies":[{"javdb_id":"javdb-new","movie_number":"ABP-002","title":"New","title_zh":"","cover_image":null,"thin_cover_image":null,"release_date":null,"duration_minutes":0,"score":0.0,"watched_count":0,"want_watch_count":0,"comment_count":0,"score_number":0,"is_collection":false,"is_subscribed":false}],"skipped_items":[{"javdb_id":"javdb-existing","movie_number":"ABP-001","reason":"already_exists"}],"failed_items":[],"stats":{"total":2,"created_count":1,"already_exists_count":1,"failed_count":0}}
+data: {"success":true,"movies":[{"javdb_id":"javdb-new","movie_number":"ABP-002","title":"New","cover_image":null,"thin_cover_image":null,"release_date":null,"duration_minutes":0,"score":0.0,"watched_count":0,"want_watch_count":0,"comment_count":0,"score_number":0,"is_collection":false,"is_subscribed":false}],"skipped_items":[{"javdb_id":"javdb-existing","movie_number":"ABP-001","reason":"already_exists"}],"failed_items":[],"stats":{"total":2,"created_count":1,"already_exists_count":1,"failed_count":0}}
 ```
 
 未找到本地系列事件流示例：
@@ -1244,7 +1233,6 @@ GET /movies/ABC-001
   "javdb_id": "MovieA1",
   "movie_number": "ABC-001",
   "title": "Movie 1",
-  "title_zh": "电影 1",
   "series_id": 1,
   "series_name": "Series 1",
   "cover_image": null,

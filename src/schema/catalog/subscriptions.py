@@ -88,7 +88,6 @@ class MovieSubscriptionListItemResource(SchemaModel):
     movie_id: int
     movie_number: str
     title: str
-    title_zh: str = ""
     cover_image: ImageResource | None = None
     release_date: str | None = None
     subscribed_at: datetime | None = None

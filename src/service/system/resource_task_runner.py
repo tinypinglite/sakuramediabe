@@ -109,7 +109,7 @@ class ResourceTaskSpec:
     task_key: str
     resource_type: str
     retry: RetryPolicy
-    # 只写域条件（如 Movie.desc == ""）；内核把状态条件作为参数传入，由任务合入查询。
+    # 只写域条件（如 Movie.heat == 0）；内核把状态条件作为参数传入，由任务合入查询。
     select_candidates: Callable[..., Iterable[Any]]
     process_one: Callable[[RunContext, Any], Any]
     # 每 run 一次，产出跨资源共享上下文（provider 会话 / 预载缓存 / 熔断器等）。

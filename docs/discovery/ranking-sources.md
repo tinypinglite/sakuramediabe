@@ -94,7 +94,6 @@
       "javdb_id": "MovieA1",
       "movie_number": "ABP-001",
       "title": "Movie A",
-      "title_zh": "电影 A",
       "series_name": null,
       "cover_image": null,
       "thin_cover_image": null,

@@ -263,7 +263,7 @@ def test_run_pending_migrations_extracts_movie_series_from_supported_legacy_sche
         "SELECT movie_number, series_id FROM movie ORDER BY movie_number"
     ).fetchall()
 
-    assert "title_zh" in movie_columns
+    assert "title_zh" not in movie_columns
     assert "series_id" in movie_columns
     assert "series_name" not in movie_columns
     assert "movie_series_name" not in movie_indexes
@@ -632,7 +632,7 @@ def test_run_pending_migrations_supports_empty_database_after_create_tables(clea
     actor_columns = {column.name for column in clean_db.get_columns("actor")}
 
     # 空库先按当前模型建表后，迁移执行结果至少要保持最终 schema 正确。
-    assert "title_zh" in movie_columns
+    assert "title_zh" not in movie_columns
     assert "series_id" in movie_columns
     assert "series_name" not in movie_columns
     assert clean_db.table_exists("movie_series")
@@ -1942,3 +1942,130 @@ def test_run_pending_migrations_cleans_removed_movie_task_records(clean_db):
         "SELECT resource_type, resource_id FROM system_event ORDER BY resource_type, resource_id"
     ).fetchall() == [("movie", 42), ("task_run", 4)]
     assert "20260815_01_cleanup_removed_movie_task_records" in _schema_migration_names(clean_db)
+
+
+def _create_movie_table_with_desc_fields(clean_db):
+    """20260815_03 迁移前的 movie 表：含 desc / desc_zh / title_zh 三列，summary 已存在。"""
+    clean_db.execute_sql(
+        """
+        CREATE TABLE movie (
+            id SERIAL PRIMARY KEY,
+            created_at TIMESTAMP NOT NULL,
+            updated_at TIMESTAMP NOT NULL,
+            javdb_id VARCHAR(64) NOT NULL UNIQUE,
+            movie_number VARCHAR(255) NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            release_date TIMESTAMP NULL,
+            duration_minutes INTEGER NOT NULL DEFAULT 0,
+            score DOUBLE PRECISION NOT NULL DEFAULT 0,
+            score_number INTEGER NOT NULL DEFAULT 0,
+            watched_count INTEGER NOT NULL DEFAULT 0,
+            cover_image_id INTEGER NULL,
+            thin_cover_image_id INTEGER NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            series_id INTEGER NULL,
+            maker_name VARCHAR(255) NULL,
+            director_name VARCHAR(255) NULL,
+            want_watch_count INTEGER NOT NULL DEFAULT 0,
+            comment_count INTEGER NOT NULL DEFAULT 0,
+            heat INTEGER NOT NULL DEFAULT 0,
+            is_collection BOOLEAN NOT NULL DEFAULT FALSE,
+            is_collection_overridden BOOLEAN NOT NULL DEFAULT FALSE,
+            is_subscribed BOOLEAN NOT NULL DEFAULT FALSE,
+            subscribed_at TIMESTAMP NULL,
+            "desc" TEXT NOT NULL DEFAULT '',
+            desc_zh TEXT NOT NULL DEFAULT '',
+            title_zh TEXT NOT NULL DEFAULT '',
+            extra TEXT NULL
+        )
+        """
+    )
+
+
+def test_run_pending_migrations_merges_movie_title_and_desc_fields(clean_db):
+    """20260815_03：desc / desc_zh / title_zh 存量数据收拢到 title / summary 后删列。
+
+    覆盖六类样本：仅 title_zh（标题被中文覆盖）、desc_zh 与 desc 同时有值（zh 优先）、
+    仅 desc 有值（回填 summary）、两者皆空（summary 保持原样）、NULL desc_zh（回落 desc）、
+    纯空白串（不算有值，不得覆盖）；同时验证三列被删除与幂等重跑。
+    """
+    _create_movie_table_with_desc_fields(clean_db)
+    # 更老的库形态可能允许 desc_zh 为 NULL：放开约束以覆盖 COALESCE 回落分支。
+    clean_db.execute_sql('ALTER TABLE "movie" ALTER COLUMN "desc_zh" DROP NOT NULL')
+    clean_db.execute_sql(
+        """
+        INSERT INTO movie (
+            created_at, updated_at, javdb_id, movie_number, title, summary,
+            "desc", desc_zh, title_zh
+        ) VALUES
+            ('2026-08-15', '2026-08-15', 'j-1', 'ABP-001', '日文标题', 'javdb简介', '日文简介', '中文简介', '中文标题'),
+            ('2026-08-15', '2026-08-15', 'j-2', 'ABP-002', '日文标题', '已有简介', '日文简介', '', ''),
+            ('2026-08-15', '2026-08-15', 'j-3', 'ABP-003', '日文标题', '已有简介', '', '', ''),
+            ('2026-08-15', '2026-08-15', 'j-4', 'ABP-004', '日文标题', '保持不动', '', '', ''),
+            ('2026-08-15', '2026-08-15', 'j-5', 'ABP-005', '日文标题', '已有简介', '日文简介', NULL, ''),
+            ('2026-08-15', '2026-08-15', 'j-6', 'ABP-006', '日文标题', '已有简介', '   ', '   ', '   '),
+            ('2026-08-15', '2026-08-15', 'j-7', 'ABP-007', '日文标题', '已有简介', '   ', '中文简介', '')
+        """
+    )
+
+    run_pending_migrations(clean_db)
+
+    columns = {column.name for column in clean_db.get_columns("movie")}
+    assert "desc" not in columns
+    assert "desc_zh" not in columns
+    assert "title_zh" not in columns
+    assert "summary" in columns
+    assert "title" in columns
+    rows = clean_db.execute_sql(
+        "SELECT movie_number, title, summary FROM movie ORDER BY movie_number"
+    ).fetchall()
+    # 仅 title_zh 有值：标题被中文覆盖，summary 取 desc_zh（zh 优先）。
+    assert rows[0] == ("ABP-001", "中文标题", "中文简介")
+    # desc_zh 为空但 desc 有值：summary 回填 desc。
+    assert rows[1] == ("ABP-002", "日文标题", "日文简介")
+    # 两者皆空：summary 保持原样。
+    assert rows[2] == ("ABP-003", "日文标题", "已有简介")
+    assert rows[3] == ("ABP-004", "日文标题", "保持不动")
+    # NULL desc_zh：COALESCE 回落，summary 仍取 desc。
+    assert rows[4] == ("ABP-005", "日文标题", "日文简介")
+    # title_zh 与 desc_zh 都是纯空白：不算有值，title 与 summary 都不被覆盖。
+    assert rows[5] == ("ABP-006", "日文标题", "已有简介")
+    # desc 是纯空白但 desc_zh 有值：summary 取 desc_zh。
+    assert rows[6] == ("ABP-007", "日文标题", "中文简介")
+    assert "20260815_03_merge_movie_title_desc_fields" in _schema_migration_names(clean_db)
+
+    # 幂等：重跑不改变已迁移数据（列已删，迁移只能走 SchemaMigration 跳过）。
+    second_summary = run_pending_migrations(clean_db)
+    assert second_summary.applied_count == 0
+    rows_after_rerun = clean_db.execute_sql(
+        "SELECT movie_number, title, summary FROM movie ORDER BY movie_number"
+    ).fetchall()
+    assert rows_after_rerun == rows
+
+
+def test_run_pending_migrations_merges_desc_without_desc_zh_column(clean_db):
+    """20260815_03：desc_zh 列缺失（极端老库）时，desc 直接回填 summary 的 else 分支。"""
+    _create_movie_table_missing_title_zh(clean_db)
+    # 模拟连 desc_zh 都没有的更老 schema：仅保留 desc。
+    clean_db.execute_sql('ALTER TABLE "movie" DROP COLUMN "desc_zh"')
+    clean_db.execute_sql(
+        """
+        INSERT INTO movie (
+            created_at, updated_at, javdb_id, movie_number, title, summary, "desc"
+        ) VALUES (
+            '2026-08-15', '2026-08-15', 'j-1', 'ABP-001', '日文标题', '已有简介', '日文简介'
+        )
+        """
+    )
+
+    run_pending_migrations(clean_db)
+
+    columns = {column.name for column in clean_db.get_columns("movie")}
+    assert "desc" not in columns
+    assert "desc_zh" not in columns
+    assert "title_zh" not in columns
+    rows = clean_db.execute_sql(
+        "SELECT movie_number, title, summary FROM movie ORDER BY movie_number"
+    ).fetchall()
+    assert rows == [("ABP-001", "日文标题", "日文简介")]
+    assert "20260815_03_merge_movie_title_desc_fields" in _schema_migration_names(clean_db)

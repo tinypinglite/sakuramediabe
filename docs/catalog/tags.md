@@ -189,7 +189,6 @@ GET /tags/1/movies?director_name=嵐山みちる&maker_name=S1%20NO.1%20STYLE&pa
       "javdb_id": "MovieA1",
       "movie_number": "ABC-001",
       "title": "Movie 1",
-      "title_zh": "电影 1",
       "series_id": null,
       "series_name": null,
       "cover_image": null,

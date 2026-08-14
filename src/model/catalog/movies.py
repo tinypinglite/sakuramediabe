@@ -59,9 +59,6 @@ class Movie(TimestampedMixin, BaseModel):
     is_collection_overridden = peewee.BooleanField(null=False, default=False, index=True)
     is_subscribed = peewee.BooleanField(null=False, default=False, index=True)
     subscribed_at = peewee.DateTimeField(null=True, index=True)
-    desc = peewee.TextField(verbose_name="描述", default="")
-    desc_zh = peewee.TextField(verbose_name="中文描述", default="")
-    title_zh = peewee.TextField(verbose_name="中文标题", default="")
     extra = JsonTextField(null=True, default=None, verbose_name="额外元数据")
 
     @staticmethod

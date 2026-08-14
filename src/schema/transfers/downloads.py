@@ -253,10 +253,9 @@ class DownloadTaskResource(SchemaModel):
             "updated_at": task.updated_at,
         }
         if movie is not None:
-            # 中文标题优先，回落到原始标题；两者都为空时保持 None（前端会 fallback 到 task.name）。
-            title_zh = (movie.title_zh or "").strip()
+            # 标题为空串时保持 None（前端会 fallback 到 task.name）。
             title = (movie.title or "").strip()
-            data["movie_title"] = title_zh or title or None
+            data["movie_title"] = title or None
             # cover_image 是可空 FK；有值才组装 ImageResource，让签名逻辑走 field_validator。
             if movie.cover_image is not None:
                 data["movie_cover"] = ImageResource.from_attributes_model(movie.cover_image)
