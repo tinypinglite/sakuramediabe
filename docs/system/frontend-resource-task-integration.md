@@ -66,7 +66,11 @@
   - `succeeded`
   - `failed`
 - `attempt_count`
-  - 当前资源任务记录累计尝试次数
+  - 本轮失败次数，延后不占用该计数
+- `deferred_count` / `deferred_limit`
+  - 延后进度，例如 `2/5`
+- `deferred_reason` / `next_retry_at`
+  - 暂缓原因与下次检查时间；`pending` 且这两个字段有效时展示“暂缓处理”
 - `last_attempted_at`
   - 最近一次开始执行时间
 - `last_succeeded_at`

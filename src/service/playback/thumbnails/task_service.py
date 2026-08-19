@@ -214,7 +214,12 @@ class MediaThumbnailTaskService:
         except (TaskItemDeferred, TaskItemError):
             raise
         except ThumbnailDeferred as exc:
-            raise TaskItemDeferred("thumbnail_source_deferred", str(exc)) from exc
+            raise TaskItemDeferred(
+                exc.error_code,
+                str(exc),
+                max_deferred_attempts=exc.max_deferred_attempts,
+                deferred_backoff_base_seconds=exc.deferred_backoff_base_seconds,
+            ) from exc
         except Exception as exc:
             raise TaskItemError(cls._classify_error_code(str(exc)), str(exc)) from exc
         counters = ctx.shared

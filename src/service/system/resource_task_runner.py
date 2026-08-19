@@ -36,6 +36,8 @@ STATE_FAILED_TERMINAL = "failed_terminal"
 STATE_EXHAUSTED = "exhausted"
 
 ERROR_CODE_UNHANDLED = "unhandled_exception"
+DEFERRED_COUNT_EXTRA_KEY = "deferred_count"
+DEFERRED_REASON_EXTRA_KEY = "deferred_reason"
 
 # 候选分批加载的批大小：一次只驻留一批完整模型，避免 desc_sync / 翻译等
 # 任务把数万~数十万候选全量 list() 进内存（实测单任务峰值 3.4-3.9GB）。
@@ -64,11 +66,20 @@ class TaskItemError(Exception):
 
 
 class TaskItemDeferred(Exception):
-    """单资源本轮跳过（既不成功也不失败，不耗预算），如缩略图源暂不可用。"""
+    """单资源本轮跳过；受控延后可指定次数上限和线性退避基数。"""
 
-    def __init__(self, error_code: str, message: str | None = None):
+    def __init__(
+        self,
+        error_code: str,
+        message: str | None = None,
+        *,
+        max_deferred_attempts: int | None = None,
+        deferred_backoff_base_seconds: int | None = None,
+    ):
         super().__init__(message or error_code)
         self.error_code = error_code
+        self.max_deferred_attempts = max_deferred_attempts
+        self.deferred_backoff_base_seconds = deferred_backoff_base_seconds
 
 
 class TaskAbortError(Exception):
@@ -142,9 +153,16 @@ class ResourceTaskLedger:
             ResourceTaskState.resource_type == resource_type,
             ResourceTaskState.resource_id == resource_id_field,
         )
+        pending_eligible = matching.where(
+            ResourceTaskState.state == STATE_PENDING,
+            (
+                ResourceTaskState.next_retry_at.is_null(True)
+                | (ResourceTaskState.next_retry_at <= current)
+            ),
+        )
         return (
             ~fn.EXISTS(matching)
-            | fn.EXISTS(matching.where(ResourceTaskState.state == STATE_PENDING))
+            | fn.EXISTS(pending_eligible)
             | fn.EXISTS(
                 matching.where(
                     ResourceTaskState.state == STATE_FAILED_RETRYABLE,
@@ -160,7 +178,7 @@ class ResourceTaskLedger:
     def default_claim_eligible(cls, record: ResourceTaskState) -> bool:
         """内核默认领取复核：与 eligible_state_condition 同语义（pending / 到期的 failed_retryable）。"""
         if record.state == STATE_PENDING:
-            return True
+            return record.next_retry_at is None or record.next_retry_at <= utc_now_for_db()
         if record.state == STATE_FAILED_RETRYABLE:
             return record.next_retry_at is None or record.next_retry_at <= utc_now_for_db()
         return False
@@ -243,6 +261,7 @@ class ResourceTaskLedger:
             # 成功即收口本轮：计数归零，让周期性任务（如互动同步）的历史成功
             # 不吃掉失败预算；终身次数由 attempt 表行数体现。
             record.attempt_count = 0
+            cls._clear_deferred_metadata(record)
             record.last_succeeded_at = now
             record.last_error = None
             record.last_error_at = None
@@ -269,6 +288,7 @@ class ResourceTaskLedger:
         回滚本轮计数且永不判 exhausted，失败照常落 failed_retryable + 错误信息。
         """
         now = utc_now_for_db()
+        cls._clear_deferred_metadata(record)
         if budget_exempt:
             record.attempt_count = max(record.attempt_count - 1, 0)
         if not retryable:
@@ -301,6 +321,60 @@ class ResourceTaskLedger:
         return final_state
 
     @classmethod
+    def finish_deferred(
+        cls,
+        attempt: ResourceTaskAttempt,
+        record: ResourceTaskState,
+        *,
+        prior_state: str,
+        error_code: str,
+        error_message: str,
+        max_deferred_attempts: int,
+        deferred_backoff_base_seconds: int,
+    ) -> str:
+        """把延后次数存在既有 extra，next_retry_at 是唯一的下次检查时间。"""
+        now = utc_now_for_db()
+        deferred_count = cls._deferred_count(record)
+        if deferred_count >= max_deferred_attempts:
+            exhausted_message = f"{error_message}；已延后 {max_deferred_attempts} 次，仍未恢复"
+            with get_database().atomic():
+                cls._finalize_attempt(
+                    attempt,
+                    "failed",
+                    finished_at=now,
+                    error_code=f"{error_code}_deferred_exhausted",
+                    error_message=exhausted_message,
+                    retryable=False,
+                )
+                record.state = STATE_FAILED_TERMINAL
+                record.last_error = exhausted_message
+                record.last_error_at = now
+                record.error_code = f"{error_code}_deferred_exhausted"
+                record.next_retry_at = None
+                record.updated_at = now
+                record.save()
+            return STATE_FAILED_TERMINAL
+
+        next_count = deferred_count + 1
+        with get_database().atomic():
+            cls._finalize_attempt(
+                attempt,
+                "deferred",
+                finished_at=now,
+                error_code=error_code,
+                error_message=error_message,
+            )
+            record.state = prior_state if prior_state != STATE_RUNNING else STATE_PENDING
+            record.attempt_count = max(record.attempt_count - 1, 0)
+            cls._set_deferred_metadata(record, count=next_count, reason=error_message)
+            record.next_retry_at = now + timedelta(
+                seconds=deferred_backoff_base_seconds * next_count
+            )
+            record.updated_at = now
+            record.save()
+        return "deferred"
+
+    @classmethod
     def finish_non_consuming(
         cls,
         attempt: ResourceTaskAttempt,
@@ -325,6 +399,31 @@ class ResourceTaskLedger:
             record.attempt_count = max(record.attempt_count - 1, 0)
             record.updated_at = now
             record.save()
+
+    @staticmethod
+    def _deferred_count(record: ResourceTaskState) -> int:
+        if not isinstance(record.extra, dict):
+            return 0
+        value = record.extra.get(DEFERRED_COUNT_EXTRA_KEY)
+        return value if isinstance(value, int) and value > 0 else 0
+
+    @staticmethod
+    def _set_deferred_metadata(
+        record: ResourceTaskState, *, count: int, reason: str
+    ) -> None:
+        extra = dict(record.extra) if isinstance(record.extra, dict) else {}
+        extra[DEFERRED_COUNT_EXTRA_KEY] = count
+        extra[DEFERRED_REASON_EXTRA_KEY] = reason
+        record.extra = extra
+
+    @staticmethod
+    def _clear_deferred_metadata(record: ResourceTaskState) -> None:
+        if not isinstance(record.extra, dict):
+            return
+        extra = dict(record.extra)
+        extra.pop(DEFERRED_COUNT_EXTRA_KEY, None)
+        extra.pop(DEFERRED_REASON_EXTRA_KEY, None)
+        record.extra = extra or None
 
     @classmethod
     def recover_running(cls, task_key: str, *, error_message: str) -> int:
@@ -403,6 +502,17 @@ class ResourceTaskRunner:
         try:
             spec.process_one(ctx, resource)
         except TaskItemDeferred as exc:
+            if exc.max_deferred_attempts is not None and exc.deferred_backoff_base_seconds is not None:
+                final_state = ResourceTaskLedger.finish_deferred(
+                    attempt,
+                    record,
+                    prior_state=prior_state,
+                    error_code=exc.error_code,
+                    error_message=str(exc),
+                    max_deferred_attempts=exc.max_deferred_attempts,
+                    deferred_backoff_base_seconds=exc.deferred_backoff_base_seconds,
+                )
+                return f"{final_state}_count", None
             ResourceTaskLedger.finish_non_consuming(
                 attempt,
                 record,

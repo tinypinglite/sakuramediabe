@@ -12,6 +12,7 @@ from PIL import Image as PILImage
 from src.lib.cloud115 import (
     Cloud115HlsSegmentReader,
     Cloud115RequestError,
+    Cloud115VideoNotReadyError,
     VideoDefinition,
     VideoSegment,
 )
@@ -20,7 +21,10 @@ from src.service.playback.thumbnails.backends import cloud115_hls as thumbnail_m
 from src.service.playback.thumbnails.backends.cloud115_hls import (
     Cloud115HlsThumbnailBackend,
 )
-from src.service.playback.thumbnails.contracts import PreparedThumbnailSource
+from src.service.playback.thumbnails.contracts import (
+    PreparedThumbnailSource,
+    ThumbnailDeferred,
+)
 from src.service.playback.thumbnails.task_service import MediaThumbnailTaskService
 
 
@@ -310,8 +314,26 @@ def test_thumbnail_dimensions_come_from_generated_webp(
     assert ThumbnailArtifactService.read_dimensions("movies/sample.webp") == (640, 360)
 
 
-def test_video_not_ready_is_classified_as_deferred_system_failure() -> None:
-    from src.lib.cloud115 import Cloud115VideoNotReadyError
-
+def test_video_not_ready_is_classified_as_bounded_deferred(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert Cloud115VideoNotReadyError in Cloud115HlsThumbnailBackend.SYSTEM_FAILURES
+
+    async def raise_not_ready(_cls, _media):
+        raise Cloud115VideoNotReadyError(
+            "video not ready for pickcode hidden (file_status=0)",
+            file_status=0,
+        )
+
+    monkeypatch.setattr(
+        Cloud115HlsThumbnailBackend,
+        "_resolve_targets",
+        classmethod(raise_not_ready),
+    )
+    with pytest.raises(ThumbnailDeferred) as error:
+        Cloud115HlsThumbnailBackend.prepare(SimpleNamespace())
+
+    assert str(error.value) == "115 视频转码尚未完成"
+    assert error.value.max_deferred_attempts == 5
+    assert error.value.deferred_backoff_base_seconds == 12 * 60 * 60
     assert MediaThumbnailTaskService.minimum_acceptable_count(100) == 85

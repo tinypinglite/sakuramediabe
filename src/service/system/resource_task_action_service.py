@@ -215,6 +215,7 @@ class ResourceTaskActionService:
                     state=STATE_PENDING,
                     retry_round=ResourceTaskState.retry_round + 1,
                     attempt_count=0,
+                    extra=None,
                     next_retry_at=None,
                     error_code=None,
                     last_error=None,
@@ -282,6 +283,8 @@ class ResourceTaskActionService:
             record.error_code = None
             record.last_error = None
             record.last_error_at = None
+        # 手动重开代表新一轮处理，丢弃上一次 115 延后计数和原因。
+        record.extra = None
         record.last_trigger_type = "manual"
         record.updated_at = now
         record.save()

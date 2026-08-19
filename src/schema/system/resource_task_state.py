@@ -41,6 +41,11 @@ class ResourceTaskRecordResource(SchemaModel):
     resource_id: int
     state: str
     attempt_count: int = 0
+    # 延后状态复用 task_state.extra 持久化，不占失败预算。
+    deferred_count: int = 0
+    deferred_limit: int = 0
+    deferred_reason: str | None = None
+    next_retry_at: datetime | None = None
     last_attempted_at: datetime | None = None
     last_succeeded_at: datetime | None = None
     last_error: str | None = None

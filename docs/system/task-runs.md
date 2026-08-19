@@ -59,7 +59,11 @@
   - `succeeded`
   - `failed`
 - `attempt_count`
-  - 本轮失败次数：成功即清零、基础设施失败回滚；终身次数看 `resource_task_attempt` 表
+  - 本轮失败次数；延后不占用该预算
+- `deferred_count` / `deferred_limit`
+  - 已安排的延后次数及上限；状态复用 `extra` 保存，不新增表或数据库列
+- `deferred_reason` / `next_retry_at`
+  - 暂缓原因和下一次允许自动检查的时间
 - `last_attempted_at`
 - `last_succeeded_at`
 - `last_error`
@@ -161,6 +165,10 @@ GET /system/resource-task-states?task_key=media_thumbnail_generation&state=faile
 ```
 
 返回记录的 `resource_id` 即 `media_id`；`resource` 摘要同时包含影片番号、标题、媒体路径和有效状态。
+
+115 视频转码未完成时，缩略图任务会保持 `pending`，但返回 `deferred_count` 和
+`next_retry_at`。第 1 至第 5 次分别在 12、24、36、48、60 小时后检查；第 6 次仍未完成
+则为 `failed_terminal`。前端应展示“暂缓处理”，不能把 `attempt_count = 0` 写成“尝试 0 次”。
 
 ### `POST /system/resource-task-actions`
 

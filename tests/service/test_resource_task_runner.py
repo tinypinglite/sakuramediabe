@@ -2,8 +2,8 @@
 succeeded / failed_retryable+退避 / failed_terminal / exhausted / deferred / abort。
 """
 
+from collections.abc import Callable
 from datetime import timedelta
-from typing import Callable
 
 import pytest
 
@@ -187,10 +187,57 @@ def test_runner_deferred_keeps_state_and_budget(test_db):
     record = _record(movie)
     assert record.state == "pending"
     assert record.attempt_count == 0
+    assert record.extra is None
+    assert record.next_retry_at is None
     attempt = ResourceTaskAttempt.get(ResourceTaskAttempt.resource_id == movie.id)
     assert attempt.state == "deferred"
     # 不耗预算：下一轮仍进候选。
     assert ResourceTaskRunner.run(_build_spec({}), StubReporter())["succeeded_count"] == 1
+
+
+def test_runner_bounded_deferred_uses_extra_backoff_then_becomes_terminal(test_db):
+    movie = _create_movie("KER-005-BACKOFF")
+    deferred = TaskItemDeferred(
+        "cloud115_video_transcoding",
+        "115 视频转码尚未完成",
+        max_deferred_attempts=5,
+        deferred_backoff_base_seconds=12 * 60 * 60,
+    )
+    spec = _build_spec({movie.id: deferred})
+
+    for deferred_count in range(1, 6):
+        before_run = utc_now_for_db()
+        stats = ResourceTaskRunner.run(spec, StubReporter())
+
+        assert stats["deferred_count"] == 1
+        record = _record(movie)
+        assert record.state == "pending"
+        assert record.attempt_count == 0
+        assert record.extra == {
+            "deferred_count": deferred_count,
+            "deferred_reason": "115 视频转码尚未完成",
+        }
+        assert record.next_retry_at is not None
+        assert (record.next_retry_at - before_run).total_seconds() >= (
+            12 * 60 * 60 * deferred_count
+        )
+        assert ResourceTaskRunner.run(spec, StubReporter())["candidate_count"] == 0
+        ResourceTaskState.update(
+            next_retry_at=utc_now_for_db() - timedelta(seconds=1)
+        ).where(ResourceTaskState.id == record.id).execute()
+
+    stats = ResourceTaskRunner.run(spec, StubReporter())
+
+    assert stats["failed_terminal_count"] == 1
+    record = _record(movie)
+    assert record.state == "failed_terminal"
+    assert record.attempt_count == 1
+    assert record.extra == {
+        "deferred_count": 5,
+        "deferred_reason": "115 视频转码尚未完成",
+    }
+    assert record.next_retry_at is None
+    assert ResourceTaskAttempt.get_by_id(record.last_attempt_id).state == "failed"
 
 
 def test_runner_abort_rolls_back_current_and_reraises(test_db):

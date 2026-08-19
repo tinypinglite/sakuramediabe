@@ -4,6 +4,9 @@
 本文件覆盖它们的语义在统一协议下的对等物（媒体合格性钩子 / 批量按状态圈定）。
 """
 
+from datetime import timedelta
+
+from src.common.runtime_time import utc_now_for_db
 from src.model import BackgroundTaskRun, Media, MediaLibrary, Movie, ResourceTaskState
 
 ACTION_PATH = "/system/resource-task-actions"
@@ -62,6 +65,9 @@ def test_reset_retry_budget_requeues_failed_media_thumbnail_tasks(client, accoun
     second_media = _create_media("ABC-002")
     _create_task_state(first_media)
     _create_task_state(second_media)
+    ResourceTaskState.update(
+        extra={"deferred_count": 5, "deferred_reason": "115 视频转码尚未完成"}
+    ).where(ResourceTaskState.resource_id == first_media.id).execute()
 
     response = client.post(
         ACTION_PATH,
@@ -94,6 +100,7 @@ def test_reset_retry_budget_requeues_failed_media_thumbnail_tasks(client, accoun
         assert record.last_trigger_type == "manual"
         # kernel 记账：重置即重开预算，轮次 +1；尝试历史保留在 attempt 表。
         assert record.retry_round == 1
+        assert record.extra is None
 
 
 def test_reset_skips_unqualified_media_and_requeues_the_rest(client, account_user):
@@ -182,6 +189,31 @@ def test_bulk_reset_by_state_without_resource_ids(client, account_user):
         ResourceTaskState.resource_id == retryable_media.id,
     )
     assert untouched.state == "failed_retryable"
+
+
+def test_resource_task_list_exposes_deferred_state_from_existing_extra(client, account_user):
+    token = _login(client, account_user.username)
+    media = _create_media("ABC-015")
+    record = _create_task_state(media, state="pending")
+    record.extra = {
+        "deferred_count": 2,
+        "deferred_reason": "115 视频转码尚未完成",
+    }
+    record.next_retry_at = utc_now_for_db() + timedelta(hours=24)
+    record.save()
+
+    response = client.get(
+        "/system/resource-task-states",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"task_key": THUMBNAIL_TASK_KEY, "state": "pending"},
+    )
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["deferred_count"] == 2
+    assert item["deferred_limit"] == 5
+    assert item["deferred_reason"] == "115 视频转码尚未完成"
+    assert item["next_retry_at"] is not None
 
 
 def test_rerun_not_supported_for_thumbnail_task(client, account_user):

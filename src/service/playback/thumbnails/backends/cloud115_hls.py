@@ -50,6 +50,8 @@ class Cloud115HlsThumbnailBackend:
     SEGMENT_MAX_WORKERS = 3
     STREAM_CHUNK_SIZE = 16 * 1024
     PROBE_SIZE = 128 * 1024
+    VIDEO_TRANSCODING_MAX_DEFERRED_ATTEMPTS = 5
+    VIDEO_TRANSCODING_DEFERRED_BACKOFF_BASE_SECONDS = 12 * 60 * 60
     INTERVAL_SECONDS = 10
     SYSTEM_FAILURES = (
         Cloud115AuthError,
@@ -136,6 +138,14 @@ class Cloud115HlsThumbnailBackend:
     def prepare(cls, media: Media) -> PreparedThumbnailSource:
         try:
             targets, expected_count, source_label = asyncio.run(cls._resolve_targets(media))
+        except Cloud115VideoNotReadyError as exc:
+            # 前端无需知道 pickcode；只需知道 115 仍在转码。
+            raise ThumbnailDeferred(
+                "115 视频转码尚未完成",
+                error_code="cloud115_video_transcoding",
+                max_deferred_attempts=cls.VIDEO_TRANSCODING_MAX_DEFERRED_ATTEMPTS,
+                deferred_backoff_base_seconds=cls.VIDEO_TRANSCODING_DEFERRED_BACKOFF_BASE_SECONDS,
+            ) from exc
         except (*cls.SYSTEM_FAILURES, ThumbnailDeferred) as exc:
             raise ThumbnailDeferred(str(exc)) from exc
         except Exception as exc:
