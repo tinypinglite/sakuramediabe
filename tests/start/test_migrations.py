@@ -5,6 +5,7 @@ import pytest
 from click.testing import CliRunner
 
 from src.model import (
+    Actor,
     BackgroundTaskRun,
     DownloadClient,
     DownloadTask,
@@ -16,6 +17,7 @@ from src.model import (
 )
 from src.start.commands import main
 from src.start.migrations.runner import (
+    ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
     SUPPORTED_BASE_MIGRATION_NAME,
@@ -83,6 +85,7 @@ def test_current_migrations_are_discoverable_in_order():
     assert [module.name for module in modules] == [
         CONSOLIDATED_MIGRATION_NAME,
         MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
+        ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
     ]
 
 
@@ -116,6 +119,26 @@ def test_run_pending_migrations_supports_fresh_database_and_is_idempotent(clean_
     assert first_summary.applied_count == 1
     assert second_summary.applied_count == 0
     assert _schema_migration_names(clean_db) == [CONSOLIDATED_MIGRATION_NAME]
+
+
+def test_run_pending_migrations_completes_fresh_current_schema_after_model_creation(clean_db):
+    first_summary = run_pending_migrations(clean_db)
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+
+    second_summary = run_pending_migrations(clean_db)
+
+    assert first_summary.applied_count == 1
+    assert second_summary.executed == [
+        MigrationExecution(name=CONSOLIDATED_MIGRATION_NAME, applied=False),
+        MigrationExecution(name=MOVIE_COLLECTION_OWNER_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=ACTOR_GENDER_BACKFILL_MIGRATION_NAME, applied=True),
+    ]
+    assert _schema_migration_names(clean_db) == [
+        CONSOLIDATED_MIGRATION_NAME,
+        MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
+        ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
+    ]
 
 
 def test_run_pending_migrations_rejects_current_schema_without_base_marker(clean_db):
@@ -266,7 +289,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
 
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 2
+    assert summary.applied_count == 3
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -330,6 +353,74 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
     assert clean_db.execute_sql(
         "SELECT field_owners FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == {"is_collection": "host:manual"}
+
+
+def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+
+    female = Actor.create(javdb_id="actor-female", name="female", gender=0)
+    male = Actor.create(javdb_id="actor-male", name="male", gender=1)
+    unknown = Actor.create(javdb_id="actor-unknown", name="unknown", gender=1)
+    untouched = Actor.create(javdb_id="actor-untouched", name="untouched", gender=2)
+
+    Movie.create(
+        movie_number="OLD-001",
+        javdb_id="old-movie",
+        title="old",
+        extra={
+            "data": {
+                "movie": {
+                    "actors": [
+                        {"id": female.javdb_id, "gender": 1},
+                        {"id": male.javdb_id, "gender": 1},
+                    ]
+                }
+            }
+        },
+    )
+    Movie.create(
+        movie_number="NEW-001",
+        javdb_id="new-movie",
+        title="new",
+        extra={
+            "data": {
+                "movie": {
+                    "actors": [
+                        # 最新影片的值胜出，验证同一演员去重后的确定性。
+                        {"id": female.javdb_id, "gender": 0},
+                        {"id": unknown.javdb_id},
+                        {"id": "actor-missing", "gender": 0},
+                    ]
+                }
+            }
+        },
+    )
+    Movie.create(
+        movie_number="EMPTY-001",
+        javdb_id="empty-movie",
+        title="empty",
+        extra={"data": {"movie": {"actors": "legacy-scalar"}}},
+    )
+    Movie.create(
+        movie_number="NULL-001",
+        javdb_id="null-movie",
+        title="null",
+        extra=None,
+    )
+
+    migration = _load_migration_module(
+        Path(
+            "src/start/migrations/versions/"
+            "20260823_02_backfill_actor_gender_from_movie_extra.py"
+        )
+    )
+    migration.migrate(clean_db)
+
+    assert Actor.get_by_id(female.id).gender == 1
+    assert Actor.get_by_id(male.id).gender == 2
+    assert Actor.get_by_id(unknown.id).gender == 1
+    assert Actor.get_by_id(untouched.id).gender == 2
 
 
 def test_load_migration_module_uses_package_import():
