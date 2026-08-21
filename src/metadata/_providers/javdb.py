@@ -312,11 +312,7 @@ class JavdbProvider(MetadataRequestClient):
                 if target_actor is not None:
                     break
         if target_actor:
-            raw_gender = target_actor.get("gender")
-            if raw_gender is None:
-                gender = 0
-            else:
-                gender = int(not raw_gender)
+            gender = self._map_actor_gender(target_actor.get("gender"))
             logger.debug(
                 "Javdb actor matched actor_name={} actor_id={} actor_type={}",
                 actor_name,
@@ -360,8 +356,7 @@ class JavdbProvider(MetadataRequestClient):
             if not actor_id or actor_id in seen_actor_ids:
                 continue
             seen_actor_ids.add(actor_id)
-            raw_gender = actor.get("gender")
-            gender = 0 if raw_gender is None else int(not raw_gender)
+            gender = self._map_actor_gender(actor.get("gender"))
             resources.append(
                 JavdbMovieActorResource.model_validate(
                     {
@@ -1025,12 +1020,32 @@ class JavdbProvider(MetadataRequestClient):
                         "name": actor.get("name") or "",
                         "alias_names": self._collect_actor_candidate_names(actor),
                         "avatar_url": self._resolve_actor_avatar_url(actor),
-                        "gender": int(not actor.get("gender")),
+                        "gender": self._map_actor_gender(actor.get("gender")),
                     }
                 )
             )
         logger.debug("Javdb actor resources built count={}", len(resources))
         return resources
+
+    @staticmethod
+    def _map_actor_gender(raw_gender: Any) -> int:
+        """将 JavDB 性别值映射为本地枚举：未知 0、女性 1、男性 2。"""
+        if raw_gender is None:
+            return 0
+        if isinstance(raw_gender, str):
+            normalized_gender = raw_gender.strip().lower()
+            if normalized_gender in {"female", "女"}:
+                return 1
+            if normalized_gender in {"male", "男"}:
+                return 2
+            if normalized_gender not in {"0", "1"}:
+                return 0
+            raw_gender = int(normalized_gender)
+        if raw_gender == 0:
+            return 1
+        if raw_gender == 1:
+            return 2
+        return 0
 
     def _collect_actor_candidate_names(self, actor: dict[str, Any]) -> list[str]:
         candidate_names: list[str] = []

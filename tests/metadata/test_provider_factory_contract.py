@@ -4,6 +4,7 @@ import pytest
 
 from src.config.config import settings
 from src.metadata import factory as factory_module
+from src.metadata._providers.javdb import JavdbProvider
 from src.metadata._providers.models import (
     JavdbMovieActorResource,
     JavdbMovieDetailResource,
@@ -65,6 +66,20 @@ def test_build_javdb_provider_never_uses_explicit_proxy():
     assert provider.provider.host == settings.metadata.javdb_host
     # 显式代理配置已整体移除，client 上不应再出现 proxy 概念。
     assert not hasattr(provider.provider, "proxy")
+
+
+def test_javdb_actor_gender_mapping_keeps_unknown_separate_from_female():
+    provider = JavdbProvider("example.com")
+
+    actors = provider._build_movie_actors(
+        [
+            {"id": "female", "name": "女性", "gender": 0},
+            {"id": "male", "name": "男性", "gender": 1},
+            {"id": "unknown", "name": "未知", "gender": None},
+        ]
+    )
+
+    assert [actor.gender for actor in actors] == [1, 2, 0]
 
 
 def test_build_javdb_provider_passes_account_credentials():

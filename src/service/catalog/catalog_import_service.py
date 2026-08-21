@@ -249,6 +249,7 @@ class CatalogImportService:
                 actor = self.upsert_actor_from_javdb_resource(
                     actor_resource,
                     profile_image_task=actor_image_tasks_by_javdb_id.get(actor_resource.javdb_id),
+                    update_gender=True,
                 )
                 MovieActor.get_or_create(movie=movie, actor=actor)
                 logger.debug(
@@ -613,7 +614,6 @@ class CatalogImportService:
                     alias_name=merged_alias_name,
                     profile_image=profile_image,
                     javdb_type=actor_resource.javdb_type,
-                    gender=actor_resource.gender,
                 ),
                 set(),
             )
@@ -633,7 +633,6 @@ class CatalogImportService:
             existing_alias_name=actor.alias_name,
         )
         actor.javdb_type = actor_resource.javdb_type
-        actor.gender = actor_resource.gender
         actor.profile_image = profile_image
         actor.save()
         return actor, obsolete_paths
@@ -673,8 +672,14 @@ class CatalogImportService:
         self,
         actor_resource: JavdbMovieActorResource,
         profile_image_task: ImagePersistTask | None = None,
+        *,
+        update_gender: bool = False,
     ) -> Actor:
-        """把 JavDB 演员资源同步到本地，并在可用时补全头像。"""
+        """把 JavDB 演员资源同步到本地，并在可用时补全头像。
+
+        演员搜索等非影片入库场景只能同步身份和头像信息；只有新影片入库
+        显式传入 ``update_gender=True`` 时，才使用影片详情中的性别写入本地。
+        """
         if profile_image_task is None:
             profile_image = self.image_service.persist_image(
                 owner_type="actor",
@@ -691,15 +696,17 @@ class CatalogImportService:
                 alias_names=actor_resource.alias_names,
                 existing_alias_name="",
             )
+            defaults = {
+                "name": actor_resource.name,
+                "alias_name": merged_alias_name,
+                "profile_image": profile_image,
+                "javdb_type": actor_resource.javdb_type,
+            }
+            if update_gender:
+                defaults["gender"] = actor_resource.gender
             actor, created = Actor.get_or_create(
                 javdb_id=actor_resource.javdb_id,
-                defaults={
-                    "name": actor_resource.name,
-                    "alias_name": merged_alias_name,
-                    "profile_image": profile_image,
-                    "javdb_type": actor_resource.javdb_type,
-                    "gender": actor_resource.gender,
-                },
+                defaults=defaults,
             )
             if not created:
                 actor.name = actor_resource.name
@@ -710,7 +717,8 @@ class CatalogImportService:
                     existing_alias_name=actor.alias_name,
                 )
                 actor.javdb_type = actor_resource.javdb_type
-                actor.gender = actor_resource.gender
+                if update_gender:
+                    actor.gender = actor_resource.gender
                 if profile_image is not None:
                     actor.profile_image = profile_image
                 actor.save()

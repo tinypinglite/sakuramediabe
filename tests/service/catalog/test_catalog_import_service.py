@@ -9,8 +9,11 @@
 
 import pytest
 
-from src.metadata._providers.models import JavdbMovieDetailResource
-from src.model import Movie
+from src.metadata._providers.models import (
+    JavdbMovieActorResource,
+    JavdbMovieDetailResource,
+)
+from src.model import Actor, Movie
 from src.service.catalog.catalog_import_service import CatalogImportService
 
 
@@ -20,6 +23,7 @@ def _build_detail(
     movie_number: str,
     title: str,
     summary: str,
+    actors: list[JavdbMovieActorResource] | None = None,
 ) -> JavdbMovieDetailResource:
     """构造无图片的最小详情：封面/剧照/演员头像全空，导入链路零图片 IO。"""
     return JavdbMovieDetailResource(
@@ -34,7 +38,7 @@ def _build_detail(
         watched_count=100,
         want_watch_count=10,
         comment_count=5,
-        actors=[],
+        actors=actors or [],
         tags=[],
     )
 
@@ -99,6 +103,67 @@ def test_import_movie_if_missing_creates_new_movie(test_db):
     assert refreshed.summary == "JavDB描述"
     assert refreshed.score == 9.5
     assert refreshed.watched_count == 100
+
+
+def test_import_movie_if_missing_updates_actor_gender_from_movie_detail(test_db):
+    detail = _build_detail(
+        javdb_id="javdb-ABP-457",
+        movie_number="ABP-457",
+        title="JavDB标题",
+        summary="JavDB描述",
+        actors=[
+            JavdbMovieActorResource(
+                javdb_id="actor-1",
+                name="演员一",
+                gender=1,
+            )
+        ],
+    )
+
+    CatalogImportService().import_movie_if_missing(detail)
+
+    assert Actor.get(Actor.javdb_id == "actor-1").gender == 1
+
+
+def test_actor_upsert_without_gender_update_preserves_existing_gender(test_db):
+    actor = Actor.create(
+        javdb_id="actor-2",
+        name="旧名字",
+        gender=1,
+    )
+    resource = JavdbMovieActorResource(
+        javdb_id=actor.javdb_id,
+        name="新名字",
+        gender=0,
+    )
+
+    CatalogImportService().upsert_actor_from_javdb_resource(resource)
+
+    refreshed = Actor.get_by_id(actor.id)
+    assert refreshed.name == "新名字"
+    assert refreshed.gender == 1
+
+
+def test_strict_actor_refresh_preserves_existing_gender(test_db):
+    actor = Actor.create(
+        javdb_id="actor-3",
+        name="旧名字",
+        gender=1,
+    )
+    resource = JavdbMovieActorResource(
+        javdb_id=actor.javdb_id,
+        name="新名字",
+        gender=0,
+    )
+
+    CatalogImportService()._refresh_actor_from_javdb_resource_strict(
+        actor_resource=resource,
+        profile_image_task=None,
+    )
+
+    refreshed = Actor.get_by_id(actor.id)
+    assert refreshed.name == "新名字"
+    assert refreshed.gender == 1
 
 
 def test_update_movie_fields_updates_only_specified_fields_on_existing_movie(test_db):
