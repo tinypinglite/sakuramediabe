@@ -19,6 +19,7 @@ from src.start.commands import main
 from src.start.migrations.runner import (
     ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
+    MOVIE_BLACKLIST_MIGRATION_NAME,
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
     SUPPORTED_BASE_MIGRATION_NAME,
     MigrationExecution,
@@ -86,6 +87,7 @@ def test_current_migrations_are_discoverable_in_order():
         CONSOLIDATED_MIGRATION_NAME,
         MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
         ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
+        MOVIE_BLACKLIST_MIGRATION_NAME,
     ]
 
 
@@ -133,11 +135,13 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=CONSOLIDATED_MIGRATION_NAME, applied=False),
         MigrationExecution(name=MOVIE_COLLECTION_OWNER_MIGRATION_NAME, applied=True),
         MigrationExecution(name=ACTOR_GENDER_BACKFILL_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=MOVIE_BLACKLIST_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
         MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
         ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
+        MOVIE_BLACKLIST_MIGRATION_NAME,
     ]
 
 
@@ -289,7 +293,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
 
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 3
+    assert summary.applied_count == 4
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -353,6 +357,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
     assert clean_db.execute_sql(
         "SELECT field_owners FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == {"is_collection": "host:manual"}
+    assert "is_blacklisted" in _column_names(clean_db, "movie")
 
 
 def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(clean_db):

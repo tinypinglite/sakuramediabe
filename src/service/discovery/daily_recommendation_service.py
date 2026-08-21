@@ -142,7 +142,7 @@ class DailyRecommendationService:
                 Movie.created_at,
                 Movie.is_subscribed,
             )
-            .where(Movie.is_collection == False)
+            .where(Movie.is_collection == False, Movie.is_blacklisted == False)
             .order_by(Movie.id.asc())
         )
         return [
@@ -402,9 +402,10 @@ class DailyRecommendationService:
         safe_page_size = int(page_size)
         validate_page(safe_page, safe_page_size, error_code="invalid_daily_recommendation_filter")
         start = (safe_page - 1) * safe_page_size
-        total = DailyRecommendationItem.select().count()
+        query = DailyRecommendationItem.select().join(Movie).where(Movie.is_blacklisted == False)
+        total = query.count()
         rows = list(
-            DailyRecommendationItem.select()
+            query
             .order_by(DailyRecommendationItem.rank.asc())
             .offset(start)
             .limit(safe_page_size)
@@ -419,7 +420,10 @@ class DailyRecommendationService:
 
         movie_ids = [row.movie_id for row in rows]
         movie_query, _thin_cover_alias = with_movie_card_relations(Movie.select(Movie))
-        movies_by_id = {movie.id: movie for movie in movie_query.where(Movie.id.in_(movie_ids))}
+        movies_by_id = {
+            movie.id: movie
+            for movie in movie_query.where(Movie.id.in_(movie_ids))
+        }
         MovieRecommendationService._attach_movie_flags(list(movies_by_id.values()))
         today = runtime_now().date()
 

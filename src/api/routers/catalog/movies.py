@@ -10,6 +10,7 @@ from src.api.routers._utils import (
 from src.api.routers.deps import db_deps, get_current_user
 from src.metadata._providers.models import JavdbMovieReviewResource
 from src.schema.catalog.movies import (
+    MovieBlacklistBatchRequest,
     MovieCollectionMarkRequest,
     MovieCollectionMarkResponse,
     MovieCollectionStatusResource,
@@ -62,6 +63,7 @@ def list_movies(
     maker_name: str | None = Query(default=None),
     heat_min: int | None = Query(default=None, ge=0),
     heat_max: int | None = Query(default=None, ge=0),
+    blacklisted: bool = False,
     page: int = 1,
     page_size: int = 20,
 ):
@@ -83,6 +85,7 @@ def list_movies(
         ),
         heat_min=heat_min,
         heat_max=heat_max,
+        blacklisted=blacklisted,
         page=page,
         page_size=page_size,
     )
@@ -148,6 +151,18 @@ def batch_subscribe_movies(payload: MovieSubscriptionBatchRequest):
 @router.post("/unsubscriptions", response_model=MovieSubscriptionBatchResponse)
 def batch_unsubscribe_movies(payload: MovieSubscriptionBatchRequest):
     return MovieService.batch_unsubscribe_movies(payload.movie_numbers)
+
+
+@router.put("/blacklist", status_code=status.HTTP_204_NO_CONTENT)
+def blacklist_movies(payload: MovieBlacklistBatchRequest):
+    MovieService.set_blacklisted(payload, blacklisted=True)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/blacklist", status_code=status.HTTP_204_NO_CONTENT)
+def unblacklist_movies(payload: MovieBlacklistBatchRequest):
+    MovieService.set_blacklisted(payload, blacklisted=False)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{movie_number}/reviews", response_model=list[JavdbMovieReviewResource])

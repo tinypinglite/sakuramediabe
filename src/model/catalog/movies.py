@@ -78,6 +78,7 @@ class Movie(TimestampedMixin, BaseModel):
     heat = peewee.IntegerField(null=False, default=0)
     is_collection = peewee.BooleanField(null=False, default=False, index=True)
     is_subscribed = peewee.BooleanField(null=False, default=False, index=True)
+    is_blacklisted = peewee.BooleanField(null=False, default=False, index=True)
     subscribed_at = peewee.DateTimeField(null=True, index=True)
     # 订阅资源查询是影片领域状态：保留可见进度与重试预算，不再依赖通用资源任务台账。
     subscription_search_state = peewee.CharField(
@@ -196,6 +197,12 @@ class Movie(TimestampedMixin, BaseModel):
 
     class Meta:
         table_name = "movie"
+        constraints = [
+            SQL(
+                "CONSTRAINT movie_subscription_blacklist_exclusive "
+                "CHECK (NOT (is_subscribed AND is_blacklisted))"
+            )
+        ]
 
 
 # 人工输入按番号点查统一走 UPPER(movie_number) 等值匹配（movie_number_match_expression），

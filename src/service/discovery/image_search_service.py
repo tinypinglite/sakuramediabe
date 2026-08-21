@@ -239,6 +239,7 @@ class ImageSearchService:
             .where(
                 MediaThumbnail.id.in_(unique_ids),
                 Media.valid == True,
+                Movie.is_blacklisted == False,
             )
         )
         return {int(thumbnail.id): thumbnail for thumbnail in query}

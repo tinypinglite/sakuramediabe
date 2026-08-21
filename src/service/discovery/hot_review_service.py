@@ -53,9 +53,11 @@ class HotReviewCatalogService:
 
         base_query = (
             HotReviewItem.select()
+            .join(Movie, on=(HotReviewItem.movie == Movie.id))
             .where(
                 HotReviewItem.source_key == HOT_REVIEW_SOURCE_KEY,
                 HotReviewItem.period == normalized_period,
+                Movie.is_blacklisted == False,
             )
             .order_by(HotReviewItem.rank.asc())
         )

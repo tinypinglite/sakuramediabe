@@ -89,6 +89,7 @@ class MovieListItemResource(SchemaModel):
     heat: int = 0
     is_collection: bool
     is_subscribed: bool
+    is_blacklisted: bool = False
     can_play: bool = False
     is_4k: bool = False
 
@@ -247,6 +248,21 @@ class MovieCollectionStatusResource(SchemaModel):
 
 class MovieSubscriptionBatchRequest(SchemaModel):
     movie_numbers: list[str] = Field(min_length=1)
+
+    @field_validator("movie_numbers")
+    @classmethod
+    def validate_movie_numbers(cls, value: list[str]) -> list[str]:
+        validated_numbers: list[str] = []
+        for movie_number in value:
+            normalized = (movie_number or "").strip()
+            if not normalized:
+                raise ValueError("movie_numbers item cannot be blank")
+            validated_numbers.append(normalized)
+        return validated_numbers
+
+
+class MovieBlacklistBatchRequest(SchemaModel):
+    movie_numbers: list[str] = Field(min_length=1, max_length=1000)
 
     @field_validator("movie_numbers")
     @classmethod

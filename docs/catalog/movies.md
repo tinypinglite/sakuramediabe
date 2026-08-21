@@ -17,6 +17,8 @@
 - `POST /movies/series/{series_id}/javdb/import/stream`：按本地系列 ID 抓取 JavDB 系列影片并流式入库
 - `POST /movies/{movie_number}/metadata-refresh`：严格刷新本地已有影片的远端元数据
 - `POST /movies/{movie_number}/heat-recompute`：手动重算单部影片热度
+- `PUT /movies/blacklist`：批量加入影片黑名单
+- `DELETE /movies/blacklist`：批量解除影片黑名单
 
 > 互动同步由 `movie_interaction_sync` 定时任务批量执行，见[任务中心文档](../system/task-runs.md)。
 - `GET /movies`：分页查询影片列表
@@ -200,6 +202,8 @@ heat = ROUND(3100 × (7/34 × W + 5/34 × I + 17/34 × C + 5/34 × R))
 | `DELETE` | `/movies/{movie_number}/subscription` | 取消订阅影片 |
 | `POST` | `/movies/subscriptions` | 批量订阅影片（部分成功） |
 | `POST` | `/movies/unsubscriptions` | 批量取消订阅影片（部分成功） |
+| `PUT` | `/movies/blacklist` | 批量加入黑名单，最多 1000 个番号 |
+| `DELETE` | `/movies/blacklist` | 批量解除黑名单，最多 1000 个番号 |
 | `GET` | `/movies/{movie_number}` | 查询影片详情 |
 
 > 订阅的**管理视图**（订阅列表、下载/入库状态与缺失影片）在独立的顶层资源
@@ -669,6 +673,7 @@ data: {"success":false,"reason":"local_series_not_found","movies":[]}
   - `special_tag`：按特殊标签过滤（可选，`4k | uncensored | vr`）
   - `heat_min`：热度下限（可选，整数且 `>= 0`，闭区间）；与 `heat_max` 配合实现热度范围过滤，如 `heat_min=40&heat_max=80`；仅传下限时表示热度无上界，未同步热度（`heat=0`）的影片会被排除
   - `heat_max`：热度上限（可选，整数且 `>= 0`，闭区间）；仅传上限时会把未同步热度（`heat=0`）的影片一并包含，需要明确下界时请配合 `heat_min`
+  - `blacklisted`：是否只查看黑名单影片（可选，默认 `false`）；默认列表不展示黑名单影片
   - `sort`：排序表达式（可选，格式 `field:direction`）
     - `field` 支持：`release_date`、`added_at`、`subscribed_at`、`comment_count`、`score_number`、`want_watch_count`、`heat`
     - `direction` 支持：`asc | desc`
@@ -689,6 +694,7 @@ data: {"success":false,"reason":"local_series_not_found","movies":[]}
   - `collection_type=single` 只返回 `is_collection=false` 的影片
   - `special_tag=4k` 只返回存在有效 `4K` 媒体的影片；`uncensored`、`vr` 同理
   - `heat_min` / `heat_max` 只返回热度落在 `[heat_min, heat_max]` 闭区间内的影片；`heat_min > heat_max` 返回 422 `invalid_movie_filter`
+  - `blacklisted=true` 时只返回黑名单影片，供管理与解除黑名单使用
 
 示例请求：
 
@@ -1127,6 +1133,7 @@ Authorization: Bearer <token>
 错误：
 
 - `404 movie_not_found`：影片不存在
+- `409 movie_is_blacklisted`：影片已在黑名单中，需先解除黑名单
 
 ### `DELETE /movies/{movie_number}/subscription`
 
@@ -1151,6 +1158,7 @@ Authorization: Bearer <token>
 - 行为：
   - 番号按大小写不敏感的精确形态去重匹配（不做 `_`/`-` 互换，宁可 miss 进 `skipped` 也不错标到另一部），逐条判定，采用**部分成功**语义，整体返回 `200`，不因个别条目失败而整批回滚
   - 命中的影片按与单条订阅一致的逻辑置为已订阅：仅在原本未订阅或 `subscribed_at` 为空时写入当前订阅时间，否则保留原值
+  - 已在黑名单中的影片进入 `skipped`，`reason=blacklisted`
   - 未在库内命中的番号进入 `skipped`，`reason=movie_not_found`
 - 成功响应：`200 OK`
 
@@ -1169,7 +1177,7 @@ Authorization: Bearer <token>
 
 - `requested_count`：入参番号总数（去重前）
 - `updated_count`：实际置为已订阅的影片条数
-- `skipped_count` / `skipped`：本次未处理的条目及原因，`reason` 取值 `movie_not_found`
+- `skipped_count` / `skipped`：本次未处理的条目及原因，`reason` 取值 `movie_not_found` | `blacklisted`
 
 ### `POST /movies/unsubscriptions`
 
@@ -1200,6 +1208,14 @@ Authorization: Bearer <token>
 - `requested_count`：入参番号总数（去重前）
 - `updated_count`：实际取消订阅的影片条数
 - `skipped_count` / `skipped`：本次未处理的条目及原因，`reason` 取值 `movie_not_found` | `has_media`
+
+### `PUT` / `DELETE /movies/blacklist`
+
+- 鉴权：需要 Bearer Token
+- 请求体：`{"movie_numbers": ["ABC-001"]}`，数组为 1 至 1000 个非空番号。
+- `PUT` 加入黑名单，`DELETE` 解除黑名单；重复操作均成功返回 `204 No Content`。
+- 加入黑名单时，批次中任一影片不存在返回 `404 movie_not_found`；任一影片已订阅则整体返回 `409 movie_is_subscribed`，不会部分写入。
+- 黑名单影片不会出现在默认影片和发现列表中；`GET /movies?blacklisted=true` 用于黑名单管理。
 
 ### `GET /movies/{movie_number}`
 

@@ -222,17 +222,17 @@ class RankingCatalogService:
         safe_page_size = max(int(page_size), 1)
         start = (safe_page - 1) * safe_page_size
 
-        order_expressions, needs_movie_join = cls._build_board_items_sort(sort)
-        base_query = RankingItem.select().where(
-            RankingItem.source_key == source_key,
-            RankingItem.board_key == board_key,
-            RankingItem.period == normalized_period,
-        )
-        if needs_movie_join:
-            # 按 Movie.heat 排序时 JOIN Movie 表
-            base_query = base_query.join(
-                Movie, on=(RankingItem.movie == Movie.id)
+        order_expressions, _needs_movie_join = cls._build_board_items_sort(sort)
+        base_query = (
+            RankingItem.select()
+            .join(Movie, on=(RankingItem.movie == Movie.id))
+            .where(
+                RankingItem.source_key == source_key,
+                RankingItem.board_key == board_key,
+                RankingItem.period == normalized_period,
+                Movie.is_blacklisted == False,
             )
+        )
         base_query = base_query.order_by(*order_expressions)
         total = base_query.count()
         # 该榜单+周期整批的抓取时间（整榜删旧插新，全批一致），与分页无关

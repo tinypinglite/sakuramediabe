@@ -115,6 +115,7 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
         for index in notification_indexes
     )
     assert Subtitle.table_exists()
+    assert "is_blacklisted" in _column_names(clean_db, "movie")
     assert not clean_db.table_exists("subtitle_import_job")
     assert MediaRapidUploadBatch.table_exists()
     assert MediaRapidUploadItem.table_exists()

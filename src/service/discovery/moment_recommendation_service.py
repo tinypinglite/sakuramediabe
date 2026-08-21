@@ -120,6 +120,7 @@ class MomentRecommendationService:
             .switch(MediaThumbnail)
             .join(Media)
             .join(Movie, on=(Media.movie == Movie.movie_number))
+            .where(Movie.is_blacklisted == False)
         )
 
     @classmethod
@@ -468,13 +469,19 @@ class MomentRecommendationService:
     def list_items(cls, page: int = 1, page_size: int = 20) -> MomentRecommendationPageResource:
         validate_page(int(page), int(page_size), error_code="invalid_moment_recommendation_filter")
         start = (int(page) - 1) * int(page_size)
-        valid_recommendation_query = MomentRecommendation.select().join(Media).where(Media.valid == True)
+        valid_recommendation_query = (
+            MomentRecommendation.select()
+            .join(Media)
+            .join(Movie, on=(Media.movie == Movie.movie_number))
+            .where(Media.valid == True, Movie.is_blacklisted == False)
+        )
         total = valid_recommendation_query.count()
         # 分页与 total 都基于仍然有效的媒体，避免失效推荐占用页面槽位。
         generated_row = (
             MomentRecommendation.select(MomentRecommendation.generated_at)
             .join(Media)
-            .where(Media.valid == True)
+            .join(Movie, on=(Media.movie == Movie.movie_number))
+            .where(Media.valid == True, Movie.is_blacklisted == False)
             .order_by(MomentRecommendation.generated_at.desc())
             .first()
         )
@@ -495,7 +502,10 @@ class MomentRecommendationService:
 
         thumbnail_by_id = cls._get_thumbnails_by_ids([row.thumbnail_id for row in rows])
         movie_query, _thin_cover_alias = with_movie_card_relations(Movie.select(Movie))
-        movies_by_id = {movie.id: movie for movie in movie_query.where(Movie.id.in_([row.movie_id for row in rows]))}
+        movies_by_id = {
+            movie.id: movie
+            for movie in movie_query.where(Movie.id.in_([row.movie_id for row in rows]))
+        }
         MovieRecommendationService._attach_movie_flags(list(movies_by_id.values()))
 
         items: list[MomentRecommendationItemResource] = []

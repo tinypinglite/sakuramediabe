@@ -369,7 +369,9 @@ class MovieRecommendationService:
         movie_query, _thin_cover_alias = with_movie_card_relations(Movie.select(Movie))
         movies_by_id = {
             movie.id: movie
-            for movie in movie_query.where(Movie.id.in_(target_ids))
+            for movie in movie_query.where(
+                Movie.id.in_(target_ids), Movie.is_blacklisted == False
+            )
         }
         self._attach_movie_flags(list(movies_by_id.values()))
 

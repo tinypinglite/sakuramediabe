@@ -45,6 +45,7 @@ from src.model import (
 )
 from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.movies import (
+    MovieBlacklistBatchRequest,
     MovieCollectionMarkResponse,
     MovieCollectionMarkType,
     MovieCollectionStatusResource,
@@ -75,6 +76,7 @@ class MovieService:
     # 批量订阅/取消订阅的跳过原因，前端按 movie_number 标注本次未处理的选择项。
     SUBSCRIPTION_SKIP_MOVIE_NOT_FOUND = "movie_not_found"
     SUBSCRIPTION_SKIP_HAS_MEDIA = "has_media"
+    SUBSCRIPTION_SKIP_BLACKLISTED = "blacklisted"
 
     MOVIE_LIST_NULLABLE_SORT_FIELDS = {"release_date", "subscribed_at"}
     MOVIE_LIST_SORT_FIELD_MAP = {
@@ -120,6 +122,7 @@ class MovieService:
         number_source: MovieNumberSource = MovieNumberSource.ALL,
         heat_min: int | None = None,
         heat_max: int | None = None,
+        blacklisted: bool = False,
     ):
         """构建影片列表的基础筛选链路，供列表和计数查询复用。"""
         if heat_min is not None and heat_max is not None and heat_min > heat_max:
@@ -129,7 +132,7 @@ class MovieService:
                 "heat_min 不能大于 heat_max",
                 {"heat_min": heat_min, "heat_max": heat_max},
             )
-        query = Movie.select()
+        query = Movie.select().where(Movie.is_blacklisted == blacklisted)
         if actor_id is None:
             filtered_query = query
         else:
@@ -235,6 +238,7 @@ class MovieService:
         number_source: MovieNumberSource = MovieNumberSource.ALL,
         heat_min: int | None = None,
         heat_max: int | None = None,
+        blacklisted: bool = False,
     ):
         """列表查询统一在这里补齐封面图和 ``can_play`` 计算列。"""
         can_play_expression = cls._playable_exists_expression().alias("can_play")
@@ -254,6 +258,7 @@ class MovieService:
                 number_source=number_source,
                 heat_min=heat_min,
                 heat_max=heat_max,
+                blacklisted=blacklisted,
             ).select(Movie, can_play_expression, is_4k_expression)
         )
         return query.order_by(*cls._build_movie_list_sort(sort, status))
@@ -268,6 +273,7 @@ class MovieService:
             Movie.select(Movie, can_play_expression, is_4k_expression)
             .join(Media)
             .switch(Movie)
+            .where(Movie.is_blacklisted == False)
         )
         return (
             query
@@ -460,6 +466,7 @@ class MovieService:
         maker_name: str | None = None,
         heat_min: int | None = None,
         heat_max: int | None = None,
+        blacklisted: bool = False,
         page: int = 1,
         page_size: int = 20,
     ) -> PageResponse[MovieListItemResource]:
@@ -477,6 +484,7 @@ class MovieService:
             number_source=number_source,
             heat_min=heat_min,
             heat_max=heat_max,
+            blacklisted=blacklisted,
         ).count()
         movies = list(
             MovieService.movie_list_query(
@@ -493,6 +501,7 @@ class MovieService:
                 number_source=number_source,
                 heat_min=heat_min,
                 heat_max=heat_max,
+                blacklisted=blacklisted,
             ).offset(start).limit(page_size)
         )
         return PageResponse[MovieListItemResource](
@@ -682,6 +691,13 @@ class MovieService:
     @classmethod
     def set_subscription(cls, movie_number: str, subscribed: bool) -> None:
         movie = cls._require_movie(movie_number)
+        if subscribed and movie.is_blacklisted:
+            raise ApiError(
+                409,
+                "movie_is_blacklisted",
+                "影片已在黑名单中，请先解除黑名单",
+                {"movie_number": movie.movie_number},
+            )
         was_subscribed = bool(movie.is_subscribed)
         movie.is_subscribed = subscribed
         reset_search_state = False
@@ -769,6 +785,37 @@ class MovieService:
         return ordered_keys, display_by_key
 
     @classmethod
+    def set_blacklisted(
+        cls,
+        payload: MovieBlacklistBatchRequest,
+        *,
+        blacklisted: bool,
+    ) -> None:
+        ordered_keys, display_by_key = cls._dedup_movie_number_keys(payload.movie_numbers)
+        movies = list(Movie.select().where(fn.UPPER(Movie.movie_number).in_(ordered_keys)))
+        matched_keys = {movie.movie_number.strip().upper() for movie in movies}
+        missing = [display_by_key[key] for key in ordered_keys if key not in matched_keys]
+        if missing:
+            raise ApiError(
+                404,
+                "movie_not_found",
+                "影片不存在",
+                {"movie_numbers": missing},
+            )
+        if blacklisted:
+            subscribed = [movie.movie_number for movie in movies if movie.is_subscribed]
+            if subscribed:
+                raise ApiError(
+                    409,
+                    "movie_is_subscribed",
+                    "已订阅影片不能加入黑名单，请先取消订阅",
+                    {"movie_numbers": subscribed},
+                )
+        Movie.update(is_blacklisted=blacklisted).where(
+            Movie.id.in_([movie.id for movie in movies])
+        ).execute()
+
+    @classmethod
     def batch_set_subscription(
         cls, movie_numbers: list[str]
     ) -> MovieSubscriptionBatchResponse:
@@ -795,7 +842,18 @@ class MovieService:
             if key not in matched_keys
         ]
 
+        blacklisted_movies = [movie for movie in matched_movies if movie.is_blacklisted]
+        skipped.extend(
+            MovieSubscriptionSkippedItem(
+                movie_number=movie.movie_number,
+                reason=cls.SUBSCRIPTION_SKIP_BLACKLISTED,
+            )
+            for movie in blacklisted_movies
+        )
+
         for movie in matched_movies:
+            if movie.is_blacklisted:
+                continue
             # 与单条 set_subscription(True) 一致：仅在原本未订阅或订阅时间为空时写入当前时间。
             was_subscribed = bool(movie.is_subscribed)
             movie.is_subscribed = True

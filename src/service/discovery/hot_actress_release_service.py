@@ -57,6 +57,7 @@ class HotActressReleaseService:
             .join(Actor)
             .where(
                 Movie.is_collection == False,
+                Movie.is_blacklisted == False,
                 Movie.release_date >= history_start,
                 Movie.release_date < history_end,
             )
@@ -106,6 +107,7 @@ class HotActressReleaseService:
             .join(Actor)
             .where(
                 Movie.is_collection == False,
+                Movie.is_blacklisted == False,
                 Movie.release_date >= candidate_start,
                 Movie.release_date < candidate_end,
                 Actor.gender == cls.FEMALE_GENDER,
@@ -162,7 +164,10 @@ class HotActressReleaseService:
         movie_ids = [item.movie_id for item in scored_movies]
         actor_ids = [item.actor_id for item in scored_movies]
         movie_query, _thin_cover_alias = with_movie_card_relations(Movie.select(Movie))
-        movies_by_id = {movie.id: movie for movie in movie_query.where(Movie.id.in_(movie_ids))}
+        movies_by_id = {
+            movie.id: movie
+            for movie in movie_query.where(Movie.id.in_(movie_ids))
+        }
         movies = [movies_by_id[item.movie_id] for item in scored_movies if item.movie_id in movies_by_id]
         MovieRecommendationService._attach_movie_flags(movies)
 

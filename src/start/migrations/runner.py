@@ -16,6 +16,7 @@ SUPPORTED_BASE_MIGRATION_NAME = "20260816_01_add_movie_field_owners"
 CONSOLIDATED_MIGRATION_NAME = "20260821_01_consolidate_task_runtime"
 MOVIE_COLLECTION_OWNER_MIGRATION_NAME = "20260823_01_unify_movie_collection_owner"
 ACTOR_GENDER_BACKFILL_MIGRATION_NAME = "20260823_02_backfill_actor_gender_from_movie_extra"
+MOVIE_BLACKLIST_MIGRATION_NAME = "20260823_03_add_movie_blacklist"
 
 
 @dataclass(frozen=True)
