@@ -7,16 +7,15 @@ pending 的 BackgroundTaskRun 行即队列元素，四个原语：
 - ``claim_next``：``FOR UPDATE SKIP LOCKED`` 领取最早到期的 pending 行，置 running
   并发放租约；
 - ``renew_leases``：执行中由 worker 周期续租；
-- ``recover_expired_leases``：租约过期即回收（取代 owner_pid 判活）。
+- ``recover_expired_leases``：租约过期即回收。
 
-``scheduled_at`` 非空是"队列托管行"的判别标志：导入族等仍在进程内直跑的 task_run
-（scheduled_at 为空）不进入领取范围，也不参与租约回收之外的队列语义。
+所有 task_run 都是队列托管行；scheduled_at 记录进入队列的时间。
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from peewee import IntegrityError, fn
@@ -26,8 +25,7 @@ from src.model import BackgroundTaskRun
 from src.model.base import get_database
 from src.service.system.activity.task_runs import TaskRunService
 
-# 与 APS 现有互斥命名空间保持一致：队列行与遗留直跑行竞争同一把锁，
-# 过渡期两种执行方式也不会同 task_key 并发。
+# 与 APS 现有互斥命名空间保持一致。
 QUEUE_MUTEX_PREFIX = "aps:"
 DEFAULT_LEASE_SECONDS = 300
 LEASE_EXPIRED_ERROR_MESSAGE = "任务租约过期，执行进程已中断，任务按失败回收"
@@ -61,7 +59,6 @@ class TaskQueueService:
         trigger_type: str,
         task_name: str | None = None,
         params: dict[str, Any] | None = None,
-        scheduled_at: datetime | None = None,
         conflict: str = "skip",
     ) -> BackgroundTaskRun | None:
         """入队一次执行。conflict="skip" 返回 None（scheduled 的 coalesce 语义），
@@ -77,7 +74,6 @@ class TaskQueueService:
                 state="pending",
                 mutex_key=mutex_key,
                 params=params,
-                scheduled_at=scheduled_at or utc_now_for_db(),
             )
         except IntegrityError:
             if conflict == "skip":
@@ -86,24 +82,6 @@ class TaskQueueService:
             raise TaskQueueConflictError(
                 task_key, blocking.id if blocking is not None else None
             ) from None
-
-    @classmethod
-    def publish_run(
-        cls,
-        task_run_id: int,
-        *,
-        params: dict[str, Any] | None = None,
-    ) -> None:
-        """两阶段发布的第二步：补齐 params 并置 scheduled_at，行自此可被 worker 领取。
-
-        触发方需要先建行占 mutex、再准备完整执行参数时，
-        用 scheduled_at 为空的 pending 行做"未发布"状态，避免 worker 抢跑读到半成品。
-        """
-        BackgroundTaskRun.update(
-            params=params,
-            scheduled_at=utc_now_for_db(),
-            updated_at=utc_now_for_db(),
-        ).where(BackgroundTaskRun.id == task_run_id).execute()
 
     @classmethod
     def settle_bootstrap_blocker(
@@ -136,7 +114,6 @@ class TaskQueueService:
                 return None
             if (
                 task_run.state == "running"
-                and task_run.scheduled_at is not None
                 and task_run.lease_expires_at is not None
                 and task_run.lease_expires_at < current
             ):
@@ -238,7 +215,6 @@ class TaskQueueService:
             candidates = (
                 BackgroundTaskRun.select()
                 .where(
-                    BackgroundTaskRun.scheduled_at.is_null(False),
                     BackgroundTaskRun.state == "running",
                     BackgroundTaskRun.lease_expires_at.is_null(False),
                     BackgroundTaskRun.lease_expires_at < current,
@@ -249,8 +225,7 @@ class TaskQueueService:
             for task_run in candidates:
                 # PostgreSQL 在锁等待后会重检 WHERE；这里再按同一个 fixed now 明确护栏。
                 if (
-                    task_run.scheduled_at is None
-                    or task_run.state != "running"
+                    task_run.state != "running"
                     or task_run.lease_expires_at is None
                     or task_run.lease_expires_at >= current
                 ):

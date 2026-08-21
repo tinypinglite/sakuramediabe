@@ -282,8 +282,6 @@ def test_run_task_does_not_execute_terminal_run(test_db, terminal_state):
 
     with pytest.raises(TaskRunFinalizedError) as exc_info:
         ActivityService.run_task(
-            task_key=run.task_key,
-            trigger_type="manual",
             task_run_id=run.id,
             func=lambda _reporter: calls.append("executed"),
             notify_result=False,
@@ -311,8 +309,6 @@ def test_run_task_success_observes_persisted_failed_winner(test_db):
 
     with pytest.raises(TaskRunFinalizedError) as exc_info:
         ActivityService.run_task(
-            task_key=run.task_key,
-            trigger_type="manual",
             task_run_id=run.id,
             func=func,
             notify_result=False,
@@ -340,8 +336,6 @@ def test_run_task_exception_observes_persisted_completed_winner(test_db):
         raise RuntimeError("late local failure")
 
     result = ActivityService.run_task(
-        task_key=run.task_key,
-        trigger_type="manual",
         task_run_id=run.id,
         func=func,
         notify_result=False,

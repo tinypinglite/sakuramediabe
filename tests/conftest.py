@@ -308,8 +308,6 @@ def app(test_db, monkeypatch):
     monkeypatch.setattr(settings.auth, "secret_key", "test-secret-key")
     monkeypatch.setattr(settings.auth, "access_token_expire_minutes", 60)
     monkeypatch.setattr(settings.auth, "refresh_token_expire_minutes", 60 * 24 * 7, raising=False)
-    monkeypatch.setattr("src.api.app.recover_interrupted_tasks", lambda **kwargs: [])
-
     application = create_app()
     yield application
 

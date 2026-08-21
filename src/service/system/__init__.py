@@ -1,10 +1,10 @@
 from .account_service import AccountService
-from .activity_cleanup_service import ActivityCleanupService
-from .activity_service import (
+from .activity import (
     ActivityService,
     TaskRunConflictError,
     TaskRunReporter,
 )
+from .activity_cleanup_service import ActivityCleanupService
 from .auth_service import AuthService
 from .config_service import ConfigService
 from .indexer_settings_service import IndexerSettingsService

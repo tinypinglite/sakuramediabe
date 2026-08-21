@@ -5,8 +5,7 @@ from importlib import import_module
 from pathlib import Path
 from types import ModuleType
 
-from peewee import Database, PostgresqlDatabase
-from playhouse.migrate import PostgresqlMigrator
+from peewee import Database
 
 from src.model import SchemaMigration
 
@@ -36,12 +35,6 @@ class MigrationRunSummary:
         return sum(1 for item in self.executed if not item.applied)
 
 
-def _build_migrator(database: Database):
-    if isinstance(database, PostgresqlDatabase):
-        return PostgresqlMigrator(database)
-    raise ValueError(f"unsupported_migration_database: {type(database).__name__}")
-
-
 def _load_migration_module(path: Path) -> ModuleType:
     return import_module(f"src.start.migrations.versions.{path.stem}")
 
@@ -53,13 +46,6 @@ def _list_migration_modules() -> list[ModuleType]:
             continue
         modules.append(_load_migration_module(path))
     return modules
-
-
-def _has_columns(database: Database, table_name: str, column_names: set[str]) -> bool:
-    if not database.table_exists(table_name):
-        return False
-    existing_columns = {column.name for column in database.get_columns(table_name)}
-    return column_names <= existing_columns
 
 
 def _is_empty_schema(database: Database) -> bool:
@@ -85,10 +71,17 @@ def run_pending_migrations(database: Database) -> MigrationRunSummary:
     with database.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
         # 迁移记录表由迁移命令显式托管，不依赖 initdb/aps 启动期补库。
         database.create_tables([SchemaMigration], safe=True)
-        migrator = _build_migrator(database)
         applied_names = {item.name for item in SchemaMigration.select(SchemaMigration.name)}
         _validate_migration_source(database, applied_names)
         executed: list[MigrationExecution] = []
+
+        if _is_empty_schema(database) and CONSOLIDATED_MIGRATION_NAME not in applied_names:
+            migration_name = CONSOLIDATED_MIGRATION_NAME
+            with database.atomic():
+                SchemaMigration.create(name=migration_name)
+            return MigrationRunSummary(
+                executed=[MigrationExecution(name=migration_name, applied=True)]
+            )
 
         for module in _list_migration_modules():
             migration_name = str(getattr(module, "name", "")).strip()
@@ -102,7 +95,7 @@ def run_pending_migrations(database: Database) -> MigrationRunSummary:
                 continue
 
             with database.atomic():
-                migrate_callable(database, migrator)
+                migrate_callable(database)
                 SchemaMigration.create(name=migration_name)
             applied_names.add(migration_name)
             executed.append(MigrationExecution(name=migration_name, applied=True))

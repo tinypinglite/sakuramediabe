@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from src.config.config import Plugins
 from src.plugins import HOST_API_VERSION
@@ -24,7 +24,7 @@ from src.plugins.loader import (
     check_plugin_dir,
     load_enabled_plugins,
 )
-from src.scheduler.contracts import JobDefinition, JobExecutionError
+from src.scheduler.contracts import JobDefinition
 from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
 from src.scheduler.registry import _build_job_registry
 from src.service.discovery.ranking_service import (
@@ -244,7 +244,7 @@ def test_check_plugin_dir_validates_and_cleans_modules(tmp_path):
         check_plugin_dir(plugin_dir=plugin_dir)
 
 
-def test_job_params_validation_rules():
+def test_job_definition_requires_handler_and_valid_schedule():
     with pytest.raises(ValidationError):
         JobDefinition(
             task_key="x",
@@ -253,7 +253,7 @@ def test_job_params_validation_rules():
             cli_help="x",
             manual_only=True,
             default_cron="0 5 * * *",
-            service_factory=lambda reporter: None,
+            handler=lambda reporter, params: None,
         )
     with pytest.raises(ValidationError):
         JobDefinition(
@@ -262,163 +262,38 @@ def test_job_params_validation_rules():
             cli_name="x",
             cli_help="x",
             default_cron="0 5 * * *",
-            service_factory=lambda reporter: None,
-            params_schema=BaseModel,
         )
 
 
-def test_job_definition_preserves_mixed_plugin_null_vs_empty_params():
+def test_job_definition_binds_null_params_to_empty_object():
     calls = []
-
-    class EmptyParams(BaseModel):
-        pass
 
     job_def = JobDefinition(
-        task_key="demo_mixed",
-        log_name="demo-mixed",
-        cli_name="demo-mixed",
-        cli_help="mixed",
+        task_key="demo_handler",
+        log_name="demo-handler",
+        cli_name="demo-handler",
+        cli_help="handler",
         default_cron="0 5 * * *",
-        service_factory=lambda reporter: calls.append(("factory", reporter)) or {},
-        params_schema=EmptyParams,
-        params_handler=lambda reporter, params: (
-            calls.append(("params", reporter, params)) or {}
-        ),
-    ).model_copy(update={"plugin_id": "demo_plugin"})
-    identity = (
-        job_def.task_key,
-        job_def.cli_name,
-        job_def.log_name,
-        job_def.plugin_id,
-    )
-    reporter = object()
-
-    job_def.build_executor(None)(reporter)
-    job_def.build_executor(EmptyParams.model_validate({}).model_dump())(reporter)
-
-    assert calls == [("factory", reporter), ("params", reporter, {})]
-    # 执行器只包装 handler，不得重写社区插件的稳定任务标识。
-    assert (
-        job_def.task_key,
-        job_def.cli_name,
-        job_def.log_name,
-        job_def.plugin_id,
-    ) == identity
-
-
-def test_job_definition_manual_only_empty_model_uses_params_handler():
-    calls = []
-
-    class EmptyParams(BaseModel):
-        pass
-
-    job_def = JobDefinition(
-        task_key="demo_manual_empty",
-        log_name="demo-manual-empty",
-        cli_name="demo-manual-empty",
-        cli_help="manual empty",
-        manual_only=True,
-        params_schema=EmptyParams,
-        params_handler=lambda reporter, params: calls.append(params) or {},
-    ).model_copy(update={"plugin_id": "demo_plugin"})
-
-    job_def.build_executor({})(object())
-
-    assert calls == [{}]
-    assert job_def.log_name == "demo-manual-empty"
-    assert job_def.notify_result is True
-
-
-def test_job_definition_handler_nonempty_params_truth_table():
-    calls = []
-
-    class ValueParams(BaseModel):
-        value: int
-
-    params_only = JobDefinition(
-        task_key="params_only_nonempty",
-        log_name="params-only-nonempty",
-        cli_name="params-only-nonempty",
-        cli_help="params only nonempty",
-        manual_only=True,
-        params_schema=ValueParams,
-        params_handler=lambda reporter, params: (
-            calls.append(("params_only", params)) or {}
-        ),
-    )
-    mixed = JobDefinition(
-        task_key="mixed_nonempty",
-        log_name="mixed-nonempty",
-        cli_name="mixed-nonempty",
-        cli_help="mixed nonempty",
-        default_cron="0 5 * * *",
-        service_factory=lambda reporter: calls.append(("factory", None)) or {},
-        params_schema=ValueParams,
-        params_handler=lambda reporter, params: calls.append(("mixed", params)) or {},
-    )
-    factory_only = JobDefinition(
-        task_key="factory_only_nonempty",
-        log_name="factory-only-nonempty",
-        cli_name="factory-only-nonempty",
-        cli_help="factory only nonempty",
-        default_cron="0 5 * * *",
-        service_factory=lambda reporter: {},
-    )
-    params = ValueParams(value=7).model_dump()
-
-    params_only.build_executor(params)(object())
-    mixed.build_executor(params)(object())
-
-    assert calls == [("params_only", {"value": 7}), ("mixed", {"value": 7})]
-    with pytest.raises(JobExecutionError, match="不支持带参执行"):
-        factory_only.build_executor(params)
-
-
-def test_job_definition_handler_is_the_single_queue_execution_entrypoint():
-    calls = []
-    job_def = JobDefinition(
-        task_key="queue_only",
-        log_name="queue-only",
-        cli_name="queue-only",
-        cli_help="queue only",
-        manual_only=True,
         handler=lambda reporter, params: calls.append(params) or {},
-        notify_result=False,
     )
 
-    job_def.build_executor({})(object())
     job_def.build_executor(None)(object())
+    job_def.build_executor({"value": 7})(object())
 
-    assert calls == [{}, {}]
-    assert job_def.notify_result is False
+    assert calls == [{}, {"value": 7}]
 
 
-def test_job_definition_rejects_missing_execution_entrypoint():
-    class EmptyParams(BaseModel):
-        pass
-
-    params_only = JobDefinition(
-        task_key="params_only",
-        log_name="params-only",
-        cli_name="params-only",
-        cli_help="params only",
+def test_job_definition_rejects_non_object_params():
+    job_def = JobDefinition(
+        task_key="demo_handler",
+        log_name="demo-handler",
+        cli_name="demo-handler",
+        cli_help="handler",
         manual_only=True,
-        params_schema=EmptyParams,
-        params_handler=lambda reporter, params: {},
+        handler=lambda reporter, params: {},
     )
-    factory_only = JobDefinition(
-        task_key="factory_only",
-        log_name="factory-only",
-        cli_name="factory-only",
-        cli_help="factory only",
-        default_cron="0 5 * * *",
-        service_factory=lambda reporter: {},
-    )
-
-    with pytest.raises(JobExecutionError, match="缺少无参执行体"):
-        params_only.build_executor(None)
-    with pytest.raises(JobExecutionError, match="不支持带参执行"):
-        factory_only.build_executor({})
+    with pytest.raises(ValueError, match="JSON object"):
+        job_def.build_executor(["invalid"])
 
 
 def test_host_api_version_range_enforced():
@@ -537,7 +412,7 @@ def test_registry_isolates_plugin_job_conflicting_with_builtin():
         cli_name="builtin-x",
         cli_help="x",
         cron_setting="movie_heat_cron",
-        service_factory=lambda reporter: run(reporter, {}),
+        handler=run,
     )
     plugin_job = JobDefinition(
         task_key="builtin_x",

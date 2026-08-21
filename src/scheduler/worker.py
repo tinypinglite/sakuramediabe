@@ -3,8 +3,7 @@
 跑在 APS 进程内：N 条领取线程 + 1 条 housekeeper 线程。
 - 领取线程：``claim_next`` 拿到行后按统一 JobDefinition 解析 executor，
   经 ``ActivityService.run_task(task_run_id=...)`` 复用同一行执行；
-- housekeeper：为在飞行的 run 续租；回收租约过期的队列行；顺带用 owner_pid 判活
-  回收遗留的非队列行（CLI 直跑/导入族崩溃残留），两类回收都联动业务恢复钩子。
+- housekeeper：为在飞行的 run 续租；回收租约过期的队列行并联动业务恢复钩子。
 """
 
 from __future__ import annotations
@@ -31,7 +30,6 @@ from src.service.system.task_queue_service import (
 )
 
 CLAIM_POLL_INTERVAL_SECONDS = 1.0
-LEGACY_RECOVERY_ERROR_MESSAGE = "任务执行进程已退出，任务按中断回收"
 
 
 class TaskWorker:
@@ -115,8 +113,6 @@ class TaskWorker:
             self._in_flight[task_run.id] = task_run.task_key
         try:
             ActivityService.run_task(
-                task_key=task_run.task_key,
-                trigger_type=task_run.trigger_type,
                 func=func,
                 task_run_id=task_run.id,
                 log_task_name=definition.log_name,
@@ -141,7 +137,7 @@ class TaskWorker:
         while not self._stop.wait(interval):
             try:
                 self._renew_in_flight_leases()
-                self._recover_interrupted()
+                self._recover_expired_leases()
             except Exception:
                 logger.exception("Task worker housekeeping failed")
 
@@ -151,15 +147,8 @@ class TaskWorker:
         if in_flight_ids:
             TaskQueueService.renew_leases(in_flight_ids, lease_seconds=self._lease_seconds)
 
-    def _recover_interrupted(self) -> None:
-        # 队列行：租约过期即回收。遗留非队列行（CLI 直跑/导入族）：owner_pid 判活回收，
-        # 让 stale mutex 不再需要等下一次同 key 触发时的 _prepare_recovery 才解开。
-        recovered = list(TaskQueueService.recover_expired_leases())
-        recovered.extend(
-            ActivityService.recover_interrupted_task_runs(
-                error_message=LEGACY_RECOVERY_ERROR_MESSAGE,
-            )
-        )
+    def _recover_expired_leases(self) -> None:
+        recovered = TaskQueueService.recover_expired_leases()
         if not recovered:
             return
         self._run_business_recovery({run.task_key for run in recovered})

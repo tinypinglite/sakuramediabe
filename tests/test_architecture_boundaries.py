@@ -49,7 +49,6 @@ GOD_SERVICES = frozenset(
 
 _FACADE_SHIMS = frozenset(
     (
-        Path("src/service/system/activity_service.py"),
         Path("src/service/playback/media_thumbnail_service.py"),
         Path("src/service/transfers/rapid_upload/facade.py"),
         Path("src/service/playback/cloud115_backend_service.py"),

@@ -65,9 +65,7 @@ def _test_cli_command(monkeypatch, cli_name, _return_stats, _expected_output):
     assert "task_run_id=7 state=pending" in result.output
 
 
-def test_dynamic_aps_cli_mixed_job_distinguishes_omitted_and_explicit_empty_params(
-    monkeypatch,
-):
+def test_dynamic_aps_cli_validates_parameterized_handler(monkeypatch):
     import click
     from pydantic import BaseModel
 
@@ -83,9 +81,8 @@ def test_dynamic_aps_cli_mixed_job_distinguishes_omitted_and_explicit_empty_para
         cli_name="demo-cli-mixed",
         cli_help="CLI mixed",
         default_cron="0 5 * * *",
-        service_factory=lambda reporter: {},
         params_schema=EmptyParams,
-        params_handler=lambda reporter, params: {},
+        handler=lambda reporter, params: {},
     ).model_copy(update={"plugin_id": "demo_plugin"})
     group = click.Group()
     captured = []
@@ -98,10 +95,7 @@ def test_dynamic_aps_cli_mixed_job_distinguishes_omitted_and_explicit_empty_para
     runner = CliRunner()
 
     omitted = runner.invoke(group, [job_def.cli_name])
-    explicit_null = runner.invoke(
-        group,
-        [job_def.cli_name, "--params-json", "null"],
-    )
+    explicit_null = runner.invoke(group, [job_def.cli_name, "--params-json", "null"])
     explicit_empty = runner.invoke(
         group,
         [job_def.cli_name, "--params-json", "{}"],
@@ -114,7 +108,7 @@ def test_dynamic_aps_cli_mixed_job_distinguishes_omitted_and_explicit_empty_para
     assert job_def.cli_name in group.commands
 
 
-def test_dynamic_aps_cli_handler_only_requires_params(monkeypatch):
+def test_dynamic_aps_cli_manual_handler_requires_params(monkeypatch):
     import click
     from pydantic import BaseModel
 
@@ -131,7 +125,7 @@ def test_dynamic_aps_cli_handler_only_requires_params(monkeypatch):
         cli_help="CLI handler only",
         manual_only=True,
         params_schema=EmptyParams,
-        params_handler=lambda reporter, params: {},
+        handler=lambda reporter, params: {},
     ).model_copy(update={"plugin_id": "demo_plugin"})
     group = click.Group()
     captured = []
@@ -152,40 +146,6 @@ def test_dynamic_aps_cli_handler_only_requires_params(monkeypatch):
     assert "Missing option '--params-json'" in result.output
     assert explicit_null.exit_code != 0
     assert "参数不能为 JSON null" in explicit_null.output
-    assert captured == []
-    assert job_def.cli_name in group.commands
-
-
-def test_dynamic_aps_cli_factory_only_does_not_expose_params_option(monkeypatch):
-    import click
-
-    from src.scheduler.contracts import JobDefinition
-    from src.start import commands as commands_module
-
-    job_def = JobDefinition(
-        task_key="demo_cli_factory_only",
-        log_name="demo-cli-factory-only",
-        cli_name="demo-cli-factory-only",
-        cli_help="CLI factory only",
-        default_cron="0 5 * * *",
-        service_factory=lambda reporter: {},
-    ).model_copy(update={"plugin_id": "demo_plugin"})
-    group = click.Group()
-    captured = []
-    monkeypatch.setattr(
-        commands_module,
-        "_run_cli_job",
-        lambda received_job, params=None: captured.append((received_job, params)),
-    )
-    commands_module._register_aps_command(job_def, group)
-
-    result = CliRunner().invoke(
-        group,
-        [job_def.cli_name, "--params-json", "{}"],
-    )
-
-    assert result.exit_code != 0
-    assert "No such option '--params-json'" in result.output
     assert captured == []
     assert job_def.cli_name in group.commands
 
@@ -520,7 +480,7 @@ def test_bootstrap_movie_similarity_index_schedules_missing_alias(monkeypatch):
     assert job.trigger.run_date is not None
 
 
-def test_similarity_bootstrap_enqueues_startup_run_and_worker_executes_factory(
+def test_similarity_bootstrap_enqueues_startup_run_and_worker_executes_handler(
     test_db, monkeypatch
 ):
     from src.model import BackgroundTaskRun
@@ -530,7 +490,7 @@ def test_similarity_bootstrap_enqueues_startup_run_and_worker_executes_factory(
     calls = []
     job_def = JOB_REGISTRY_BY_KEY["movie_similarity_recompute"]
     fake_def = job_def.model_copy(
-        update={"service_factory": lambda _reporter: calls.append("factory") or {}}
+        update={"handler": lambda _reporter, _params: calls.append("handler") or {}}
     )
     monkeypatch.setitem(
         JOB_REGISTRY_BY_KEY,
@@ -566,7 +526,7 @@ def test_similarity_bootstrap_enqueues_startup_run_and_worker_executes_factory(
     TaskWorker()._execute(TaskQueueService.claim_next())
 
     stored = BackgroundTaskRun.get_by_id(queued.id)
-    assert calls == ["factory"]
+    assert calls == ["handler"]
     assert stored.state == "completed"
     assert stored.mutex_key is None
 
@@ -643,7 +603,7 @@ def test_bootstrap_recovers_expired_running_blocker_and_executes_replacement(
         JOB_REGISTRY_BY_KEY,
         job_def.task_key,
         job_def.model_copy(
-            update={"service_factory": lambda _reporter: calls.append("factory") or {}}
+            update={"handler": lambda _reporter, _params: calls.append("handler") or {}}
         ),
     )
     monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: None)
@@ -691,7 +651,7 @@ def test_bootstrap_recovers_expired_running_blocker_and_executes_replacement(
     guard = scheduler.get_job("test_expired_bootstrap_completion_guard")
     guard.func(*guard.args, **guard.kwargs)
 
-    assert calls == ["factory"]
+    assert calls == ["handler"]
     assert BackgroundTaskRun.get_by_id(replacement.id).state == "completed"
     assert BackgroundTaskRun.get_by_id(replacement.id).mutex_key is None
     assert BackgroundTaskRun.select().where(
@@ -750,7 +710,7 @@ def test_bootstrap_pending_blocker_executes_once_and_completed_guard_stops(
         JOB_REGISTRY_BY_KEY,
         task_key,
         job_def.model_copy(
-            update={"service_factory": lambda _reporter: calls.append("factory") or {}}
+            update={"handler": lambda _reporter, _params: calls.append("handler") or {}}
         ),
     )
     monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: None)
@@ -772,7 +732,7 @@ def test_bootstrap_pending_blocker_executes_once_and_completed_guard_stops(
     guard.func(*guard.args, **guard.kwargs)
 
     stored = BackgroundTaskRun.get_by_id(pending.id)
-    assert calls == ["factory"]
+    assert calls == ["handler"]
     assert stored.state == "completed"
     assert stored.mutex_key is None
     assert BackgroundTaskRun.select().where(
@@ -805,7 +765,7 @@ def test_bootstrap_guard_requeues_run_failed_by_lease_housekeeper(
         JOB_REGISTRY_BY_KEY,
         task_key,
         job_def.model_copy(
-            update={"service_factory": lambda _reporter: calls.append("factory") or {}}
+            update={"handler": lambda _reporter, _params: calls.append("handler") or {}}
         ),
     )
     monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: None)
@@ -846,7 +806,7 @@ def test_bootstrap_guard_requeues_run_failed_by_lease_housekeeper(
     assert replacement.state == "pending"
     assert replacement.mutex_key == f"aps:{task_key}"
     TaskWorker()._execute(TaskQueueService.claim_next())
-    assert calls == ["factory"]
+    assert calls == ["handler"]
     assert BackgroundTaskRun.get_by_id(replacement.id).state == "completed"
 
 
@@ -906,7 +866,7 @@ def test_bootstrap_transient_failure_schedules_retry_and_eventually_completes(
         JOB_REGISTRY_BY_KEY,
         task_key,
         job_def.model_copy(
-            update={"service_factory": lambda _reporter: calls.append("factory") or {}}
+            update={"handler": lambda _reporter, _params: calls.append("handler") or {}}
         ),
     )
     attempts = {"count": 0}
@@ -975,7 +935,7 @@ def test_bootstrap_transient_failure_schedules_retry_and_eventually_completes(
     completion_guard.func(*completion_guard.args, **completion_guard.kwargs)
 
     stored = BackgroundTaskRun.get_by_id(runs[0].id)
-    assert calls == ["factory"]
+    assert calls == ["handler"]
     assert stored.state == "completed"
     assert stored.mutex_key is None
     assert scheduler.get_job(retry_id) is None
@@ -990,154 +950,6 @@ def test_schedule_bootstrap_job_rejects_non_bootstrap_task_key():
             "movie_heat_update",
             job_id="invalid_bootstrap",
         )
-
-
-# ---------------------------------------------------------------------------
-# 启动恢复测试
-# ---------------------------------------------------------------------------
-
-
-def test_aps_recovers_interrupted_scheduled_tasks_before_starting_scheduler(monkeypatch):
-    events = []
-
-    class FakeScheduler:
-        def start(self):
-            events.append("scheduler.start")
-
-    monkeypatch.setattr("src.start.aps.settings.scheduler.enabled", True)
-    fake_database = object()
-    monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: events.append("db.ready") or fake_database)
-    def fake_recover_interrupted_task_runs(**kwargs):
-        events.append(("recover", kwargs))
-        return []
-
-    monkeypatch.setattr("src.start.recovery.ActivityService.recover_interrupted_task_runs", fake_recover_interrupted_task_runs)
-    monkeypatch.setattr("src.start.aps.build_scheduler", lambda: events.append("build") or FakeScheduler())
-    monkeypatch.setattr("src.start.aps._bootstrap_movie_similarity_index", lambda _scheduler: None)
-
-    from src.start.aps import aps
-
-    aps()
-
-    assert events == [
-        "db.ready",
-        (
-            "recover",
-            {
-                "trigger_type": "scheduled",
-                "error_message": "APS进程重启，任务已中断",
-                "allow_null_owner": True,
-                "force": True,
-                "suppress_notification_task_keys": {"media_rapid_upload"},
-            },
-        ),
-        (
-            "recover",
-            {
-                "trigger_type": "manual",
-                "error_message": "APS进程重启，任务已中断",
-                "allow_null_owner": True,
-                "force": True,
-                "suppress_notification_task_keys": {"media_rapid_upload"},
-            },
-        ),
-        (
-            "recover",
-            {
-                "trigger_type": "internal",
-                "error_message": "APS进程重启，任务已中断",
-                "allow_null_owner": True,
-                "force": True,
-                "suppress_notification_task_keys": {"media_rapid_upload"},
-            },
-        ),
-        (
-            "recover",
-            {
-                "trigger_type": "startup",
-                "error_message": "APS进程重启，任务已中断",
-                "allow_null_owner": True,
-                "force": True,
-                "suppress_notification_task_keys": {"media_rapid_upload"},
-            },
-        ),
-        "build",
-        "scheduler.start",
-    ]
-
-
-def test_aps_recovers_task_related_business_running_states(monkeypatch):
-    events = []
-
-    class FakeScheduler:
-        def start(self):
-            events.append("scheduler.start")
-
-    monkeypatch.setattr("src.start.aps.settings.scheduler.enabled", True)
-    fake_database = object()
-    monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: events.append("db.ready") or fake_database)
-
-    def fake_recover_interrupted_task_runs(**kwargs):
-        events.append(("recover", kwargs["trigger_type"]))
-        if kwargs["trigger_type"] == "scheduled":
-            return [type("TaskRun", (), {"task_key": "movie_interaction_sync"})()]
-        if kwargs["trigger_type"] == "manual":
-            return [type("TaskRun", (), {"task_key": "library_import"})()]
-        if kwargs["trigger_type"] == "internal":
-            return [type("TaskRun", (), {"task_key": "library_import"})()]
-        return []
-
-    monkeypatch.setattr("src.start.recovery.ActivityService.recover_interrupted_task_runs", fake_recover_interrupted_task_runs)
-    from src.start.recovery import BUSINESS_RECOVERY_HANDLERS
-
-    monkeypatch.setitem(
-        BUSINESS_RECOVERY_HANDLERS,
-        "library_import",
-        lambda: events.append(("recover_import", True)) or {"recovered_count": 1},
-    )
-    monkeypatch.setattr("src.start.aps.build_scheduler", lambda: events.append("build") or FakeScheduler())
-    monkeypatch.setattr("src.start.aps._bootstrap_movie_similarity_index", lambda _scheduler: None)
-
-    from src.start.aps import aps
-
-    aps()
-
-    assert events == [
-        "db.ready",
-        ("recover", "scheduled"),
-        ("recover", "manual"),
-        ("recover", "internal"),
-        ("recover", "startup"),
-        ("recover_import", True),
-        "build",
-        "scheduler.start",
-    ]
-
-
-def test_library_import_recovery_resets_only_linked_download_imports(monkeypatch):
-    from src.start.recovery import BUSINESS_RECOVERY_HANDLERS, recover_interrupted_tasks
-
-    monkeypatch.setattr(
-        "src.start.recovery.ActivityService.recover_interrupted_task_runs",
-        lambda **kwargs: [
-            type("TaskRun", (), {"task_key": "library_import"})()
-        ]
-        if kwargs["trigger_type"] == "manual"
-        else [],
-    )
-    calls = []
-    monkeypatch.setitem(
-        BUSINESS_RECOVERY_HANDLERS,
-        "library_import",
-        lambda: calls.append("imports") or 1,
-    )
-
-    recovered = recover_interrupted_tasks(
-        trigger_types=("manual",), error_message="容器重启"
-    )
-
-    assert recovered == {"library_import"}
-    assert calls == ["imports"]
 
 
 def test_subtitle_task_run_has_no_domain_recovery_handler():
@@ -1172,65 +984,6 @@ def test_run_job_scheduled_delegates_to_enqueue(monkeypatch):
 
     assert result is marker
     assert captured == ["actor_subscription_sync"]
-
-
-# ---------------------------------------------------------------------------
-# ActivityService.run_task 日志测试（原 run_tracked_task / run_logged_task 测试）
-# ---------------------------------------------------------------------------
-
-
-def test_activity_service_run_task_with_logging(monkeypatch):
-    events = []
-
-    class FakeLogger:
-        def info(self, message, *args):
-            events.append(("info", message.format(*args) if args else message))
-
-        def exception(self, message, *args):
-            events.append(("exception", message.format(*args) if args else message))
-
-    monkeypatch.setattr("src.scheduler.logging.get_task_logger", lambda task_name: FakeLogger())
-
-    class FakeTaskRun:
-        id = 1
-        task_key = "actor_subscription_sync"
-        trigger_type = "scheduled"
-        state = "running"
-        result_summary = {}
-
-    monkeypatch.setattr(
-        "src.service.system.activity_service.ActivityService.create_task_run",
-        staticmethod(lambda **kwargs: FakeTaskRun()),
-    )
-    monkeypatch.setattr(
-        "src.service.system.activity_service.ActivityService.mark_task_run_running",
-        staticmethod(lambda task_run_id: FakeTaskRun()),
-    )
-    monkeypatch.setattr(
-        "src.service.system.activity_service.ActivityService.complete_task_run",
-        classmethod(lambda cls, task_run_id, **kwargs: FakeTaskRun()),
-    )
-    monkeypatch.setattr(
-        "src.service.system.activity_service.ActivityService._complete_task_run_transition",
-        classmethod(lambda cls, task_run_id, **kwargs: (FakeTaskRun(), True)),
-    )
-    monkeypatch.setattr(
-        "src.service.system.activity_service.ActivityService.update_task_run_progress",
-        staticmethod(lambda task_run_id, **kwargs: FakeTaskRun()),
-    )
-
-    from src.service.system.activity_service import ActivityService
-
-    result = ActivityService.run_task(
-        task_key="actor_subscription_sync",
-        trigger_type="scheduled",
-        func=lambda reporter: {"ok": True},
-        log_task_name="actor-subscription-sync",
-    )
-
-    assert result == {"ok": True}
-    assert events[0][0] == "info"
-    assert events[-1][0] == "info"
 
 
 # ---------------------------------------------------------------------------
@@ -1302,7 +1055,7 @@ def test_build_scheduler_wires_cron_jobs_to_enqueue_only():
         *(job_def.task_key for job_def in JOB_REGISTRY),
         DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID,
     }
-    # cron 触发一律指向入队函数，绝不直接执行 service_factory。
+    # cron 触发一律指向入队函数，绝不在 APS 线程直接执行 handler。
     cron_jobs = [job for job in jobs if job.id != DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID]
     assert all(job.func is enqueue_scheduled_job for job in cron_jobs)
 
@@ -1368,7 +1121,7 @@ def test_task_worker_executes_claimed_queue_run(test_db, monkeypatch):
     calls = []
     job_def = JOB_REGISTRY_BY_KEY["movie_heat_update"]
     fake_def = job_def.model_copy(
-        update={"service_factory": lambda _reporter: calls.append(1) or {"updated_count": 1}}
+        update={"handler": lambda _reporter, _params: calls.append(1) or {"updated_count": 1}}
     )
     monkeypatch.setitem(JOB_REGISTRY_BY_KEY, "movie_heat_update", fake_def)
 
@@ -1401,9 +1154,8 @@ def test_task_worker_preserves_mixed_plugin_null_vs_empty_params(test_db, monkey
         cli_name="demo-mixed-worker",
         cli_help="mixed worker",
         default_cron="0 5 * * *",
-        service_factory=lambda reporter: calls.append("factory") or {},
         params_schema=EmptyParams,
-        params_handler=lambda reporter, params: calls.append(("params", params)) or {},
+        handler=lambda reporter, params: calls.append(params) or {},
     ).model_copy(update={"plugin_id": "demo_plugin"})
     monkeypatch.setitem(JOB_REGISTRY_BY_KEY, job_def.task_key, job_def)
 
@@ -1420,7 +1172,7 @@ def test_task_worker_preserves_mixed_plugin_null_vs_empty_params(test_db, monkey
     )
     TaskWorker()._execute(TaskQueueService.claim_next())
 
-    assert calls == ["factory", ("params", {})]
+    assert calls == [{}, {}]
     assert BackgroundTaskRun.get_by_id(no_params.id).state == "completed"
     assert BackgroundTaskRun.get_by_id(explicit_empty.id).state == "completed"
 
@@ -1437,42 +1189,6 @@ def test_task_worker_fails_run_with_unregistered_task_key(test_db):
     stored = BackgroundTaskRun.get_by_id(queued.id)
     assert stored.state == "failed"
     assert stored.mutex_key is None
-
-
-def test_task_worker_resolution_failure_releases_mutex(test_db, monkeypatch):
-    from src.model import BackgroundTaskRun
-    from src.scheduler.contracts import JobDefinition
-    from src.scheduler.worker import TaskWorker
-    from src.service.system.task_queue_service import TaskQueueService
-
-    job_def = JobDefinition(
-        task_key="factory_only_invalid_params",
-        log_name="factory-only-invalid-params",
-        cli_name="factory-only-invalid-params",
-        cli_help="factory only invalid params",
-        default_cron="0 5 * * *",
-        service_factory=lambda reporter: {},
-    )
-    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, job_def.task_key, job_def)
-    queued = TaskQueueService.enqueue(
-        task_key=job_def.task_key,
-        trigger_type="manual",
-        params={"unexpected": True},
-    )
-
-    TaskWorker()._execute(TaskQueueService.claim_next())
-
-    stored = BackgroundTaskRun.get_by_id(queued.id)
-    assert stored.state == "failed"
-    assert stored.error_message == (f"任务不支持带参执行 task_key={job_def.task_key}")
-    assert stored.mutex_key is None
-    assert (
-        TaskQueueService.enqueue(
-            task_key=job_def.task_key,
-            trigger_type="scheduled",
-        )
-        is not None
-    )
 
 
 def test_task_worker_rapid_failure_suppresses_generic_notification(
@@ -1524,16 +1240,14 @@ def test_task_worker_rapid_failure_suppresses_generic_notification(
 
 
 def test_default_lane_never_claims_import_lane_tasks(test_db):
-    from src.common.runtime_time import utc_now_for_db
     from src.scheduler.queue_tasks import NON_DEFAULT_LANE_TASK_KEYS, lane_task_keys
-    from src.service.system.activity_service import ActivityService
+    from src.service.system import ActivityService
     from src.service.system.task_queue_service import TaskQueueService
 
     queued = ActivityService.create_task_run(
         task_key="library_import",
         trigger_type="manual",
         params={"media_kind": "jav", "backend": "local"},
-        scheduled_at=utc_now_for_db(),
     )
 
     # default 道排除专属道任务；import 道能领到。
@@ -1545,12 +1259,11 @@ def test_default_lane_never_claims_import_lane_tasks(test_db):
 
 
 def test_task_worker_dispatches_queue_task_handler_with_params(test_db, monkeypatch):
-    from src.common.runtime_time import utc_now_for_db
     from src.model import BackgroundTaskRun
     from src.scheduler.contracts import JobDefinition
     from src.scheduler.queue_tasks import QUEUE_TASK_REGISTRY
     from src.scheduler.worker import TaskWorker
-    from src.service.system.activity_service import ActivityService
+    from src.service.system import ActivityService
     from src.service.system.task_queue_service import TaskQueueService
 
     calls = []
@@ -1571,7 +1284,6 @@ def test_task_worker_dispatches_queue_task_handler_with_params(test_db, monkeypa
         task_key="library_import",
         trigger_type="manual",
         params={"media_kind": "jav", "backend": "local"},
-        scheduled_at=utc_now_for_db(),
     )
     claimed = TaskQueueService.claim_next()
     TaskWorker()._execute(claimed)

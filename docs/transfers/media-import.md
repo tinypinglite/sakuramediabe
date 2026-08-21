@@ -56,8 +56,8 @@ JAV 与普通视频、本地文件系统与 115 网盘共用一个异步入口�
 
 ## TaskRun 与互斥
 
-任务采用两阶段发布：先创建未发布的 pending TaskRun 占用 mutex，再写入完整参数并发布给
-worker。发布失败会把 TaskRun 收口为 failed 并释放 mutex，不会留下永久阻塞项。
+任务行、完整参数和关联下载记录在同一事务中提交；提交前 worker 不可见半成品，事务失败也不会留下
+占用 mutex 的孤儿任务。
 
 为保证 move / `cleanup-source` 不会并发处理互相重叠的目录树，本地导入共用一把全局 mutex，
 所有本地库和来源串行；所有 115 媒体库共用一把写入 mutex，CID/FID、媒体种类、下载自动入库和媒体秒传
@@ -109,5 +109,6 @@ qBittorrent 与 115 离线下载都通过 `ImportTaskService` 创建 `library_im
 ## Breaking change
 
 从 v0.4.21 升级时，迁移 `20260821_01_consolidate_task_runtime` 新增下载任务的 TaskRun 外键和索引，
-把无法可靠绑定的旧 `running` 下载导入重置为 `pending`；同时删除 `import_job`、`video_import_job`、
-`subtitle_import_job`、旧系统事件与通用资源任务台账。旧表里的未完成作业直接放弃，不做 copy 兼容或文件级续跑；已有媒体数据不变。
+把旧 `running` 下载导入重置为 `pending`；同时清空通知、删除 `import_job`、`video_import_job`、
+`subtitle_import_job`、旧系统事件与通用资源任务台账，并终止旧的活动 TaskRun。旧表里的未完成作业直接放弃，
+不做兼容续跑；已有媒体数据和订阅搜索状态会迁入当前领域字段。

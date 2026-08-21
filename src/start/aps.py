@@ -22,7 +22,7 @@ from src.model import BackgroundTaskRun
 from src.scheduler.contracts import JobDefinition
 from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.scheduler.worker import TaskWorker
-from src.service.system.activity_service import TaskRunConflictError
+from src.service.system.activity import TaskRunConflictError
 from src.service.system.task_queue_service import (
     BOOTSTRAP_QUEUE_TASK_KEYS,
     DEFAULT_LEASE_SECONDS,
@@ -34,7 +34,6 @@ from src.service.system.task_queue_service import (
 from src.service.transfers.downloads.progress_sync_service import (
     DownloadProgressSyncService,
 )
-from src.start.recovery import recover_interrupted_tasks
 
 DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID = "_internal_download_progress_snapshot"
 BOOTSTRAP_RETRY_GRACE_SECONDS = 1
@@ -376,12 +375,6 @@ def aps():
         return
     database = ensure_database_ready()
     logger.info("Scheduler runtime database ready {}", type(database).__name__)
-    # 这里只回收 scheduled_at=NULL 的遗留直跑任务；队列 pending 跨重启存活，
-    # running 由 lease 负责。两个 bootstrap 另有按冲突 run 跟踪的完成守卫。
-    recover_interrupted_tasks(
-        trigger_types=("scheduled", "manual", "internal", "startup"),
-        error_message="APS进程重启，任务已中断",
-    )
     scheduler = build_scheduler()
     _bootstrap_gfriends_filetree_refresh(scheduler)
     _bootstrap_movie_similarity_index(scheduler)

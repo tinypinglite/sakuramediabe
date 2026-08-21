@@ -254,7 +254,7 @@ from src.scheduler.contracts import JobDefinition
 
 校验规则（违反则加载失败并隔离该插件）：
 
-- 必须提供 `handler`，插件不能声明 `service_factory` 或 `params_handler`；
+- 必须提供 `handler`，所有任务都使用这一套执行契约；
 - handler 签名固定为 `(reporter, params)`，所有任务都由同一队列 worker 执行；
 - `manual_only` 任务不能声明任何 cron，且必须允许手动触发；
 - `params_schema` 只能配合统一 `handler` 使用；

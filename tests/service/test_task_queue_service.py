@@ -66,7 +66,7 @@ def test_enqueue_manual_conflict_raises_with_blocking_run_id(test_db):
 
 
 def test_enqueue_allowed_again_after_terminal_state_releases_mutex(test_db):
-    from src.service.system.activity_service import ActivityService
+    from src.service.system import ActivityService
 
     first = TaskQueueService.enqueue(task_key="movie_heat_update", trigger_type="scheduled")
     ActivityService.fail_task_run(first.id, error_message="boom", notify_result=False)
@@ -94,18 +94,13 @@ def test_claim_next_claims_earliest_due_row_and_sets_lease(test_db):
     assert TaskQueueService.claim_next() is None
 
 
-def test_claim_next_ignores_non_queue_rows_and_future_schedules(test_db):
-    from src.service.system.activity_service import ActivityService
-
-    # 进程内直跑的 task_run（scheduled_at 为空）不属于队列，worker 不得领取。
-    ActivityService.create_task_run(
-        task_key="media_directory_import", trigger_type="manual", state="pending"
+def test_claim_next_skips_future_schedule(test_db):
+    queued = TaskQueueService.enqueue(
+        task_key="movie_heat_update", trigger_type="scheduled"
     )
-    TaskQueueService.enqueue(
-        task_key="movie_heat_update",
-        trigger_type="scheduled",
-        scheduled_at=utc_now_for_db() + timedelta(hours=1),
-    )
+    BackgroundTaskRun.update(
+        scheduled_at=utc_now_for_db() + timedelta(hours=1)
+    ).where(BackgroundTaskRun.id == queued.id).execute()
 
     assert TaskQueueService.claim_next() is None
 

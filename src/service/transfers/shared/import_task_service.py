@@ -14,6 +14,7 @@ from src.common.media_import_status import (
 )
 from src.config.config import settings
 from src.model import DownloadTask, MediaLibrary
+from src.model.base import get_database
 from src.model.enums import MediaLibraryBackend
 from src.schema.transfers.media_import import (
     ImportAcceptedResponse,
@@ -21,7 +22,6 @@ from src.schema.transfers.media_import import (
     ImportResult,
 )
 from src.service.system import ActivityService
-from src.service.system.task_queue_service import TaskQueueService
 from src.service.transfers.shared.import_notifications import create_new_media_reminder
 from src.service.transfers.shared.write_mutex import library_import_mutex_key
 
@@ -41,14 +41,26 @@ class ImportTaskService:
         request, library = cls._validated_request(request)
         source = request.source_path or request.source_cid or request.source_fid or ""
         mutex_key = cls._mutex_key(request.backend, library)
+        params = request.model_dump()
+        params["download_task_id"] = download_task_id
+        download_task = None
         try:
-            # 先占后端互斥键但不发布，完整 params 落定后 worker 才能领取。
-            task_run = ActivityService.create_task_run(
-                task_key=cls.TASK_KEY,
-                task_name=task_name or cls._task_name(request, source),
-                trigger_type=trigger_type,
-                mutex_key=mutex_key,
-            )
+            # 在同一事务中创建队列行和关联下载记录，提交前 worker 不可见半成品。
+            with get_database().atomic():
+                task_run = ActivityService.create_task_run(
+                    task_key=cls.TASK_KEY,
+                    task_name=task_name or cls._task_name(request, source),
+                    trigger_type=trigger_type,
+                    mutex_key=mutex_key,
+                    params=params,
+                )
+                if download_task_id is not None:
+                    download_task = DownloadTask.get_by_id(download_task_id)
+                    download_task.import_status = IMPORT_STATUS_RUNNING
+                    download_task.import_task_run = task_run
+                    download_task.save(
+                        only=[DownloadTask.import_status, DownloadTask.import_task_run]
+                    )
         except IntegrityError as exc:
             blocking = ActivityService.find_task_run_by_mutex_key(mutex_key)
             raise ApiError(
@@ -57,28 +69,15 @@ class ImportTaskService:
                 "同一导入互斥域已有任务",
                 {"blocking_task_run_id": blocking.id if blocking else None},
             ) from exc
-
-        download_task = None
-        try:
-            if download_task_id is not None:
-                download_task = DownloadTask.get_by_id(download_task_id)
-                download_task.import_status = IMPORT_STATUS_RUNNING
-                download_task.import_task_run = task_run
-                download_task.save(
-                    only=[DownloadTask.import_status, DownloadTask.import_task_run]
-                )
-            params = request.model_dump()
-            params["download_task_id"] = download_task_id
-            TaskQueueService.publish_run(task_run.id, params=params)
         except Exception as exc:
+            if download_task_id is not None:
+                download_task = DownloadTask.get_or_none(DownloadTask.id == download_task_id)
             if download_task is not None:
                 download_task.import_status = IMPORT_STATUS_FAILED
                 download_task.save(only=[DownloadTask.import_status])
-            # 发布失败必须终结 TaskRun；终态写入同时释放 mutex_key。
-            ActivityService.fail_task_run(task_run.id, error_message=str(exc))
             raise ApiError(
                 502,
-                "import_task_enqueue_failed",
+                "import_task_create_failed",
                 "媒体导入任务入队失败",
                 {"detail": str(exc)},
             ) from exc

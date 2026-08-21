@@ -93,12 +93,6 @@ def _validate_plugin_jobs(
                 "validate_jobs",
                 f"任务 {job.task_key} 不允许引用宿主 Scheduler 字段",
             )
-        if job.handler is None or job.service_factory is not None or job.params_handler is not None:
-            raise PluginLoadError(
-                plugin_id,
-                "validate_jobs",
-                f"任务 {job.task_key} 必须使用新的 handler 契约",
-            )
         jobs.append(job.model_copy(update={"plugin_id": plugin_id}))
     return tuple(jobs)
 

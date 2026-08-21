@@ -153,7 +153,7 @@
 - 仅 `manual_trigger_allowed=true` 的任务允许通过 HTTP 触发
 - HTTP 手动触发会创建 `trigger_type=manual` 的 `BackgroundTaskRun`
 - 同一个 APS 注册任务在 `manual` 与 `scheduled` 之间按 `aps:<task_key>` 互斥
-- 任务由持久队列 worker 执行；worker 中断后会按任务恢复规则回收
+- 任务由持久队列 worker 执行；worker 中断后按租约过期回收
 
 ## 前端接入建议
 

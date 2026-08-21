@@ -8,7 +8,7 @@ from src.scheduler.contracts import JobDefinition
 from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.schema.system.activity import TaskRunResource
 from src.schema.system.jobs import JobMetadataResource, ManualJobTriggerResponse
-from src.service.system.activity_service import TaskRunConflictError
+from src.service.system.activity import TaskRunConflictError
 from src.start.aps import get_job_cron_setting, resolve_job_cron_expr, submit_manual_job
 
 router = APIRouter(
@@ -74,9 +74,7 @@ def trigger_job(task_key: str, payload: dict | None = None):
 
     params = None
     if payload is None:
-        if (job_def.manual_only and job_def.params_schema is not None) or (
-            job_def.service_factory is None and job_def.handler is None
-        ):
+        if job_def.manual_only and job_def.params_schema is not None:
             # 声明参数模型的 manual_only 任务必须显式提供参数；无参任务可直接入队。
             raise ApiError(
                 422,
@@ -84,7 +82,7 @@ def trigger_job(task_key: str, payload: dict | None = None):
                 f"任务 {task_key} 必须提供请求参数",
             )
     elif job_def.params_schema is None:
-        # factory-only 不接受任何显式 body，避免调用方误以为参数会生效。
+        # 无参数任务不接受显式 body，避免调用方误以为参数会生效。
         raise ApiError(
             422,
             "invalid_job_params",

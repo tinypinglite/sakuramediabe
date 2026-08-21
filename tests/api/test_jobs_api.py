@@ -26,7 +26,7 @@ def _release_task_run(task_run: BackgroundTaskRun) -> None:
     )
 
 
-def test_mixed_job_trigger_preserves_missing_null_empty_and_nonempty_body(
+def test_parameterized_job_trigger_preserves_missing_null_empty_and_nonempty_body(
     client, account_user, monkeypatch
 ):
     class Params(BaseModel):
@@ -109,33 +109,6 @@ def test_handler_only_job_rejects_missing_and_null_body(
     assert BackgroundTaskRun.select().count() == 0
 
 
-def test_factory_only_job_rejects_explicit_body(client, account_user, monkeypatch):
-    job_def = JobDefinition(
-        task_key="demo_http_factory_only",
-        log_name="demo-http-factory-only",
-        cli_name="demo-http-factory-only",
-        cli_help="HTTP factory only",
-        default_cron="0 5 * * *",
-        service_factory=lambda reporter: {},
-    ).model_copy(update={"plugin_id": "demo_plugin"})
-    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, job_def.task_key, job_def)
-    auth_headers = _auth_headers(client, account_user.username)
-    endpoint = f"/system/jobs/{job_def.task_key}/run"
-
-    explicit_empty = client.post(endpoint, json={}, headers=auth_headers)
-    explicit_nonempty = client.post(
-        endpoint,
-        json={"value": 7},
-        headers=auth_headers,
-    )
-
-    assert explicit_empty.status_code == 422
-    assert explicit_nonempty.status_code == 422
-    assert explicit_empty.json()["error"]["code"] == "invalid_job_params"
-    assert explicit_nonempty.json()["error"]["code"] == "invalid_job_params"
-    assert BackgroundTaskRun.select().count() == 0
-
-
 def test_builtin_jobs_accept_parameterless_async_trigger(client, account_user):
     task_keys = (
         "subscribed_movie_auto_download",
@@ -147,7 +120,6 @@ def test_builtin_jobs_accept_parameterless_async_trigger(client, account_user):
     for task_key in task_keys:
         job_def = JOB_REGISTRY_BY_KEY[task_key]
         assert job_def.params_schema is None
-        assert job_def.params_handler is None
         response = client.post(f"/system/jobs/{task_key}/run", headers=auth_headers)
         assert response.status_code == 202, response.text
         _release_task_run(BackgroundTaskRun.get_by_id(response.json()["task_run_id"]))

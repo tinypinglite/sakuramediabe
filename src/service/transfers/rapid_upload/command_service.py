@@ -6,6 +6,7 @@ from peewee import IntegrityError
 
 from src.api.exception.errors import ApiError
 from src.model import (
+    BackgroundTaskRun,
     Media,
     MediaLibrary,
     MediaRapidUploadBatch,
@@ -16,7 +17,6 @@ from src.model.enums import MediaLibraryBackend
 from src.schema.transfers.rapid_upload import MediaRapidUploadTriggerResponse
 from src.service.cloud115 import require_cloud115_library
 from src.service.system import ActivityService
-from src.service.system.task_queue_service import TaskQueueService
 from src.service.transfers.rapid_upload.states import (
     BATCH_STATE_COMPLETED,
     BATCH_STATE_FAILED,
@@ -111,26 +111,17 @@ class MediaRapidUploadCommandService:
         retry_of_batch_id: int | None,
     ) -> MediaRapidUploadTriggerResponse:
         mutex_key = cloud115_write_mutex_key(target_library)
-        try:
-            # 秒传和普通 115 导入共享全局写锁，必须在建批次前先竞争同一把锁。
-            task_run = ActivityService.create_task_run(
-                task_key=TASK_KEY,
-                task_name=f"批量媒体秒传（{len(specs)} 个）",
-                trigger_type="manual",
-                mutex_key=mutex_key,
-            )
-        except IntegrityError as exc:
-            blocking = ActivityService.find_task_run_by_mutex_key(mutex_key)
-            raise ApiError(
-                409,
-                "cloud115_write_task_conflict",
-                "已有 115 导入或秒传任务",
-                {"blocking_task_run_id": blocking.id if blocking else None},
-            ) from exc
-
         batch: MediaRapidUploadBatch | None = None
         try:
             with get_database().atomic():
+                # 批次和队列行同事务提交，worker 不会看到未完成的批次。
+                task_run = ActivityService.create_task_run(
+                    task_key=TASK_KEY,
+                    task_name=f"批量媒体秒传（{len(specs)} 个）",
+                    trigger_type="manual",
+                    mutex_key=mutex_key,
+                    params={},
+                )
                 batch = MediaRapidUploadBatch.create(
                     target_library=target_library,
                     retry_of_batch=retry_of_batch_id,
@@ -163,24 +154,24 @@ class MediaRapidUploadCommandService:
                 if retry_source_item_ids:
                     # 新批次接管失败项后，旧项不再重复参与后续重试或删除保护。
                     cls._mark_items_retried(retry_source_item_ids)
-            # 入队交 worker 的 rapid_upload 并发道执行（MediaRapidUploadRunner 已退役）。
-            TaskQueueService.publish_run(
-                task_run.id, params={"rapid_upload_batch_id": batch.id}
-            )
+                BackgroundTaskRun.update(
+                    params={"rapid_upload_batch_id": batch.id}
+                ).where(BackgroundTaskRun.id == task_run.id).execute()
         except IntegrityError as exc:
-            ActivityService.fail_task_run(
-                task_run.id,
-                error_message="媒体已在其它秒传批次中",
-            )
+            blocking = ActivityService.find_task_run_by_mutex_key(mutex_key)
+            if blocking is not None:
+                raise ApiError(
+                    409,
+                    "cloud115_write_task_conflict",
+                    "已有 115 导入或秒传任务",
+                    {"blocking_task_run_id": blocking.id},
+                ) from exc
             raise ApiError(
                 409,
                 "media_rapid_upload_media_conflict",
                 "选择的媒体已在其它秒传批次中",
             ) from exc
         except Exception as exc:
-            if batch is not None:
-                cls._fail_unstarted_batch(batch, str(exc))
-            ActivityService.fail_task_run(task_run.id, error_message=str(exc))
             raise ApiError(
                 502,
                 "media_rapid_upload_launch_failed",

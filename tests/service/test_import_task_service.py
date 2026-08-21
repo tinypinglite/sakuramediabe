@@ -13,7 +13,6 @@ from src.model import (
     Movie,
 )
 from src.schema.transfers.media_import import ImportRequest, ImportResult
-from src.service.system.task_queue_service import TaskQueueService
 from src.service.transfers.shared.import_task_service import ImportTaskService
 
 
@@ -250,30 +249,6 @@ def test_cloud115_import_and_rapid_upload_share_global_write_mutex(test_db, tmp_
     assert exc_info.value.status_code == 409
     assert exc_info.value.code == "cloud115_write_task_conflict"
     assert exc_info.value.details == {"blocking_task_run_id": accepted.task_run_id}
-
-
-def test_enqueue_publish_failure_fails_run_and_releases_mutex(test_db, monkeypatch):
-    library = MediaLibrary.create(name="cloud", backend="cloud115", backend_config={})
-    monkeypatch.setattr(
-        TaskQueueService,
-        "publish_run",
-        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("queue unavailable")),
-    )
-
-    with pytest.raises(ApiError) as exc_info:
-        ImportTaskService.enqueue(
-            ImportRequest(
-                media_kind="jav",
-                backend="cloud115",
-                library_id=library.id,
-                source_cid="publish-failure",
-            )
-        )
-
-    assert exc_info.value.status_code == 502
-    task_run = BackgroundTaskRun.get()
-    assert task_run.state == "failed"
-    assert task_run.mutex_key is None
 
 
 def test_partial_failure_marks_download_failed_and_notifies_once(test_db, monkeypatch):

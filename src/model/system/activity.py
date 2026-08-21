@@ -1,5 +1,3 @@
-import os
-
 import peewee
 
 from src.model.base import BaseModel, JsonTextField
@@ -10,7 +8,6 @@ class BackgroundTaskRun(TimestampedMixin, BaseModel):
     task_key = peewee.CharField(max_length=64, index=True)
     task_name = peewee.CharField(max_length=255)
     trigger_type = peewee.CharField(max_length=32, index=True)
-    owner_pid = peewee.IntegerField(null=True, default=os.getpid)
     mutex_key = peewee.CharField(max_length=128, null=True)
     state = peewee.CharField(max_length=32, default="pending", index=True)
     progress_current = peewee.IntegerField(null=True)
@@ -21,9 +18,7 @@ class BackgroundTaskRun(TimestampedMixin, BaseModel):
     error_message = peewee.TextField(null=True)
     started_at = peewee.DateTimeField(null=True)
     finished_at = peewee.DateTimeField(null=True)
-    # 持久队列字段：
-    # pending 行即队列元素；scheduled_at 决定可领取时间；lease_expires_at 是 worker
-    # 租约过期即可回收，取代 owner_pid 判活；params 仅用于队列专属任务执行凭据。
+    # pending 行即队列元素；lease_expires_at 过期即可回收。
     params = JsonTextField(null=True, default=None)
     scheduled_at = peewee.DateTimeField(null=True)
     lease_expires_at = peewee.DateTimeField(null=True)

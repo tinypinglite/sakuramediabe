@@ -5,7 +5,7 @@ from src.schema.catalog.movies import MovieHeatRecomputeParams
 from src.schema.system.jobs import ManualJobTriggerResponse
 from src.service.catalog.movie_heat_service import MovieHeatService
 from src.service.catalog.movie_service import MovieService
-from src.service.system.activity_service import TaskRunConflictError
+from src.service.system.activity import TaskRunConflictError
 
 
 class MovieTaskService:

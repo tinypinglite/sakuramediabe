@@ -5,6 +5,7 @@ import pytest
 from click.testing import CliRunner
 
 from src.model import (
+    BackgroundTaskRun,
     DownloadClient,
     DownloadTask,
     Media,
@@ -124,6 +125,9 @@ def test_run_pending_migrations_rejects_current_schema_without_base_marker(clean
 def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_memory(clean_db):
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
     clean_db.create_tables(TEST_MODELS)
+    clean_db.execute_sql(
+        "ALTER TABLE background_task_run ADD COLUMN owner_pid INTEGER NULL"
+    )
 
     library = MediaLibrary.create(
         name="migration-library",
@@ -151,6 +155,12 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         category="info",
         title="历史通知",
         content="保留历史内容",
+    )
+    active_run = BackgroundTaskRun.create(
+        task_key="legacy_task",
+        task_name="legacy task",
+        trigger_type="manual",
+        mutex_key="aps:legacy_task",
     )
     SchemaMigration.create(name=SUPPORTED_BASE_MIGRATION_NAME)
 
@@ -289,6 +299,10 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         """,
         (download_task.id,),
     ).fetchone() == ("", 0, 0, 0, 0, "pending")
+    assert SystemNotification.select().count() == 0
+    migrated_run = BackgroundTaskRun.get_by_id(active_run.id)
+    assert migrated_run.state == "failed"
+    assert migrated_run.mutex_key is None
     assert {
         "event_type",
         "dedupe_key",

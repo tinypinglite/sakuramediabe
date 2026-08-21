@@ -371,17 +371,11 @@ def _register_aps_command(job_def, group):
         help="任务参数 JSON，按任务声明的 params_schema 校验",
     )
     def _cmd_with_params(params_json):
-        # mixed 任务省略参数或显式 null 时保留 None，走全量 service_factory；
-        # 显式传入非 null JSON（包括 '{}'）才调用 params_handler。
         payload = None
         if params_json is not None:
             decoded = json.loads(params_json)
             if decoded is None:
-                # JSON null 仅对可走 factory 的非 manual_only 任务等同省略参数。
-                if (
-                    job_def.service_factory is None
-                    and job_def.handler is None
-                ) or job_def.manual_only:
+                if job_def.manual_only:
                     raise click.BadParameter(
                         "当前任务的参数不能为 JSON null",
                         param_hint="--params-json",

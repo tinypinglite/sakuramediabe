@@ -592,46 +592,24 @@ def test_create_app_registers_download_task_center_routes():
 def test_create_app_runs_runtime_startup_jobs(monkeypatch):
     events = []
     monkeypatch.setattr("src.api.app.ensure_database_ready", lambda: events.append("db.ready"))
-    startup_recover = Mock(side_effect=lambda **kwargs: events.append(("recover", kwargs)) or [])
-    monkeypatch.setattr("src.api.app.recover_interrupted_tasks", startup_recover)
     app = create_app()
 
     with TestClient(app):
         pass
 
-    startup_recover.assert_called_once_with(
-        trigger_types=("startup", "manual", "internal"),
-        error_message="API进程重启，任务已中断",
-    )
-    assert events == [
-        "db.ready",
-        (
-            "recover",
-            {
-                "trigger_types": ("startup", "manual", "internal"),
-                "error_message": "API进程重启，任务已中断",
-            },
-        ),
-    ]
+    assert events == ["db.ready"]
 
 
 def test_create_app_initializes_database_proxy_before_runtime_startup_jobs(monkeypatch):
     events = []
     monkeypatch.setattr("src.api.app.ensure_database_ready", lambda: events.append("db.ready"))
-    monkeypatch.setattr(
-        "src.api.app.recover_interrupted_tasks",
-        Mock(side_effect=lambda **kwargs: events.append("recover") or []),
-    )
 
     app = create_app()
 
     with TestClient(app):
         pass
 
-    assert events == [
-        "db.ready",
-        "recover",
-    ]
+    assert events == ["db.ready"]
 
 
 def test_create_app_sets_peewee_logger_level_from_settings(monkeypatch):
