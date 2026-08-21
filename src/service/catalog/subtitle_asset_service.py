@@ -30,7 +30,7 @@ class SubtitleAssetService:
 
     @classmethod
     def movie_subtitle_hashes(cls, movie) -> set[str]:
-        """该影片已登记字幕的内容指纹集合（含新老布局合法路径）。"""
+        """该影片已登记字幕的内容指纹集合。"""
         hashes: set[str] = set()
         for subtitle in Subtitle.select().where(Subtitle.movie == movie):
             try:

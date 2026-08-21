@@ -20,7 +20,6 @@ SakuraMediaBE 内部维护的 115 网盘极简异步客户端。**仅支持 cook
 - [异常层次](#异常层次)
 - [关键机制](#关键机制)
 - [手动测试 CLI](#手动测试-cli)
-- [集成测试](#集成测试)
 - [不在本 SDK 范围](#不在本-sdk-范围)
 
 ---
@@ -631,26 +630,6 @@ uv run python -m src.lib.cloud115 list-dir --help
 
 ---
 
-## 集成测试
-
-`tests/lib/cloud115/test_integration.py` 提供真实端到端用例与 HLS 历史样本协议回归，
-默认整体 skip，需显式传入 `--run-cloud115-integration`。真实 115 用例还需要
-`COOKIE_115`；不访问外网的 TS 惰性读取与缩略图时间轴回归位于
-`test_hls_thumbnail.py`，默认测试会直接执行：
-
-```fish
-set -x COOKIE_115 "UID=...; CID=...; SEID=...; KID=..."
-uv run pytest tests/lib/cloud115/ --run-cloud115-integration -n0 -v
-uv run pytest tests/lib/cloud115/test_integration.py --run-cloud115-integration \
-  -k "video_info or video_segments or m3u8 or pick_variant" -n0 -v
-```
-
-无 flag 时正常 `uv run pytest` 会跳过该文件，避免 CI 访问真实 115 端点。
-
-**意义**：cipher 单元测试无法端到端验证（`rsa_encode` / `rsa_decode` 不是数学逆变换，见下面协议注解），所以集成测试是 cipher 正确性的唯一权威证据。
-
----
-
 ## 协议实现说明（进阶）
 
 如果你要改 [`cipher.py`](../cipher.py)，先读这段。
@@ -663,7 +642,7 @@ uv run pytest tests/lib/cloud115/test_integration.py --run-cloud115-integration 
 - `rsa_decode`：服务端 → 客户端方向。服务端用私钥 `d` "签名" 响应，客户端用公钥 `(n, e)` "验证"恢复
 - 数学上依靠 `pow(pow(m, d, n), e, n) == m`（RSA 双向性）
 
-**推论**：**不能做 `rsa_decode(rsa_encode(x)) == x` 的 round-trip 单元测试**（一定失败）。协议正确性只能靠集成测试证明。
+**推论**：**不能做 `rsa_decode(rsa_encode(x)) == x` 的 round-trip 单元测试**（一定失败）。仓库中的协议回归使用固定样本；需要验证真实服务时，请通过上面的手动测试 CLI 操作。
 
 ### XOR 常量不对称
 

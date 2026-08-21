@@ -139,9 +139,6 @@ class Media(BaseModel):
     )
     allowed_min_video_file_size: int = 268435456 # 256MB
     import_image_root_path: str = "/data/cache/assets"
-    # legacy：字幕已统一到 movies/<shard>/<番号>/subtitles/，此项仅供 migrate-movie-subtitles
-    # CLI 定位旧字幕根，运行期不再有任何写入。存量搬完后可以从配置里删掉。
-    subtitle_root_path: str = "/data/cache/subtitles"
     max_thumbnail_process_count: int = Field(
         default_factory=lambda: max(1, math.ceil((os.cpu_count() or 1) / 2))
     )

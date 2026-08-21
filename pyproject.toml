@@ -61,9 +61,6 @@ addopts = "-n 6 --testmon"
 testpaths = ["tests"]
 # pytest-asyncio auto 模式：所有 async def test_* 自动按协程执行，免逐个 @pytest.mark.asyncio。
 asyncio_mode = "auto"
-markers = [
-    "cloud115_integration: hits real 115 API using COOKIE_115 env var; skip by default",
-]
 
 [tool.ruff]
 target-version = "py310"

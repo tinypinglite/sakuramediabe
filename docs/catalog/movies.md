@@ -164,8 +164,8 @@ heat = ROUND(3100 × (7/34 × W + 5/34 × I + 17/34 × C + 5/34 × R))
 
 `ImageResource` 当前典型路径：
 
-- 封面：`/files/images/movies/{movie_number}/cover.jpg?...`
-- 剧照：`/files/images/movies/{movie_number}/plots/{index}.jpg?...`
+- 封面：`/files/images/movies/{shard}/{movie_number}/cover.jpg?...`
+- 剧照：`/files/images/movies/{shard}/{movie_number}/plot-{index}.jpg?...`
 - 演员头像：`/files/images/actors/{javdb_id}.jpg?...`
 
 分页响应：
@@ -1029,17 +1029,11 @@ Authorization: Bearer <token>
   - 字幕下载地址使用 `subtitle_id` 签名协议，不再使用 `media_id + file_name`
   - 只读已存在的字幕记录，不再暴露后台抓取状态
 
-存储位置：**新导入**的字幕统一落在 `<图片根>/movies/{shard}/{番号}/subtitles/`，本地导入与 115 导入共用
+存储位置：字幕统一落在 `<图片根>/movies/{shard}/{番号}/subtitles/`，本地导入与 115 导入共用
 同一目录。新布局下字幕**跟番号走**而不跟具体 Media 文件走：媒体文件被删除或失效不会连带清掉字幕。
 
-**向后兼容（迁移可选）**：老用户即使不跑 `migrate-movie-subtitles`，存量字幕也照常可读——运行时同时放行
-新布局与两处老位置：115 旧字幕根 `<旧字幕根>/{番号}/`、以及媒体库里视频所在版本目录的 sidecar `.srt`。
-合法路径边界与扫盘发现分别由 `src/common/subtitle_paths.py` 的 `ensure_movie_subtitle_path()`
-与 `MovieSubtitleService._discover_subtitle_paths()` 收口，二者都覆盖上述三处根。迁移只是把存量整理到新布局
-的可选操作，不是硬性前置。
-
-文件命名：统一为 `<番号>-<N>.srt`（N 从当前 `subtitles/` 目录已有序号 max + 1 起），本地导入 / 115 导入 /
-存量迁移共用 `src/common/media_paths.py` 的 `allocate_next_movie_subtitle_path()` 分配。同一部影片下多份
+文件命名：统一为 `<番号>-<N>.srt`（N 从当前 `subtitles/` 目录已有序号 max + 1 起），本地导入与 115 导入
+共用 `src/common/media_paths.py` 的 `allocate_next_movie_subtitle_path()` 分配。同一部影片下多份
 字幕（同版本目录里 whisperjav 生成的 chinese/plain 两份、跨版本目录同名 srt、115 云盘多个字幕）都拿到
 不同 N，天然不撞车。
 

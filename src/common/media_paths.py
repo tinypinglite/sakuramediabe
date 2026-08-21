@@ -39,7 +39,7 @@ def normalize_asset_dir_name(owner_key: str) -> str:
 def movie_asset_shard(dir_name: str) -> str:
     """番号资产目录的分片名：sha1 十六进制前 2 位。
 
-    入参必须是最终落盘的目录名本身（已归一化），迁移侧与写入侧才会算出同一个分片。
+    入参必须是最终落盘的目录名本身（已归一化），确保各调用方算出同一个分片。
     """
     return hashlib.sha1(dir_name.encode("utf-8")).hexdigest()[:MOVIE_ASSET_SHARD_HEX_LENGTH]
 
@@ -71,7 +71,7 @@ MOVIE_SUBTITLE_EXTENSIONS = (".srt", ".ass", ".ssa", ".vtt")
 def is_movie_subtitle_target_name(movie_number: str, file_name: str) -> bool:
     """判断文件名是否已经符合 ``<番号>-<N>.<ext>`` 命名格式。
 
-    迁移与写入侧共用这一判定：已符合格式的字幕视为终态，重跑走 fast-path skip。
+    已符合格式的字幕可直接作为已有目标文件使用。
     """
     prefix = f"{movie_number}-"
     for extension in MOVIE_SUBTITLE_EXTENSIONS:

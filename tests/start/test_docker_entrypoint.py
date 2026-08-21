@@ -178,7 +178,6 @@ def test_docker_entrypoint_chowns_managed_dirs_only(tmp_path):
             "config",
             "cache",
             "cache/assets",
-            "cache/subtitles",
             "cache/gfriends",
             "media-clips",
             "plugins",

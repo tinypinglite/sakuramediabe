@@ -246,7 +246,7 @@ class SubtitleImportService:
         movie,
         existing_hashes: dict[int, set[str]],
     ) -> set[str]:
-        """返回该影片已登记字幕的内容指纹集合（含新老布局合法路径）。"""
+        """返回该影片已登记字幕的内容指纹集合。"""
         if movie.id in existing_hashes:
             return existing_hashes[movie.id]
         hashes = SubtitleAssetService.movie_subtitle_hashes(movie)

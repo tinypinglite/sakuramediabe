@@ -65,7 +65,7 @@
 - 影片字幕：`movies/{shard}/{movie_number}/subtitles/{movie_number}-{N}.srt`（N 递增分配）
 
 分片计算集中在 `src/common/media_paths.py` 的 `movie_asset_shard()` / `movie_asset_relative_dir()`，
-番号先经 `normalize_asset_dir_name()` 归一化再参与哈希；写入侧与迁移侧共用同一套函数。
+番号先经 `normalize_asset_dir_name()` 归一化再参与哈希。
 
 磁盘根目录来自：
 
@@ -92,17 +92,6 @@ storage/import-images/
           SONE-210-1.srt
           SONE-210-2.srt
 ```
-
-### 存量迁移
-
-老布局到当前布局的两步迁移都是**手动可选的独立 CLI**（不进 lifespan、不随 `migrate` 自动跑），
-与 `migrate-jav-layout` / `migrate-plot-layout` 同一模式，都带 `--dry-run` 预览规模：
-
-- `python -m src.start.commands migrate-movie-asset-shard`：番号目录整体 `rename` 进分片 + 批量重写 `image.origin`
-- `python -m src.start.commands migrate-movie-subtitles`：字幕从媒体库 sidecar 与旧字幕根收敛到 `subtitles/`（建议在分片之后运行）
-
-两者都幂等、崩溃安全：文件先落位、DB 后重写，已完成的部分重跑天然跳过，Ctrl+C / 掉电后重跑即收敛。
-新装或不打算迁移存量时无需运行；新入库直接落分片布局。
 
 ## 文件访问接口
 

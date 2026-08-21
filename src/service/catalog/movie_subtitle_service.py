@@ -6,10 +6,7 @@ from src.api.exception.errors import ApiError
 from src.common import build_signed_subtitle_url
 from src.common.media_paths import movie_subtitle_dir
 from src.common.service_helpers import require_record
-from src.common.subtitle_paths import (
-    ensure_movie_subtitle_path,
-    iter_movie_sidecar_roots,
-)
+from src.common.subtitle_paths import ensure_movie_subtitle_path
 from src.model import Movie, Subtitle
 from src.schema.catalog.subtitles import (
     MovieSubtitleItemResource,
@@ -99,31 +96,16 @@ class MovieSubtitleService:
 
     @classmethod
     def _discover_subtitle_paths(cls, movie: Movie) -> list[Path]:
-        """扫描该影片所有合法字幕位置，兼容新老布局（迁移可选，不迁移也能读到）。
-
-        - 新布局：统一目录 ``movies/<shard>/<番号>/subtitles/``（新导入与迁移后的落点），
-          字幕不跟随具体 Media 文件，媒体文件失效也不影响这里的字幕。
-        - 老布局：媒体库里视频所在的版本目录 sidecar（老用户未迁移时字幕仍在这里）。
-        115 旧字幕根下的字幕在导入时已登记为 Subtitle 行、由 ensure_movie_subtitle_path 放行，
-        无需在这里重复扫盘。
-        """
-        scan_roots: list[Path] = [movie_subtitle_dir(movie.movie_number)]
-        scan_roots.extend(iter_movie_sidecar_roots(movie))
-
+        """扫描该影片标准字幕目录下的 .srt 文件。"""
+        scan_root = movie_subtitle_dir(movie.movie_number)
+        if not scan_root.is_dir():
+            return []
         discovered_paths: list[Path] = []
-        seen_paths: set[str] = set()
-        for scan_root in scan_roots:
-            if not scan_root.is_dir():
+        for subtitle_path in sorted(scan_root.iterdir(), key=lambda item: item.name.lower()):
+            if not subtitle_path.is_file() or subtitle_path.suffix.lower() != ".srt":
                 continue
-            for subtitle_path in sorted(scan_root.iterdir(), key=lambda item: item.name.lower()):
-                if not subtitle_path.is_file() or subtitle_path.suffix.lower() != ".srt":
-                    continue
-                try:
-                    normalized_path = str(ensure_movie_subtitle_path(movie, subtitle_path))
-                except ApiError:
-                    continue
-                if normalized_path in seen_paths:
-                    continue
-                seen_paths.add(normalized_path)
-                discovered_paths.append(Path(normalized_path))
+            try:
+                discovered_paths.append(ensure_movie_subtitle_path(movie, subtitle_path))
+            except ApiError:
+                continue
         return discovered_paths
