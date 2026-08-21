@@ -1,4 +1,5 @@
 from .daily_recommendation_service import DailyRecommendationService
+from .hot_actress_release_service import HotActressReleaseService
 from .hot_review_service import HotReviewCatalogService, HotReviewSyncService
 from .image_search_index_service import ImageSearchIndexService
 from .image_search_service import ImageSearchService, get_image_search_service
@@ -19,6 +20,7 @@ from .recommendation_service import MovieRecommendationService
 
 __all__ = [
     "DailyRecommendationService",
+    "HotActressReleaseService",
     "HotReviewCatalogService",
     "HotReviewSyncService",
     "ImageSearchIndexService",

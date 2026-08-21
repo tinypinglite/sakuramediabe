@@ -12,6 +12,9 @@ from src.api.routers import deps
 from src.api.routers.catalog import subscriptions as movie_subscriptions
 from src.api.routers.catalog import subtitle_imports, tags
 from src.api.routers.discovery import hot_reviews, image_search, ranking_sources
+from src.api.routers.discovery.hot_actress_releases import (
+    router as hot_actress_releases_router,
+)
 from src.api.routers.files import images
 from src.api.routers.playback import media as media_router
 from src.api.routers.playback import media_libraries
@@ -173,6 +176,15 @@ def test_hot_reviews_router_uses_auth_and_db_dependencies():
     assert deps.get_current_user in dependency_targets
 
 
+def test_hot_actress_releases_router_uses_auth_and_db_dependencies():
+    dependency_targets = {
+        dependency.dependency for dependency in hot_actress_releases_router.dependencies
+    }
+
+    assert deps.db_deps in dependency_targets
+    assert deps.get_current_user in dependency_targets
+
+
 def test_ranking_sources_router_uses_auth_and_db_dependencies():
     dependency_targets = {
         dependency.dependency
@@ -294,6 +306,7 @@ def test_create_app_registers_image_search_routes():
     assert "/daily-recommendations" in paths
     assert "/moment-recommendations" in paths
     assert "/hot-reviews" in paths
+    assert "/hot-actress-releases" in paths
     assert "/ranking-sources" in paths
     assert "/ranking-sources/{source_key}/boards" in paths
     assert "/ranking-sources/{source_key}/boards/{board_key}/items" in paths

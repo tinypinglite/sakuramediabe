@@ -25,6 +25,9 @@ from src.api.routers.collections.playlists import router as playlists_router
 from src.api.routers.discovery.daily_recommendations import (
     router as daily_recommendations_router,
 )
+from src.api.routers.discovery.hot_actress_releases import (
+    router as hot_actress_releases_router,
+)
 from src.api.routers.discovery.hot_reviews import router as hot_reviews_router
 from src.api.routers.discovery.image_search import router as image_search_router
 from src.api.routers.discovery.moment_recommendations import (
@@ -102,6 +105,7 @@ def create_app() -> FastAPI:
     app.include_router(media_libraries_router)
     app.include_router(cloud115_libraries_router)
     app.include_router(daily_recommendations_router)
+    app.include_router(hot_actress_releases_router)
     app.include_router(image_search_router)
     app.include_router(moment_recommendations_router)
     app.include_router(hot_reviews_router)
