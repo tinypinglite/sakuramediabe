@@ -2,7 +2,7 @@
 
 覆盖 v2-lite 设计文档第 4 节的保证：读取与导入只返回不可变快照、patch 走
 唯一网关。插件 Host API 只接受当前版本。白名单当前真实开放
-title / summary。
+title / summary / is_collection。
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from src.model import Movie
-from src.plugins import MOVIE_SNAPSHOT_FIELDS, MovieSnapshot
+from src.plugins import MOVIE_SNAPSHOT_FIELDS, MoviePage, MovieSnapshot
 from src.plugins.context import MovieApi
 from src.plugins.contracts import HOST_API_VERSION, MIN_SUPPORTED_HOST_API_VERSION
 from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
@@ -84,15 +84,47 @@ def test_movies_find_by_numbers_is_case_and_separator_insensitive(test_db):
     assert [snapshot.values["movie_number"] for snapshot in snapshots] == ["ABP-001"]
 
 
+def test_movies_list_page_walks_full_library_by_id_cursor(test_db):
+    first = _create_movie(test_db, movie_number="ABP-001")
+    second = _create_movie(
+        test_db,
+        javdb_id="javdb-2",
+        movie_number="ABP-002",
+    )
+    third = _create_movie(
+        test_db,
+        javdb_id="javdb-3",
+        movie_number="ABP-003",
+    )
+    api = MovieApi("demo_plugin")
+
+    first_page = api.list_page(limit=2)
+    assert isinstance(first_page, MoviePage)
+    assert [item.movie_id for item in first_page.items] == [first.id, second.id]
+    assert first_page.next_cursor == second.id
+
+    second_page = api.list_page(after_id=first_page.next_cursor, limit=2)
+    assert [item.movie_id for item in second_page.items] == [third.id]
+    assert second_page.next_cursor is None
+
 def test_movies_patch_goes_through_gateway(test_db):
     movie = _create_movie(test_db)
     api = MovieApi("demo_plugin")
 
     assert api.patch(movie.id, {"title": "插件标题"}, expected_revision=0) is True
+    assert api.patch(
+        movie.id,
+        {"is_collection": True},
+        expected_revision=1,
+    ) is True
     snapshot = api.get(movie.id)
     assert snapshot.values["title"] == "插件标题"
-    assert snapshot.owners == {"title": "plugin:demo_plugin"}
-    assert snapshot.revision == 1
+    assert snapshot.values["is_collection"] is True
+    assert snapshot.owners == {
+        "title": "plugin:demo_plugin",
+        "is_collection": "plugin:demo_plugin",
+    }
+    assert snapshot.revision == 2
 
     # 陈旧 revision：返回 False 且零修改。
     assert api.patch(movie.id, {"title": "再次写入"}, expected_revision=0) is False

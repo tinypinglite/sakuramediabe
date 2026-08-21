@@ -8,12 +8,12 @@ from src.model.catalog.tags import Tag
 from src.model.mixins import TimestampedMixin
 
 # 受保护字段白名单（v2-lite 字段主权）：插件可写字段的宿主固定名单。
-# 当前开放 title / summary / maker_name / director_name（宿主严格刷新已收敛走
-# gateway，插件可补充/修正文案与厂商/导演信息）；后续每个可写字段必须由第一个
+# 当前开放 title / summary / maker_name / director_name / is_collection（宿主严格刷新已收敛走
+# gateway，插件可补充/修正文案、厂商/导演信息和合集判定）；后续每个可写字段必须由第一个
 # 真实插件提出、补 MOVIE_FIELD_CODECS 类型校验、并收敛对应宿主写点后才加入。
 # 白名单非空后，已持久化 Movie 的裸 save() 会被护栏拒绝。
 PROTECTED_MOVIE_FIELDS: frozenset[str] = frozenset(
-    {"title", "summary", "maker_name", "director_name"}
+    {"title", "summary", "maker_name", "director_name", "is_collection"}
 )
 
 # 受保护字段 codec：字段名 -> 接受的值类型；开放写入前必须补上（v2-lite 文档约定）。
@@ -22,6 +22,7 @@ MOVIE_FIELD_CODECS: dict[str, type] = {
     "summary": str,
     "maker_name": str,
     "director_name": str,
+    "is_collection": bool,
 }
 
 
@@ -76,7 +77,6 @@ class Movie(TimestampedMixin, BaseModel):
     interaction_synced_at = peewee.DateTimeField(null=True, index=True)
     heat = peewee.IntegerField(null=False, default=0)
     is_collection = peewee.BooleanField(null=False, default=False, index=True)
-    is_collection_overridden = peewee.BooleanField(null=False, default=False, index=True)
     is_subscribed = peewee.BooleanField(null=False, default=False, index=True)
     subscribed_at = peewee.DateTimeField(null=True, index=True)
     # 订阅资源查询是影片领域状态：保留可见进度与重试预算，不再依赖通用资源任务台账。
@@ -92,7 +92,7 @@ class Movie(TimestampedMixin, BaseModel):
     subscription_search_last_error = peewee.TextField(null=True)
     subscription_search_last_error_at = peewee.DateTimeField(null=True)
     extra = JsonTextField(null=True, default=None, verbose_name="额外元数据")
-    # v2-lite 字段主权：字段 -> "plugin:<id>" 的 owner 映射（缺键代表宿主管理）；
+    # v2-lite 字段主权：字段 -> owner 映射（缺键代表自动宿主管理，host:manual 代表人工）；
     # mutation_revision 只表示受保护字段及其 owner 的版本，不是整条 Movie 的全局版本。
     # constraints 里的服务端 DEFAULT 与 v0.5.0 收敛迁移对齐，保证新库（initdb 渲染）
     # 与 v0.4.21 存量库（迁移 ALTER）schema 同构，裸 INSERT 也有兜底。
@@ -139,8 +139,7 @@ class Movie(TimestampedMixin, BaseModel):
 
     @classmethod
     def update(cls, *args, **kwargs):
-        # 与 save(only=...) 同级的运行时护栏：批量 UPDATE 同样禁止写受保护字段，
-        # 白名单为空时惰性放行（v2-lite 阶段一不开放任何字段）。
+        # 与 save(only=...) 同级的运行时护栏：批量 UPDATE 同样禁止写受保护字段。
         # peewee 的 __data dict 与 kwargs 会合并，两侧都要检查，杜绝混合调用绕过。
         written_fields: set[str] = set()
         if args and isinstance(args[0], dict):
@@ -162,7 +161,7 @@ class Movie(TimestampedMixin, BaseModel):
             return
         if not only:
             # 未传 only 的 save() 会把 _data 全列写回，可能覆盖插件刚写入的受保护字段，
-            # 因此一旦开放任何字段就必须显式窄更新。白名单为空时无保护对象，放行。
+            # 因此一旦开放任何字段就必须显式窄更新。
             raise RuntimeError(
                 f"已持久化 Movie 的 save() 必须传 only（受保护字段: {sorted(PROTECTED_MOVIE_FIELDS)}）"
             )

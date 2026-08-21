@@ -263,6 +263,7 @@ def test_create_tables_creates_current_schema_columns(clean_db, monkeypatch):
     assert "interaction_synced_at" in movie_columns
     assert "field_owners" in movie_columns
     assert "mutation_revision" in movie_columns
+    assert "is_collection_overridden" not in movie_columns
     movie_column_types = {
         column.name: column.data_type
         for column in database.get_columns("movie")

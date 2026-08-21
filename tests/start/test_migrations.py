@@ -17,6 +17,7 @@ from src.model import (
 from src.start.commands import main
 from src.start.migrations.runner import (
     CONSOLIDATED_MIGRATION_NAME,
+    MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
     SUPPORTED_BASE_MIGRATION_NAME,
     MigrationExecution,
     MigrationRunSummary,
@@ -76,10 +77,13 @@ def _create_legacy_task_tables(database) -> None:
     )
 
 
-def test_only_v050_consolidated_migration_is_discoverable():
+def test_current_migrations_are_discoverable_in_order():
     modules = _list_migration_modules()
 
-    assert [module.name for module in modules] == [CONSOLIDATED_MIGRATION_NAME]
+    assert [module.name for module in modules] == [
+        CONSOLIDATED_MIGRATION_NAME,
+        MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
+    ]
 
 
 def test_run_pending_migrations_accepts_v0421_base(clean_db):
@@ -126,6 +130,9 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
     clean_db.create_tables(TEST_MODELS)
     clean_db.execute_sql(
+        "ALTER TABLE movie ADD COLUMN is_collection_overridden BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    clean_db.execute_sql(
         "ALTER TABLE background_task_run ADD COLUMN owner_pid INTEGER NULL"
     )
 
@@ -135,6 +142,10 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         backend_config={"root_path": "/library"},
     )
     movie = Movie.create(movie_number="ABP-001", javdb_id="movie-1", title="title")
+    clean_db.execute_sql(
+        "UPDATE movie SET is_collection_overridden = TRUE WHERE id = %s",
+        (movie.id,),
+    )
     media = Media.create(
         movie=movie,
         library=library,
@@ -255,7 +266,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
 
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 1
+    assert summary.applied_count == 2
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -315,6 +326,10 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
     assert not clean_db.table_exists("subtitle_import_job")
     assert not clean_db.table_exists("video_import_job")
     assert not clean_db.table_exists("import_job")
+    assert "is_collection_overridden" not in _column_names(clean_db, "movie")
+    assert clean_db.execute_sql(
+        "SELECT field_owners FROM movie WHERE id = %s", (movie.id,)
+    ).fetchone()[0] == {"is_collection": "host:manual"}
 
 
 def test_load_migration_module_uses_package_import():

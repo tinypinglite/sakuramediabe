@@ -232,11 +232,11 @@ class CatalogImportService:
             movie.title = detail.title
             movie.javdb_id = detail.javdb_id
             movie.movie_number = detail.movie_number
-            # 手动覆盖优先：已手工标记的影片在导入刷新时保持现状，不按自动规则重算合集状态。
-            if not bool(movie.is_collection_overridden):
-                movie.is_collection = MovieCollectionService.matches_configured_collection(
-                    detail.movie_number,
-                )
+            # 新建行尚无 owner，按宿主自动规则初始化合集字段；后续人工/插件接管
+            # 通过 field_owners 表达，自动同步会尊重 owner。
+            movie.is_collection = MovieCollectionService.matches_configured_collection(
+                detail.movie_number,
+            )
             movie.save()
             logger.debug(
                 "Catalog import movie saved movie_id={} movie_number={}",

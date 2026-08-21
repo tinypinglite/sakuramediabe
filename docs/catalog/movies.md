@@ -355,7 +355,8 @@ Authorization: Bearer <token>
   - 命中的影片会批量更新：
     - `collection` -> `is_collection=true`
     - `single` -> `is_collection=false`
-  - 同时写入手动覆盖标记，后续自动规则同步和导入流程不会改写该影片的合集状态
+  - 同时将 `field_owners.is_collection` 写为 `host:manual`，后续自动规则同步不会改写该影片的合集状态；
+    该人工主权不会自动恢复或清除
 - 成功响应：
   - `200 OK`
   - 返回 `requested_count`（请求内原始番号数量）和 `updated_count`（命中并写入数量）

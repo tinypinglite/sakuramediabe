@@ -67,11 +67,10 @@
 - 新增 HTTP 路由 / API 端点；
 - 注册事件钩子、中间件或 Webhook；
 - 扩展 JavDB/GFriends 等 metadata provider 与索引器；
-- 按主库资源 ID 做通用处理（插件不能按条件批量查询/更新主库任意资源；
-  写侧入口只有 `import_movie_by_number` / `import_subtitle` / `movies.patch` 三个，
-  `movies.get` / `find_by_numbers` 只能按 id / 番号单点读取快照）；
-- 查询主库业务状态（例如"哪些影片缺字幕/缺封面"），`list_existing_movie_numbers()`
-  只能拿到全部番号集合；
+- 按条件批量查询/更新主库任意资源；影片领域仅提供 `movies.list_page()` 做通用的
+  全库快照遍历，写入仍必须按公开字段契约进行；
+- 查询主库任意业务状态（例如"哪些影片缺字幕/缺封面"），插件只能基于公开快照字段
+  自己计算；
 - 直接访问数据库；
 - 安装第三方依赖（插件只能使用宿主 venv 已装依赖 + 标准库）；
 - 注册前端页面或 UI 组件。
@@ -360,7 +359,7 @@ PluginExtension(
 | `build_javdb_provider(username=None, password=None)` | 构造 JavDB 元数据 provider；账号仅需登录的榜单（TOP250）需要，由插件从自身设置传入 |
 | `build_catalog_import_service()` | 构造目录入库服务 |
 | `import_movie_by_number(movie_number, *, force_subscribed=False)` | 通过 JavDB 获取详情并复用宿主能力入库；**已存在影片跳过不更新**（纯新建语义），返回不可变 `MovieSnapshot`（v2 契约，不再返回可写 ORM 对象） |
-| `movies` | 影片只读快照与受保护字段写入出口（v2 契约），见 6.8 节 |
+| `movies` | 影片快照、全库分页遍历与受保护字段写入出口（v2 契约），见 6.8 节 |
 | `list_existing_movie_numbers() -> set[str]` | 主库全部影片番号（大写），用于 O(1) 存在性判断 |
 | `import_subtitle(movie_number, content, filename, language=None)` | 写入一段字幕字节内容，返回 `SubtitleImportResult`。只支持 `.srt/.ass/.ssa/.vtt`；去重粒度为**同一部影片内**的内容 sha256；`filename` 只取扩展名；影片不存在返回 `movie_not_found`，不抛异常 |
 | `sync_ranking_sources(progress_callback=None)` | 同步当前插件声明的全部排行榜来源，返回统计 dict |
@@ -514,6 +513,15 @@ from src.plugins import MovieSnapshot
 snapshot: MovieSnapshot | None = context.movies.get(movie_id)
 snapshots: list[MovieSnapshot] = context.movies.find_by_numbers(["ABP-123", "IPX-456"])
 
+# 全库遍历：首次 after_id=0，后续使用上一页 next_cursor；按 id 游标不会跳过分页边界。
+page = context.movies.list_page(after_id=0, limit=500)
+while page.items:
+    for snapshot in page.items:
+        handle(snapshot)
+    if page.next_cursor is None:
+        break
+    page = context.movies.list_page(after_id=page.next_cursor, limit=500)
+
 # 写受保护字段（乐观并发）：
 # - 字段未接管或 owner 是当前插件、且 revision 匹配 → 成功，返回 True
 # - 否则整次零修改，返回 False（重新读取 snapshot 后决定是否重试）
@@ -524,13 +532,16 @@ ok = context.movies.patch(
 )
 ```
 
-- `MovieSnapshot(movie_id, revision, values, owners)`：不可变；
-  `revision` 是受保护字段版本，`owners` 是字段 -> `plugin:<id>` 接管映射；
+- `MovieSnapshot(movie_id, revision, values, owners)`：不可变；`owners` 缺少字段表示宿主管理，
+  `plugin:<id>` 表示插件接管，`host:manual` 表示人工接管；`revision` 是受保护字段版本；
+- `MoviePage(items, next_cursor)`：全库遍历的一页快照；`next_cursor` 为 `None` 表示结束，
+  `list_page` 使用 `Movie.id` keyset 游标，不暴露 ORM；
 - 插件要更新既有影片字段，必须先 `get`/`find_by_numbers` 取得 snapshot，
   再 `patch`；`import_movie_by_number` 保持纯新建语义，不覆盖已有影片；
 - 字段写入白名单由宿主固定维护（当前开放 `title` / `summary` / `maker_name` /
-  `director_name`，后续字段须由真实插件提出需求并收敛宿主写点后才开放），不在
-  白名单内的字段调用 `patch` 会直接抛 `ValueError`；以上字段只接受字符串值；
+  `director_name` / `is_collection`，后续字段须由真实插件提出需求并收敛宿主写点后才开放），不在
+  白名单内的字段调用 `patch` 会直接抛 `ValueError`；前四个字段只接受字符串值，
+  `is_collection` 只接受布尔值；
 - 插件被删除后其接管记录会保留在 `movie.field_owners`，字段冻结回宿主管理前
   需执行 `plugins clear-field-owners --plugin-id <id>` 解除接管。
 

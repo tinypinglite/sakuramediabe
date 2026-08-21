@@ -1,6 +1,7 @@
 from src.common import normalize_movie_number
 from src.config.config import settings
 from src.model import Movie
+from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
 
 
 class MovieCollectionService:
@@ -31,7 +32,7 @@ class MovieCollectionService:
                 Movie.id,
                 Movie.movie_number,
                 Movie.is_collection,
-                Movie.is_collection_overridden,
+                Movie.field_owners,
             ).order_by(Movie.id)
         )
         to_collection_ids: list[int] = []
@@ -42,8 +43,8 @@ class MovieCollectionService:
             target_is_collection = cls.matches_configured_collection(movie.movie_number)
             if target_is_collection:
                 matched_count += 1
-            # 手动覆盖优先：被手动标记过的影片不再参与自动规则同步改写。
-            if bool(movie.is_collection_overridden):
+            # 自动规则只管理没有 owner 的字段；插件和人工都由同一映射表达。
+            if (movie.field_owners or {}).get("is_collection"):
                 continue
             if bool(movie.is_collection) == target_is_collection:
                 continue
@@ -52,17 +53,15 @@ class MovieCollectionService:
             else:
                 to_single_ids.append(movie.id)
 
-        if to_collection_ids:
-            (
-                Movie.update(is_collection=True)
-                .where(Movie.id.in_(to_collection_ids))
-                .execute()
+        for movie_id in to_collection_ids:
+            MovieOwnershipGateway.update_host_unowned(
+                movie_id,
+                {"is_collection": True},
             )
-        if to_single_ids:
-            (
-                Movie.update(is_collection=False)
-                .where(Movie.id.in_(to_single_ids))
-                .execute()
+        for movie_id in to_single_ids:
+            MovieOwnershipGateway.update_host_unowned(
+                movie_id,
+                {"is_collection": False},
             )
 
         total_movies = len(movies)

@@ -2,7 +2,7 @@
 
 覆盖文档验收的最低保证：字段 owner 与值同语句提交、revision 乐观并发、
 宿主窄更新不覆盖已接管字段、save/update 运行时护栏。白名单当前真实开放
-title / summary（MOVIE_FIELD_CODECS 限定 str），测试直接跑真实配置。
+title / summary / is_collection，测试直接跑真实配置。
 """
 
 from __future__ import annotations
@@ -106,6 +106,22 @@ def test_patch_plugin_rejects_wrong_value_type(test_db):
         )
 
 
+def test_patch_plugin_can_take_collection_ownership(test_db):
+    movie = _create_movie(test_db)
+
+    assert MovieOwnershipGateway.patch_plugin(
+        movie.id,
+        "collection-plugin",
+        {"is_collection": True},
+        expected_revision=0,
+    ) is True
+
+    movie = Movie.get_by_id(movie.id)
+    assert movie.is_collection is True
+    assert movie.field_owners == {"is_collection": "plugin:collection-plugin"}
+    assert movie.mutation_revision == 1
+
+
 def test_update_host_unowned_skips_owned_field(test_db):
     movie = _create_movie(test_db)
     assert MovieOwnershipGateway.patch_plugin(
@@ -171,6 +187,29 @@ def test_update_host_unowned_accepts_none_for_nullable_fields(test_db):
     assert movie.mutation_revision == 2
 
 
+def test_update_host_manual_overrides_plugin_and_blocks_auto_updates(test_db):
+    movie = _create_movie(test_db)
+    assert MovieOwnershipGateway.patch_plugin(
+        movie.id,
+        "collection-plugin",
+        {"is_collection": True},
+        expected_revision=0,
+    ) is True
+
+    assert MovieOwnershipGateway.update_host_manual(
+        [movie.id], {"is_collection": False}
+    ) == 1
+    movie = Movie.get_by_id(movie.id)
+    assert movie.is_collection is False
+    assert movie.field_owners == {"is_collection": "host:manual"}
+    assert movie.mutation_revision == 2
+
+    MovieOwnershipGateway.update_host_unowned(movie.id, {"is_collection": True})
+    movie = Movie.get_by_id(movie.id)
+    assert movie.is_collection is False
+    assert movie.mutation_revision == 2
+
+
 def test_save_guard_rejects_full_save(test_db):
     movie = _create_movie(test_db)
     movie.title = "直接改"
@@ -185,10 +224,14 @@ def test_save_guard_rejects_only_with_protected_field(test_db):
         movie.save(only=[Movie.title])
 
     # 非保护字段窄更新放行。
-    movie.is_collection = True
-    movie.save(only=[Movie.is_collection])
+    movie.heat = 123
+    movie.save(only=[Movie.heat])
     movie = Movie.get_by_id(movie.id)
-    assert movie.is_collection is True
+    assert movie.heat == 123
+
+    movie.is_collection = True
+    with pytest.raises(RuntimeError, match="受保护字段禁止直接写入"):
+        movie.save(only=[Movie.is_collection])
 
 
 def test_save_guard_rejects_string_only_with_protected_field(test_db):
@@ -199,10 +242,14 @@ def test_save_guard_rejects_string_only_with_protected_field(test_db):
         movie.save(only=["title"])
 
     # 非保护字段字符串窄更新放行。
-    movie.is_collection = True
-    movie.save(only=["is_collection"])
+    movie.heat = 123
+    movie.save(only=["heat"])
     movie = Movie.get_by_id(movie.id)
-    assert movie.is_collection is True
+    assert movie.heat == 123
+
+    movie.is_collection = True
+    with pytest.raises(RuntimeError, match="受保护字段禁止直接写入"):
+        movie.save(only=["is_collection"])
 
 
 def test_update_guard_rejects_protected_fields(test_db):
@@ -212,10 +259,13 @@ def test_update_guard_rejects_protected_fields(test_db):
     with pytest.raises(RuntimeError, match="禁止直接 UPDATE"):
         Movie.update({Movie.title: "批量改"}).where(Movie.id == movie.id).execute()
 
+    with pytest.raises(RuntimeError, match="禁止直接 UPDATE"):
+        Movie.update({Movie.is_collection: True}).where(Movie.id == movie.id).execute()
+
     # 非保护字段批量更新放行。
-    Movie.update({Movie.is_collection: True}).where(Movie.id == movie.id).execute()
+    Movie.update({Movie.heat: 123}).where(Movie.id == movie.id).execute()
     movie = Movie.get_by_id(movie.id)
-    assert movie.is_collection is True
+    assert movie.heat == 123
 
 
 def test_update_guard_rejects_mixed_dict_and_kwargs(test_db):

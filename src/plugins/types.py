@@ -46,7 +46,7 @@ class MovieSnapshot:
     """影片不可变快照（v2-lite）：插件读取/导入的出口，绝不暴露内部 ORM 对象。
 
     - ``values``：MOVIE_SNAPSHOT_FIELDS 固定只读集合的快照值；
-    - ``owners``：字段 -> "plugin:<id>" 的接管映射（缺键代表宿主管理）；
+    - ``owners``：字段 -> owner 的接管映射（缺键代表自动宿主管理，``host:manual`` 代表人工）；
     - ``revision``：受保护字段版本，``patch`` 的乐观并发依据。
     """
 
@@ -56,12 +56,21 @@ class MovieSnapshot:
     owners: Mapping[str, str]
 
 
+@dataclass(frozen=True)
+class MoviePage:
+    """按影片内部 id 游标返回的一页影片快照。"""
+
+    items: tuple[MovieSnapshot, ...]
+    next_cursor: int | None
+
+
 __all__ = [
     "MOVIE_SNAPSHOT_FIELDS",
     "ImageDownloadError",
     "JavdbMovieActor",
     "JavdbMovieDetail",
     "JavdbMovieTag",
+    "MoviePage",
     "MovieSnapshot",
     "SubtitleImportResult",
     "SubtitleImportStatus",

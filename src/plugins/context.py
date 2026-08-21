@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.plugins.types import MOVIE_SNAPSHOT_FIELDS, MovieSnapshot
+from src.plugins.types import MOVIE_SNAPSHOT_FIELDS, MoviePage, MovieSnapshot
 
 
 class MovieApi:
@@ -60,6 +60,28 @@ class MovieApi:
             seen_ids.add(movie.id)
             snapshots.append(self._to_snapshot(movie))
         return snapshots
+
+    def list_page(self, *, after_id: int = 0, limit: int = 500) -> MoviePage:
+        """按 Movie.id 游标分页遍历全库，返回不可变影片快照。"""
+        if after_id < 0:
+            raise ValueError("after_id 不能小于 0")
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit 必须在 1 到 1000 之间")
+
+        from src.model import Movie
+
+        rows = list(
+            Movie.select()
+            .where(Movie.id > after_id)
+            .order_by(Movie.id)
+            .limit(limit + 1)
+        )
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        return MoviePage(
+            items=tuple(self._to_snapshot(movie) for movie in page_rows),
+            next_cursor=page_rows[-1].id if has_more else None,
+        )
 
     def patch(
         self,

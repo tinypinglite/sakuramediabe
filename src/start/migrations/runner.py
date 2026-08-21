@@ -14,6 +14,7 @@ VERSIONS_DIR = Path(__file__).resolve().parent / "versions"
 # 0.5.0 只承接 v0.4.21 的最后一条迁移记录；旧版本文件会随本次发布移除。
 SUPPORTED_BASE_MIGRATION_NAME = "20260816_01_add_movie_field_owners"
 CONSOLIDATED_MIGRATION_NAME = "20260821_01_consolidate_task_runtime"
+MOVIE_COLLECTION_OWNER_MIGRATION_NAME = "20260823_01_unify_movie_collection_owner"
 
 
 @dataclass(frozen=True)
@@ -75,13 +76,16 @@ def run_pending_migrations(database: Database) -> MigrationRunSummary:
         _validate_migration_source(database, applied_names)
         executed: list[MigrationExecution] = []
 
-        if _is_empty_schema(database) and CONSOLIDATED_MIGRATION_NAME not in applied_names:
-            migration_name = CONSOLIDATED_MIGRATION_NAME
-            with database.atomic():
-                SchemaMigration.create(name=migration_name)
-            return MigrationRunSummary(
-                executed=[MigrationExecution(name=migration_name, applied=True)]
-            )
+        if _is_empty_schema(database):
+            if CONSOLIDATED_MIGRATION_NAME not in applied_names:
+                migration_name = CONSOLIDATED_MIGRATION_NAME
+                with database.atomic():
+                    SchemaMigration.create(name=migration_name)
+                return MigrationRunSummary(
+                    executed=[MigrationExecution(name=migration_name, applied=True)]
+                )
+            # 新库只记录 consolidated marker，业务迁移由当前模型建表，不应尝试执行。
+            return MigrationRunSummary(executed=[])
 
         for module in _list_migration_modules():
             migration_name = str(getattr(module, "name", "")).strip()

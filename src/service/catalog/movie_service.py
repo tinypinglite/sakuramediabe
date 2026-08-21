@@ -65,6 +65,7 @@ from src.schema.catalog.movies import (
     TagResource,
 )
 from src.schema.common.pagination import PageResponse
+from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
 from src.service.collections import PlaylistService
 
 
@@ -630,18 +631,14 @@ class MovieService:
             )
 
         target_is_collection = collection_type == MovieCollectionMarkType.COLLECTION
-        # 手工批量标记后写入 override 标识，后续自动规则同步不再覆盖这些影片。
-        (
-            Movie.update(
-                is_collection=target_is_collection,
-                is_collection_overridden=True,
-            )
-            .where(Movie.id.in_(matched_movie_ids))
-            .execute()
+        # 人工标记取得宿主 owner，后续自动规则尊重该字段；不增加单独 override 状态。
+        updated_count = MovieOwnershipGateway.update_host_manual(
+            matched_movie_ids,
+            {"is_collection": target_is_collection},
         )
         return MovieCollectionMarkResponse(
             requested_count=requested_count,
-            updated_count=len(matched_movie_ids),
+            updated_count=updated_count,
         )
 
     @classmethod

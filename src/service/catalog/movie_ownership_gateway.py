@@ -8,6 +8,7 @@ EvalPlanQual 阶段重新评估 WHERE）保证原子性：
   失败整次零修改，无 TOCTOU 窗口。
 - ``update_host_unowned``：宿主只更新尚未被接管的字段；NULL-safe 变化检测，
   任一字段真正变化才递增 revision 并刷新 updated_at。
+- ``update_host_manual``：人工写入并取得宿主 owner，可覆盖插件对同一字段的接管。
 
 字段名全部来自宿主白名单常量，不接收任意字符串；值一律参数化。
 """
@@ -18,6 +19,8 @@ import json
 from typing import Any
 
 from src.model.catalog.movies import MOVIE_FIELD_CODECS, PROTECTED_MOVIE_FIELDS, Movie
+
+MANUAL_MOVIE_FIELD_OWNER = "host:manual"
 
 
 class MovieOwnershipGateway:
@@ -42,7 +45,7 @@ class MovieOwnershipGateway:
             if value is None:
                 # 宿主写路径（update_host_unowned）放行 None：maker_name / director_name /
                 # summary 等列允许 NULL，远端详情缺失时以 None 落库是合法数据；
-                # 插件 patch 路径保持 str-only（allow_none=False），拒绝 None。
+                # 插件 patch 路径不允许 None（allow_none=False）。
                 if not allow_none:
                     raise ValueError(
                         f"字段 {name} 值类型错误: 期望 {expected_type.__name__}"
@@ -139,6 +142,36 @@ class MovieOwnershipGateway:
             WHERE id = %s
             """,
             params,
+        )
+        return cursor.rowcount
+
+    @classmethod
+    def update_host_manual(cls, movie_ids: list[int], fields: dict[str, Any]) -> int:
+        """人工写入受保护字段，并把这些字段标记为宿主人工 owner。
+
+        这是宿主侧的特权写入口：人工操作可以覆盖插件 owner，后续自动规则会尊重
+        ``host:manual``，但不提供自动恢复或回退语义。
+        """
+        cls._validate_fields(fields, allow_none=True)
+        if not movie_ids:
+            return 0
+        table = Movie._meta.table_name
+        assignments = ", ".join(f"{name} = %s" for name in fields)
+        placeholders = ", ".join("%s" for _ in movie_ids)
+        owner_payload = json.dumps(
+            {name: MANUAL_MOVIE_FIELD_OWNER for name in fields},
+            ensure_ascii=False,
+        )
+        cursor = Movie._meta.database.execute_sql(
+            f"""
+            UPDATE {table}
+            SET {assignments},
+                field_owners = field_owners || %s::jsonb,
+                mutation_revision = mutation_revision + 1,
+                updated_at = now()
+            WHERE id IN ({placeholders})
+            """,
+            [*fields.values(), owner_payload, *movie_ids],
         )
         return cursor.rowcount
 
