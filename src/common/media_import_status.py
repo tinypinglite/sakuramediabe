@@ -8,8 +8,6 @@
 
 约定：
 - 每个 ``*_*`` 常量的值即落库与序列化使用的原始字符串，不要直接写字面量，统一引用本模块常量。
-- ``*_DESCRIPTIONS`` 字典给出"取值 -> 中文说明"的映射。
-- ``describe_*`` 提供查询入口，未知取值回退原值，避免展示层因脏数据崩溃。
 
 注意：catalog 域（``movie_service`` / ``actor_service``）的单片元数据抓取也用到了
 ``metadata_fetch_failed`` 等同名 reason 字符串，但那是另一套语义，不在本模块管辖范围内。
@@ -30,7 +28,6 @@ IMPORT_STATUS_DESCRIPTIONS: dict[str, str] = {
     IMPORT_STATUS_FAILED: "导入失败：存在未成功导入的文件",
     IMPORT_STATUS_SKIPPED: "已跳过：任务未触发导入",
 }
-ALLOWED_IMPORT_STATUSES = set(IMPORT_STATUS_DESCRIPTIONS)
 # 导入"还在途"的两个取值：等自动导入排队、或导入作业正在跑。其余取值（completed / failed /
 # skipped）都表示这一趟导入已经跑完、不会再自动推进。中断恢复链路（DownloadSyncService 与
 # Cloud115OfflineSyncService 的孤儿回收）把中断的任务重置回 pending，所以"在途"恒由这两个值表达。
@@ -42,14 +39,6 @@ FAILED_FILE_KIND_FILE = "file"        # 单个媒体文件级失败，可重导/
 FAILED_FILE_KIND_SKIPPED = "skipped"  # 主动跳过（如小文件），仅信息展示
 FAILED_FILE_KIND_WARNING = "warning"  # 导入后告警（如删源失败/多字幕），不做文件级操作
 FAILED_FILE_KIND_JOB = "job"          # 任务级失败，path 通常为目录，不做文件级操作
-
-FAILED_FILE_KIND_DESCRIPTIONS: dict[str, str] = {
-    FAILED_FILE_KIND_FILE: "单文件失败：可重导/删除/重命名",
-    FAILED_FILE_KIND_SKIPPED: "主动跳过：仅信息展示，无需处理",
-    FAILED_FILE_KIND_WARNING: "导入后告警：媒体已入库，仅提示",
-    FAILED_FILE_KIND_JOB: "任务级失败：作用对象通常为目录，不做文件级操作",
-}
-
 
 # ===== failed_files[].reason：单条导入失败的具体原因 =====
 FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND = "movie_number_not_found"
@@ -69,29 +58,6 @@ FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED = "cloud115_metadata_probe_failed"
 FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED = "cloud115_subtitle_download_failed"
 FAILURE_REASON_SUBTITLE_MOVIE_NOT_FOUND = "subtitle_movie_not_found"
 FAILURE_REASON_SUBTITLE_IMPORT_FAILED = "subtitle_import_failed"
-
-FAILURE_REASON_DESCRIPTIONS: dict[str, str] = {
-    FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND: "未识别番号：无法从文件名/路径解析出影片番号",
-    FAILURE_REASON_METADATA_FETCH_FAILED: "元数据抓取失败：从站点获取影片信息失败",
-    FAILURE_REASON_IMAGE_DOWNLOAD_FAILED: "图片下载失败：影片封面/海报下载失败",
-    FAILURE_REASON_METADATA_UPSERT_FAILED: "元数据入库失败：影片信息写入数据库失败",
-    FAILURE_REASON_MEDIA_IMPORT_FAILED: "文件导入失败：单个媒体文件搬运/落库异常",
-    FAILURE_REASON_FILE_TOO_SMALL: "文件过小：低于最小体积阈值，按样本/残片跳过",
-    FAILURE_REASON_SOURCE_DELETE_FAILED: "源文件删除失败：媒体已入库，但清理源文件失败（仅告警）",
-    # 已废弃的历史 reason（本地 VR/FC2 合并已删除，新导入不再产生），仅为兼容旧 failed_files 展示保留标签。
-    "multi_part_merge_failed": "多分段合并失败：历史遗留原因，当前版本不再产生",
-    "merge_subtitle_skipped_multiple_sidecars": "字幕未合并：历史遗留告警，当前版本不再产生",
-    FAILURE_REASON_NO_MEDIA_FILES_FOUND: "未发现媒体文件：下载目录中没有扫描到可导入的视频",
-    FAILURE_REASON_ALREADY_INDEXED_PATH: "已在库中：该文件路径已登记，跳过重复导入",
-    FAILURE_REASON_DUPLICATE_FINGERPRINT: "内容重复：库中已存在相同内容的文件，跳过导入",
-    FAILURE_REASON_CLOUD115_FILE_CENSORED: "115 已封禁：文件被 115 标记违规，已登记为失效（拿不到直链也播不了）",
-    FAILURE_REASON_CLOUD115_TRANSFER_FAILED: "115 搬运失败：云端移动阶段异常",
-    FAILURE_REASON_CLOUD115_RENAME_FAILED: "115 改名失败：目标文件名未按预期生效",
-    FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED: "115 媒体探测失败：无法在读取预算内解析视频技术信息",
-    FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED: "字幕下载失败：影片已入库，但字幕从 115 下载失败（仅告警）",
-    FAILURE_REASON_SUBTITLE_MOVIE_NOT_FOUND: "影片不存在：库中没有该番号对应的影片，先导入影片或删除该字幕文件",
-    FAILURE_REASON_SUBTITLE_IMPORT_FAILED: "字幕导入失败：字幕文件复制或登记异常",
-}
 
 # 失败原因 -> 条目分类：决定该失败项是否可被用户重导/删除/重命名。
 _FAILED_FILE_KIND_BY_REASON: dict[str, str] = {
@@ -138,13 +104,3 @@ def make_failure_item(path, reason: str, detail: str = "") -> dict[str, str]:
 def describe_import_status(value: str) -> str:
     """返回 import_status 的中文说明；未知取值回退原值。"""
     return IMPORT_STATUS_DESCRIPTIONS.get(value or "", value or "")
-
-
-def describe_failed_file_kind(value: str) -> str:
-    """返回失败条目分类的中文说明；未知取值回退原值。"""
-    return FAILED_FILE_KIND_DESCRIPTIONS.get(value or "", value or "")
-
-
-def describe_failure_reason(value: str) -> str:
-    """返回失败原因的中文说明；未知取值回退原值。"""
-    return FAILURE_REASON_DESCRIPTIONS.get(value or "", value or "")

@@ -15,11 +15,6 @@ def rest_between_requests(min_seconds: float, max_seconds: float) -> float:
     return random.uniform(min_seconds, max_seconds)
 
 
-async def rest_between_requests_async(min_seconds: float, max_seconds: float) -> float:
-    """取一个降频休息用的随机延迟（秒）的异步版；sleep 由调用方执行。"""
-    return random.uniform(min_seconds, max_seconds)
-
-
 def unlink_ignore_missing(path) -> None:
     """删除文件；文件本就不存在时静默放行（竞态下先删后查的常见场景）。"""
     try:

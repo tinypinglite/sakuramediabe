@@ -165,9 +165,6 @@ async def stream_media_file(
         playback_url = await MediaService.resolve_cloud115_playback_url(
             media, user_agent, signature
         )
-        playback_url = await MediaService.resolve_cloud115_playback_url(
-            media, user_agent, signature
-        )
         return RedirectResponse(
             playback_url,
             status_code=status.HTTP_302_FOUND,

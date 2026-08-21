@@ -1,3 +1,5 @@
+import pytest
+
 from src.lib.cloud115 import Cloud115CookieStatus
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Actor, Media, MediaLibrary, Movie
@@ -24,29 +26,17 @@ def _create_movie(movie_number: str, javdb_id: str, **kwargs):
     return Movie.create(**payload)
 
 
-def test_status_endpoint_requires_authentication(client):
-    response = client.get("/status")
-
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "unauthorized"
-
-
-def test_cloud115_cookies_status_endpoint_requires_authentication(client):
-    response = client.get("/status/media-libraries/cloud115")
-
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "unauthorized"
-
-
-def test_image_search_status_endpoint_requires_authentication(client):
-    response = client.get("/status/image-search")
-
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "unauthorized"
-
-
-def test_metadata_provider_test_endpoint_requires_authentication(client):
-    response = client.get("/status/metadata-providers/javdb/test")
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/status",
+        "/status/media-libraries/cloud115",
+        "/status/image-search",
+        "/status/metadata-providers/javdb/test",
+    ],
+)
+def test_status_endpoints_require_authentication(client, path):
+    response = client.get(path)
 
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthorized"

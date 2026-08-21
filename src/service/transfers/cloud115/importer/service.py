@@ -10,10 +10,11 @@ from loguru import logger
 from src.common.media_import_status import (
     FAILED_FILE_KIND_WARNING,
     FAILURE_REASON_DUPLICATE_FINGERPRINT,
+    FAILURE_REASON_NO_MEDIA_FILES_FOUND,
     FAILURE_REASON_SOURCE_DELETE_FAILED,
     make_failure_item,
 )
-from src.common.service_helpers import emit_progress, rest_between_requests_async
+from src.common.service_helpers import emit_progress, rest_between_requests
 from src.lib.cloud115 import Cloud115Client
 from src.model import MediaLibrary, Movie
 from src.schema.transfers.media_import import ImportResult
@@ -169,6 +170,16 @@ class Cloud115ImportService:
             )
             stats["skipped"] += scan_skipped
             stats["failed"] += scan_failed
+            # 空来源不能静默成功，否则会把没有媒体产出的任务当作可清理。
+            if not groups and scan_skipped == 0 and scan_failed == 0:
+                stats["failed"] += 1
+                failure_items.append(
+                    make_failure_item(
+                        f"cloud115:{source_cid}",
+                        FAILURE_REASON_NO_MEDIA_FILES_FOUND,
+                        "115 下载任务目录中没有扫描到可导入的视频",
+                    )
+                )
             total_movies = len(groups)
             completed_movies = 0
             emit_progress(
@@ -201,7 +212,7 @@ class Cloud115ImportService:
                     movie_number = group.movie_number
                     if not managed_download_source and group_index > 0:
                         # 先取延迟并报"等待中"事件，再真正休息——事件语义是"即将休息到 delay 秒后"。
-                        delay = await rest_between_requests_async(
+                        delay = rest_between_requests(
                             MANUAL_GROUP_REST_MIN_SECONDS,
                             MANUAL_GROUP_REST_MAX_SECONDS,
                         )

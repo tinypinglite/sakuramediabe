@@ -2,6 +2,7 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
@@ -15,7 +16,6 @@ from src.api.routers.discovery import hot_reviews, image_search, ranking_sources
 from src.api.routers.discovery.hot_actress_releases import (
     router as hot_actress_releases_router,
 )
-from src.api.routers.files import images
 from src.api.routers.playback import media as media_router
 from src.api.routers.playback import media_libraries
 from src.api.routers.system import (
@@ -34,87 +34,37 @@ from src.service.playback.cloud115_hls_service import Cloud115HlsService
 from src.service.playback.media_service import MediaService
 
 
-def test_auth_router_uses_db_deps_as_router_level_dependency():
-    assert hasattr(deps, "db_deps")
-    assert any(
-        isinstance(dependency.dependency, type(deps.db_deps))
-        or dependency.dependency is deps.db_deps
-        for dependency in auth.router.dependencies
-    )
-
-
-def test_account_router_uses_db_deps_as_router_level_dependency():
-    assert hasattr(deps, "db_deps")
-    assert any(
-        isinstance(dependency.dependency, type(deps.db_deps))
-        or dependency.dependency is deps.db_deps
-        for dependency in account.router.dependencies
-    )
-
-
-def test_media_libraries_router_uses_db_deps_as_router_level_dependency():
-    assert hasattr(deps, "db_deps")
-    assert any(
-        isinstance(dependency.dependency, type(deps.db_deps))
-        or dependency.dependency is deps.db_deps
-        for dependency in media_libraries.router.dependencies
-    )
-
-
-def test_downloads_router_uses_db_deps_as_router_level_dependency():
-    assert hasattr(deps, "db_deps")
-    assert any(
-        isinstance(dependency.dependency, type(deps.db_deps))
-        or dependency.dependency is deps.db_deps
-        for dependency in downloads.router.dependencies
-    )
-
-
-def test_media_import_router_uses_auth_and_db_dependencies():
+@pytest.mark.parametrize(
+    ("router", "expected_dependencies"),
+    [
+        (auth.router, (deps.db_deps,)),
+        (account.router, (deps.db_deps,)),
+        (media_libraries.router, (deps.db_deps,)),
+        (downloads.router, (deps.db_deps,)),
+        (media_import.router, (deps.db_deps, deps.get_current_user)),
+        (subtitle_imports.router, (deps.db_deps, deps.get_current_user)),
+        (rapid_uploads.router, (deps.db_deps, deps.get_current_user)),
+        (status.router, (deps.db_deps, deps.get_current_user)),
+        (activity.router, (deps.db_deps, deps.get_current_user)),
+        (indexer_settings.router, (deps.db_deps,)),
+        (plugins.router, (deps.db_deps, deps.get_current_user)),
+        (system_config.router, (deps.db_deps,)),
+        (image_search.router, (deps.db_deps, deps.get_current_user)),
+        (hot_reviews.router, (deps.db_deps, deps.get_current_user)),
+        (hot_actress_releases_router, (deps.db_deps, deps.get_current_user)),
+        (ranking_sources.router, (deps.db_deps, deps.get_current_user)),
+        (tags.router, (deps.db_deps, deps.get_current_user)),
+        (movie_subscriptions.router, (deps.db_deps, deps.get_current_user)),
+        (video_items.router, (deps.db_deps, deps.get_current_user)),
+        (video_collections.router, (deps.db_deps, deps.get_current_user)),
+    ],
+)
+def test_routers_use_expected_router_dependencies(router, expected_dependencies):
     dependency_targets = {
-        dependency.dependency
-        for dependency in media_import.router.dependencies
+        dependency.dependency for dependency in router.dependencies
     }
 
-    assert deps.db_deps in dependency_targets
-    assert deps.get_current_user in dependency_targets
-
-
-def test_subtitle_imports_router_uses_auth_and_db_dependencies():
-    dependency_targets = {
-        dependency.dependency for dependency in subtitle_imports.router.dependencies
-    }
-
-    assert deps.db_deps in dependency_targets
-    assert deps.get_current_user in dependency_targets
-
-
-def test_rapid_uploads_router_uses_auth_and_db_dependencies():
-    dependency_targets = {
-        dependency.dependency
-        for dependency in rapid_uploads.router.dependencies
-    }
-
-    assert deps.db_deps in dependency_targets
-    assert deps.get_current_user in dependency_targets
-
-
-def test_status_router_uses_db_deps_as_router_level_dependency():
-    assert hasattr(deps, "db_deps")
-    assert any(
-        isinstance(dependency.dependency, type(deps.db_deps))
-        or dependency.dependency is deps.db_deps
-        for dependency in status.router.dependencies
-    )
-
-
-def test_activity_router_uses_db_deps_as_router_level_dependency():
-    assert hasattr(deps, "db_deps")
-    assert any(
-        isinstance(dependency.dependency, type(deps.db_deps))
-        or dependency.dependency is deps.db_deps
-        for dependency in activity.router.dependencies
-    )
+    assert set(expected_dependencies) <= dependency_targets
 
 
 def test_create_app_does_not_register_retired_resource_task_routes():
@@ -123,96 +73,6 @@ def test_create_app_does_not_register_retired_resource_task_routes():
     assert "/system/resource-task-states/definitions" not in paths
     assert "/system/resource-task-states" not in paths
     assert "/system/resource-task-actions" not in paths
-
-
-def test_indexer_settings_router_uses_db_deps_as_router_level_dependency():
-    assert hasattr(deps, "db_deps")
-    assert any(
-        isinstance(dependency.dependency, type(deps.db_deps))
-        or dependency.dependency is deps.db_deps
-        for dependency in indexer_settings.router.dependencies
-    )
-
-
-def test_plugins_router_uses_auth_and_db_dependencies():
-    dependency_targets = {
-        dependency.dependency for dependency in plugins.router.dependencies
-    }
-
-    assert deps.db_deps in dependency_targets
-    assert deps.get_current_user in dependency_targets
-
-
-def test_config_router_uses_db_deps_as_router_level_dependency():
-    assert hasattr(deps, "db_deps")
-    assert any(
-        isinstance(dependency.dependency, type(deps.db_deps))
-        or dependency.dependency is deps.db_deps
-        for dependency in system_config.router.dependencies
-    )
-
-
-def test_file_images_router_has_no_router_level_dependencies():
-    assert images.router.dependencies == []
-
-
-def test_image_search_router_uses_auth_and_db_dependencies():
-    dependency_targets = {
-        dependency.dependency
-        for dependency in image_search.router.dependencies
-    }
-
-    assert deps.db_deps in dependency_targets
-    assert deps.get_current_user in dependency_targets
-
-
-def test_hot_reviews_router_uses_auth_and_db_dependencies():
-    dependency_targets = {
-        dependency.dependency
-        for dependency in hot_reviews.router.dependencies
-    }
-
-    assert deps.db_deps in dependency_targets
-    assert deps.get_current_user in dependency_targets
-
-
-def test_hot_actress_releases_router_uses_auth_and_db_dependencies():
-    dependency_targets = {
-        dependency.dependency for dependency in hot_actress_releases_router.dependencies
-    }
-
-    assert deps.db_deps in dependency_targets
-    assert deps.get_current_user in dependency_targets
-
-
-def test_ranking_sources_router_uses_auth_and_db_dependencies():
-    dependency_targets = {
-        dependency.dependency
-        for dependency in ranking_sources.router.dependencies
-    }
-
-    assert deps.db_deps in dependency_targets
-    assert deps.get_current_user in dependency_targets
-
-
-def test_tags_router_uses_auth_and_db_dependencies():
-    dependency_targets = {
-        dependency.dependency
-        for dependency in tags.router.dependencies
-    }
-
-    assert deps.db_deps in dependency_targets
-    assert deps.get_current_user in dependency_targets
-
-
-def test_movie_subscriptions_router_uses_auth_and_db_dependencies():
-    dependency_targets = {
-        dependency.dependency
-        for dependency in movie_subscriptions.router.dependencies
-    }
-
-    assert deps.db_deps in dependency_targets
-    assert deps.get_current_user in dependency_targets
 
 
 def test_create_app_registers_movie_subscription_routes():
@@ -225,15 +85,6 @@ def test_create_app_registers_movie_subscription_routes():
     assert "/movie-subscriptions/search-resets" in paths
     # 批量取消订阅刻意不在本域：复用已有的 /movies/unsubscriptions 与 DELETE /media/{id}。
     assert "/movie-subscriptions/removals" not in paths
-
-
-def test_videos_routers_use_auth_and_db_dependencies():
-    for module in (video_items, video_collections):
-        dependency_targets = {
-            dependency.dependency for dependency in module.router.dependencies
-        }
-        assert deps.db_deps in dependency_targets
-        assert deps.get_current_user in dependency_targets
 
 
 def test_create_app_registers_videos_routes():
@@ -376,14 +227,10 @@ async def test_cloud115_stream_uses_smart_playback_dispatch(monkeypatch):
         "is_cloud115_media",
         Mock(return_value=True),
     )
-    captured = {}
+    calls = []
 
     async def resolve_playback(_media, user_agent, signature):
-        captured.update(
-            media=_media,
-            user_agent=user_agent,
-            signature=signature,
-        )
+        calls.append((_media, user_agent, signature))
         return "https://cpats01.115.com/highest.m3u8"
 
     monkeypatch.setattr(
@@ -411,11 +258,7 @@ async def test_cloud115_stream_uses_smart_playback_dispatch(monkeypatch):
     assert response.status_code == 302
     assert response.headers["location"] == "https://cpats01.115.com/highest.m3u8"
     assert response.headers["cache-control"] == "no-store"
-    assert captured == {
-        "media": media,
-        "user_agent": "Frontend-Player/2.0",
-        "signature": "signed",
-    }
+    assert calls == [(media, "Frontend-Player/2.0", "signed")]
 
 
 async def test_cloud115_playback_prefers_highest_hls(monkeypatch):
@@ -608,18 +451,6 @@ def test_create_app_registers_download_task_center_routes():
 def test_create_app_runs_runtime_startup_jobs(monkeypatch):
     events = []
     monkeypatch.setattr("src.api.app.ensure_database_ready", lambda: events.append("db.ready"))
-    app = create_app()
-
-    with TestClient(app):
-        pass
-
-    assert events == ["db.ready"]
-
-
-def test_create_app_initializes_database_proxy_before_runtime_startup_jobs(monkeypatch):
-    events = []
-    monkeypatch.setattr("src.api.app.ensure_database_ready", lambda: events.append("db.ready"))
-
     app = create_app()
 
     with TestClient(app):

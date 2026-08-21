@@ -57,17 +57,6 @@ class MovieReviewSort(str, Enum):
     HOTLY = "hotly"
 
 
-MOVIE_LIST_SORT_FIELDS = (
-    "release_date",
-    "added_at",
-    "subscribed_at",
-    "comment_count",
-    "score_number",
-    "want_watch_count",
-    "heat",
-)
-
-
 class MovieListItemResource(SchemaModel):
     # 影片主键：番号是对外主标识，但统一 action 协议的 resource_ids 收的是整数 id，
     # 所以影片卡片一律带上它，详情页与各列表页都能直接发起资源任务操作。

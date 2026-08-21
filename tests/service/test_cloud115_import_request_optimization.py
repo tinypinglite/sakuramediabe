@@ -329,7 +329,7 @@ def test_target_directory_cache_is_reused_across_import_jobs():
     ]
 
 
-def test_managed_import_uses_one_source_metadata_request(monkeypatch):
+def test_managed_empty_source_is_kept_after_one_metadata_request(monkeypatch):
     source_meta = DirMeta(
         cid="source",
         name="ABC-001",
@@ -342,7 +342,10 @@ def test_managed_import_uses_one_source_metadata_request(monkeypatch):
         ctime=0,
         paths=(DirBreadcrumb(file_id="download-root", name="downloads"),),
     )
-    client = SimpleNamespace(dir_info=AsyncMock(return_value=source_meta))
+    client = SimpleNamespace(
+        dir_info=AsyncMock(return_value=source_meta),
+        delete_files=AsyncMock(),
+    )
 
     @asynccontextmanager
     async def fake_client_for(_library, **_kwargs):
@@ -364,12 +367,14 @@ def test_managed_import_uses_one_source_metadata_request(monkeypatch):
         AsyncMock(return_value=([], 0, 0)),
     )
     service = Cloud115ImportService()
+    failure_items: list[dict] = []
+    stats = {"imported": 0, "skipped": 0, "failed": 0}
     asyncio.run(
         service._run(
             library=object(),
             source_cid="source",
-            failure_items=[],
-            stats={"imported": 0, "skipped": 0, "failed": 0},
+            failure_items=failure_items,
+            stats=stats,
             new_playable_movies={},
             progress_callback=None,
             managed_download_source=True,
@@ -378,6 +383,16 @@ def test_managed_import_uses_one_source_metadata_request(monkeypatch):
     )
 
     client.dir_info.assert_awaited_once_with("source")
+    client.delete_files.assert_not_awaited()
+    assert stats == {"imported": 0, "skipped": 0, "failed": 1}
+    assert failure_items == [
+        {
+            "path": "cloud115:source",
+            "reason": "no_media_files_found",
+            "detail": "115 下载任务目录中没有扫描到可导入的视频",
+            "kind": "job",
+        }
+    ]
 
 
 def _run_import_groups(

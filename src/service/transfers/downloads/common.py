@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import require_by_id, resolve_sort
-from src.common.service_helpers import validate_page as _validate_page
 from src.config.config import settings
 from src.model import (
     DownloadClient,
@@ -382,10 +381,6 @@ def resolve_task_sort(value: str | None) -> Sequence:
         value, TASK_SORT_FIELDS,
         default_key="created_at:desc", error_code="invalid_download_task_filter",
     )
-
-
-def validate_page(page: int, page_size: int) -> None:
-    _validate_page(page, page_size, error_code="invalid_download_task_filter")
 
 
 def build_task_movie_filter(movie_number: str):

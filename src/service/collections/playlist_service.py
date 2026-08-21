@@ -57,8 +57,6 @@ _SYSTEM_KIND_ORDER = (
     (PLAYLIST_KIND_4K, 2),
 )
 
-# 播放列表影片排序白名单：heat(热度)/bitrate(最高码率)/added_at(最近媒体入库)/release_date(发布时间)。
-PLAYLIST_SORT_FIELDS = {"heat", "bitrate", "added_at", "release_date"}
 # 允许空值、排序时统一垫后的字段（added_at/bitrate 走子查询无媒体场景由 COALESCE 兜底，不参与垫后）。
 PLAYLIST_NULLABLE_SORT_FIELDS = {"release_date"}
 # 分辨率筛选档位：归一化标签 -> 高度阈值（Media.resolution 为 "WxH" 字符串，取 height 判定）。

@@ -10,6 +10,7 @@ from src.common.media_import_status import (
     IMPORT_STATUS_RUNNING,
     IMPORT_STATUS_SKIPPED,
 )
+from src.common.service_helpers import validate_page
 from src.model import DownloadTask, Image, Movie
 from src.model.enums import DownloadClientKind
 from src.schema.common.pagination import PageResponse
@@ -35,7 +36,6 @@ from src.service.transfers.downloads.common import (
     require_client,
     require_task,
     resolve_task_sort,
-    validate_page,
 )
 from src.service.transfers.shared.common import canonicalize_btih
 from src.service.transfers.shared.import_task_service import ImportTaskService
@@ -55,7 +55,7 @@ class DownloadTaskService:
         download_state: list[str] | None = None,
         sort: str | None = None,
     ) -> PageResponse[DownloadTaskResource]:
-        validate_page(page, page_size)
+        validate_page(page, page_size, error_code="invalid_download_task_filter")
         query = DownloadTask.select()
         if client_id is not None:
             require_client(client_id)

@@ -19,5 +19,3 @@ from src.plugins.extensions.ranking import (
 EXTENSION_VALIDATORS: dict[str, Callable[..., Any]] = {
     RANKING_SOURCE_EXTENSION_KEY: validate_ranking_extension,
 }
-
-SUPPORTED_EXTENSION_KEYS: frozenset[str] = frozenset(EXTENSION_VALIDATORS)

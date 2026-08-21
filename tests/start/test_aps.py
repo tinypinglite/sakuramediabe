@@ -46,8 +46,29 @@ def test_aps_command_invokes_scheduler_entrypoint(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _test_cli_command(monkeypatch, cli_name, _return_stats, _expected_output):
-    """通用 CLI 命令测试辅助函数。"""
+@pytest.mark.parametrize(
+    "cli_name",
+    [
+        "sync-subscribed-actor-movies",
+        "update-movie-heat",
+        "sync-movie-interactions",
+        "sync-hot-reviews",
+        "sync-movie-collections",
+        "generate-media-thumbnails",
+        "scan-media-files",
+        "cleanup-download-small-files",
+        "cleanup-qb-stalled-tasks",
+        "sync-cloud115-offline-tasks",
+        "cleanup-activity-records",
+        "index-image-search-thumbnails",
+        "optimize-image-search-index",
+        "recompute-movie-similarities",
+        "generate-daily-recommendations",
+        "generate-moment-recommendations",
+        "auto-download-subscribed-movies",
+    ],
+)
+def test_aps_cli_commands_run_job(monkeypatch, cli_name):
     called = {"job": 0}
 
     def fake_run_job(job_def, *, trigger_type="scheduled", params=None):
@@ -150,42 +171,6 @@ def test_dynamic_aps_cli_manual_handler_requires_params(monkeypatch):
     assert job_def.cli_name in group.commands
 
 
-def test_aps_sync_subscribed_actor_movies_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "sync-subscribed-actor-movies",
-        {"total_actors": 3, "success_actors": 2, "failed_actors": 1, "imported_movies": 5},
-        "sync finished: total_actors=3 success_actors=2 failed_actors=1 imported_movies=5",
-    )
-
-
-def test_aps_update_movie_heat_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "update-movie-heat",
-        {"candidate_count": 4, "updated_count": 3, "formula_version": "v3"},
-        "heat update finished: candidate_count=4 updated_count=3 formula_version=v3",
-    )
-
-
-def test_aps_sync_movie_interactions_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "sync-movie-interactions",
-        {
-            "candidate_movies": 4,
-            "processed_movies": 4,
-            "succeeded_movies": 3,
-            "failed_movies": 1,
-            "updated_movies": 2,
-            "unchanged_movies": 1,
-            "heat_updated_movies": 2,
-        },
-        "movie interaction sync finished: candidate_movies=4 processed_movies=4 "
-        "succeeded_movies=3 failed_movies=1 updated_movies=2 unchanged_movies=1 heat_updated_movies=2",
-    )
-
-
 def test_aps_subcommand_prepares_database_before_running_job(monkeypatch):
     events = []
 
@@ -228,187 +213,6 @@ def test_aps_manual_subcommand_exits_with_click_error_when_task_conflicts(monkey
 
     assert result.exit_code != 0
     assert "任务“订阅演员影片同步”已在运行中" in result.output
-
-
-def test_aps_sync_hot_reviews_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "sync-hot-reviews",
-        {
-            "total_periods": 5, "success_periods": 4, "failed_periods": 1,
-            "fetched_reviews": 120, "imported_movies": 100, "skipped_reviews": 20, "stored_items": 100,
-        },
-        "hot review sync finished: total_periods=5 success_periods=4 failed_periods=1 "
-        "fetched_reviews=120 imported_movies=100 skipped_reviews=20 stored_items=100",
-    )
-
-
-def test_aps_sync_movie_collections_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "sync-movie-collections",
-        {
-            "total_movies": 4, "matched_count": 2, "updated_to_collection_count": 1,
-            "updated_to_single_count": 1, "unchanged_count": 2,
-        },
-        "collection sync finished: total_movies=4 matched_count=2 "
-        "updated_to_collection_count=1 updated_to_single_count=1 unchanged_count=2",
-    )
-
-
-def test_aps_generate_media_thumbnails_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "generate-media-thumbnails",
-        {
-            "pending_media": 3, "successful_media": 2, "generated_thumbnails": 6,
-            "deferred_media": 0, "retryable_failed_media": 1, "terminal_failed_media": 0,
-            "backend_failed_lanes": 0,
-        },
-        "thumbnail generation finished: pending_media=3 successful_media=2 "
-        "generated_thumbnails=6 deferred_media=0 retryable_failed_media=1 terminal_failed_media=0 "
-        "backend_failed_lanes=0",
-    )
-
-
-def test_aps_scan_media_files_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "scan-media-files",
-        {
-            "scanned_media": 6, "updated_media": 3, "skipped_media": 2,
-            "failed_media": 1, "invalidated_media": 1, "revived_media": 1,
-            "cloud115_index_failed_libraries": 1,
-        },
-        "media file scan finished: scanned_media=6 updated_media=3 skipped_media=2 "
-        "failed_media=1 invalidated_media=1 revived_media=1 "
-        "cloud115_index_failed_libraries=1",
-    )
-
-
-def test_aps_cleanup_download_small_files_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "cleanup-download-small-files",
-        {
-            "total_clients": 2, "scanned_torrents": 5, "deselected_files": 4,
-            "deleted_files": 3, "failed_count": 1,
-        },
-        "download small file cleanup finished: total_clients=2 scanned_torrents=5 "
-        "deselected_files=4 deleted_files=3 failed_count=1",
-    )
-
-
-def test_aps_cleanup_qb_stalled_tasks_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "cleanup-qb-stalled-tasks",
-        {
-            "total_clients": 2, "scanned_torrents": 5, "cleaned_count": 3,
-            "failed_count": 1,
-        },
-        "qb stalled cleanup finished: total_clients=2 scanned_torrents=5 "
-        "cleaned_count=3 failed_count=1",
-    )
-
-
-def test_aps_sync_cloud115_offline_tasks_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "sync-cloud115-offline-tasks",
-        {
-            "total_clients": 1, "updated_count": 3, "import_triggered_count": 1,
-            "abandoned_count": 1, "failed_count": 0,
-        },
-        "cloud115 offline sync finished: total_clients=1 updated_count=3 "
-        "import_triggered_count=1 abandoned_count=1 failed_count=0",
-    )
-
-
-def test_aps_cleanup_activity_records_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "cleanup-activity-records",
-        {"deleted_task_runs": 30, "deleted_notifications": 5},
-        "activity record cleanup finished: deleted_task_runs=30 deleted_notifications=5",
-    )
-
-
-def test_aps_index_image_search_thumbnails_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "index-image-search-thumbnails",
-        {"pending_thumbnails": 4, "successful_thumbnails": 3, "failed_thumbnails": 1},
-        "image search index finished: pending_thumbnails=4 successful_thumbnails=3 failed_thumbnails=1",
-    )
-
-
-def test_aps_optimize_image_search_index_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "optimize-image-search-index",
-        {"optimized": True},
-        "image search optimize finished: optimized=True",
-    )
-
-
-def test_aps_recompute_movie_similarities_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "recompute-movie-similarities",
-        {
-            "total_movies": 8,
-            "indexed_movies": 7,
-            "actor_features": 18,
-            "tag_features": 24,
-        },
-        "movie similarity recompute finished: total_movies=8 indexed_movies=7 "
-        "actor_features=18 tag_features=24",
-    )
-
-
-def test_aps_generate_daily_recommendations_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "generate-daily-recommendations",
-        {
-            "candidate_movies": 8,
-            "stored_items": 5,
-            "cold_start": True,
-            "extreme_cold_start": False,
-        },
-        "daily recommendation generate finished: candidate_movies=8 stored_items=5 "
-        "cold_start=True extreme_cold_start=False",
-    )
-
-
-def test_aps_generate_moment_recommendations_command_runs_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "generate-moment-recommendations",
-        {
-            "seed_points": 3,
-            "visual_candidates": 4,
-            "similar_candidates": 2,
-            "popular_candidates": 1,
-            "stored_items": 5,
-        },
-        "moment recommendation generate finished: seed_points=3 visual_candidates=4 "
-        "similar_candidates=2 popular_candidates=1 stored_items=5",
-    )
-
-
-def test_aps_auto_download_subscribed_movies_command_invokes_job(monkeypatch):
-    _test_cli_command(
-        monkeypatch,
-        "auto-download-subscribed-movies",
-        {
-            "candidate_movies": 3, "searched_movies": 3, "submitted_movies": 2,
-            "no_candidate_movies": 1, "skipped_movies": 0, "failed_movies": 0,
-        },
-        "auto download finished: candidate_movies=3 searched_movies=3 submitted_movies=2 "
-        "no_candidate_movies=1 skipped_movies=0 failed_movies=0",
-    )
 
 
 # ---------------------------------------------------------------------------

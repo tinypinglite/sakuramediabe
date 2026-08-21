@@ -19,13 +19,6 @@ class ActorListSubscriptionStatus(str, Enum):
     UNSUBSCRIBED = "unsubscribed"
 
 
-ACTOR_LIST_SORT_FIELDS = (
-    "subscribed_at",
-    "name",
-    "movie_count",
-)
-
-
 class ImageResource(SchemaModel):
     id: int
     origin: str

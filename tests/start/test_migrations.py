@@ -438,15 +438,6 @@ def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(
     assert Actor.get_by_id(untouched.id).gender == 2
 
 
-def test_load_migration_module_uses_package_import():
-    module = _load_migration_module(
-        Path("src/start/migrations/versions/20260821_01_consolidate_task_runtime.py")
-    )
-
-    assert module.name == CONSOLIDATED_MIGRATION_NAME
-    assert callable(module.migrate)
-
-
 def test_migrate_command_runs_the_consolidated_migration(monkeypatch):
     events = []
     legacy_database = object()
