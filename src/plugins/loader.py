@@ -40,12 +40,20 @@ class PluginLoadError(RuntimeError):
         super().__init__(f"插件加载失败 plugin_id={plugin_id} stage={stage}: {message}")
 
 
+def _clear_plugin_modules(plugin_id: str) -> None:
+    """清除插件根模块及其子模块，避免更新时混用旧代码。"""
+    module_name = f"{PLUGIN_MODULE_NAMESPACE}.{plugin_id}"
+    for name in list(sys.modules):
+        if name == module_name or name.startswith(f"{module_name}."):
+            sys.modules.pop(name, None)
+
+
 def _import_plugin_package(plugin_dir: Path, plugin_id: str):
     """把插件目录作为包导入（支持插件内部相对导入）。"""
     init_path = plugin_dir / "__init__.py"
     module_name = f"{PLUGIN_MODULE_NAMESPACE}.{plugin_id}"
     # 清除同进程内可能残留的旧模块（例如加载失败后重试），避免复用过期状态。
-    sys.modules.pop(module_name, None)
+    _clear_plugin_modules(plugin_id)
     spec = importlib.util.spec_from_file_location(
         module_name,
         init_path,
@@ -171,7 +179,9 @@ def _load_plugin_dir(
         if isinstance(exc, PluginLoadError):
             raise
         raise PluginLoadError(
-            plugin_id, "register", "register(context) 执行或返回值校验失败"
+            plugin_id,
+            "register",
+            f"register(context) 执行或返回值校验失败: {exc}",
         ) from exc
 
     if registration.plugin_id != plugin_id:
@@ -225,7 +235,6 @@ def check_plugin_dir(
     """
     plugin_dir = Path(plugin_dir)
     plugin_id = plugin_dir.name
-    module_name = f"{PLUGIN_MODULE_NAMESPACE}.{plugin_id}"
     try:
         return _load_plugin_dir(
             plugin_id=plugin_id,
@@ -233,12 +242,7 @@ def check_plugin_dir(
             plugin_settings=plugin_settings or Plugins(),
         )
     finally:
-        for name in [
-            name
-            for name in sys.modules
-            if name == module_name or name.startswith(f"{module_name}.")
-        ]:
-            del sys.modules[name]
+        _clear_plugin_modules(plugin_id)
 
 
 def load_enabled_plugins(

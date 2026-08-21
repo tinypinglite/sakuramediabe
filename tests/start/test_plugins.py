@@ -159,6 +159,7 @@ def test_loader_isolates_broken_plugin(tmp_path):
     )
     assert [registration.plugin_id for registration in loaded] == ["good_plugin"]
     assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "register"
+    assert "boom" in PLUGIN_LOAD_ERRORS["bad_plugin"]["message"]
 
 
 def test_loader_clears_stale_error_on_success(tmp_path):
@@ -242,6 +243,54 @@ def test_check_plugin_dir_validates_and_cleans_modules(tmp_path):
     (plugin_dir / "__init__.py").write_text(bad_source, encoding="utf-8")
     with pytest.raises(RuntimeError, match="register"):
         check_plugin_dir(plugin_dir=plugin_dir)
+
+
+def test_check_plugin_dir_does_not_reuse_stale_plugin_submodules(tmp_path):
+    import sys
+
+    from src.plugins.loader import _load_plugin_dir
+
+    old_plugin_dir = _write_plugin_dir(
+        tmp_path / "old",
+        "demo_plugin",
+        init_source="from .plugin import register\n",
+    )
+    new_plugin_dir = _write_plugin_dir(
+        tmp_path / "new",
+        "demo_plugin",
+        init_source="from .plugin import register\n",
+    )
+
+    def write_plugin_module(plugin_dir, version: str) -> None:
+        plugin_path = plugin_dir / "plugin.py"
+        plugin_path.write_text(
+            "from src.plugins import HOST_API_VERSION, PluginRegistration\n"
+            f"VERSION = {version!r}\n"
+            "def register(context):\n"
+            "    return PluginRegistration("
+            "plugin_id='demo_plugin', display_name='x', version=VERSION, "
+            "host_api_version=HOST_API_VERSION, jobs=())\n",
+            encoding="utf-8",
+        )
+
+    write_plugin_module(old_plugin_dir, "1.0.0")
+    _load_plugin_dir(
+        plugin_id="demo_plugin",
+        plugin_dir=old_plugin_dir,
+        plugin_settings=Plugins(),
+    )
+    assert "sakuramedia_plugins.demo_plugin.plugin" in sys.modules
+
+    (new_plugin_dir / "manifest.json").write_text(
+        (new_plugin_dir / "manifest.json").read_text(encoding="utf-8").replace(
+            '"version": "1.0.0"', '"version": "2.0.0"'
+        ),
+        encoding="utf-8",
+    )
+    write_plugin_module(new_plugin_dir, "2.0.0")
+
+    registration = check_plugin_dir(plugin_dir=new_plugin_dir)
+    assert registration.version == "2.0.0"
 
 
 def test_job_definition_requires_handler_and_valid_schedule():
