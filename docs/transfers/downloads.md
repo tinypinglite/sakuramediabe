@@ -46,7 +46,6 @@
 
 - 仅处理 `is_subscribed = true` 的影片
 - 仅处理不存在有效 `Media` 且**不存在活跃 `DownloadTask`** 的影片（判定的是活跃而非存在，见下「死种判定」）
-- 仅处理**尚未放弃**的影片（`state != exhausted`，见下「没找到次数与放弃」）
 - 使用 Torznab 协议搜索 PT 与 BT 候选资源
 - 选种为「过滤 → 打分取最高」两步，与 `downloads.preferred_client_kinds` 无关（见下）
 - 复用 `POST /download-requests` 对应的 service 提交下载，不新增 API
@@ -207,11 +206,9 @@ torrent-only 候选的 `info_hash` 做死种黑名单比对。被内容闸门或
 - `download_candidate_content_unverifiable`（502）：有 `.torrent` 地址但拿不到或解析不了种子文件
   （纯磁力候选已不抛此错误——直接放行，见下）
 
-不可校验之所以也换种而不是中止该影片：中止要走 `consumes_budget=False`，而它会回滚重试计数且
-**永不判 exhausted**（`ResourceTaskRunner._finish_failed`），稳定复现的坏候选会让这部影片每轮
-重来、永远放弃不掉。换种则会在候选耗尽时正常落到「本轮没找到资源」并消耗本轮没找到次数，可收敛。
-索引器整体故障不会走到这里——那种情况 `search_candidates` 会先失败并按 `indexer_search_failed`
-处理（那才是真正的基础设施故障，不消耗次数）。
+不可校验时继续换种，是为了避免一个稳定复现的坏候选遮住同一搜索结果里的可用候选。候选耗尽后
+本轮记为 `no_candidate`；索引器整体故障不会走到这里——那种情况 `search_candidates` 会先失败。
+两种结果都写入本次 TaskRun 汇总，影片在下一轮仍由领域条件重新判断是否进入候选。
 
 拉取策略：`FETCH_ATTEMPTS = 2`、`FETCH_TIMEOUT_SECONDS = 20`。Torznab 聚合器（如 Jackett）
 的 `/dl/` 下载端点要回源到上游站点，偶发超时是常态，重试即可恢复；生产实测串行重试下
@@ -226,7 +223,7 @@ query 里；httpx 的异常字符串也会内嵌完整 URL，而 `details` 会�
 **只有磁力链的候选直接放行。** 磁力本身不含文件列表，要拿到只能走 BEP-9 从 swarm 换
 metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 67 秒），做不了提交前的同步
 闸门，因此不拦、内容校验推迟到下载完成后的导入阶段：原盘（只有 `.iso`）导入时扫不到
-合格视频会明确失败（`ImportJob` failed + `DownloadTask.import_status=failed`），合集包会
+合格视频会明确失败（`TaskRun` failed + `DownloadTask.import_status=failed`），合集包会
 混入媒体库，由用户删任务清理。放行路径的种子身份从磁力 btih 解析——btih 与 `.torrent`
 的 `info_hash` 是同一值，选种黑名单语义不变。链接分流**按内容而非字段名**，与
 `QBittorrentClient.add_candidate` / `resolve_magnet_from_links` 保持一致：索引器会把磁力
@@ -240,10 +237,9 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 - 候选侧已知的 `info_hash`（torznab infohash / 磁力链）在选种阶段纯内存比对，**零网络请求**；
   torrent-only 候选在提交阶段由内容闸门解析 `.torrent` 后确认，纯磁力候选在提交阶段由闸门
   从磁力 btih 解析（放行路径顺带完成），命中的死种按「不合格候选」换下一个
-- 排除后无候选 = 本轮没找到资源，正常计入本轮没找到次数
-- **黑名单是永久的，重置查询状态不放开它。** `info_hash` 是内容寻址的——同一个 hash 就是同一个
-  swarm，换个索引器它照样是死的；用户重置后真正想要的是找一个**别的**种子，而黑名单本来就不挡这个。
-  确实要重试某个具体种子时，**手动删除该下载任务**（UI 删任务会同步删 qB 侧与本地台账行）——
+- 排除后无候选 = 本轮没找到资源；下一轮任务仍会重新搜索其它候选
+- **黑名单是永久的。** `info_hash` 是内容寻址的——同一个 hash 就是同一个 swarm，换个索引器它
+  照样是死的。确实要重试某个具体种子时，**手动删除该下载任务**（UI 删任务会同步删 qB 侧与本地台账行）——
   反向对账 `_prune_ghost_tasks` 对死态行（failed / abandoned / stalled_dead）**豁免**，仅凭在 qB 里
   删掉种子不会解除黑名单；豁免是停滞清理的闭环前提：否则删完种子下轮对账就抹掉黑名单，
   第二天自动下载又把同一死种拉回来。
@@ -259,7 +255,7 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 真正补身份的地方在**提交阶段的内容闸门**：torrent-only 候选本来就要下载 `.torrent` 校验内容，
 顺手把 `torrent_info.info_hash()` 解出来。解析后命中该影片死种黑名单的候选抛
 `download_candidate_dead`，自动下载把它当作「不合格候选」换下一个；全部换完仍无可提交候选时
-才落到 `no_candidate` 正常消耗查询预算。这样既不为整个候选池逐个拉 `.torrent`（每影片最多
+才落到 `no_candidate`。这样既不为整个候选池逐个拉 `.torrent`（每影片最多
 `MAX_REJECTED_CANDIDATES`（5）个候选、每候选最多 `FETCH_ATTEMPTS`（2）次），也堵住了
 「PT 源只给 torrent 链接导致死种被反复重提交」的闭环。
 
@@ -268,45 +264,13 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 候选四条链路都要用，且必须是同一个实现，否则「这两个是不是同一个种子」在不同链路上会给出不同答案。
 实测同一个种子在 knaben（大写 hex）和 sukebei（小写 hex）上会收敛到同一个字符串。
 
-#### 没找到次数与放弃
+#### 直接候选与自然重试
 
-避免老片长期没有资源却年复一年地查索引器。状态落在 `ResourceTaskState`
-（`task_key=subscribed_movie_auto_download`，与定时任务同 key；kernel 逐资源记账，
-见 [task-architecture.md](../development/task-architecture.md)），不额外建表。
+调度每天执行一轮（`subscribed_movie_auto_download_cron` 默认 `30 2 * * *`）。候选集要求影片已订阅、没有有效媒体、没有活动下载任务，并遵循影片上的搜索预算：新片持续查询；老片连续未找到达到 `subscription_search_stale_attempt_limit` 后进入 `exhausted`，需要在订阅页重开。
 
-调度是每天一轮（`subscribed_movie_auto_download_cron` 默认 `30 2 * * *`），所以「每轮都查」就等于
-「每天查一次」。规则只有两档：
+没有候选会消耗老片预算；索引器故障和提交失败会保留错误但不消耗预算，下轮重试。提交成功后出现死种时，死态 `DownloadTask` 不再算活动任务，影片会重新进入候选，同时该任务的 `info_hash` 继续充当黑名单，避免重复选择同一个种子。
 
-| 档 | 判定 | 节奏 |
-|---|---|---|
-| 新片 | `release_date` 在 `subscription_search_fresh_days`（默认 90 天）内，**含未来日期** | 每轮都查，**不计次数，永不放弃** |
-| 老片 | 其余，含 `release_date` 为空的（无法证明它新） | 每轮都查，累计本轮没找到次数 `attempt_count`，满 `subscription_search_stale_attempt_limit`（默认 3）置 `exhausted` |
-
-即老片**连查 3 天后放弃**。这里刻意不做逐次退避：老片的种子可得性基本是静态的，把 3 次摊到几十天
-并不比连查 3 天多抓到什么；真要捞重新做种的片子得是月/年尺度的重扫，那靠订阅管理页的「重置全部
-已放弃」手动触发，而不是让每部影片都背一套阶梯参数。
-
-「还要不要查」在写入时就落进了 `state`，调度器的候选集仍是一条纯 SQL：排除
-`exhausted` / `failed_terminal` / `running`，`failed_retryable` 看 `next_retry_at`——本任务退避
-为零、写入即到期，等价「下一轮照查」。「查过没找到」带 `error_code=no_candidate_found`，
-订阅页据此归入「未找到」档而非「查询失败」；索引器/提交故障声明不消耗本轮没找到次数
-（`consumes_budget=False`），只落错误信息。本任务不使用 `extra` 列。
-
-状态取值：
-
-| state | 含义 |
-|---|---|
-| `pending` | 从未查过（或重置后重开预算），等待下轮查询 |
-| `succeeded` | 已提交下载（或发现已有同样任务）。成功即收口本轮：`attempt_count` 清零，本轮没找到次数重新计；终身查过几次由 attempt 表行数体现 |
-| `failed` | 索引器调用出错。**回滚本轮计数（不消耗没找到次数），`last_attempted_at` 照常更新**：索引器故障是运维问题，不该消耗该影片的没找到次数 |
-| `exhausted` | 老片本轮没找到次数达到上限（默认 3），只能由用户手动重置 |
-
-**取消订阅不会删这些状态行，因此「未订阅 -> 订阅」的转变必须顺带重置它**（`MovieService` 的单条与
-批量订阅入口都做了）。否则一部曾被判 `exhausted` 的影片退订后重新订阅，状态行还是 `exhausted`，
-自动下载会直接跳过它，用户侧表现为「重新订阅了却完全没动静」。
-
-提交成功的种子后来判死时，该影片回到候选池，新一轮没找到次数从 0 重新计，跑满同样会被放弃；此时用户能在订阅管理页
-看到失败的下载任务历史，据此决定要不要手动重置。
+运维或前端可通过 `POST /system/jobs/subscribed_movie_auto_download/run` 手动执行整批；接口不要求任务参数，后续使用 `GET /system/task-runs` 观察进度、汇总和失败明细。
 
 ### 下载中种子小文件清理
 
@@ -407,6 +371,13 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
   "progress": 0.52,
   "download_state": "downloading",
   "import_status": "pending",
+  "raw_state": "downloading",
+  "download_speed_bytes": 2097152,
+  "uploaded_speed_bytes": 131072,
+  "downloaded_bytes": 5583457485,
+  "total_size_bytes": 10737418240,
+  "eta_seconds": 2300,
+  "progress_synced_at": "2026-03-10T08:19:58",
   "created_at": "2026-03-10T08:10:00",
   "updated_at": "2026-03-10T08:20:00"
 }
@@ -419,6 +390,9 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 - `(client_id, info_hash)` 是任务幂等键
 - `movie_number` 可以为空；同步阶段允许先按 `name` 解析，后续再补齐
 - `import_status` 只反映本地导入流程，不直接映射 qBittorrent 状态
+- `raw_state`、速度、已下载量、总大小与 ETA 是 APS 内部 qB 采样器写入的数据库快照；
+  `progress_synced_at` 只在快照值变化时推进，表示“快照内容最后变化时间”，不是最后一次成功采样或
+  qB 连接健康时间；静态任务持续采样成功也不会推进该字段
 - `download_started_at`（qb 专用）：进入活跃下载态（stalled / downloading）的时刻，由对账维护；
   排队 / 暂停 / 完成 / 做种时清空。停滞 / 慢速清理按它计时，排队时长不计入
 
@@ -447,20 +421,23 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 - `failed`
 - `skipped`
 
-## 实时进度与任务控制
+## 进度快照与任务控制
 
-客户端先通过 `GET /download-tasks` 分页加载全部历史记录，再以 `GET /download-tasks/stream` 订阅 qBittorrent 的实时状态。两个接口都支持 `client_id` 与 `movie_number` 筛选；SSE 首次为每个匹配下载客户端发送 `snapshot`，随后发送：
+客户端通过 `GET /download-tasks` 分页轮询下载进度。接口支持 `client_id` 与
+`movie_number` 筛选，并直接返回数据库中的 qB 快照字段：`raw_state`、
+`download_speed_bytes`、`uploaded_speed_bytes`、`downloaded_bytes`、
+`total_size_bytes`、`eta_seconds` 与 `progress_synced_at`。
 
 `GET /download-tasks` 还支持按下载状态筛选：`download_state` 可重复传多个取值（如
 `?download_state=downloading&download_state=stalled`），命中的是并集；未传或传空表示不过滤。
 取值集合与下文 `download_state` 枚举一致，非法取值返回 422。
 
-- `download_task_updated`：进度、速度、总大小、已下载量、ETA 与 qB 原始/归一化状态
-- `download_task_removed`：qB 中任务被移除或本系统删除任务
-- `download_client_status`：qB 客户端可用性，以及整体上下行速度
-- `heartbeat`：连接保活
-
-SSE 只服务在线实时展示，不把秒级进度写入数据库，也不改变现有 APS 同步和自动导入节奏。客户端断线后应重新查询任务列表并重新建立 SSE 连接。
+qB 快照由 APS 宿主内部 IntervalTrigger 采样器维护，默认每 `5` 秒执行一次
+（`[scheduler].download_progress_snapshot_interval_seconds`，允许 `1` 至 `60` 秒）。
+它不进入 `JOB_REGISTRY`、不出现在任务中心，也不创建 TaskRun；同一时刻最多运行一个实例。
+采样只更新本地已登记的受管任务，不创建、删除或触发导入；值未变化时不写库，qB 请求失败时
+保留旧快照。客户端只能把 `progress_synced_at` 展示为“最后变化时间”，不能据此判断采样器或
+qBittorrent 当前是否健康。
 
 暂停、恢复与删除均以本地 `task_id` 操作，后端会再次验证 qB 种子带有 `sakuramedia` 和对应 `client:<id>` 标签，手动加入 qB 的种子不会被操作。
 
@@ -480,7 +457,8 @@ qBittorrent kind 走 qB Web API 并校验种子仍属于当前下载客户端；
 失效等按 115 统一错误映射返回。cleanup-source 导入在没有失败项且有媒体产出（或没有可导入候选）
 时清理受管源目录；零产出但有跳过候选的目录会保留，供查看和重导。
 
-进度轮询周期：qBittorrent 由 `[downloads].progress_stream_poll_interval_seconds` 配置，默认 `1.0` 秒（允许 `0.2` 至 `10` 秒，修改后需重启 API）；cloud115 由 `[downloads].cloud115_progress_poll_interval_seconds` 配置，默认 `8.0` 秒（允许 `2` 至 `60` 秒，每轮现读、热生效）。Cloud115 SSE 始终从数据库构造完整快照，仅在存在 `queued/downloading` 任务时拉 115 离线列表补进度；没有活跃任务时零 115 请求。`abandoned` 任务仍保留在快照中，状态变化广播一次后不再请求远端进度。
+Cloud115 不接入这条高频采样器，仍由 `cloud115_offline_sync` 每分钟对账一次；没有
+`queued/downloading` 任务时整轮零远端请求。旧 TOML 中两项 SSE poll 配置会在启动加载时忽略。
 
 ## cloud115 离线下载
 
@@ -501,18 +479,18 @@ qBittorrent kind 走 qB Web API 并校验种子仍属于当前下载客户端；
 - 115 侧已存在同 hash 任务时，以远端真实 `save_dir_id` 为准，并通过目录面包屑确认它属于当前媒体库的受管下载根；位于用户目录或无法可靠定位时返回 `409 cloud115_offline_task_exists_unmanaged`，不会接管或清理
 - 离线月配额耗尽返回 `409 cloud115_offline_quota_exceeded`，不自动降级到其它下载器
 - 广告/垃圾小文件不做下载前过滤：导入管线按扩展名白名单分拣，`cleanup-source` 只把命中白名单的视频移进库
-- **导入成功后整个任务目录被删除**（进 115 回收站），连同 nfo / 封面 / 种子 / 判定过小的样本等非视频残留一并清掉。仅在本次导入零失败项时执行；有失败项则整个目录保留，供按相对路径重导。这条是必需的：`cleanup-source` 走 `move`，只搬文件不动目录，否则已完成的任务目录会在缓冲区永久累积，而按整个缓冲区导入时扫描要把这些空壳逐个列一遍（实测 158+ 个残留目录会让扫描连打 200 余次 `list_dir` 并触发 WAF 405）
+- **导入成功后整个任务目录被删除**（进 115 回收站），连同 nfo / 封面 / 种子 / 判定过小的样本等非视频残留一并清掉。仅在本次导入零失败项且没有需保留的 `duplicate_fingerprint` 源文件时执行；有失败项或保留重复源则整个目录保留，供查看和重导。这条清理仍是必需的：`cleanup-source` 走 `move`，只搬文件不动目录，否则已完成的任务目录会在缓冲区永久累积，而按整个缓冲区导入时扫描要把这些空壳逐个列一遍（实测 158+ 个残留目录会让扫描连打 200 余次 `list_dir` 并触发 WAF 405）
 
 ### 周期对账（`cloud115_offline_sync`）
 
 内部调度任务，默认每分钟执行一次（`[scheduler].cloud115_offline_sync_cron`），对每个 cloud115 下载入口：
 
-- 先用本地状态推进 completed 任务的导入与 ImportJob 终态；只有存在 `queued/downloading` 任务时才拉 115 离线列表
-- 任务完成（status=2）且待导入 → 按任务创建时间串行消费：触发 cloud115 导入（`cleanup-source`：把视频从缓冲目录直接移动进库）、关联 `ImportJob` 并在本轮等待终态。成功后若还有待导入任务，随机休息 10–30 秒再继续；作业失败或存在失败文件时立即停止本轮，剩余任务留待下一轮
-- 自动导入队列在同一下载入口内串行，但不设置媒体库级 mutex；手动 JAV/videos 导入和媒体秒传不会因自动导入而返回库级冲突
-- 提交超过 `[downloads].cloud115_offline_abandon_hours`（默认 `24`，最小 `1`）仍处于 queued/downloading → 本地标记 `abandoned` 并发系统通知；**不删除 115 侧任务**，后续不再请求其远端进度。远端 failed 任务保持 failed，不再因超时改为 abandoned
+- 先用本地状态推进 completed 任务关联的 `TaskRun` 终态；只有存在 `queued/downloading` 任务时才拉 115 离线列表
+- 任务完成（status=2）且待导入 → 按任务创建时间串行消费：触发统一 cloud115 导入（把视频从缓冲目录直接移动进库）、关联 `TaskRun` 并在本轮等待终态。成功后若还有待导入任务，随机休息 10–30 秒再继续；任务失败或结果含失败文件时立即停止本轮，剩余任务留待下一轮
+- 自动导入队列在同一下载入口内串行，并与手动 JAV/videos 导入、媒体秒传竞争全局 115 写入 mutex；若被占用，本轮保留 `pending` 并在后续周期重试，不会并发移动或改名远端文件
+- 提交超过 `[downloads].cloud115_offline_abandon_hours`（默认 `24`，最小 `1`）仍处于 queued/downloading → 本地标记 `abandoned` 并发系统通知（同一下载任务仅一条）；**不删除 115 侧任务**，后续不再请求其远端进度。远端 failed 任务保持 failed，不再因超时改为 abandoned
 - 没有活跃任务时整轮零请求，不打扰 115
-- 容器重启时，关联 Activity 会保留 failed 审计记录；半截 Cloud115 ImportJob 被删除，下载任务回到 `import_status=pending`。启动阶段不访问 115，下一轮周期对账再触发导入；已复制文件与 Media 由现有 SHA/Media 幂等对账收敛
+- 容器重启时，关联 TaskRun 会保留 failed 审计记录；仅精确关联该失败 TaskRun 的下载任务回到 `import_status=pending`。启动阶段不访问 115，下一轮周期对账再触发导入；已登记或已移动的文件与 Media 由现有 SHA/Media 幂等对账收敛
 - 可手动单次执行：`uv run python -m src.start.commands aps sync-cloud115-offline-tasks`
 
 ### 任务控制差异（相对 qb）
@@ -521,7 +499,8 @@ qBittorrent kind 走 qB Web API 并校验种子仍属于当前下载客户端；
 - 删除任务：非 `abandoned` 任务会先删 115 侧离线任务（`delete_files=true` 时连已下载文件一起删）再删本地镜像；`abandoned` 任务只删本地记录、不动远端（与放弃语义一致）
 - 手动触发导入（复用下载任务导入接口）走 cloud115 导入作业链路，不走本地路径导入
 
-配置生效级别：Cloud115 SSE 间隔为热生效；qB SSE 间隔需重启 API；abandon 时长、小文件阈值与 `preferred_client_kinds` 由 APS 消费，修改后需重启 scheduler。
+配置生效级别：qB 快照间隔、Cloud115 abandon 时长、小文件阈值与
+`preferred_client_kinds` 均由 APS 消费，修改后需重启 scheduler。
 
 ## 端点总览
 
@@ -538,7 +517,6 @@ qBittorrent kind 走 qB Web API 并校验种子仍属于当前下载客户端；
 | `GET` | `/download-candidates` | 搜索番号的候选资源 |
 | `POST` | `/download-requests` | 向指定客户端提交下载 |
 | `GET` | `/download-tasks` | 分页查询全部下载历史 |
-| `GET` | `/download-tasks/stream` | 订阅 qBittorrent 实时进度 SSE |
 | `GET` | `/download-tasks/{task_id}/files` | 按任务实时拉取文件列表（qB / 115） |
 | `POST` | `/download-tasks/{task_id}/pause` | 暂停受管下载任务 |
 | `POST` | `/download-tasks/{task_id}/resume` | 恢复受管下载任务 |

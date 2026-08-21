@@ -2,6 +2,10 @@
 from peewee import JOIN, fn
 
 from src.api.exception.errors import ApiError
+from src.common.service_helpers import (
+    build_ordered_expressions,
+    resolve_sort_expression,
+)
 from src.model import MovieTag, Tag
 from src.schema.catalog.movies import (
     MovieCollectionType,
@@ -11,7 +15,6 @@ from src.schema.catalog.movies import (
     TagListItemResource,
 )
 from src.schema.common.pagination import PageResponse
-from src.common.service_helpers import build_ordered_expressions, resolve_sort_expression
 from src.service.catalog.movie_service import MovieService
 
 

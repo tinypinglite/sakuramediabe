@@ -4,7 +4,7 @@ import pytest
 from click.testing import CliRunner
 
 from src.metadata._providers.models import JavdbMovieDetailResource
-from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
+from src.metadata.provider import MetadataRequestError
 from src.start.commands import main
 
 

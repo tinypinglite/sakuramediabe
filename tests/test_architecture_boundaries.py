@@ -26,7 +26,8 @@ def test_cloud115_sdk_does_not_depend_on_business_layers() -> None:
 
 
 def test_rapid_upload_does_not_depend_on_playback_service() -> None:
-    for path in Path("src/service/transfers/media_rapid_upload").rglob("*.py"):
+    # 秒传实现已迁入 rapid_upload 子包；旧目录已删除，继续扫描会让护栏空跑。
+    for path in Path("src/service/transfers/rapid_upload").rglob("*.py"):
         forbidden = {
             module
             for module in _imported_modules(path)
@@ -50,7 +51,7 @@ _FACADE_SHIMS = frozenset(
     (
         Path("src/service/system/activity_service.py"),
         Path("src/service/playback/media_thumbnail_service.py"),
-        Path("src/service/transfers/media_rapid_upload_service.py"),
+        Path("src/service/transfers/rapid_upload/facade.py"),
         Path("src/service/playback/cloud115_backend_service.py"),
     )
 )
@@ -183,8 +184,7 @@ def test_multi_base_facades_have_no_ambiguous_method_names() -> None:
 # 同一守卫顺带覆盖另一种形态：重构删掉了某个私有辅助方法，调用点却还在——
 # 该类同样会出现解析不到的 `cls.` 引用，而它是被跨包直接使用的入口类。
 #
-# 历史事故：queue_tasks 直接 import MediaRapidUploadExecutor（秒传任务全崩）、
-# ResourceTaskStateService._validate_page 随重构被删（列表接口 500）。
+# 历史事故：queue_tasks 直接 import MediaRapidUploadExecutor（秒传任务全崩）。
 # ---------------------------------------------------------------------------
 
 
@@ -322,4 +322,3 @@ def test_classes_with_dangling_self_refs_are_not_used_outside_their_package() ->
                         f"——改用组合后的门面，或把缺失方法补回该类"
                     )
     assert not violations, "\n".join(violations)
-

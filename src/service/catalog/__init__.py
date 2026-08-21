@@ -7,11 +7,10 @@ from .movie_metadata_refresh_service import MovieMetadataRefreshService
 from .movie_service import MovieService
 from .movie_subscription_service import MovieSubscriptionService
 from .movie_subtitle_service import MovieSubtitleService
-from .subtitle_import_job_service import SubtitleImportJobService
-from .subtitle_import_service import SubtitleImportService
 from .movie_task_service import MovieTaskService
 from .movie_thin_cover_backfill_service import MovieThinCoverBackfillService
 from .subscribed_actor_movie_sync_service import SubscribedActorMovieSyncService
+from .subtitle_import_service import SubtitleImportService
 from .tag_service import TagService
 
 __all__ = [
@@ -25,10 +24,9 @@ __all__ = [
     "MovieService",
     "MovieSubscriptionService",
     "MovieSubtitleService",
-    "SubtitleImportJobService",
-    "SubtitleImportService",
     "MovieTaskService",
     "MovieThinCoverBackfillService",
     "SubscribedActorMovieSyncService",
+    "SubtitleImportService",
     "TagService",
 ]

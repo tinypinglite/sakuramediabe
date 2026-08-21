@@ -24,11 +24,15 @@ def create_media_rapid_upload_notification(
         f"本批次共 {total_count} 个媒体：成功 {succeeded_count} 个，"
         f"失败 {failed_count} 个，本地文件清理失败 {cleanup_failed_count} 个。"
     )
-    return NotificationService.create(
+    return NotificationService.create_once(
         NotificationDraft(
             category=category,
             title=title,
             content=content,
+            event_type="media_rapid_upload_completed",
+            dedupe_key=f"media_rapid_upload_completed:batch:{batch_id}",
+            resource_type="media_rapid_upload_batch",
+            resource_id=batch_id,
             related_task_run_id=task_run_id,
             related_resource_type="media_rapid_upload_batch",
             related_resource_id=batch_id,

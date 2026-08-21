@@ -1,69 +1,114 @@
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from datetime import timedelta
+from typing import Any
 
 from loguru import logger
+from peewee import fn
 
+from src.common.database import ensure_database_ready
+from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import Media, MediaLibrary, MediaThumbnail
 from src.model.enums import MediaLibraryBackend
 from src.service.playback.thumbnails.artifacts import ThumbnailArtifactService
 from src.service.playback.thumbnails.backend_registry import ThumbnailBackendRegistry
-from src.service.playback.thumbnails.contracts import ThumbnailDeferred
-from src.service.system.resource_task_runner import (
-    ResourceTaskLedger,
-    ResourceTaskRunner,
-    ResourceTaskSpec,
-    RetryPolicy,
-    TaskItemDeferred,
-    TaskItemError,
+from src.service.playback.thumbnails.contracts import (
+    ThumbnailBackendUnavailable,
+    ThumbnailDeferred,
 )
 
 
+@dataclass(frozen=True)
+class ThumbnailGenerationOutcome:
+    """单条媒体的领域收口结果，供两条执行泳道统一汇总。"""
+
+    state: str
+    generated_count: int = 0
+    error_code: str | None = None
+
+
 class MediaThumbnailTaskService:
-    """媒体缩略图生成（已迁 kernel 记账，任务架构 Wave 2）。
-
-    双泳道 = 两次 Runner 执行：cloud115 媒体串行（远端限速），本地媒体按
-    ``max_thumbnail_process_count`` 并发（任务内并发由内核线程池接管，
-    ctx 显式传参，旧的 ``wrap_current_task_run_context`` ContextVar 链路退役）。
-
-    失败分类：缺内容指纹 → failed_terminal；生成失败按预算退避（2 次/轮后
-    exhausted，可经重置接口重开）；源暂不可用（HLS 未就绪等）→ deferred 不耗预算。
-    """
+    """按 Media 自有状态生成缩略图，并让媒体级失败在有限次数内收口。"""
 
     TASK_KEY = "media_thumbnail_generation"
-    THUMBNAIL_MAX_RETRIES = 2
-    INTERRUPTED_GENERATION_ERROR_MESSAGE = "媒体缩略图生成任务中断，等待重试"
-    RETRY_POLICY = RetryPolicy(
-        max_attempts=THUMBNAIL_MAX_RETRIES,
-        backoff_base_seconds=900,
-        backoff_max_seconds=86400,
-    )
-    # 生成链路里可识别的确定性错误标记（历史裸字符串常量），映射为结构化 error_code。
-    KNOWN_ERROR_CODES = (
-        "thumbnail_generation_empty",
-        "thumbnail_generation_unparseable_filenames",
-        "thumbnail_generation_insufficient_count",
+    MAX_FAILURE_ATTEMPTS = 2
+    FAILURE_RETRY_BACKOFF_BASE_SECONDS = 15 * 60
+    FAILURE_RETRY_BACKOFF_MAX_SECONDS = 24 * 60 * 60
+    # 下列错误由媒体本身决定，重试不会改变结果，首次即可明确终态。
+    TERMINAL_ERROR_CODES = frozenset(
+        {
+            "cloud115_locator_missing",
+            "hls_clean_frame_missing",
+            "hls_video_stream_missing",
+            "thumbnail_generation_empty",
+            "thumbnail_generation_insufficient_count",
+            "thumbnail_generation_unparseable_filenames",
+            "video_file_missing",
+            "video_stream_missing",
+        }
     )
 
-    # -------- 候选查询 --------
+    @staticmethod
+    def _thumbnail_exists_query():
+        return MediaThumbnail.select(MediaThumbnail.id).where(
+            MediaThumbnail.media == Media.id
+        )
+
+    @classmethod
+    def _missing_thumbnail_condition(cls):
+        return ~fn.EXISTS(cls._thumbnail_exists_query())
+
+    @staticmethod
+    def _has_usable_fingerprint_condition():
+        return (
+            Media.content_fingerprint.is_null(False)
+            & (Media.content_fingerprint != "")
+        )
+
+    @classmethod
+    def _source_changed_condition(cls):
+        """内容版本变化后重新打开旧状态，终态失败不会永久绑定到新文件。"""
+        return cls._has_usable_fingerprint_condition() & (
+            Media.thumbnail_source_fingerprint.is_null(True)
+            | (Media.thumbnail_source_fingerprint != Media.content_fingerprint)
+        )
 
     @classmethod
     def _candidate_query(
         cls,
-        state_condition,
         *,
         backend_lane: str | None = None,
-        only_ids=None,
     ):
+        now = utc_now_for_db()
+        normal_state = (
+            Media.thumbnail_generation_state.in_(
+                (
+                    Media.THUMBNAIL_STATE_PENDING,
+                    # 成功产物被人工清理时，重新生成而不是永久卡在 succeeded。
+                    Media.THUMBNAIL_STATE_SUCCEEDED,
+                )
+            )
+            | cls._source_changed_condition()
+            | (
+                (Media.thumbnail_generation_state == Media.THUMBNAIL_STATE_RETRY_WAIT)
+                & (
+                    Media.thumbnail_next_retry_at.is_null(True)
+                    | (Media.thumbnail_next_retry_at <= now)
+                )
+            )
+        )
         query = (
-            # 候选只取 id（count_pending_media 复用同一查询做 .count() 兼容）；
-            # 完整模型由内核按 CANDIDATE_BATCH_SIZE 分批加载。
             Media.select(Media.id)
             .join(MediaLibrary)
             .where(
                 Media.valid == True,
-                state_condition(cls.TASK_KEY, "media", Media.id),
+                cls._has_usable_fingerprint_condition(),
+                cls._missing_thumbnail_condition(),
+                normal_state,
             )
             .order_by(Media.id)
         )
@@ -75,24 +120,39 @@ class MediaThumbnailTaskService:
             query = query.where(
                 MediaLibrary.backend != MediaLibraryBackend.CLOUD115.value
             )
-        if only_ids:
-            query = query.where(Media.id.in_(list(only_ids)))
         return query
 
     @classmethod
-    def count_pending_media(cls) -> int:
-        return cls._candidate_query(ResourceTaskLedger.eligible_state_condition).count()
+    def _candidate_ids(cls, backend_lane: str) -> list[int]:
+        return [
+            int(media_id)
+            for (media_id,) in cls._candidate_query(backend_lane=backend_lane).tuples()
+        ]
 
     @classmethod
-    def recover_interrupted_running_media(cls, *, error_message: str | None = None) -> int:
-        normalized_error = (
-            (error_message or "").strip() or cls.INTERRUPTED_GENERATION_ERROR_MESSAGE
-        )
-        return ResourceTaskLedger.recover_running(
-            cls.TASK_KEY, error_message=normalized_error
+    def _count_state(cls, state: str) -> int:
+        return (
+            Media.select(Media.id)
+            .where(
+                cls._missing_thumbnail_condition(),
+                Media.thumbnail_generation_state == state,
+                ~cls._source_changed_condition(),
+            )
+            .count()
         )
 
-    # -------- 生成核心 --------
+    @classmethod
+    def count_pending_media(cls) -> int:
+        """返回当前可执行的媒体数；到期 retry_wait 也属于本轮待处理。"""
+        return cls._candidate_query().count()
+
+    @classmethod
+    def count_retry_wait_media(cls) -> int:
+        return cls._count_state(Media.THUMBNAIL_STATE_RETRY_WAIT)
+
+    @classmethod
+    def count_terminal_failed_media(cls) -> int:
+        return cls._count_state(Media.THUMBNAIL_STATE_TERMINAL)
 
     @staticmethod
     def minimum_acceptable_count(expected_count: int) -> int:
@@ -117,19 +177,11 @@ class MediaThumbnailTaskService:
         return message
 
     @classmethod
-    def _classify_error_code(cls, message: str) -> str:
-        for known_code in cls.KNOWN_ERROR_CODES:
-            if message.startswith(known_code):
-                return known_code
-        return "thumbnail_generation_failed"
-
-    @classmethod
     def generate_for_media(cls, media: Media) -> int:
-        """备好源并生成缩略图，返回入库张数。失败抛原始异常，由 _process_one 分类。
-
-        独立成方法既是测试替换点，也隔离"生成"与"记账"两层关注点。
-        """
         backend = ThumbnailBackendRegistry.for_media(media)
+        ensure_available = getattr(backend, "ensure_available", None)
+        if callable(ensure_available):
+            ensure_available()
         prepared = backend.prepare(media)
         logger.info(
             "Generating media thumbnails media_id={} movie_number={} source={}",
@@ -189,102 +241,335 @@ class MediaThumbnailTaskService:
             raise RuntimeError("thumbnail_generation_unparseable_filenames")
         return generated_count
 
+    @staticmethod
+    def _error_code(exc: Exception) -> str:
+        error_code = getattr(exc, "error_code", None)
+        if isinstance(error_code, str) and error_code.strip():
+            return error_code.strip()[:64]
+        detail = str(exc).strip()
+        if detail:
+            return detail.split(maxsplit=1)[0].split(":", maxsplit=1)[0][:64]
+        return type(exc).__name__.lower()[:64]
+
+    @staticmethod
+    def _error_detail(exc: Exception) -> str:
+        return (str(exc).strip() or type(exc).__name__)[:4000]
+
     @classmethod
-    def _process_one(cls, ctx, media_row: Media) -> None:
-        media = Media.get_or_none(Media.id == media_row.id)
+    def _write_state(
+        cls,
+        media: Media,
+        *,
+        state: str,
+        attempt_count: int,
+        deferred_count: int,
+        next_retry_at,
+        error_code: str | None,
+        error_detail: str | None,
+        terminal_at,
+    ) -> None:
+        # 状态更新集中在单条 UPDATE：不把并发执行时的旧 Media 实例整行写回数据库。
+        Media.update(
+            thumbnail_generation_state=state,
+            thumbnail_attempt_count=attempt_count,
+            thumbnail_deferred_count=deferred_count,
+            thumbnail_next_retry_at=next_retry_at,
+            thumbnail_last_error_code=error_code,
+            thumbnail_last_error=error_detail,
+            thumbnail_terminal_at=terminal_at,
+            thumbnail_source_fingerprint=media.content_fingerprint,
+            updated_at=utc_now_for_db(),
+        ).where(Media.id == media.id).execute()
+
+    @classmethod
+    def _mark_succeeded(cls, media: Media) -> None:
+        cls._write_state(
+            media,
+            state=Media.THUMBNAIL_STATE_SUCCEEDED,
+            attempt_count=0,
+            deferred_count=0,
+            next_retry_at=None,
+            error_code=None,
+            error_detail=None,
+            terminal_at=None,
+        )
+
+    @classmethod
+    def _mark_deferred(cls, media: Media, exc: ThumbnailDeferred) -> bool:
+        """返回是否因达到延后上限转为 terminal。"""
+        now = utc_now_for_db()
+        attempt_count = int(media.thumbnail_attempt_count or 0) + 1
+        deferred_count = int(media.thumbnail_deferred_count or 0) + 1
+        error_code = cls._error_code(exc)
+        error_detail = cls._error_detail(exc)
+        if deferred_count > exc.max_deferred_attempts:
+            cls._write_state(
+                media,
+                state=Media.THUMBNAIL_STATE_TERMINAL,
+                attempt_count=attempt_count,
+                deferred_count=deferred_count,
+                next_retry_at=None,
+                error_code=error_code,
+                error_detail=error_detail,
+                terminal_at=now,
+            )
+            return True
+
+        backoff_seconds = min(
+            exc.deferred_backoff_base_seconds * deferred_count,
+            cls.FAILURE_RETRY_BACKOFF_MAX_SECONDS,
+        )
+        cls._write_state(
+            media,
+            state=Media.THUMBNAIL_STATE_RETRY_WAIT,
+            attempt_count=attempt_count,
+            deferred_count=deferred_count,
+            next_retry_at=now + timedelta(seconds=backoff_seconds),
+            error_code=error_code,
+            error_detail=error_detail,
+            terminal_at=None,
+        )
+        return False
+
+    @classmethod
+    def _mark_failure(cls, media: Media, exc: Exception) -> bool:
+        """媒体错误最多重试一次；确定性错误直接进入 terminal。"""
+        now = utc_now_for_db()
+        attempt_count = int(media.thumbnail_attempt_count or 0) + 1
+        error_code = cls._error_code(exc)
+        error_detail = cls._error_detail(exc)
+        is_terminal = (
+            error_code in cls.TERMINAL_ERROR_CODES
+            or attempt_count >= cls.MAX_FAILURE_ATTEMPTS
+        )
+        if is_terminal:
+            cls._write_state(
+                media,
+                state=Media.THUMBNAIL_STATE_TERMINAL,
+                attempt_count=attempt_count,
+                deferred_count=int(media.thumbnail_deferred_count or 0),
+                next_retry_at=None,
+                error_code=error_code,
+                error_detail=error_detail,
+                terminal_at=now,
+            )
+            return True
+
+        backoff_seconds = min(
+            cls.FAILURE_RETRY_BACKOFF_BASE_SECONDS * attempt_count,
+            cls.FAILURE_RETRY_BACKOFF_MAX_SECONDS,
+        )
+        cls._write_state(
+            media,
+            state=Media.THUMBNAIL_STATE_RETRY_WAIT,
+            attempt_count=attempt_count,
+            deferred_count=int(media.thumbnail_deferred_count or 0),
+            next_retry_at=now + timedelta(seconds=backoff_seconds),
+            error_code=error_code,
+            error_detail=error_detail,
+            terminal_at=None,
+        )
+        return False
+
+    @classmethod
+    def _generate_one(cls, media_id: int) -> ThumbnailGenerationOutcome:
+        ensure_database_ready()
+        media = Media.get_or_none(Media.id == media_id)
         if media is None or not media.valid:
-            raise TaskItemDeferred(
-                "media_missing_or_invalid", "媒体已删除或失效，等待巡检收敛"
-            )
+            return ThumbnailGenerationOutcome("skipped")
         if MediaThumbnail.select().where(MediaThumbnail.media == media).exists():
-            logger.info(
-                "Skipping media thumbnail generation media_id={} "
-                "reason=thumbnails_already_exist",
-                media.id,
-            )
-            return
+            cls._mark_succeeded(media)
+            return ThumbnailGenerationOutcome("skipped")
+        # 候选 SQL 已严格排除缺指纹媒体；这里防止查询后字段被并发清空。
         if not media.content_fingerprint:
-            raise TaskItemError(
-                "content_fingerprint_missing",
-                "缺少内容指纹，无法定位缩略图目录",
-                retryable=False,
-            )
+            return ThumbnailGenerationOutcome("skipped")
         try:
             generated_count = cls.generate_for_media(media)
-        except (TaskItemDeferred, TaskItemError):
-            raise
-        except ThumbnailDeferred as exc:
-            raise TaskItemDeferred(
+        except ThumbnailBackendUnavailable as exc:
+            logger.warning(
+                "Media thumbnail backend unavailable media_id={} code={} detail={}",
+                media_id,
                 exc.error_code,
-                str(exc),
-                max_deferred_attempts=exc.max_deferred_attempts,
-                deferred_backoff_base_seconds=exc.deferred_backoff_base_seconds,
-            ) from exc
+                exc,
+            )
+            return ThumbnailGenerationOutcome(
+                "backend_unavailable",
+                error_code=exc.error_code,
+            )
+        except ThumbnailDeferred as exc:
+            terminal = cls._mark_deferred(media, exc)
+            logger.warning(
+                "Media thumbnail generation deferred media_id={} code={} terminal={} detail={}",
+                media_id,
+                exc.error_code,
+                terminal,
+                exc,
+            )
+            return ThumbnailGenerationOutcome(
+                "terminal_failed" if terminal else "deferred",
+                error_code=exc.error_code,
+            )
         except Exception as exc:
-            raise TaskItemError(cls._classify_error_code(str(exc)), str(exc)) from exc
-        counters = ctx.shared
-        if counters is not None:
-            counters["generated_thumbnails"] += generated_count
+            # 若并发路径已经持久化了缩略图，产物事实优先，不再写回失败状态。
+            if MediaThumbnail.select().where(MediaThumbnail.media == media).exists():
+                cls._mark_succeeded(media)
+                return ThumbnailGenerationOutcome("succeeded")
+            terminal = cls._mark_failure(media, exc)
+            logger.exception(
+                "Media thumbnail generation failed media_id={} code={} terminal={}",
+                media_id,
+                cls._error_code(exc),
+                terminal,
+            )
+            return ThumbnailGenerationOutcome(
+                "terminal_failed" if terminal else "retryable_failed",
+                error_code=cls._error_code(exc),
+            )
 
-    # -------- 批量入口 --------
-
-    @classmethod
-    def _build_spec(cls, backend_lane: str, concurrency: int) -> ResourceTaskSpec:
-        return ResourceTaskSpec(
-            task_key=cls.TASK_KEY,
-            resource_type="media",
-            retry=cls.RETRY_POLICY,
-            select_candidates=lambda state_condition, only_ids=None: cls._candidate_query(
-                state_condition, backend_lane=backend_lane, only_ids=only_ids
-            ),
-            process_one=cls._process_one,
-            setup_run=lambda _ctx: {"generated_thumbnails": 0},
-            concurrency=concurrency,
-            resource_model=Media,
-        )
+        cls._mark_succeeded(media)
+        return ThumbnailGenerationOutcome("succeeded", generated_count=generated_count)
 
     @classmethod
     def generate_pending_thumbnails(
-        cls, *, reporter, only_ids: list[int] | None = None
-    ) -> dict[str, int]:
+        cls,
+        *,
+        reporter,
+    ) -> dict[str, Any]:
         started_at = time.time()
-        # cloud115 泳道先行且串行（远端限速），本地泳道随后并发。
-        cloud_stats = ResourceTaskRunner.run(
-            cls._build_spec("cloud115", 1), reporter, only_ids=only_ids
-        )
-        local_stats = ResourceTaskRunner.run(
-            cls._build_spec("local", settings.media.max_thumbnail_process_count),
-            reporter,
-            only_ids=only_ids,
-        )
-
-        def merged(key: str) -> int:
-            return int(cloud_stats.get(key, 0)) + int(local_stats.get(key, 0))
-
-        generated_thumbnails = sum(
-            int((stats.get("shared") or {}).get("generated_thumbnails", 0))
-            for stats in (cloud_stats, local_stats)
-        )
-        stats = {
-            "pending_media": merged("candidate_count"),
-            "successful_media": merged("succeeded_count"),
-            "generated_thumbnails": generated_thumbnails,
-            "deferred_media": merged("deferred_count"),
-            "retryable_failed_media": merged("failed_retryable_count"),
-            "terminal_failed_media": merged("failed_terminal_count"),
-            "exhausted_media": merged("exhausted_count"),
+        cloud_ids = cls._candidate_ids("cloud115")
+        local_ids = cls._candidate_ids("local")
+        all_ids = cloud_ids + local_ids
+        stats: dict[str, Any] = {
+            "pending_media": len(all_ids),
+            "successful_media": 0,
+            "generated_thumbnails": 0,
+            "deferred_media": 0,
+            "retryable_failed_media": 0,
+            "terminal_failed_media": 0,
+            "failed_media_ids": [],
+            "terminal_failed_media_ids": [],
+            "backend_failed_lanes": 0,
+            "backend_deferred_media": 0,
+            "backend_failure_codes": [],
+            "skipped_media": 0,
         }
+        completed = 0
+        failed_backend_lanes: set[str] = set()
+
+        def record(media_id: int, outcome: ThumbnailGenerationOutcome) -> None:
+            nonlocal completed
+            if outcome.state == "succeeded":
+                stats["successful_media"] += 1
+                stats["generated_thumbnails"] += outcome.generated_count
+            elif outcome.state == "deferred":
+                stats["deferred_media"] += 1
+            elif outcome.state == "retryable_failed":
+                stats["retryable_failed_media"] += 1
+                stats["failed_media_ids"].append(media_id)
+            elif outcome.state == "terminal_failed":
+                stats["terminal_failed_media"] += 1
+                stats["failed_media_ids"].append(media_id)
+                stats["terminal_failed_media_ids"].append(media_id)
+            elif outcome.state == "skipped":
+                stats["skipped_media"] += 1
+            completed += 1
+            reporter.emit(current=completed, total=len(all_ids), summary_patch=stats)
+
+        def mark_backend_unavailable(
+            *,
+            lane: str,
+            remaining_ids: list[int],
+            exc: ThumbnailBackendUnavailable,
+        ) -> None:
+            nonlocal completed
+            # 本地并发泳道可能有多个已在飞行的媒体同时感知到同一个后端故障；泳道只计一次，
+            # 但每一条未处理媒体都要进入本轮 deferred 统计，便于前端正确显示进度。
+            if lane not in failed_backend_lanes:
+                failed_backend_lanes.add(lane)
+                stats["backend_failed_lanes"] += 1
+                stats["backend_failure_codes"].append(exc.error_code)
+            stats["backend_deferred_media"] += len(remaining_ids)
+            completed += len(remaining_ids)
+            logger.warning(
+                "Thumbnail backend lane paused lane={} media_count={} code={} detail={}",
+                lane,
+                len(remaining_ids),
+                exc.error_code,
+                exc,
+            )
+            reporter.emit(current=completed, total=len(all_ids), summary_patch=stats)
+
+        def run_cloud_lane() -> None:
+            if not cloud_ids:
+                return
+            try:
+                ThumbnailBackendRegistry.ensure_available(MediaLibraryBackend.CLOUD115.value)
+            except ThumbnailBackendUnavailable as exc:
+                mark_backend_unavailable(
+                    lane="cloud115", remaining_ids=cloud_ids, exc=exc
+                )
+                return
+            for index, media_id in enumerate(cloud_ids):
+                outcome = cls._generate_one(media_id)
+                if outcome.state == "backend_unavailable":
+                    mark_backend_unavailable(
+                        lane="cloud115",
+                        remaining_ids=cloud_ids[index:],
+                        exc=ThumbnailBackendUnavailable(
+                            "Cloud115 thumbnail backend became unavailable",
+                            error_code=outcome.error_code or "thumbnail_backend_unavailable",
+                        ),
+                    )
+                    return
+                record(media_id, outcome)
+
+        def run_local_lane() -> None:
+            if not local_ids:
+                return
+            try:
+                ThumbnailBackendRegistry.ensure_available(MediaLibraryBackend.LOCAL.value)
+            except ThumbnailBackendUnavailable as exc:
+                mark_backend_unavailable(lane="local", remaining_ids=local_ids, exc=exc)
+                return
+            with ThreadPoolExecutor(
+                max_workers=max(settings.media.max_thumbnail_process_count, 1),
+                thread_name_prefix="media-thumbnail",
+            ) as pool:
+                futures = {
+                    pool.submit(cls._generate_one, media_id): media_id for media_id in local_ids
+                }
+                for future in as_completed(futures):
+                    media_id = futures[future]
+                    outcome = future.result()
+                    if outcome.state == "backend_unavailable":
+                        # 已在飞行的本地任务允许完成；后续轮次会在预检阶段整体恢复或暂停。
+                        mark_backend_unavailable(
+                            lane="local",
+                            remaining_ids=[media_id],
+                            exc=ThumbnailBackendUnavailable(
+                                "Local thumbnail backend became unavailable",
+                                error_code=outcome.error_code
+                                or "thumbnail_backend_unavailable",
+                            ),
+                        )
+                    else:
+                        record(media_id, outcome)
+
+        # 115 源受远端限速约束，保持串行；本地源继续使用配置的并发度。
+        run_cloud_lane()
+        run_local_lane()
+
         logger.info(
             "Finished media thumbnail generation pending_media={} successful_media={} "
             "generated_thumbnails={} deferred_media={} retryable_failed_media={} "
-            "terminal_failed_media={} exhausted_media={} elapsed_ms={}",
+            "terminal_failed_media={} backend_failed_lanes={} elapsed_ms={}",
             stats["pending_media"],
             stats["successful_media"],
             stats["generated_thumbnails"],
             stats["deferred_media"],
             stats["retryable_failed_media"],
             stats["terminal_failed_media"],
-            stats["exhausted_media"],
+            stats["backend_failed_lanes"],
             int((time.time() - started_at) * 1000),
         )
         return stats

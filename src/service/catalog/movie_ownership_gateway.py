@@ -44,10 +44,14 @@ class MovieOwnershipGateway:
                 # summary 等列允许 NULL，远端详情缺失时以 None 落库是合法数据；
                 # 插件 patch 路径保持 str-only（allow_none=False），拒绝 None。
                 if not allow_none:
-                    raise ValueError(f"字段 {name} 值类型错误: 期望 {expected_type.__name__}")
+                    raise ValueError(
+                        f"字段 {name} 值类型错误: 期望 {expected_type.__name__}"
+                    )
                 continue
             if not isinstance(value, expected_type):
-                raise ValueError(f"字段 {name} 值类型错误: 期望 {expected_type.__name__}")
+                raise ValueError(  # noqa: TRY004 - 插件字段校验已公开为 ValueError
+                    f"字段 {name} 值类型错误: 期望 {expected_type.__name__}"
+                )
 
     @classmethod
     def patch_plugin(
@@ -68,13 +72,15 @@ class MovieOwnershipGateway:
         table = Movie._meta.table_name
         assignments = ", ".join(f"{name} = %s" for name in fields)
         owner_conditions = " AND ".join(
-            "(field_owners->>%s IS NULL OR field_owners->>%s = %s)"
-            for _ in fields
+            "(field_owners->>%s IS NULL OR field_owners->>%s = %s)" for _ in fields
         )
-        owner_payload = json.dumps(
-            {name: owner for name in fields}, ensure_ascii=False
-        )
-        params: list[Any] = [*fields.values(), owner_payload, movie_id, expected_revision]
+        owner_payload = json.dumps({name: owner for name in fields}, ensure_ascii=False)
+        params: list[Any] = [
+            *fields.values(),
+            owner_payload,
+            movie_id,
+            expected_revision,
+        ]
         for name in fields:
             params.extend((name, name, owner))
         cursor = Movie._meta.database.execute_sql(
@@ -161,9 +167,7 @@ class MovieOwnershipGateway:
             # 左结合会把整条结果污染成 NULL）。
             key_placeholders = ", ".join("%s" for _ in fields)
             # 任一目标字段属于该插件即整行更新（字段级独立摘除）。
-            conditions = " OR ".join(
-                "field_owners->>%s = %s" for _ in fields
-            )
+            conditions = " OR ".join("field_owners->>%s = %s" for _ in fields)
             params: list[Any] = [owner, *fields]
             for name in fields:
                 params.extend((name, owner))

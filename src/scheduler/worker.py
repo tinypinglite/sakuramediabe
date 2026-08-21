@@ -15,6 +15,10 @@ from loguru import logger
 
 from src.common.database import ensure_database_ready
 from src.model import BackgroundTaskRun
+from src.scheduler.job_execution_adapter import (
+    JobExecutionResolutionError,
+    resolve_job_execution,
+)
 from src.scheduler.queue_tasks import (
     LANE_CONCURRENCY,
     LANE_DEFAULT,
@@ -96,29 +100,21 @@ class TaskWorker:
             self._execute(task_run)
 
     def _execute(self, task_run: BackgroundTaskRun) -> None:
-        params = task_run.params if isinstance(task_run.params, dict) else {}
         queue_def = QUEUE_TASK_REGISTRY.get(task_run.task_key)
         job_def = JOB_REGISTRY_BY_KEY.get(task_run.task_key)
-        # 解析顺序：队列专属任务（key 不在 cron 注册表，或运行带 params 的单资源任务）
-        # 优先；否则回落 cron 批任务的 service_factory。
-        if queue_def is not None and (job_def is None or params):
-            func = lambda reporter: queue_def.handler(reporter, params)
-            log_name = queue_def.log_name
-            notify_result = queue_def.notify_result
-        elif job_def is not None and params and job_def.params_handler is not None:
-            # 插件/参数化任务：手动带参执行体，与 cron 批任务共用互斥与恢复。
-            func = lambda reporter: job_def.params_handler(reporter, params)
-            log_name = job_def.log_name
-            notify_result = True
-        elif job_def is not None and job_def.service_factory is not None:
-            func = job_def.service_factory
-            log_name = job_def.log_name
-            notify_result = True
-        else:
-            # 队列里出现未注册 key（如插件停用后的残留行）：显式失败，避免无限重领。
+        try:
+            # 必须把数据库 NULL 原样交给 adapter；显式 {} 代表一次带参调用。
+            execution = resolve_job_execution(
+                task_key=task_run.task_key,
+                raw_params=task_run.params,
+                job_def=job_def,
+                queue_def=queue_def,
+            )
+        except JobExecutionResolutionError as exc:
+            # 插件停用、持久参数与声明不匹配等情况明确失败，避免无限重领。
             ActivityService.fail_task_run(
                 task_run.id,
-                error_message=f"task_key 未在注册表中: {task_run.task_key}",
+                error_message=str(exc),
             )
             return
         with self._lock:
@@ -127,10 +123,10 @@ class TaskWorker:
             ActivityService.run_task(
                 task_key=task_run.task_key,
                 trigger_type=task_run.trigger_type,
-                func=func,
+                func=execution.func,
                 task_run_id=task_run.id,
-                log_task_name=log_name,
-                notify_result=notify_result,
+                log_task_name=execution.log_name,
+                notify_result=execution.notify_result,
             )
         except Exception:
             # run_task 内部已把异常写入 task_run；这里只记 worker 层日志。
@@ -176,19 +172,6 @@ class TaskWorker:
 
     @staticmethod
     def _run_business_recovery(task_keys: set[str]) -> None:
-        # 复用启动恢复的业务钩子注册表，保证崩溃回收与启动回收的领域联动一致。
-        from src.start.recovery import BUSINESS_RECOVERY_HANDLERS
+        from src.start.recovery import recover_business_states
 
-        for task_key in sorted(task_keys):
-            handler = BUSINESS_RECOVERY_HANDLERS.get(task_key)
-            if handler is None:
-                continue
-            try:
-                stats = handler()
-                logger.info(
-                    "Task worker business recovery task_key={} stats={}", task_key, stats
-                )
-            except Exception:
-                logger.exception(
-                    "Task worker business recovery failed task_key={}", task_key
-                )
+        recover_business_states(task_keys)

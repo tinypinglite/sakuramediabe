@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import NamedTuple
 
 
 @dataclass
@@ -49,13 +48,5 @@ class CloudImportGroup:
 
     movie_number: str
     files: list[CloudSourceFile] = field(default_factory=list)
-
-
-class ResolvedFile(NamedTuple):
-    """copy 策略中 copy + 对账后的单个待登记条目。"""
-
-    cloud_file: CloudSourceFile
-    target_fid: str
-    target_pickcode: str
-    current_name: str
-    target_name: str
+    # scanner 会丢弃批内同 SHA1 的后续视频，但这些源文件仍留在远端并继续引用字幕。
+    retained_duplicate_subtitle_fids: set[str] = field(default_factory=set)

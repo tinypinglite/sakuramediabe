@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 from loguru import logger
@@ -6,17 +5,12 @@ from peewee import JOIN
 
 from src.api.exception.errors import ApiError
 from src.common.media_import_status import (
-    FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED,
-    IMPORT_JOB_STATE_FAILED,
-    IMPORT_JOB_STATE_PENDING,
     IMPORT_STATUS_FAILED,
     IMPORT_STATUS_PENDING,
     IMPORT_STATUS_RUNNING,
     IMPORT_STATUS_SKIPPED,
-    make_failure_item,
 )
-from src.common.runtime_time import utc_now_for_db
-from src.model import DownloadTask, Image, ImportJob, Movie
+from src.model import DownloadTask, Image, Movie
 from src.model.enums import DownloadClientKind
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
@@ -26,8 +20,7 @@ from src.schema.transfers.downloads import (
     DownloadTaskImportResponse,
     DownloadTaskResource,
 )
-from src.service.system import ActivityService
-from src.service.system.task_queue_service import TaskQueueService
+from src.schema.transfers.media_import import ImportRequest
 from src.service.transfers.downloads.clients.qbittorrent import (
     QBittorrentClient,
     QBittorrentClientError,
@@ -44,9 +37,8 @@ from src.service.transfers.downloads.common import (
     resolve_task_sort,
     validate_page,
 )
-from src.service.transfers.imports.import_service import MediaImportService
 from src.service.transfers.shared.common import canonicalize_btih
-from src.service.transfers.shared.import_notifications import create_new_media_reminder
+from src.service.transfers.shared.import_task_service import ImportTaskService
 
 
 class DownloadTaskService:
@@ -455,113 +447,28 @@ class DownloadTaskService:
                 Cloud115OfflineSyncService,
             )
 
-            response = Cloud115OfflineSyncService.trigger_task_import(task)
-            return DownloadTaskImportResponse(
-                task_id=task.id,
-                import_job_id=response.import_job_id,
-                task_run_id=response.task_run_id,
-                status=response.status,
+            response = Cloud115OfflineSyncService.trigger_task_import(
+                task, trigger_type=trigger_type
             )
+            return response
 
         source_path = cls._resolve_import_source_path(task.save_path)
-        import_job = ImportJob.create(
-            source_path=str(source_path),
-            library=task.client.media_library,
-            download_task=task,
-            state=IMPORT_JOB_STATE_PENDING,
-        )
-        task_run = ActivityService.create_task_run(
-            task_key="download_task_import",
-            task_name=f"下载任务导入 {task.movie or task.name}",
+        accepted = ImportTaskService.enqueue(
+            ImportRequest(
+                media_kind="jav",
+                backend="local",
+                library_id=task.client.media_library_id,
+                source_path=str(source_path),
+            ),
             trigger_type=trigger_type,
+            download_task_id=task.id,
+            task_name=f"下载任务导入 {task.movie or task.name}",
         )
-        # 导入作业必须持久关联 activity 任务，后续孤儿恢复才能精确回收状态。
-        import_job.task_run = task_run
-        import_job.save()
-        task.import_status = IMPORT_STATUS_RUNNING
-        task.save()
-
-        try:
-            # 入队交 worker 的 import 并发道执行（DownloadImportRunner 已退役）。
-            TaskQueueService.publish_run(
-                task_run.id,
-                params={"task_id": task.id, "import_job_id": import_job.id},
-            )
-        except Exception as exc:
-            import_job.state = IMPORT_JOB_STATE_FAILED
-            import_job.finished_at = utc_now_for_db()
-            import_job.save()
-            task.import_status = IMPORT_STATUS_FAILED
-            task.save()
-            ActivityService.fail_task_run(
-                task_run.id,
-                error_message=str(exc),
-                result_summary={
-                    "task_id": task.id,
-                    "import_job_id": import_job.id,
-                },
-            )
-            raise ApiError(
-                502,
-                "download_task_import_failed",
-                "Failed to enqueue download task import",
-                {"detail": str(exc), "task_id": task_id},
-            ) from exc
-
         return DownloadTaskImportResponse(
             task_id=task.id,
-            import_job_id=import_job.id,
-            task_run_id=task_run.id,
+            task_run_id=accepted.task_run_id,
             status="accepted",
         )
-
-    @classmethod
-    def execute_import_from_queue(cls, reporter, params: dict) -> dict:
-        """worker 队列执行入口：跑下载完成后的媒体导入，并在成功后尽力发新片提醒。"""
-        task_id = int(params["task_id"])
-        import_job_id = int(params["import_job_id"])
-        try:
-            task = require_task(task_id)
-            source_path = cls._resolve_import_source_path(task.save_path)
-            service = MediaImportService()
-            job = service.import_from_source(
-                str(source_path),
-                task.client.media_library_id,
-                download_task_id=task.id,
-                import_job_id=import_job_id,
-                progress_callback=reporter.progress_callback,
-            )
-        except Exception as exc:
-            cls._mark_import_failed(task_id, import_job_id, str(exc))
-            logger.exception(
-                "Download task import failed task_id={} import_job_id={}",
-                task_id,
-                import_job_id,
-            )
-            raise
-        # 通知链路不能反向影响导入主流程，因此提醒创建只做尽力而为。
-        new_playable_movies = reporter.summary.get("new_playable_movies", [])
-        if isinstance(new_playable_movies, list) and new_playable_movies:
-            try:
-                create_new_media_reminder(
-                    movie_items=new_playable_movies,
-                    related_task_run_id=reporter.task_run_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Create new media reminder skipped task_run_id={} detail={}",
-                    reporter.task_run_id,
-                    exc,
-                )
-        return {
-            "task_id": task.id,
-            "import_job_id": job.id,
-            "imported_count": job.imported_count,
-            "skipped_count": job.skipped_count,
-            "failed_count": job.failed_count,
-            "job_state": job.state,
-            "new_playable_movies": new_playable_movies,
-        }
 
     @staticmethod
     def _resolve_import_source_path(save_path: str) -> Path:
@@ -576,30 +483,3 @@ class DownloadTaskService:
             "Download task save path is not accessible",
             {"save_path": save_path},
         )
-
-    @staticmethod
-    def _mark_import_failed(task_id: int, import_job_id: int, detail: str) -> None:
-        task = DownloadTask.get_or_none(DownloadTask.id == task_id)
-        if task is not None:
-            task.import_status = IMPORT_STATUS_FAILED
-            task.save()
-
-        import_job = ImportJob.get_or_none(ImportJob.id == import_job_id)
-        if import_job is None:
-            return
-
-        failure_items = []
-        try:
-            if import_job.failed_files:
-                failure_items = json.loads(import_job.failed_files)
-        except json.JSONDecodeError:
-            failure_items = []
-
-        failure_items.append(
-            make_failure_item(import_job.source_path, FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED, detail)
-        )
-        import_job.failed_count = max(import_job.failed_count, 1)
-        import_job.failed_files = json.dumps(failure_items, ensure_ascii=False)
-        import_job.state = IMPORT_JOB_STATE_FAILED
-        import_job.finished_at = utc_now_for_db()
-        import_job.save()

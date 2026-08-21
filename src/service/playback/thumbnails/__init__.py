@@ -5,6 +5,7 @@ from .backends.local import LocalThumbnailBackend
 from .contracts import (
     PreparedThumbnailSource,
     ThumbnailBackend,
+    ThumbnailBackendUnavailable,
     ThumbnailDeferred,
     ThumbnailGenerationResult,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "ThumbnailArtifactService",
     "ThumbnailBackend",
     "ThumbnailBackendRegistry",
+    "ThumbnailBackendUnavailable",
     "ThumbnailDeferred",
     "ThumbnailGenerationResult",
 ]

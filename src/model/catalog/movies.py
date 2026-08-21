@@ -72,16 +72,30 @@ class Movie(TimestampedMixin, BaseModel):
     director_name = peewee.CharField(max_length=255, verbose_name="导演名称", null=True)
     want_watch_count = peewee.IntegerField(default=0)
     comment_count = peewee.IntegerField(default=0)
+    # 互动数刷新节奏属于影片领域；不再借通用资源任务投影保存成功时间。
+    interaction_synced_at = peewee.DateTimeField(null=True, index=True)
     heat = peewee.IntegerField(null=False, default=0)
     is_collection = peewee.BooleanField(null=False, default=False, index=True)
     is_collection_overridden = peewee.BooleanField(null=False, default=False, index=True)
     is_subscribed = peewee.BooleanField(null=False, default=False, index=True)
     subscribed_at = peewee.DateTimeField(null=True, index=True)
+    # 订阅资源查询是影片领域状态：保留可见进度与重试预算，不再依赖通用资源任务台账。
+    subscription_search_state = peewee.CharField(
+        max_length=32, default="pending", index=True
+    )
+    subscription_search_attempt_count = peewee.IntegerField(default=0)
+    subscription_search_retry_round = peewee.IntegerField(default=0)
+    subscription_search_last_attempted_at = peewee.DateTimeField(null=True)
+    subscription_search_last_succeeded_at = peewee.DateTimeField(null=True)
+    subscription_search_next_retry_at = peewee.DateTimeField(null=True)
+    subscription_search_error_code = peewee.CharField(max_length=64, null=True)
+    subscription_search_last_error = peewee.TextField(null=True)
+    subscription_search_last_error_at = peewee.DateTimeField(null=True)
     extra = JsonTextField(null=True, default=None, verbose_name="额外元数据")
     # v2-lite 字段主权：字段 -> "plugin:<id>" 的 owner 映射（缺键代表宿主管理）；
     # mutation_revision 只表示受保护字段及其 owner 的版本，不是整条 Movie 的全局版本。
-    # constraints 里的服务端 DEFAULT 与迁移 20260816_01 对齐，保证新库（initdb 渲染）
-    # 与存量库（迁移 ALTER）schema 同构，裸 INSERT 也有兜底。
+    # constraints 里的服务端 DEFAULT 与 v0.5.0 收敛迁移对齐，保证新库（initdb 渲染）
+    # 与 v0.4.21 存量库（迁移 ALTER）schema 同构，裸 INSERT 也有兜底。
     field_owners = JsonbField(
         null=False,
         default=dict,
@@ -186,7 +200,7 @@ class Movie(TimestampedMixin, BaseModel):
 
 
 # 人工输入按番号点查统一走 UPPER(movie_number) 等值匹配（movie_number_match_expression），
-# 函数索引保证它不退化为顺扫。索引名必须与迁移 20260728_01_add_movie_number_upper_index 一致。
+# 函数索引保证它不退化为顺扫；索引名保持与历史 schema 兼容。
 Movie.add_index(
     peewee.ModelIndex(
         Movie,
@@ -198,7 +212,7 @@ Movie.add_index(
 # 影片卡片列表排序用的复合索引：nullable 排序字段（release_date / subscribed_at）经
 # build_ordered_expressions 渲染为 ``DESC NULLS LAST``，索引与排序表达式同向，planner 直接
 # Index Scan 取页内行，避免全表扫 + 全量排序；反向扫描同时服务 asc 方向。
-# 索引名必须与迁移 20260815_02_add_movie_sort_indexes 一致。
+# 索引名保持与历史 schema 兼容，避免存量库重复创建同义索引。
 Movie.add_index(
     peewee.ModelIndex(
         Movie,

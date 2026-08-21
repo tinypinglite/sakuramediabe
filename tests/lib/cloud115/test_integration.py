@@ -26,7 +26,9 @@ from src.lib.cloud115 import (
     Cloud115VideoNotReadyError,
     DirEntry,
 )
-from src.service.playback.thumbnails.backends.cloud115_hls import Cloud115HlsThumbnailBackend
+from src.service.playback.thumbnails.backends.cloud115_hls import (
+    Cloud115HlsThumbnailBackend,
+)
 
 pytestmark = pytest.mark.cloud115_integration
 

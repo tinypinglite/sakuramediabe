@@ -5,12 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
 
 from src.common.service_helpers import poll_until
-
 from src.lib.cloud115 import (
     Cloud115Client,
     Cloud115DuplicateNameError,
@@ -28,28 +26,9 @@ from src.service.transfers.shared.file_transfer import (
     VIDEOS_LIBRARY_SUBDIR,
 )
 
-CLOUD115_TRANSFER_MODE_COPY = "copy"
-CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE = "cleanup-source"
-CLOUD115_TRANSFER_MODE_LEGACY_MOVE = "move"
-
 CLOUD115_METADATA_PROBE_MAX_BYTES = 64 * 1024 * 1024
 CLOUD115_METADATA_PROBE_UA = "Mozilla/5.0 SakuraMedia-Cloud115-Metadata/1.0"
 CLOUD115_COVER_UA = "Mozilla/5.0 SakuraMedia-Cloud115-Cover/1.0"
-
-
-def normalize_cloud115_transfer_mode(
-    transfer_mode: str,
-    *,
-    allow_legacy_move: bool = True,
-) -> str:
-    if transfer_mode == CLOUD115_TRANSFER_MODE_LEGACY_MOVE and allow_legacy_move:
-        return CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE
-    if transfer_mode in (
-        CLOUD115_TRANSFER_MODE_COPY,
-        CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
-    ):
-        return transfer_mode
-    raise ValueError("invalid_transfer_mode")
 
 
 # ---------------------------------------------------------------------------
@@ -291,38 +270,6 @@ async def collect_cloud115_source_files(
         meta = await client.dir_info(cid)
         rel_dirs[cid] = _rel_parts_from_dir_meta(meta, source_cid)
     return files, rel_dirs
-
-
-async def list_cloud115_target_files(
-    client: Cloud115Client, target_cid: str
-) -> dict[str, list[DirEntry]]:
-    """列扁平目标目录并按大写 SHA1 建索引。"""
-    by_sha1: dict[str, list[DirEntry]] = {}
-    offset = 0
-    while True:
-        entries, total = await client.list_dir(target_cid, offset=offset, limit=1150)
-        for entry in entries:
-            if not entry.is_dir and entry.sha1:
-                by_sha1.setdefault(entry.sha1.upper(), []).append(entry)
-        offset += len(entries)
-        if not entries or offset >= total:
-            break
-    return by_sha1
-
-
-def resolve_cloud115_copied_entry(
-    target_entries_by_sha1: dict[str, list[DirEntry]],
-    source_file: Any,
-    encoded_name: str,
-) -> DirEntry | None:
-    """按 SHA1 对账复制结果，优先匹配源文件名或编码后的目标名。"""
-    candidates = target_entries_by_sha1.get(source_file.sha1) or []
-    if not candidates:
-        return None
-    for candidate in candidates:
-        if candidate.name in (source_file.name, encoded_name):
-            return candidate
-    return candidates[0]
 
 
 async def verify_cloud115_renamed_file(

@@ -4,7 +4,7 @@
 
 如果要查询任务运行历史、进度和通知，请继续使用：
 
-- [任务中心与事件流接口](./task-runs.md)
+- [任务中心接口](./task-runs.md)
 - [通知中心接口](./notifications.md)
 
 ## 资源模型
@@ -70,8 +70,8 @@
 
 说明：
 
-- 手动触发接口只负责创建任务记录并提交后台线程，不等待任务执行完成
-- 返回的 `state` 通常是 `pending`；后续状态通过 `GET /system/task-runs`、`GET /system/activity/bootstrap` 或 SSE 获取
+- 手动触发接口只负责创建任务记录并写入持久任务队列，不等待任务执行完成
+- 返回的 `state` 通常是 `pending`；后续状态通过 `GET /system/task-runs` 或 `GET /system/activity/bootstrap` 轮询获取
 
 ## 端点列表总览
 
@@ -113,9 +113,16 @@
 
 请求体：
 
-- 无参数任务：不传请求体；
-- 声明了 `params_schema` 的任务：传符合该 JSON Schema 的 JSON 对象，
-  例如字幕抓取任务 `{"movie_number": "ABP-123"}`。
+- 仅有 `service_factory` 的无参数任务：省略请求体或传 JSON `null`；传任何非 `null` JSON 对象都会返回 `422 invalid_job_params`。
+- 同时声明 `service_factory`、`params_schema` 和 `params_handler` 的任务：省略请求体或传 JSON `null` 时以 `params=NULL` 入队并执行 `service_factory`；显式传 `{}` 或其他 JSON 对象时，严格通过 `params_schema` 校验后入队并执行 `params_handler`。
+- 仅有 `params_schema` 和 `params_handler` 的 handler-only 任务：必须显式传 JSON 对象；省略请求体或传 JSON `null` 都会返回 `422 invalid_job_params`。若 schema 允许空对象，可传 `{}`。
+- 例如字幕抓取任务可传 `{"movie_number": "ABP-123"}`。
+
+动态 APS CLI 的分派规则与 HTTP 一致：
+
+- 混合任务省略 `--params-json` 或显式传 `--params-json 'null'` 时执行 `service_factory`，显式传 `--params-json '{}'` 或其他对象时校验后执行 `params_handler`；JSON `null` 等同省略仅适用于带 `service_factory` 的非 `manual_only` 任务。
+- handler-only / `manual_only` 任务必须提供非 `null` 的 `--params-json`。
+- factory-only 任务不提供 `--params-json` 选项。
 
 错误响应：
 
@@ -146,11 +153,11 @@
 - 仅 `manual_trigger_allowed=true` 的任务允许通过 HTTP 触发
 - HTTP 手动触发会创建 `trigger_type=manual` 的 `BackgroundTaskRun`
 - 同一个 APS 注册任务在 `manual` 与 `scheduled` 之间按 `aps:<task_key>` 互斥
-- 任务在线程内执行；API 进程退出会导致未完成任务中断，下一次启动或调度前会按任务恢复规则回收
+- 任务由持久队列 worker 执行；worker 中断后会按任务恢复规则回收
 
 ## 前端接入建议
 
 - 页面初始化先调用 `GET /system/jobs` 获取可执行任务列表和最新状态
 - 点击手动执行后使用返回的 `task_run_id` 定位到任务详情或高亮对应运行记录
 - 遇到 `409 task_conflict` 时展示正在运行的 `blocking_task_run_id`，不要重复提交
-- 后续进度刷新复用 `GET /system/activity/bootstrap`、`GET /system/task-runs` 和 `GET /system/events/stream`
+- 后续进度刷新复用 `GET /system/activity/bootstrap` 与 `GET /system/task-runs`，页面不可见时停止轮询

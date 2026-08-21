@@ -47,6 +47,8 @@
   "resolution": "1920x1080",
   "special_tags": "普通",
   "valid": true,
+  "thumbnail_generation_state": "succeeded",
+  "thumbnail_last_error_code": null,
   "heat": 320,
   "created_at": "2026-03-12T10:20:00",
   "updated_at": "2026-03-12T10:20:00"
@@ -69,6 +71,17 @@
 
 - `special_tags` 中本地媒体的 `4K` 由真实视频流解析得出，不再按文件名、`.iso` 或体积推断
 - `valid` 表示媒体记录当前是否对应一个真实存在、可访问的本地文件；巡检会在文件缺失时将其更新为 `false`，文件恢复后再更新回 `true`
+- `thumbnail_generation_state` 是 `pending`、`retry_wait`、`terminal` 或 `succeeded`；它描述缩略图任务的持久生命周期，不以某一次 TaskRun 是否已被清理为准
+- `thumbnail_last_error_code` 仅在最近一次尚未成功的缩略图尝试存在时返回，可用于列表展示和排障
+
+### 缩略图重试语义
+
+缩略图产物仍保存在 `MediaThumbnail`，但失败状态归 `Media` 管理：确定性媒体错误直接进入
+`terminal`，其它媒体错误最多尝试 2 次；115 转码或 HLS 清单未就绪最多经历 5 次延后窗口。`terminal`
+不会被 APS 自动重试。文件巡检或任一导入链路发现旧 Media 从无效复活、或内容指纹发生变化时会重新打开候选。
+
+后端/账号级故障（认证、限流、风控、网络、PyAV 缺失）会暂停相应缩略图泳道，不会把故障次数计入
+每条 Media。终态媒体可通过 `GET /media?thumbnail_generation_state=terminal` 排障；内容版本变化或媒体复活时会自动重新进入候选。
 
 媒体书签资源：
 
@@ -175,7 +188,7 @@
 }
 ```
 
-批次内部严格按请求顺序逐个秒传。同一目标 115 库会与现有 115 导入共享库级写锁，避免建目录、改名和删除并发。
+批次内部严格按请求顺序逐个秒传。所有 **115 媒体库**会与手动导入、下载自动入库共享全局写锁，避免建目录、改名和删除并发。
 
 单项只有在 115 返回秒传成功、并按 `fid/pickcode/SHA1/size` 回查确认后，才会把原 `Media` 原地切换为 cloud115 定位；随后再次核对本地文件的大小、mtime、device 和 inode，确认仍是同一文件后删除。原地切换会保留该媒体已有的播放进度、缩略图、书签、片段与推荐关系。
 
@@ -185,7 +198,7 @@
 - `failed`：秒传失败；本地 Media 和文件保持不变。
 - `cleanup_failed`：云端已登记，但本地文件未能安全删除；重试时只执行本地清理，不会再次秒传。
 
-前端通过 `GET /system/events/stream` 接收 `task_run_created` / `task_run_updated` 进度事件。批次结束后系统始终创建一条汇总通知：全成功为 `info`，存在任一失败或清理失败为 `warning`。
+前端通过 `GET /system/task-runs` 与秒传批次详情接口轮询进度。批次结束后系统始终创建一条汇总通知：全成功为 `info`，存在任一失败或清理失败为 `warning`。
 
 查询接口：
 
@@ -201,6 +214,7 @@
 常见错误：
 
 - `409 media_rapid_upload_media_conflict`：所选媒体已在其它秒传批次中。
+- `409 cloud115_write_task_conflict`：已有 115 导入或秒传任务。
 - `422 media_rapid_upload_source_not_local`：源媒体不是本地媒体。
 - `422 media_rapid_upload_target_not_cloud115`：目标不是 115 媒体库。
 
@@ -227,6 +241,8 @@
 - `kind`: 归属过滤，默认 `all`
 - `library_id`: 按所属媒体库过滤，可选
 - `actor_ids`: 按订阅女优筛选，逗号分隔的正整数演员 ID 列表，可选；命中任意一位即可（OR 逻辑）。非 JAV 视频没有演员关联，传入该参数后天然被排除，即便 `kind=all`
+- `rapid_upload_status`: 可选，按最近一次 115 秒传状态筛选
+- `thumbnail_generation_state`: 可选，`pending` / `retry_wait` / `terminal` / `succeeded`；排障终态失败使用 `terminal`
 - `sort`: 排序规则，默认 `created_at:desc`
 
 支持的 `kind`：
@@ -282,6 +298,8 @@ Authorization: Bearer <token>
       "resolution": "1920x1080",
       "special_tags": "普通",
       "valid": true,
+      "thumbnail_generation_state": "succeeded",
+      "thumbnail_last_error_code": null,
       "heat": 320,
       "created_at": "2026-03-12T10:20:00",
       "updated_at": "2026-03-12T10:20:00"
@@ -1129,7 +1147,6 @@ Authorization: Bearer <token>
   - `MediaPoint`
   - `MediaThumbnail`
   - 无其他引用时，缩略图对应的 `Image`
-  - `ResourceTaskState` 中 `resource_type=media` 且 `resource_id` 为当前媒体的任务状态
   - Qdrant 中该媒体关联的缩略图向量
 - 不会联动删除 `Movie`
 - 不会删除任何 `PlaylistMovie` 关系，包括 `recently_played`

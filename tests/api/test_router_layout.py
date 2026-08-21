@@ -26,7 +26,6 @@ from src.api.routers.system import (
 from src.api.routers.system import config as system_config
 from src.api.routers.transfers import downloads, media_import, rapid_uploads
 from src.api.routers.videos import collections as video_collections
-from src.api.routers.videos import imports as video_imports
 from src.api.routers.videos import items as video_items
 from src.service.playback.cloud115_hls_service import Cloud115HlsService
 from src.service.playback.media_service import MediaService
@@ -113,6 +112,14 @@ def test_activity_router_uses_db_deps_as_router_level_dependency():
         or dependency.dependency is deps.db_deps
         for dependency in activity.router.dependencies
     )
+
+
+def test_create_app_does_not_register_retired_resource_task_routes():
+    paths = {getattr(route, "path", None) for route in create_app().routes}
+
+    assert "/system/resource-task-states/definitions" not in paths
+    assert "/system/resource-task-states" not in paths
+    assert "/system/resource-task-actions" not in paths
 
 
 def test_indexer_settings_router_uses_db_deps_as_router_level_dependency():
@@ -203,14 +210,13 @@ def test_create_app_registers_movie_subscription_routes():
     # 顶层资源而非 /movies 子路径：避免和 /movies/{movie_number} 抢匹配。
     assert "/movie-subscriptions" in paths
     assert "/movie-subscriptions/status-counts" in paths
-    # 资源查询重置已并入统一 action 协议，本域不再有 search-resets 端点。
-    assert "/movie-subscriptions/search-resets" not in paths
+    assert "/movie-subscriptions/search-resets" in paths
     # 批量取消订阅刻意不在本域：复用已有的 /movies/unsubscriptions 与 DELETE /media/{id}。
     assert "/movie-subscriptions/removals" not in paths
 
 
 def test_videos_routers_use_auth_and_db_dependencies():
-    for module in (video_items, video_collections, video_imports):
+    for module in (video_items, video_collections):
         dependency_targets = {
             dependency.dependency for dependency in module.router.dependencies
         }
@@ -229,19 +235,34 @@ def test_create_app_registers_videos_routes():
     assert "/video-collections/{collection_id}/items" in paths
     assert "/video-collections/{collection_id}/items/{item_id}" in paths
     assert "/video-collections/{collection_id}/items/reorder" in paths
-    assert "/video-imports" in paths
+    assert "/video-imports" not in paths
+
+
+def test_create_app_registers_only_unified_media_import_route():
+    route_methods = {
+        (getattr(route, "path", None), method)
+        for route in create_app().routes
+        for method in getattr(route, "methods", set())
+    }
+
+    assert ("/imports", "POST") in route_methods
+    assert not any((path or "").startswith("/imports/") for path, _ in route_methods)
 
 
 def test_create_app_registers_subtitle_import_routes():
     app = create_app()
-    paths = {getattr(route, "path", None) for route in app.routes}
+    route_methods = {
+        (getattr(route, "path", None), method)
+        for route in app.routes
+        for method in getattr(route, "methods", set())
+    }
 
-    assert "/subtitle-imports" in paths
-    assert "/subtitle-imports/{subtitle_import_job_id}" in paths
-    assert "/subtitle-imports/{subtitle_import_job_id}/retry" in paths
-    assert "/subtitle-imports/{subtitle_import_job_id}/rerun" in paths
-    assert "/subtitle-imports/{subtitle_import_job_id}/failed-files" in paths
-    assert "/subtitle-imports/{subtitle_import_job_id}/failed-files/rename" in paths
+    assert ("/subtitle-imports", "POST") in route_methods
+    assert ("/subtitle-imports", "GET") not in route_methods
+    assert not any(
+        (path or "").startswith("/subtitle-imports/{subtitle_import_job_id}")
+        for path, _method in route_methods
+    )
 
 
 def test_openapi_uses_oauth2_password_flow_for_authorize_button():
@@ -277,12 +298,10 @@ def test_create_app_registers_image_search_routes():
     assert "/ranking-sources/{source_key}/boards" in paths
     assert "/ranking-sources/{source_key}/boards/{board_key}/items" in paths
     assert "/tags" in paths
-    assert "/tags/{tag_id}" in paths
-    assert "/tags/{tag_id}/movies" in paths
     assert "/movies/{movie_number}/subtitles" in paths
     assert "/movies/{movie_number}/collection-status" in paths
     assert "/movies/{movie_number}/metadata-refresh" in paths
-    # 单片翻译/互动同步端点已并入统一 action 协议（rerun + only_ids）。
+    # 翻译链路已删除；互动同步由常规定时任务负责。
     assert "/movies/{movie_number}/desc-translation" not in paths
     assert "/movies/{movie_number}/interaction-sync" not in paths
     assert "/movies/{movie_number}/heat-recompute" in paths
@@ -292,14 +311,11 @@ def test_create_app_registers_image_search_routes():
     assert "/system/activity/bootstrap" in paths
     assert "/system/notifications" in paths
     assert "/system/task-runs" in paths
-    assert "/system/events/stream" in paths
+    assert "/system/events/stream" not in paths
     assert "/status/metadata-providers/{provider}/test" in paths
     assert "/filesystem/entries" in paths
-    assert "/import-jobs" in paths
-    assert "/import-jobs/{import_job_id}" in paths
-    assert "/import-jobs/{import_job_id}/retry" in paths
-    assert "/import-jobs/{import_job_id}/failed-files" in paths
-    assert "/import-jobs/{import_job_id}/failed-files/rename" in paths
+    assert "/imports" in paths
+    assert not any(path.startswith("/import-jobs") for path in paths if path)
 
 
 def test_create_app_registers_media_clip_routes():
@@ -534,7 +550,7 @@ def test_create_app_does_not_register_removed_api_endpoints():
         ("/actors/{actor_id}/movies", "GET"),
         ("/system/notifications/{notification_id}/archive", "PATCH"),
         ("/system/resource-task-states/{task_key}/{resource_id}/reset", "POST"),
-        # 任务专用 reset 端点已并入统一 action 协议（reset_retry_budget）。
+        # 缩略图不再保存可重置的资源状态。
         ("/system/resource-task-states/media_thumbnail_generation/reset", "POST"),
         ("/download-clients/{client_id}/sync", "POST"),
         ("/download-tasks/{task_id}/import", "POST"),
@@ -566,7 +582,7 @@ def test_create_app_registers_download_task_center_routes():
     }
 
     assert ("/download-tasks", "GET") in route_methods
-    assert ("/download-tasks/stream", "GET") in route_methods
+    assert ("/download-tasks/stream", "GET") not in route_methods
     assert ("/download-tasks/{task_id}/files", "GET") in route_methods
     assert ("/download-tasks/{task_id}/pause", "POST") in route_methods
     assert ("/download-tasks/{task_id}/resume", "POST") in route_methods
@@ -578,11 +594,6 @@ def test_create_app_runs_runtime_startup_jobs(monkeypatch):
     monkeypatch.setattr("src.api.app.ensure_database_ready", lambda: events.append("db.ready"))
     startup_recover = Mock(side_effect=lambda **kwargs: events.append(("recover", kwargs)) or [])
     monkeypatch.setattr("src.api.app.recover_interrupted_tasks", startup_recover)
-    monkeypatch.setattr(
-        "src.start.recovery.DownloadSyncService.recover_orphaned_imports_only",
-        lambda self: (_ for _ in ()).throw(AssertionError("should not recover import state")),
-    )
-
     app = create_app()
 
     with TestClient(app):

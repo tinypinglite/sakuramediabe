@@ -3,18 +3,18 @@ from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common.media_import_status import (
-    IMPORT_JOB_STATE_FAILED,
-    IMPORT_JOB_STATE_PENDING,
-    IMPORT_JOB_STATE_RUNNING,
     IMPORT_STATUS_PENDING,
     IMPORT_STATUS_RUNNING,
 )
 from src.common.movie_numbers import parse_movie_number_from_text
 from src.common.runtime_time import utc_now_for_db
-from src.model import DownloadClient, DownloadTask, ImportJob
+from src.model import DownloadClient, DownloadTask
 from src.model.enums import DownloadClientKind
 from src.schema.transfers.downloads import DownloadClientSyncResponse
-from src.service.system import ActivityService
+from src.service.transfers.downloads.clients.qbittorrent import (
+    QBittorrentClient,
+    QBittorrentClientError,
+)
 from src.service.transfers.downloads.common import (
     DOWNLOAD_ACTIVE_DOWNLOAD_STATES,
     DOWNLOAD_COMPLETE_STATES,
@@ -22,12 +22,9 @@ from src.service.transfers.downloads.common import (
     require_client,
     resolve_qbittorrent_download_state,
 )
-from src.service.transfers.shared.common import download_task_dead_expression
 from src.service.transfers.downloads.task_service import DownloadTaskService
-from src.service.transfers.downloads.clients.qbittorrent import (
-    QBittorrentClient,
-    QBittorrentClientError,
-)
+from src.service.transfers.shared.common import download_task_dead_expression
+from src.service.transfers.shared.import_task_service import ImportTaskService
 
 
 class DownloadSyncService:
@@ -88,36 +85,37 @@ class DownloadSyncService:
                 created_count += 1
                 continue
 
-            changed = False
+            changed_fields = []
             # 只填空不覆写：提交时写入的 movie_number 是 Movie 规范列的拷贝（权威），
             # 这里 parse 出的是猜测（正则可能转写分隔符），拿猜测覆写权威值会打断与 Movie 的 JOIN。
             # parse 的唯一正当用途是本地行丢失后从 qB 侧重建（上面 get_or_create 的 defaults）。
             if movie_number and task.movie is None:
                 task.movie = movie_number
-                changed = True
+                changed_fields.append(DownloadTask.movie)
             if task.name != remote_task.get("name", ""):
                 task.name = remote_task.get("name", "")
-                changed = True
+                changed_fields.append(DownloadTask.name)
             if task.save_path != mapped_path:
                 task.save_path = mapped_path
-                changed = True
+                changed_fields.append(DownloadTask.save_path)
             if task.progress != remote_task.get("progress", 0.0):
                 task.progress = remote_task.get("progress", 0.0)
-                changed = True
+                changed_fields.append(DownloadTask.progress)
             if task.download_state != normalized_state:
                 task.download_state = normalized_state
-                changed = True
+                changed_fields.append(DownloadTask.download_state)
             # 维护"进入活跃下载态的时刻"：进入 stalled/downloading 且为空时起算，
             # 离开（暂停/完成/做种/排队/失败等）即清空——排队时长不计入下载时长。
             if normalized_state in DOWNLOAD_ACTIVE_DOWNLOAD_STATES:
                 if task.download_started_at is None:
                     task.download_started_at = now
-                    changed = True
+                    changed_fields.append(DownloadTask.download_started_at)
             elif task.download_started_at is not None:
                 task.download_started_at = None
-                changed = True
-            if changed:
-                task.save()
+                changed_fields.append(DownloadTask.download_started_at)
+            if changed_fields:
+                # 只保存本轮真正变化的字段，避免并发采样已推进 progress/state 后被旧对账实例覆写。
+                task.save(only=changed_fields)
                 updated_count += 1
             else:
                 unchanged_count += 1
@@ -137,22 +135,13 @@ class DownloadSyncService:
     def _prune_ghost_tasks(client_id: int, remote_hashes: set[str]) -> int:
         """把 qB 侧已消失的下载任务从本地清掉，作为 sync 的反向对账。
 
-        白名单（保留不删）：
-        - import_status == running：runner 正在处理，删了会破坏 in-flight 状态
-        - 有 state IN (pending, running) 的关联 ImportJob：导入队列还没消化完
+        白名单：import_status == running，表示统一 TaskRun 正在排队或执行。
 
         保底：qB 返回空列表时直接跳过，避免 tag 被误清 / 异常空返回一次抹掉所有本地记录。
-        真需要清空的极端场景后续可加显式接口处理。ImportJob.download_task 是 SET NULL FK，
-        清理 DownloadTask 不影响 ImportJob 里已导入的历史台账。
-
         用单条 DELETE 让白名单条件在 DB 层原子求值，关掉"先 SELECT ghost_ids、再按 id
         DELETE"中间被并发的 trigger_import 插队的 race——那种场景下正在启动导入的任务会被
         误删，runner 后续 require_task 会抛错。
 
-        已知遗留：SSE hub 的 _task_index 有该 client 的 info_hash→task_id 内存索引，本函数
-        不主动 evict。用户在活跃 SSE 会话期间恰好重新下载被 prune 掉的同一种子时，实时进度
-        事件可能带旧 task_id，刷新页面即恢复。要闭环该窗口需要把 hub 引用穿透进本服务，暂
-        不在本 PR 处理。
         """
         if not remote_hashes:
             logger.warning(
@@ -162,10 +151,6 @@ class DownloadSyncService:
             )
             return 0
 
-        active_import_task_ids = ImportJob.select(ImportJob.download_task).where(
-            ImportJob.state.in_((IMPORT_JOB_STATE_PENDING, IMPORT_JOB_STATE_RUNNING))
-            & ImportJob.download_task.is_null(False)
-        )
         removed_count = DownloadTask.delete().where(
             (DownloadTask.client == client_id)
             & DownloadTask.info_hash.not_in(list(remote_hashes))
@@ -174,7 +159,6 @@ class DownloadSyncService:
             # 自动下载第二天又把同一死种拉回来。
             & ~download_task_dead_expression()
             & (DownloadTask.import_status != IMPORT_STATUS_RUNNING)
-            & DownloadTask.id.not_in(active_import_task_ids)
         ).execute()
         if removed_count:
             logger.info(
@@ -261,59 +245,4 @@ class DownloadSyncService:
 
     @staticmethod
     def _recover_orphaned_imports() -> int:
-        recovered_count = 0
-        # qB 导入由本服务托管；115 导入状态由 Cloud115OfflineSyncService 独立对账，不能跨后端回收。
-        running_qb_tasks = (
-            DownloadTask.select(DownloadTask)
-            .join(DownloadClient)
-            .where(
-                DownloadTask.import_status == IMPORT_STATUS_RUNNING,
-                DownloadClient.kind == DownloadClientKind.QBITTORRENT.value,
-            )
-            .order_by(DownloadTask.id.asc())
-        )
-        for task in running_qb_tasks:
-            running_jobs = list(
-                ImportJob.select()
-                .where(
-                    (ImportJob.download_task == task.id)
-                    & (ImportJob.state.in_((IMPORT_JOB_STATE_PENDING, IMPORT_JOB_STATE_RUNNING)))
-                )
-                .order_by(ImportJob.id.asc())
-            )
-            # 队列托管后判活看 task_run：排队中或租约未过期即视为仍在执行。
-            from src.service.transfers.shared.base_import_job_service import (
-                BaseImportJobService,
-            )
-
-            if running_jobs and any(
-                BaseImportJobService._task_run_alive(job) for job in running_jobs
-            ):
-                continue
-
-            for job in running_jobs:
-                job.state = IMPORT_JOB_STATE_FAILED
-                job.finished_at = utc_now_for_db()
-                job.save()
-                if job.task_run_id is not None:
-                    allow_null_owner = bool(job.task_run is not None and job.task_run.trigger_type == "internal")
-                    # 只有拿到持久 task_run_id，才回收对应 activity，避免靠名字或时间猜测。
-                    ActivityService.recover_task_run(
-                        job.task_run_id,
-                        error_message="下载导入线程已中断，任务已失败",
-                        result_summary={
-                            "task_id": task.id,
-                            "import_job_id": job.id,
-                        },
-                        allow_null_owner=allow_null_owner,
-                    )
-
-            task.import_status = IMPORT_STATUS_PENDING
-            task.save()
-            recovered_count += 1
-            logger.warning(
-                "Recovered orphaned download import task_id={} import_job_ids={}",
-                task.id,
-                [job.id for job in running_jobs],
-            )
-        return recovered_count
+        return ImportTaskService.recover_interrupted_downloads()

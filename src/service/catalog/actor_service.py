@@ -14,8 +14,8 @@ from src.common.service_helpers import (
     require_by_id,
     resolve_sort_expression,
 )
-from src.metadata.factory import build_javdb_provider
 from src.metadata._providers.models import JavdbMovieActorResource
+from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError
 from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag
 from src.model.expressions import year_expression

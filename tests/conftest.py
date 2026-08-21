@@ -34,7 +34,6 @@ from src.model import (
     HotReviewItem,
     Image,
     ImageSearchSession,
-    ImportJob,
     Indexer,
     IndexerDownloadClient,
     Media,
@@ -54,19 +53,14 @@ from src.model import (
     Playlist,
     PlaylistMovie,
     RankingItem,
-    ResourceTaskAttempt,
-    ResourceTaskState,
     SchemaMigration,
     Subtitle,
-    SubtitleImportJob,
-    SystemEvent,
     SystemNotification,
     Tag,
     User,
     UserRefreshToken,
     VideoCollection,
     VideoCollectionItem,
-    VideoImportJob,
     VideoItem,
 )
 from src.model.base import create_database, database_proxy, init_database
@@ -91,7 +85,6 @@ TEST_MODELS = [
     MoviePlotImage,
     MovieTag,
     Subtitle,
-    SubtitleImportJob,
     VideoItem,
     VideoCollection,
     VideoCollectionItem,
@@ -111,17 +104,12 @@ TEST_MODELS = [
     HotReviewItem,
     DailyRecommendationItem,
     BackgroundTaskRun,
-    ResourceTaskAttempt,
-    ResourceTaskState,
     SchemaMigration,
     SystemNotification,
-    SystemEvent,
     DownloadClient,
     Indexer,
     IndexerDownloadClient,
     DownloadTask,
-    ImportJob,
-    VideoImportJob,
     MediaRapidUploadBatch,
     MediaRapidUploadItem,
 ]
@@ -130,6 +118,23 @@ TEST_MODELS = [
 # 本地测试库连接串（含账号密码）不入库：优先读真实环境变量，缺失时回退项目根 .env.test，
 # .env.test 已在 .gitignore 中，仓库只保留脱敏模板 .env.test.example。
 _LOCAL_TEST_ENV_FILE = Path(__file__).resolve().parents[1] / ".env.test"
+
+# xdist 会把同一次运行的唯一 ID 注入每个 worker。非 xdist 模式没有该变量，
+# 则在本进程生成一次随机 ID，保证并行启动的两次 pytest 不会共用数据库命名空间。
+_TEST_RUN_UID = os.environ.get("PYTEST_XDIST_TESTRUNUID") or uuid.uuid4().hex
+# PostgreSQL 数据库名上限为 63 字节，散列后的固定长度既保留足够隔离度，又给 worker 名留空间。
+_TEST_RUN_NAMESPACE = hashlib.sha256(_TEST_RUN_UID.encode("utf-8")).hexdigest()[:24]
+
+_PROXY_ENVIRONMENT_VARIABLES = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+)
 
 
 def _load_local_test_env() -> None:
@@ -164,16 +169,11 @@ def _quote_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _worker_database_prefix() -> str:
-    # 前缀带 worker 名，清理残留时只删本 worker 的历史库，绝不误删并行中其他 worker 的库。
+def _worker_database_name() -> str:
+    # 同一次 xdist 运行的 worker 各有独立库；不同 pytest 运行的命名空间也绝不重叠。
     worker_id = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
     normalized_worker = re.sub(r"[^a-zA-Z0-9_]+", "_", worker_id).strip("_").lower() or "gw0"
-    return f"sakuramedia_test_{normalized_worker}_"
-
-
-def _build_worker_database_name() -> str:
-    # 每个 xdist worker 用独立数据库，避免并行用例互相清库；名字带 uuid 防止复用历史残留。
-    return f"{_worker_database_prefix()}{uuid.uuid4().hex}"
+    return f"sakuramedia_test_{_TEST_RUN_NAMESPACE}_{normalized_worker[:16]}"
 
 
 def _database_url_with_dbname(database_url: str, database_name: str) -> str:
@@ -196,36 +196,13 @@ def _run_maintenance_statements(database_url: str, statements: list[str]) -> Non
         control_database.close()
 
 
-def _drop_stale_worker_databases(database_url: str, prefix: str) -> None:
-    # 建本次库前，清掉上次异常中断残留的同 worker 前缀库；本次库尚未创建，不会误删。
-    control_database = create_database(Database(url=database_url))
-    control_database.connect()
-    try:
-        connection = control_database.connection()
-        connection.autocommit = True
-        cursor = connection.cursor()
-        cursor.execute("SELECT datname FROM pg_database WHERE datname LIKE %s", (f"{prefix}%",))
-        stale_names = [row[0] for row in cursor.fetchall()]
-        for name in stale_names:
-            cursor.execute(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
-                "WHERE datname = %s AND pid <> pg_backend_pid()",
-                (name,),
-            )
-            cursor.execute(f"DROP DATABASE IF EXISTS {_quote_identifier(name)}")
-        cursor.close()
-    finally:
-        control_database.close()
-
-
 @pytest.fixture(scope="session")
 def _worker_test_database_url():
     # 生产用 public schema，而 peewee 的表自省（get_tables / get_columns / get_indexes 等）在
     # PostgreSQL 下固定查 public，忽略 search_path；为与生产一致，测试为每个 worker 建独立数据库，
     # 把表建在其 public schema，而不是靠自定义 schema 隔离。
     base_url = _require_test_database_url()
-    _drop_stale_worker_databases(base_url, _worker_database_prefix())
-    database_name = _build_worker_database_name()
+    database_name = _worker_database_name()
     quoted_name = _quote_identifier(database_name)
     # template0 规避目标服务器 template1 的 collation 版本不一致问题。
     _run_maintenance_statements(base_url, [f"CREATE DATABASE {quoted_name} TEMPLATE template0"])
@@ -335,6 +312,14 @@ def app(test_db, monkeypatch):
 
     application = create_app()
     yield application
+
+
+@pytest.fixture(autouse=True)
+def isolated_proxy_environment(monkeypatch):
+    # 单元测试不应继承开发机代理；需要验证代理行为的 case 可自行 monkeypatch.setenv。
+    for variable in _PROXY_ENVIRONMENT_VARIABLES:
+        monkeypatch.delenv(variable, raising=False)
+    yield
 
 
 @pytest.fixture(autouse=True)

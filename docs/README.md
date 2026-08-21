@@ -20,7 +20,7 @@
 - [system/indexer-settings.md](./system/indexer-settings.md): 索引器配置管理
 - [system/notifications.md](./system/notifications.md): 通知中心接口
 - [system/jobs.md](./system/jobs.md): 系统任务元数据与手动触发接口
-- [system/task-runs.md](./system/task-runs.md): 任务中心与事件流接口
+- [system/task-runs.md](./system/task-runs.md): 任务中心接口
 - [system/plugins.md](./system/plugins.md): 插件系统开发指南（目录/zip 插件、契约、任务、扩展点与 CLI/API 管理）
 
 ### Catalog
@@ -57,6 +57,7 @@
 ### Transfers
 
 - [transfers/downloads.md](./transfers/downloads.md): 下载器配置与下载任务
+- [transfers/media-import.md](./transfers/media-import.md): 统一媒体导入与 TaskRun 语义
 
 ### Releases
 

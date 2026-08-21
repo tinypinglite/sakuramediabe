@@ -19,6 +19,11 @@
   - `error`：错误（任务失败）
 - `is_read`
   - 已读状态
+- `event_type` / `resource_type` / `resource_id`
+  - 可选的机器可读事件及其资源身份；不替代旧的 `related_resource_*` 展示关联
+- `dedupe_key`
+  - 可选的稳定幂等键，非空时全局唯一；同一键重复投递会复用原通知，不会新增重复记录。
+    历史通知保持空值，不按标题或正文回填、合并。
 
 ## 接口
 
@@ -47,7 +52,7 @@
 - `updated_count`：本次新置为已读的条数（已读或不存在的 ID 自动忽略）
 - `unread_count`：操作后剩余未读数
 
-`ids` 为空时为 no-op（返回 `updated_count=0`，不产生事件）。成功标记后广播 `notifications_read` SSE 事件（data 形如 `{"ids": [...], "updated_count": N, "unread_count": M}`），供其它在线页面同步未读态。
+`ids` 为空时为 no-op（返回 `updated_count=0`）。成功响应中的 `unread_count` 是操作后的数据库快照；其它在线页面通过轮询通知列表同步未读态。
 
 ### `POST /system/notifications/read-all`
 
@@ -56,11 +61,12 @@
 - `updated_count`：本次新置为已读的通知条数
 - `unread_count`：操作后剩余未读数（正常为 0）
 
-没有未读时返回 `updated_count=0`，且不产生事件。成功标记后会广播一条 `notifications_read_all` SSE 事件（data 形如 `{"updated_count": N, "unread_count": 0}`），供其它在线页面同步未读角标。
+没有未读时返回 `updated_count=0`。成功响应中的 `unread_count` 正常为 `0`，其它在线页面通过轮询通知列表同步未读角标。
 
 ## 说明
 
 - 后端任务常态成功不再生成通知（避免高频任务刷屏）；仅当成功但 `result_summary` 含 `failed` 计数（>0）时才生成一条 `warning` 通知，`skipped` 等其它指标不触发
 - 后端任务失败后会生成一条 `error` 通知
 - 下载导入任务新增可播放影片时，会额外生成一条 `reminder` 通知
-- 活动中心正确接入方式是“bootstrap 首屏快照 + SSE 增量续传”
+- Cloud115 登录失效、离线任务放弃、秒传批次完成和下载导入提醒均按稳定事件键去重
+- 活动中心正确接入方式是“bootstrap 首屏快照 + 通知/任务列表按需轮询”

@@ -115,6 +115,39 @@ def test_sync_sets_started_at_on_active_states_and_clears_on_leave(test_db, qb_e
     assert task.download_started_at is not None
 
 
+def test_sync_saves_only_fields_changed_in_current_round(qb_env, qb_client_cls, monkeypatch):
+    """对账只改 name 时不得顺带保存旧 progress/state，避免覆盖并发采样。"""
+    _, client = qb_env
+    DownloadTask.create(
+        client=client,
+        movie="ABP-001",
+        name="old-name",
+        info_hash="a" * 40,
+        save_path="/mnt/downloads/ABP-001",
+        progress=0.5,
+        download_state="queued",
+    )
+    qb_client_cls.torrents = [_remote_torrent("a" * 40, "queuedDL", progress=0.5)]
+    original_save = DownloadTask.save
+    saved_field_names: list[set[str]] = []
+
+    def record_save(task, *args, **kwargs):
+        only = kwargs.get("only") or []
+        saved_field_names.append(
+            {
+                field if isinstance(field, str) else field.name
+                for field in only
+            }
+        )
+        return original_save(task, *args, **kwargs)
+
+    monkeypatch.setattr(DownloadTask, "save", record_save)
+
+    DownloadSyncService(qbittorrent_client_cls=qb_client_cls).sync_client(client.id)
+
+    assert saved_field_names == [{"name"}]
+
+
 def test_cleanup_deletes_stalled_torrent_and_marks_dead(test_db, qb_env, qb_client_cls):
     """命中清理：删种 + 删文件 + 本地行落 stalled_dead。"""
     _, client = qb_env
@@ -232,7 +265,7 @@ def test_cleanup_skips_queued_paused_young_and_unstarted(test_db, qb_env, qb_cli
 
 def test_cleanup_skips_torrents_without_local_row(test_db, qb_env, qb_client_cls):
     """远程种子无本地行（非系统提交）：不清理。"""
-    _, client = qb_env
+    _, _client = qb_env
     qb_client_cls.torrents = [_remote_torrent("e" * 40, "stalledDL")]
 
     stats = QBStalledCleanupService(qbittorrent_client_cls=qb_client_cls).cleanup_stalled_tasks()

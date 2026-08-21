@@ -19,7 +19,9 @@ from src.service.transfers.cloud115.importer.common import (
     normalize_jav_media_filename,
     verify_cloud115_renamed_file,
 )
-from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
+from src.service.transfers.cloud115.importer.media_registrar import (
+    Cloud115MediaRegistrar,
+)
 from src.service.transfers.rapid_upload.states import (
     FAILURE_REASON_FILE_CHANGED,
     FAILURE_REASON_NOT_HIT,

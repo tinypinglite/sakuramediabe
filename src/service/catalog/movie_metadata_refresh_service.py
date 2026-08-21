@@ -12,8 +12,8 @@ from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common import normalize_movie_number
-from src.metadata.factory import build_javdb_provider
 from src.metadata._providers.models import JavdbMovieDetailResource
+from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Movie, MovieSeries
 from src.schema.catalog.movies import MovieDetailResource, MovieListItemResource

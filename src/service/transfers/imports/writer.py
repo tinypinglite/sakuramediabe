@@ -16,8 +16,7 @@ from src.common.runtime_time import utc_now_for_db
 from src.model import Media, MediaLibrary, Movie
 from src.service.catalog.movie_subtitle_service import MovieSubtitleService
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
-from src.service.system.resource_task_state_service import ResourceTaskStateService
+from src.service.playback.media_thumbnail_state import reset_thumbnail_state_for_revival
 from src.service.transfers.downloads.guards.tag_rules import build_media_special_tags
 from src.service.transfers.imports.source_scanner import (
     ImportTransferMode,
@@ -139,7 +138,7 @@ def upsert_media(
         has_subtitle=has_sidecar_subtitle,
     )
     if invalid_media is None:
-        media = Media.create(
+        Media.create(
             movie=movie,
             library=library,
             path=str(target_path),
@@ -152,7 +151,6 @@ def upsert_media(
             special_tags=special_tags,
             valid=True,
         )
-        _reset_thumbnail_generation_state(media.id)
         return
 
     invalid_media.movie = movie
@@ -169,17 +167,10 @@ def upsert_media(
         invalid_media.video_info = metadata.video_info
     invalid_media.special_tags = special_tags
     invalid_media.valid = True
+    # 存量无效记录复活后，终态失败必须回到新文件的缩略图生命周期。
+    reset_thumbnail_state_for_revival(invalid_media)
     invalid_media.updated_at = utc_now_for_db()
     invalid_media.save()
-    _reset_thumbnail_generation_state(invalid_media.id)
-
-
-def _reset_thumbnail_generation_state(media_id: int) -> None:
-    # 导入新文件或复活旧媒体后，缩略图任务必须回到全新的待处理状态。
-    ResourceTaskStateService.reset_for_requeue(
-        MediaThumbnailService.TASK_KEY,
-        media_id,
-    )
 
 
 def _import_single_media_file(
@@ -235,4 +226,3 @@ def _import_sidecar_subtitle(
         return
     target_subtitle_path = prepare_movie_subtitle_target_path(movie_number, target_video_path)
     transfer_file(subtitle_source_path, target_subtitle_path, transfer_mode=transfer_mode)
-

@@ -54,6 +54,14 @@ class QBittorrentClient:
             password=download_client.password,
         )
 
+    def close(self) -> None:
+        """确定性关闭 qBittorrent API 与种子下载共用的 HTTP 连接池。"""
+        try:
+            # qbittorrent-api 没有公开 close；其析构函数也通过该入口关闭并清空 Session。
+            self.client._trigger_session_initialization()
+        finally:
+            self.http_client.close()
+
     def add_candidate(
         self,
         *,
@@ -394,6 +402,12 @@ class QBittorrentClient:
             # qB 官方定义："Last time (Unix Epoch) when a chunk was downloaded/uploaded"。
             # 死种判定的唯一依据；从未活动的种子 qB 返回的是添加时刻，不是哨兵值。
             "last_activity": getattr(torrent, "last_activity", None),
+            # 进度快照所需的传输指标。保持 qB 原始字段名，领域服务统一做类型和 ETA 归一化。
+            "dlspeed": getattr(torrent, "dlspeed", 0),
+            "upspeed": getattr(torrent, "upspeed", 0),
+            "downloaded": getattr(torrent, "downloaded", 0),
+            "size": getattr(torrent, "size", 0),
+            "eta": getattr(torrent, "eta", None),
         }
 
     @staticmethod

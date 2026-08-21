@@ -27,6 +27,7 @@ from src.schema.playback.media import (
     MediaProgressResource,
     MediaProgressUpdateRequest,
     MediaRapidUploadFilterStatus,
+    MediaThumbnailGenerationState,
     MediaThumbnailResource,
     MediaValidityCheckResponse,
 )
@@ -56,6 +57,7 @@ def list_media(
     library_id: int | None = Query(default=None),
     actor_ids: str | None = Query(default=None),
     rapid_upload_status: MediaRapidUploadFilterStatus | None = Query(default=None),
+    thumbnail_generation_state: MediaThumbnailGenerationState | None = Query(default=None),
     sort: str | None = Query(default=None),
     page: int = 1,
     page_size: int = 20,
@@ -66,6 +68,7 @@ def list_media(
         library_id=library_id,
         actor_ids=parse_csv_positive_ints(actor_ids, "actor_ids", error_code="invalid_media_filter"),
         rapid_upload_status=rapid_upload_status,
+        thumbnail_generation_state=thumbnail_generation_state,
         sort=sort,
         page=page,
         page_size=page_size,

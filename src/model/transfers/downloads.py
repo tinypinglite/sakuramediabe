@@ -93,7 +93,39 @@ class DownloadTask(TimestampedMixin, BaseModel):
     target_ref = JsonTextField(null=True, default=None)
     progress = peewee.FloatField(default=0)
     download_state = peewee.CharField(max_length=32, default="downloading", index=True)
+    # qB 采样快照：保留原始状态与传输指标，列表读取无需每次反查下载器。
+    raw_state = peewee.CharField(
+        max_length=32,
+        default="",
+        constraints=[peewee.SQL("DEFAULT ''")],
+    )
+    download_speed_bytes = peewee.BigIntegerField(
+        default=0,
+        constraints=[peewee.SQL("DEFAULT 0")],
+    )
+    uploaded_speed_bytes = peewee.BigIntegerField(
+        default=0,
+        constraints=[peewee.SQL("DEFAULT 0")],
+    )
+    downloaded_bytes = peewee.BigIntegerField(
+        default=0,
+        constraints=[peewee.SQL("DEFAULT 0")],
+    )
+    total_size_bytes = peewee.BigIntegerField(
+        default=0,
+        constraints=[peewee.SQL("DEFAULT 0")],
+    )
+    eta_seconds = peewee.IntegerField(null=True)
+    progress_synced_at = peewee.DateTimeField(null=True)
     import_status = peewee.CharField(max_length=32, default="pending", index=True)
+    # TaskRun 是下载后入库的唯一执行记录；终态历史被清理时仅断开关联。
+    import_task_run = peewee.ForeignKeyField(
+        BackgroundTaskRun,
+        null=True,
+        backref="download_import_tasks",
+        on_delete="SET NULL",
+        column_name="import_task_run_id",
+    )
     # 进入活跃下载态（stalled/downloading）的时刻，由 qB 对账维护：排队/暂停/完成/做种时清空。
     # 停滞/慢速清理按它计时——qB 接口没有"开始下载时刻"字段（只有 added_on 与 last_activity），
     # 直接用 added_on 会把排队时长算进去，2000 部订阅 + 10 并发的排队场景会误删队尾种子。
@@ -102,43 +134,3 @@ class DownloadTask(TimestampedMixin, BaseModel):
     class Meta:
         table_name = "download_task"
         indexes = ((("client", "info_hash"), True),)
-
-
-class ImportJob(TimestampedMixin, BaseModel):
-    # 本地导入 = 源目录绝对路径；cloud115 导入 = 源目录面包屑可读路径（仅展示用）。
-    source_path = peewee.CharField(max_length=1024)
-    # cloud115 导入的源目录 cid（重导据此重新枚举源）；本地导入为 NULL。
-    source_cid = peewee.CharField(max_length=64, null=True)
-    library = peewee.ForeignKeyField(
-        MediaLibrary,
-        backref="import_jobs",
-        on_delete="CASCADE",
-        column_name="library_id",
-    )
-    download_task = peewee.ForeignKeyField(
-        DownloadTask,
-        null=True,
-        backref="import_jobs",
-        on_delete="SET NULL",
-        column_name="download_task_id",
-    )
-    task_run = peewee.ForeignKeyField(
-        BackgroundTaskRun,
-        null=True,
-        backref="import_jobs",
-        on_delete="SET NULL",
-        column_name="task_run_id",
-    )
-    state = peewee.CharField(max_length=32, default="pending", index=True)
-    # 导入模式：auto（本地硬链接优先）/ copy / cleanup-source（本地复制后删源、cloud115
-    # 直接移动）；失败文件重导时据此沿用原作业语义。
-    transfer_mode = peewee.CharField(max_length=32, default="auto")
-    imported_count = peewee.IntegerField(default=0)
-    skipped_count = peewee.IntegerField(default=0)
-    failed_count = peewee.IntegerField(default=0)
-    failed_files = peewee.TextField(default="[]")
-    started_at = peewee.DateTimeField(null=True)
-    finished_at = peewee.DateTimeField(null=True)
-
-    class Meta:
-        table_name = "import_job"

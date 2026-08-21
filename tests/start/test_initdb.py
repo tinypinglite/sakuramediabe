@@ -25,12 +25,8 @@ from src.model import (
     MovieSeries,
     Playlist,
     RankingItem,
-    ResourceTaskAttempt,
-    ResourceTaskState,
     SchemaMigration,
     Subtitle,
-    SubtitleImportJob,
-    SystemEvent,
     SystemNotification,
     User,
     UserRefreshToken,
@@ -101,12 +97,25 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
     assert HotReviewItem.table_exists()
     assert Playlist.table_exists()
     assert BackgroundTaskRun.table_exists()
-    assert ResourceTaskState.table_exists()
+    assert not clean_db.table_exists("resource_task_state")
+    assert not clean_db.table_exists("resource_task_attempt")
     assert SchemaMigration.table_exists()
     assert SystemNotification.table_exists()
-    assert SystemEvent.table_exists()
+    assert not clean_db.table_exists("system_event")
+    notification_columns = _column_names(clean_db, "system_notification")
+    assert {
+        "event_type",
+        "dedupe_key",
+        "resource_type",
+        "resource_id",
+    } <= notification_columns
+    notification_indexes = clean_db.get_indexes("system_notification")
+    assert any(
+        tuple(index.columns) == ("dedupe_key",) and index.unique
+        for index in notification_indexes
+    )
     assert Subtitle.table_exists()
-    assert SubtitleImportJob.table_exists()
+    assert not clean_db.table_exists("subtitle_import_job")
     assert MediaRapidUploadBatch.table_exists()
     assert MediaRapidUploadItem.table_exists()
     # 秒传 item 需带 failure_reason 列，用来区分 not_hit / 其它可重试失败。
@@ -248,10 +257,10 @@ def test_create_tables_creates_current_schema_columns(clean_db, monkeypatch):
     actor_columns = _column_names(database, "actor")
     assert "subscribed_at" in actor_columns
     assert BackgroundTaskRun.table_exists()
-    assert ResourceTaskState.table_exists()
     # v2-lite 字段主权两列：新库按模型渲染出 JSONB / BIGINT + 服务端默认值
-    # （与迁移 20260816_01 的 ALTER 同构，裸 INSERT 也有兜底）。
+    # （与 v0.5.0 收敛迁移的 ALTER 同构，裸 INSERT 也有兜底）。
     movie_columns = _column_names(database, "movie")
+    assert "interaction_synced_at" in movie_columns
     assert "field_owners" in movie_columns
     assert "mutation_revision" in movie_columns
     movie_column_types = {
@@ -266,26 +275,6 @@ def test_create_tables_creates_current_schema_columns(clean_db, monkeypatch):
     }
     assert movie_column_defaults["field_owners"] == "'{}'::jsonb"
     assert movie_column_defaults["mutation_revision"] == "0"
-
-
-def test_create_tables_creates_resource_task_state_unique_constraint(clean_db, monkeypatch):
-    create_tables()
-
-    ResourceTaskState.create(
-        task_key="movie_interaction_sync",
-        resource_type="movie",
-        resource_id=1,
-    )
-    try:
-        ResourceTaskState.create(
-            task_key="movie_interaction_sync",
-            resource_type="movie",
-            resource_id=1,
-        )
-    except IntegrityError:
-        pass
-    else:
-        raise AssertionError("expected resource_task_state unique constraint to reject duplicate rows")
 
 
 def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(clean_db, monkeypatch):
@@ -311,40 +300,20 @@ def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(cl
         raise AssertionError("expected mutex_key unique constraint to reject duplicate rows")
 
 
-def test_create_tables_creates_task_queue_and_attempt_schema(clean_db, monkeypatch):
-    """任务架构 Wave 0：队列扩列、尝试历史表、投影扩列与外键化（存量库走 20260729_01 迁移）。"""
+def test_create_tables_creates_task_queue_schema(clean_db, monkeypatch):
+    """任务队列保留，资源级投影与尝试历史不再进入当前 schema。"""
     create_tables()
 
-    assert ResourceTaskAttempt.table_exists()
     run_columns = _column_names(clean_db, "background_task_run")
     assert {"params", "scheduled_at", "lease_expires_at"} <= run_columns
-    state_columns = _column_names(clean_db, "resource_task_state")
-    assert {"next_retry_at", "error_code", "retry_round", "last_attempt_id"} <= state_columns
+    assert not clean_db.table_exists("resource_task_state")
+    assert not clean_db.table_exists("resource_task_attempt")
 
-    # 队列领取与重试调度的两个组合索引。
+    # 队列领取组合索引仍保留。
     run_indexed_columns = {
         tuple(index.columns) for index in clean_db.get_indexes("background_task_run")
     }
     assert ("state", "scheduled_at") in run_indexed_columns
-    state_indexed_columns = {
-        tuple(index.columns) for index in clean_db.get_indexes("resource_task_state")
-    }
-    assert ("task_key", "state", "next_retry_at") in state_indexed_columns
-
-    # 尝试历史清理走 finished_at 索引定位过期行，缺索引会全表扫。
-    attempt_indexed_columns = {
-        tuple(index.columns) for index in clean_db.get_indexes("resource_task_attempt")
-    }
-    assert ("finished_at",) in attempt_indexed_columns
-
-    # last_task_run_id 外键化：悬空引用必须被数据库拒绝。
-    with pytest.raises(IntegrityError):
-        ResourceTaskState.create(
-            task_key="movie_interaction_sync",
-            resource_type="movie",
-            resource_id=42,
-            last_task_run_id=999_999,
-        )
 
 
 def test_create_tables_does_not_patch_existing_legacy_movie_schema(clean_db, monkeypatch):
@@ -379,7 +348,7 @@ def test_create_tables_creates_movie_series_schema(clean_db, monkeypatch):
 
 
 def test_create_tables_creates_movie_number_upper_index(clean_db, monkeypatch):
-    """人工输入点查依赖的 UPPER(movie_number) 函数索引：新库建表即有，存量库走 20260728_01 迁移。"""
+    """人工输入点查依赖的 UPPER(movie_number) 函数索引：新库建表即有。"""
     create_tables()
 
     assert clean_db.execute_sql(
@@ -468,6 +437,38 @@ def test_create_tables_creates_download_domain_multi_bind_schema(clean_db, monke
     # qB 停滞/慢速清理按 download_started_at 计时（排队时间不计），新库直接建出该列。
     assert "download_started_at" in task_columns
     assert _column_is_nullable(database, "download_task", "download_started_at") is True
+    # qB 进度由 APS 内部采样器落库，新库直接具备完整快照列。
+    assert {
+        "raw_state",
+        "download_speed_bytes",
+        "uploaded_speed_bytes",
+        "downloaded_bytes",
+        "total_size_bytes",
+        "eta_seconds",
+        "progress_synced_at",
+    } <= task_columns
+    assert _column_is_nullable(database, "download_task", "eta_seconds") is True
+    assert _column_is_nullable(database, "download_task", "progress_synced_at") is True
+    library = MediaLibrary.create(name="snapshot-defaults", backend="local")
+    download_client = DownloadClient.create(
+        name="snapshot-defaults-qb",
+        kind="qbittorrent",
+        media_library=library,
+    )
+    database.execute_sql(
+        "INSERT INTO download_task"
+        " (created_at, updated_at, client_id, name, info_hash, save_path, progress,"
+        "  download_state, import_status)"
+        " VALUES (now(), now(), %s, 'ABP-001', 'initdb-snapshot', '/downloads/ABP-001',"
+        "  0, 'queued', 'pending')",
+        (download_client.id,),
+    )
+    snapshot_defaults = database.execute_sql(
+        "SELECT raw_state, download_speed_bytes, uploaded_speed_bytes,"
+        " downloaded_bytes, total_size_bytes"
+        " FROM download_task WHERE info_hash = 'initdb-snapshot'"
+    ).fetchone()
+    assert snapshot_defaults == ("", 0, 0, 0, 0)
     # 每个索引器独立可选的 Torznab 鉴权 key，新库直接建出可空列。
     indexer_columns = {column.name for column in database.get_columns("indexer")}
     assert "api_key" in indexer_columns

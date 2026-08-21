@@ -19,6 +19,7 @@ from src.lib.cloud115 import (
     Cloud115MembershipRequiredError,
     Cloud115RateLimitedError,
     Cloud115RequestError,
+    Cloud115RiskControlError,
     Cloud115VideoNotReadyError,
     VideoDefinition,
     VideoSegment,
@@ -27,6 +28,7 @@ from src.model import Media
 from src.service.cloud115 import cloud115_client_for
 from src.service.playback.thumbnails.contracts import (
     PreparedThumbnailSource,
+    ThumbnailBackendUnavailable,
     ThumbnailDeferred,
     ThumbnailGenerationResult,
 )
@@ -59,15 +61,49 @@ class Cloud115HlsThumbnailBackend:
         Cloud115MembershipRequiredError,
         Cloud115RateLimitedError,
         Cloud115RequestError,
-        Cloud115VideoNotReadyError,
+        Cloud115RiskControlError,
     )
+
+    @staticmethod
+    def ensure_available() -> None:
+        if av is None:
+            raise ThumbnailBackendUnavailable(
+                "PyAV 未安装，无法生成 115 媒体缩略图",
+                error_code="pyav_not_installed",
+            )
+
+    @classmethod
+    def _defer(cls, message: str, *, error_code: str) -> ThumbnailDeferred:
+        return ThumbnailDeferred(
+            message,
+            error_code=error_code,
+            max_deferred_attempts=cls.VIDEO_TRANSCODING_MAX_DEFERRED_ATTEMPTS,
+            deferred_backoff_base_seconds=cls.VIDEO_TRANSCODING_DEFERRED_BACKOFF_BASE_SECONDS,
+        )
+
+    @staticmethod
+    def _backend_error_code(exc: Exception) -> str:
+        if isinstance(exc, Cloud115AuthError):
+            return "cloud115_auth_unavailable"
+        if isinstance(exc, Cloud115MembershipRequiredError):
+            return "cloud115_membership_required"
+        if isinstance(exc, Cloud115RateLimitedError):
+            return "cloud115_rate_limited"
+        if isinstance(exc, Cloud115RiskControlError):
+            return "cloud115_risk_control"
+        if isinstance(exc, Cloud115CipherError):
+            return "cloud115_cipher_unavailable"
+        return "cloud115_request_unavailable"
 
     @classmethod
     def select_lowest_definition(
         cls, definitions: list[VideoDefinition]
     ) -> VideoDefinition:
         if not definitions:
-            raise ThumbnailDeferred("cloud115_hls_definitions_empty")
+            raise cls._defer(
+                "cloud115_hls_definitions_empty",
+                error_code="cloud115_hls_definitions_empty",
+            )
 
         def sort_key(definition: VideoDefinition) -> tuple[int, int, int, int]:
             width, height = parse_resolution(definition.resolution)
@@ -105,7 +141,10 @@ class Cloud115HlsThumbnailBackend:
             timeline.append((segment, cursor, end))
             cursor = end
         if not timeline or cursor <= 0:
-            raise ThumbnailDeferred("cloud115_hls_segments_empty")
+            raise cls._defer(
+                "cloud115_hls_segments_empty",
+                error_code="cloud115_hls_segments_empty",
+            )
 
         grouped: dict[int, tuple[VideoSegment, list[int]]] = {}
         timeline_index = 0
@@ -136,18 +175,22 @@ class Cloud115HlsThumbnailBackend:
 
     @classmethod
     def prepare(cls, media: Media) -> PreparedThumbnailSource:
+        cls.ensure_available()
         try:
             targets, expected_count, source_label = asyncio.run(cls._resolve_targets(media))
         except Cloud115VideoNotReadyError as exc:
             # 前端无需知道 pickcode；只需知道 115 仍在转码。
-            raise ThumbnailDeferred(
+            raise cls._defer(
                 "115 视频转码尚未完成",
                 error_code="cloud115_video_transcoding",
-                max_deferred_attempts=cls.VIDEO_TRANSCODING_MAX_DEFERRED_ATTEMPTS,
-                deferred_backoff_base_seconds=cls.VIDEO_TRANSCODING_DEFERRED_BACKOFF_BASE_SECONDS,
             ) from exc
-        except (*cls.SYSTEM_FAILURES, ThumbnailDeferred) as exc:
-            raise ThumbnailDeferred(str(exc)) from exc
+        except ThumbnailDeferred:
+            raise
+        except cls.SYSTEM_FAILURES as exc:
+            raise ThumbnailBackendUnavailable(
+                str(exc),
+                error_code=cls._backend_error_code(exc),
+            ) from exc
         except Exception as exc:
             raise RuntimeError(f"cloud115_hls_prepare_failed: {exc}") from exc
         return PreparedThumbnailSource(
@@ -158,8 +201,7 @@ class Cloud115HlsThumbnailBackend:
 
     @classmethod
     def decode_segment(cls, segment: VideoSegment, offsets: list[int], webp_dir: Path) -> int:
-        if av is None:
-            raise RuntimeError("pyav_not_installed")
+        cls.ensure_available()
         reader = Cloud115HlsSegmentReader(
             segment.url,
             user_agent=cls.USER_AGENT,
@@ -218,6 +260,16 @@ class Cloud115HlsThumbnailBackend:
                 segment, offsets = futures[future]
                 try:
                     future.result()
+                except ThumbnailBackendUnavailable:
+                    # 解码器依赖在运行中失效时，仍按整条后端泳道暂停。
+                    raise
+                except cls.SYSTEM_FAILURES as exc:
+                    # HLS 分片读取同样会遇到 cookie、限流和网络故障；不能在外层被降级成
+                    # 单媒体的“缩略图数量不足”，否则会错误耗尽每条 Media 的重试额度。
+                    raise ThumbnailBackendUnavailable(
+                        str(exc),
+                        error_code=cls._backend_error_code(exc),
+                    ) from exc
                 except Exception as exc:
                     if first_error is None:
                         first_error = exc

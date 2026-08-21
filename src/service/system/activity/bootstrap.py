@@ -1,8 +1,5 @@
 from contextlib import contextmanager
 
-from peewee import fn
-
-from src.model import SystemEvent
 from src.model.base import get_database
 from src.schema.system.activity import ActivityBootstrapResource
 from src.service.system.activity.notifications import NotificationService
@@ -29,10 +26,6 @@ class ActivityBootstrapService:
         task_sort: str | None = None,
     ) -> ActivityBootstrapResource:
         with activity_read_snapshot():
-            latest_event_id = (
-                SystemEvent.select(fn.COALESCE(fn.MAX(SystemEvent.id), 0)).scalar()
-                or 0
-            )
             notifications = NotificationService.page_notifications(
                 NotificationService.build_notification_query(category=notification_category),
                 page=1,
@@ -49,7 +42,6 @@ class ActivityBootstrapService:
                 page_size=ACTIVITY_BOOTSTRAP_PAGE_SIZE,
             )
             return ActivityBootstrapResource(
-                latest_event_id=int(latest_event_id),
                 notifications=notifications,
                 unread_count=NotificationService.get_unread_count(),
                 active_task_runs=TaskRunService.list_active_task_runs(),

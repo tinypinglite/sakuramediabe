@@ -10,6 +10,7 @@ import pytest
 from PIL import Image as PILImage
 
 from src.lib.cloud115 import (
+    Cloud115AuthError,
     Cloud115HlsSegmentReader,
     Cloud115RequestError,
     Cloud115VideoNotReadyError,
@@ -23,6 +24,7 @@ from src.service.playback.thumbnails.backends.cloud115_hls import (
 )
 from src.service.playback.thumbnails.contracts import (
     PreparedThumbnailSource,
+    ThumbnailBackendUnavailable,
     ThumbnailDeferred,
 )
 from src.service.playback.thumbnails.task_service import MediaThumbnailTaskService
@@ -171,6 +173,32 @@ def test_hls_segment_generation_never_exceeds_three_workers(
     assert peak == 3
 
 
+def test_hls_segment_account_failure_is_backend_level(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fail_decode(*_args, **_kwargs) -> int:
+        raise Cloud115AuthError("cookies expired")
+
+    monkeypatch.setattr(
+        Cloud115HlsThumbnailBackend,
+        "decode_segment",
+        staticmethod(fail_decode),
+    )
+
+    with pytest.raises(ThumbnailBackendUnavailable) as error:
+        Cloud115HlsThumbnailBackend.generate(
+            PreparedThumbnailSource(
+                source_label="test",
+                expected_count=1,
+                payload=[(_segment(0), [0])],
+            ),
+            tmp_path,
+        )
+
+    assert error.value.error_code == "cloud115_auth_unavailable"
+
+
 def test_hls_segment_decode_limits_network_and_ffmpeg_probe(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -317,8 +345,6 @@ def test_thumbnail_dimensions_come_from_generated_webp(
 def test_video_not_ready_is_classified_as_bounded_deferred(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert Cloud115VideoNotReadyError in Cloud115HlsThumbnailBackend.SYSTEM_FAILURES
-
     async def raise_not_ready(_cls, _media):
         raise Cloud115VideoNotReadyError(
             "video not ready for pickcode hidden (file_status=0)",
@@ -330,6 +356,7 @@ def test_video_not_ready_is_classified_as_bounded_deferred(
         "_resolve_targets",
         classmethod(raise_not_ready),
     )
+    monkeypatch.setattr(Cloud115HlsThumbnailBackend, "ensure_available", lambda: None)
     with pytest.raises(ThumbnailDeferred) as error:
         Cloud115HlsThumbnailBackend.prepare(SimpleNamespace())
 
@@ -337,3 +364,22 @@ def test_video_not_ready_is_classified_as_bounded_deferred(
     assert error.value.max_deferred_attempts == 5
     assert error.value.deferred_backoff_base_seconds == 12 * 60 * 60
     assert MediaThumbnailTaskService.minimum_acceptable_count(100) == 85
+
+
+def test_cloud115_auth_failure_is_backend_level_not_media_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def raise_auth(_cls, _media):
+        raise Cloud115AuthError("cookies expired")
+
+    monkeypatch.setattr(
+        Cloud115HlsThumbnailBackend,
+        "_resolve_targets",
+        classmethod(raise_auth),
+    )
+    monkeypatch.setattr(Cloud115HlsThumbnailBackend, "ensure_available", lambda: None)
+
+    with pytest.raises(ThumbnailBackendUnavailable) as error:
+        Cloud115HlsThumbnailBackend.prepare(SimpleNamespace())
+
+    assert error.value.error_code == "cloud115_auth_unavailable"

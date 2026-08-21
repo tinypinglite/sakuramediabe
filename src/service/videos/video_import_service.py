@@ -1,15 +1,14 @@
-"""非 JAV 视频导入 service：指定目录或单文件，搬运入媒体库并登记为 VideoItem + Media。
+"""非 JAV 视频导入执行器：扫描本地源并登记 VideoItem + Media。
 
 与 JAV 导入共用一套文件落库语义：
 - 文件按硬链接优先 / 复制后删源（cleanup-source）搬入指定媒体库根目录；
 - 每个 video_item 的 Media 必须归属一个媒体库（library_id 必填）；
 - 导入每个视频时读取**第 0 帧**生成封面；
-- 进度写回 VideoImportJob 并经 progress_callback 实时上报，供后台任务可观测。
+- 进度经回调写入统一 TaskRun。
 
 不抓取外部元数据、不解析番号、不设标签体系；标题默认取文件名 stem，可在导入时一并关联合集。
 """
 
-import json
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -22,37 +21,28 @@ from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS
 from src.common.media_import_status import (
     FAILURE_REASON_ALREADY_INDEXED_PATH,
     FAILURE_REASON_DUPLICATE_FINGERPRINT,
-    FAILURE_REASON_IMPORT_JOB_CRASHED,
-    FAILURE_REASON_MEDIA_IMPORT_FAILED,
-    IMPORT_JOB_STATE_COMPLETED,
-    IMPORT_JOB_STATE_FAILED,
-    IMPORT_JOB_STATE_PENDING,
-    IMPORT_JOB_STATE_RUNNING,
-    make_failure_item,
 )
 from src.common.service_helpers import emit_progress
-from src.common.runtime_time import utc_now_for_db
 from src.model import (
     Media,
     MediaLibrary,
     VideoCollection,
-    VideoImportJob,
     VideoItem,
     get_database,
 )
 from src.model.enums import MediaLibraryBackend
+from src.schema.transfers.media_import import ImportResult
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
-from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
+from src.service.transfers.downloads.guards.tag_rules import build_media_special_tags
+from src.service.transfers.imports.source_scanner import (
+    find_media_library_containing_path,
+)
 from src.service.transfers.shared.file_transfer import (
     VIDEOS_LIBRARY_SUBDIR,
     create_version_directory,
     delete_source_files,
     transfer_file,
 )
-from src.service.transfers.imports.source_scanner import (
-    find_media_library_containing_path,
-)
-from src.service.transfers.downloads.guards.tag_rules import build_media_special_tags
 from src.service.videos.video_collection_service import VideoCollectionService
 from src.service.videos.video_cover_service import VideoCoverService
 
@@ -74,12 +64,8 @@ class VideoImportService:
     @staticmethod
     def _collect_video_files(
         source_path: str,
-        only_file_set: set[str] | None = None,
     ) -> list[Path]:
-        """扫描源路径下的视频文件。
-
-        ``only_file_set`` 提供时仅保留命中其中绝对路径的文件，用于失败文件的子集重导。
-        """
+        """扫描源路径下的视频文件。"""
         source = Path(source_path).expanduser()
         if not source.exists():
             raise ApiError(404, "import_source_not_found", "Import source not found", {"source_path": source_path})
@@ -98,8 +84,6 @@ class VideoImportService:
                 for path in sorted(source.rglob("*"))
                 if path.is_file() and path.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
             ]
-        if only_file_set is not None:
-            files = [path for path in files if str(path) in only_file_set]
         return files
 
     @staticmethod
@@ -194,7 +178,7 @@ class VideoImportService:
             storage_mode = transfer_file(file_path, target_path, transfer_mode=transfer_mode)
             file_size = target_path.stat().st_size
             with get_database().atomic():
-                media = Media.create(
+                Media.create(
                     video_item=video,
                     library=library,
                     path=str(target_path),
@@ -224,8 +208,6 @@ class VideoImportService:
                 logger.warning("Video import rollback delete video failed video_id={}", video.id)
             raise
 
-        # 缩略图任务接手（与 JAV 一致，导入后置为全新待处理状态）。
-        Cloud115MediaRegistrar.reset_thumbnail_state(media.id)
         # 首帧封面：增益项，失败仅记日志不阻断导入。
         VideoCoverService.generate_cover(video, target_path)
         # 落库（含合集关联）成功后再删源（cleanup-source；删失败仅告警计入失败明细）。
@@ -239,56 +221,16 @@ class VideoImportService:
         )
         return video.id, delete_failed
 
-    # ---- 作业生命周期 ----
-
-    def _prepare_job(
-        self,
-        *,
-        video_import_job_id: int | None,
-        source_entry: Path,
-        library: MediaLibrary,
-        transfer_mode: str,
-        collection_id: int | None,
-    ) -> VideoImportJob:
-        if video_import_job_id is None:
-            return VideoImportJob.create(
-                source_path=str(source_entry),
-                library=library,
-                collection=collection_id,
-                state=IMPORT_JOB_STATE_PENDING,
-                transfer_mode=transfer_mode,
-            )
-        # 复用已由作业 service 预创建的 job（异步触发路径），重置统计字段。
-        job = VideoImportJob.get_by_id(video_import_job_id)
-        job.source_path = str(source_entry)
-        job.library = library
-        job.collection = collection_id
-        job.transfer_mode = transfer_mode
-        job.state = IMPORT_JOB_STATE_PENDING
-        job.imported_count = 0
-        job.skipped_count = 0
-        job.failed_count = 0
-        job.failed_files = "[]"
-        job.started_at = None
-        job.finished_at = None
-        job.save()
-        return job
-
     def import_from_source(
         self,
         source_path: str,
         library_id: int,
         *,
-        video_import_job_id: int | None = None,
         transfer_mode: str = "auto",
         collection_id: int | None = None,
-        only_files: list[str] | None = None,
         progress_callback: ImportProgressCallback | None = None,
-    ) -> VideoImportJob:
-        """执行一次完整的视频导入，并把中间状态写回 VideoImportJob。
-
-        ``only_files`` 提供时仅导入这些绝对路径，用于失败文件的子集重导。
-        """
+    ) -> ImportResult:
+        """执行一次整源视频导入，单文件失败只计数并继续。"""
         if transfer_mode not in SUPPORTED_TRANSFER_MODES:
             raise ApiError(422, "invalid_transfer_mode", "无效的导入模式", {"transfer_mode": transfer_mode})
 
@@ -299,22 +241,6 @@ class VideoImportService:
             raise ApiError(404, "import_source_not_found", "Import source not found", {"source_path": source_path})
         if transfer_mode == "cleanup-source":
             self._assert_source_outside_libraries(source_entry)
-
-        # 子集重导时把目标文件归一化为绝对路径集合，扫描阶段据此过滤。
-        only_file_set: set[str] | None = None
-        if only_files is not None:
-            only_file_set = {str(Path(item).expanduser().resolve()) for item in only_files}
-
-        job = self._prepare_job(
-            video_import_job_id=video_import_job_id,
-            source_entry=source_entry,
-            library=library,
-            transfer_mode=transfer_mode,
-            collection_id=collection_id,
-        )
-        job.state = IMPORT_JOB_STATE_RUNNING
-        job.started_at = utc_now_for_db()
-        job.save()
 
         failure_items: list[dict[str, str]] = []
         created_ids: list[int] = []
@@ -330,115 +256,67 @@ class VideoImportService:
                 "created_video_ids": list(created_ids),
             }
 
-        try:
-            files = self._collect_video_files(str(source_entry), only_file_set=only_file_set)
-            total = len(files)
+        files = self._collect_video_files(str(source_entry))
+        total = len(files)
+        emit_progress(
+            progress_callback,
+            event="scan_complete",
+            current=0,
+            total=total,
+            text="视频文件扫描完成",
+            summary_patch=_summary(),
+        )
+
+        for index, file_path in enumerate(files, start=1):
             emit_progress(
                 progress_callback,
-                event="scan_complete",
-                current=0,
+                event="file_started",
+                current=index - 1,
                 total=total,
-                text="视频文件扫描完成",
+                text=f"正在导入 {file_path.name}",
                 summary_patch=_summary(),
             )
 
-            for index, file_path in enumerate(files, start=1):
-                emit_progress(
-                    progress_callback,
-                    event="file_started",
-                    current=index - 1,
-                    total=total,
-                    text=f"正在导入 {file_path.name}",
-                    summary_patch=_summary(),
-                )
+            skip_reason, fingerprint = self._resolve_dedupe(file_path)
+            if skip_reason is not None:
+                skipped += 1
+                logger.info("Video import skipped path={} reason={}", str(file_path), skip_reason)
+            else:
+                try:
+                    video_id, delete_failed = self._create_video_for_file(
+                        file_path,
+                        library=library,
+                        transfer_mode=transfer_mode,
+                        collection_id=collection_id,
+                        fingerprint=fingerprint,
+                        failure_items=failure_items,
+                    )
+                    imported += 1
+                    failed += delete_failed
+                    created_ids.append(video_id)
+                except Exception as exc:
+                    failed += 1
+                    logger.exception("Video import file failed source={} detail={}", str(file_path), exc)
 
-                skip_reason, fingerprint = self._resolve_dedupe(file_path)
-                if skip_reason is not None:
-                    skipped += 1
-                    logger.info("Video import skipped path={} reason={}", str(file_path), skip_reason)
-                    # 跳过项写入 failure_items（kind=skipped），让接口可返回跳过明细，不计入失败数。
-                    failure_items.append(make_failure_item(file_path, skip_reason))
-                else:
-                    try:
-                        video_id, delete_failed = self._create_video_for_file(
-                            file_path,
-                            library=library,
-                            transfer_mode=transfer_mode,
-                            collection_id=collection_id,
-                            fingerprint=fingerprint,
-                            failure_items=failure_items,
-                        )
-                        imported += 1
-                        failed += delete_failed
-                        created_ids.append(video_id)
-                    except Exception as exc:
-                        failed += 1
-                        logger.exception("Video import file failed source={} detail={}", str(file_path), exc)
-                        failure_items.append(
-                            make_failure_item(file_path, FAILURE_REASON_MEDIA_IMPORT_FAILED, str(exc))
-                        )
-
-                emit_progress(
-                    progress_callback,
-                    event="file_finished",
-                    current=index,
-                    total=total,
-                    text=f"已处理 {index}/{total}",
-                    summary_patch=_summary(),
-                )
-
-            self._finalize_job(job, imported=imported, skipped=skipped, failed=failed, failure_items=failure_items)
             emit_progress(
                 progress_callback,
-                event="job_finished",
-                current=total,
+                event="file_finished",
+                current=index,
                 total=total,
-                text="视频导入任务完成",
+                text=f"已处理 {index}/{total}",
                 summary_patch=_summary(),
             )
-            logger.info(
-                "Video import finished source={} imported={} skipped={} failed={}",
-                str(source_entry),
-                imported,
-                skipped,
-                failed,
-            )
-            return job
-        except Exception as exc:
-            # 走到这里说明导入流程本身崩溃，而非单文件失败，补一条任务级错误。
-            failed += 1
-            failure_items.append(make_failure_item(source_entry, FAILURE_REASON_IMPORT_JOB_CRASHED, str(exc)))
-            self._finalize_job(
-                job,
-                imported=imported,
-                skipped=skipped,
-                failed=failed,
-                failure_items=failure_items,
-                force_failed=True,
-            )
-            emit_progress(
-                progress_callback,
-                event="job_failed",
-                text="视频导入任务失败",
-                summary_patch=_summary(),
-            )
-            logger.exception("Video import crashed source={} detail={}", str(source_entry), exc)
-            raise
 
-    @staticmethod
-    def _finalize_job(
-        job: VideoImportJob,
-        *,
-        imported: int,
-        skipped: int,
-        failed: int,
-        failure_items: list[dict[str, str]],
-        force_failed: bool = False,
-    ) -> None:
-        job.imported_count = imported
-        job.skipped_count = skipped
-        job.failed_count = failed
-        job.state = IMPORT_JOB_STATE_FAILED if (force_failed or failed > 0) else IMPORT_JOB_STATE_COMPLETED
-        job.failed_files = json.dumps(failure_items, ensure_ascii=False)
-        job.finished_at = utc_now_for_db()
-        job.save()
+        logger.info(
+            "Video import finished source={} imported={} skipped={} failed={}",
+            str(source_entry),
+            imported,
+            skipped,
+            failed,
+        )
+        return ImportResult(
+            imported_count=imported,
+            skipped_count=skipped,
+            failed_count=failed,
+            created_video_ids=created_ids,
+        )

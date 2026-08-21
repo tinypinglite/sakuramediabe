@@ -27,8 +27,10 @@ class StatusMediaLibrarySummary(SchemaModel):
 
 
 class StatusThumbnailSummary(SchemaModel):
-    # 待生成缩略图的媒体文件数量，以及已生成的缩略图文件总数。
+    # pending 为当前可领取量；retry_wait 未到退避时间；terminal 须人工点名重试。
     pending_media: int
+    retry_wait_media: int
+    terminal_failed_media: int
     total: int
 
 

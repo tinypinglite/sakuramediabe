@@ -2,9 +2,9 @@ from datetime import timedelta, timezone
 
 from loguru import logger
 
-from src.config.config import settings
 from src.common.media_import_status import IMPORT_STATUS_RUNNING
 from src.common.runtime_time import utc_now_for_db
+from src.config.config import settings
 from src.model import DownloadClient, DownloadTask
 from src.model.enums import DownloadClientKind
 from src.service.transfers.downloads.clients.qbittorrent import (
@@ -181,19 +181,21 @@ class QBStalledCleanupService:
             )
             .execute()
         )
-        if updated == 0:
-            if not DownloadTask.select().where(DownloadTask.id == task.id).exists():
-                # 行已被对账 prune（黑名单丢失）：按任务幂等键重插死态行，保住黑名单。
-                DownloadTask.create(
-                    client_id=client_id,
-                    info_hash=info_hash,
-                    movie=task.movie,
-                    name=task.name,
-                    save_path=task.save_path,
-                    progress=task.progress,
-                    download_state=DOWNLOAD_STALLED_DEAD_STATE,
-                    import_status=task.import_status,
-                )
+        if (
+            updated == 0
+            and not DownloadTask.select().where(DownloadTask.id == task.id).exists()
+        ):
+            # 行已被对账 prune（黑名单丢失）：按任务幂等键重插死态行，保住黑名单。
+            DownloadTask.create(
+                client_id=client_id,
+                info_hash=info_hash,
+                movie=task.movie,
+                name=task.name,
+                save_path=task.save_path,
+                progress=task.progress,
+                download_state=DOWNLOAD_STALLED_DEAD_STATE,
+                import_status=task.import_status,
+            )
         logger.info(
             "qb stalled cleanup removed stalled torrent: client_id={} info_hash={} "
             "movie={} name={} remote_removed={}",

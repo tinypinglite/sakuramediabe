@@ -3,8 +3,13 @@ import math
 import os
 import pathlib
 import secrets
+import stat
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from enum import Enum
 from pathlib import Path
+from threading import RLock
 from typing import Any
 from urllib.parse import urlparse
 
@@ -229,6 +234,8 @@ class Scheduler(BaseModel):
     actor_subscription_sync_cron: str = "0 2 * * *"
     subscribed_movie_auto_download_cron: str = "30 2 * * *"
     download_task_sync_cron: str = "*/5 * * * *"
+    # 宿主内部 qB 进度快照采样周期；不进入任务注册表，也不创建 TaskRun。
+    download_progress_snapshot_interval_seconds: float = Field(default=5.0, ge=1.0, le=60.0)
     download_task_auto_import_cron: str = "*/10 * * * *"
     download_small_file_cleanup_cron: str = "*/5 * * * *"
     # qB 停滞/慢速任务清理：每天凌晨 1 点跑（早于订阅自动下载 02:30，删完当天就能换种重下）。
@@ -250,16 +257,13 @@ class Scheduler(BaseModel):
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
     activity_cleanup_cron: str = "30 5 * * *"
-    # resource_task_attempt 保留期清理：每天 6:00 跑一次，避开活动清理窗口。
-    resource_task_attempt_cleanup_cron: str = "0 6 * * *"
     # cloud115 cookies 保活：acw_tc（阿里云 WAF token）30 分钟过期，每 20 分钟探活一次
     # 并把 SDK merge 到的最新快照回写库配置；长效凭据失效时发通知引导重新扫码。
     cloud115_keepalive_cron: str = "*/20 * * * *"
     # GFriends Filetree 缓存刷新：默认每周一 04:00，对齐 disk cache 默认 7 天 TTL。
     gfriends_filetree_refresh_cron: str = "0 4 * * 1"
-    # 活动中心三张表的保留期：事件流只保留最近 N 天，每个 task_key 只保留最近 N 条运行记录，
-    # 已读通知保留最近 N 天。具体语义见 ActivityCleanupService。
-    activity_event_retention_days: int = 1
+    # 活动中心保留期：每个 task_key 只保留最近 N 条运行记录，已读通知保留最近 N 天。
+    # 具体语义见 ActivityCleanupService。
     activity_task_run_retention_per_key: int = 200
     activity_notification_read_retention_days: int = 3
 
@@ -290,10 +294,6 @@ class Scheduler(BaseModel):
 class Downloads(BaseModel):
     # 下载中种子内小于该大小（MB）的文件视为可清理小文件，会被设为不下载并物理删除。
     small_file_cleanup_threshold_mb: int = 256
-    # SSE 下载进度轮询 qBittorrent Sync API 的间隔；低于 0.2 秒会无谓放大 qB Web API 压力。
-    progress_stream_poll_interval_seconds: float = Field(default=1.0, ge=0.2, le=10.0)
-    # SSE 下载进度轮询 115 离线列表的间隔：公网 API 且有风控，禁止低于 2 秒。
-    cloud115_progress_poll_interval_seconds: float = Field(default=8.0, ge=2.0, le=60.0)
     # 下载入口 kind 的全局偏好顺序：索引器绑定多个下载器时按此顺序挑选，列表外的 kind 排最后。
     # 只影响挑选顺序，不做白名单；选中的下载器执行失败时直接报错，不自动换下一个。
     preferred_client_kinds: list[str] = Field(default_factory=lambda: ["qbittorrent", "cloud115"])
@@ -323,13 +323,7 @@ class Downloads(BaseModel):
     # 只写入不删除；存量行 download_started_at 为空时先让对账起算。enabled=False 关闭该清理。
     qbittorrent_stalled_cleanup_enabled: bool = Field(default=True)
     qbittorrent_stalled_cleanup_hours: int = Field(default=24, ge=1)
-    # 订阅影片资源查询分两档，调度是每天一轮（subscribed_movie_auto_download_cron），所以
-    # "每轮都查" 就等于 "每天查一次"：
-    #   新片（release_date 落在下面这个窗口内，含未来日期）：每轮都查，不计次数，永不放弃；
-    #   老片（其余，含 release_date 为空的——无法证明它新）：每轮都查，但只查
-    #     subscription_search_stale_attempt_limit 次，跑满置 exhausted，只能手动重置。
-    # 不做逐次退避：老片的种子可得性基本是静态的，把 3 次摊到几十天并不比连查 3 天多抓到什么，
-    # 真要捞重新做种的片子得是月/年尺度的重扫，那靠"重置全部已放弃"手动触发。
+    # 新片持续查询，老片连续未找到达到上限后进入 exhausted，等待用户显式重开。
     subscription_search_fresh_days: int = Field(default=90, ge=1)
     subscription_search_stale_attempt_limit: int = Field(default=3, ge=1)
 
@@ -443,6 +437,19 @@ def get_settings() -> Settings:
 
 
 settings = Settings()
+_SETTINGS_WRITE_LOCK = RLock()
+
+
+@contextmanager
+def settings_write_lock() -> Iterator[None]:
+    """串行化进程内的配置读改写，避免局部 PATCH 相互覆盖。"""
+    with _SETTINGS_WRITE_LOCK:
+        yield
+
+
+def load_persisted_settings() -> Settings:
+    """从当前 TOML 创建配置快照；读改写调用方须持有 settings_write_lock。"""
+    return Settings()
 
 
 def refresh_runtime_settings(new_settings: Settings) -> None:
@@ -470,12 +477,50 @@ def _build_persistable_settings(settings_to_persist: Settings) -> dict[str, Any]
     return json.loads(settings_to_persist.model_dump_json())
 
 
+def persist_settings(new_settings: Settings) -> bool:
+    """原子写入配置文件，不改变当前进程的 settings 快照。"""
+    with settings_write_lock():
+        serializable_settings = _build_persistable_settings(new_settings)
+        settings_path = Path(Settings.model_config["toml_file"])
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        mode = stat.S_IMODE(settings_path.stat().st_mode) if settings_path.exists() else None
+        temporary_path: Path | None = None
+        try:
+            # 同目录临时文件完成落盘后再 replace，避免进程重启时读到半截 TOML。
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=settings_path.parent,
+                prefix=f".{settings_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as file:
+                temporary_path = Path(file.name)
+                file.write(toml.dumps(serializable_settings))
+                file.flush()
+                os.fsync(file.fileno())
+            if mode is not None:
+                temporary_path.chmod(mode)
+            os.replace(temporary_path, settings_path)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
+    return True
+
+
 def update_settings(new_settings: Settings) -> bool:
-    serializable_settings = _build_persistable_settings(new_settings)
-    settings_path = Path(Settings.model_config["toml_file"])
-    with open(settings_path, "w", encoding="utf-8") as file:
-        file.write(toml.dumps(serializable_settings))
-    refresh_runtime_settings(new_settings)
+    """兼容插件管理器：只更新 plugins 段，并同步当前进程的插件配置。"""
+    with settings_write_lock():
+        # 插件管理器持有的 settings 可能早于普通配置 PATCH；以磁盘为底只覆盖 plugins，
+        # 防止安装/配置插件时把尚未重启的普通配置写回旧值。
+        persisted_settings = load_persisted_settings()
+        persisted_settings.plugins = new_settings.plugins.model_copy(deep=True)
+        persist_settings(persisted_settings)
+
+        # 保持普通配置的运行时旧快照，仅让插件配置沿用原有即时可见行为。
+        runtime_settings = Settings.model_validate(settings.model_dump())
+        runtime_settings.plugins = new_settings.plugins.model_copy(deep=True)
+        refresh_runtime_settings(runtime_settings)
     return True
 
 

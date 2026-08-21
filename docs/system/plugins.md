@@ -55,7 +55,7 @@
 - **排行榜来源注册与同步编排**：插件通过 `discovery.ranking_source` 扩展点
   声明 `source_key` / boards / 抓取回调，宿主负责注册、同步编排、JavDB 详情入库、
   整榜写 `RankingItem` 与对外 API（见 6.6）；
-- **后台任务全链路**：任务进统一任务中心，天然获得任务级互斥、SSE 进度、
+- **后台任务全链路**：任务进统一任务中心，天然获得任务级互斥、可轮询进度、
   运行记录、通知、崩溃恢复与 `business_recovery` 钩子；
 - **网络与数据处理**：插件可以使用宿主 venv 已安装的依赖（httpx 等）与标准库
   访问外部站点；
@@ -414,8 +414,7 @@ def handler(reporter, params):
     return {"done": True}  # dict 会自动合并进任务结果统计
 ```
 
-进度会写入任务运行记录，通过 `GET /system/task-runs` 与 SSE 事件流
-（`/system/events/stream`）对外可见；任务完成/失败会走通知中心。
+进度会写入任务运行记录，通过 `GET /system/task-runs` 轮询读取；任务完成/失败会走通知中心。
 
 ### 6.5 日志
 

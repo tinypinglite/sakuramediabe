@@ -29,6 +29,8 @@
   },
   "thumbnails": {
     "pending_media": 24,
+    "retry_wait_media": 3,
+    "terminal_failed_media": 2,
     "total": 132
   }
 }
@@ -62,7 +64,9 @@
 - `media_files.total`: `Media` 总行数
 - `media_files.total_size_bytes`: 所有 `Media.file_size_bytes` 的求和（空库为 `0`）
 - `media_libraries.total`: `MediaLibrary` 总数
-- `thumbnails.pending_media`: 待生成缩略图的媒体文件数量（复用 `MediaThumbnailService` 的待处理判定：`Media.valid == true` 且缩略图任务状态为未登记、`pending` 或可重试的 `failed`）
+- `thumbnails.pending_media`: 当前可执行的缩略图媒体数（`pending`、源版本变化、丢失成功产物，或已到期的 `retry_wait`）
+- `thumbnails.retry_wait_media`: 尚未到 `thumbnail_next_retry_at` 的媒体级延后数
+- `thumbnails.terminal_failed_media`: 已达到上限或命中确定性错误的媒体数；不会被定时任务自动重试
 - `thumbnails.total`: 已生成的缩略图文件总数（`MediaThumbnail` 总行数）
 
 ## `GET /status/media-libraries/cloud115`

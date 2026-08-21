@@ -1,4 +1,4 @@
-"""任务队列内核（任务架构 Wave 1，见 docs/development/task-architecture.md）。
+"""基于 BackgroundTaskRun 的持久任务队列内核。
 
 pending 的 BackgroundTaskRun 行即队列元素，四个原语：
 
@@ -24,7 +24,6 @@ from peewee import IntegrityError, fn
 from src.common.runtime_time import utc_now_for_db
 from src.model import BackgroundTaskRun
 from src.model.base import get_database
-from src.service.system.activity.events import SystemEventService
 from src.service.system.activity.task_runs import TaskRunService
 
 # 与 APS 现有互斥命名空间保持一致：队列行与遗留直跑行竞争同一把锁，
@@ -32,6 +31,12 @@ from src.service.system.activity.task_runs import TaskRunService
 QUEUE_MUTEX_PREFIX = "aps:"
 DEFAULT_LEASE_SECONDS = 300
 LEASE_EXPIRED_ERROR_MESSAGE = "任务租约过期，执行进程已中断，任务按失败回收"
+BOOTSTRAP_LEASE_EXPIRED_ERROR_MESSAGE = "启动引导任务租约过期，已回收并重新入队"
+INTERNAL_FAILURE_CODE_KEY = "_failure_code"
+FAILURE_CODE_QUEUE_LEASE_EXPIRED = "queue_lease_expired"
+BOOTSTRAP_QUEUE_TASK_KEYS = frozenset(
+    {"gfriends_filetree_refresh", "movie_similarity_recompute"}
+)
 
 
 class TaskQueueConflictError(RuntimeError):
@@ -91,7 +96,7 @@ class TaskQueueService:
     ) -> None:
         """两阶段发布的第二步：补齐 params 并置 scheduled_at，行自此可被 worker 领取。
 
-        触发方需要先建行占 mutex、再建领域对象（如 ImportJob）拿到 id 回填 params 时，
+        触发方需要先建行占 mutex、再准备完整执行参数时，
         用 scheduled_at 为空的 pending 行做"未发布"状态，避免 worker 抢跑读到半成品。
         """
         BackgroundTaskRun.update(
@@ -99,6 +104,52 @@ class TaskQueueService:
             scheduled_at=utc_now_for_db(),
             updated_at=utc_now_for_db(),
         ).where(BackgroundTaskRun.id == task_run_id).execute()
+
+    @classmethod
+    def settle_bootstrap_blocker(
+        cls,
+        *,
+        task_key: str,
+        task_run_id: int,
+    ) -> BackgroundTaskRun | None:
+        """锁定并收敛 bootstrap 冲突行，只回收两个内建引导任务的过期租约。
+
+        返回锁内最新快照；行不存在或已不属于目标 task_key 时返回 None。过期判断与
+        失败终态写入位于同一 PostgreSQL 行锁事务，避免先扫 lease、后强制回收时误伤
+        已续租任务的 TOCTOU 窗口。
+        """
+        if task_key not in BOOTSTRAP_QUEUE_TASK_KEYS:
+            raise ValueError(f"unsupported_bootstrap_task_key: {task_key}")
+
+        current = utc_now_for_db()
+        with get_database().atomic():
+            task_run = (
+                BackgroundTaskRun.select()
+                .where(
+                    BackgroundTaskRun.id == task_run_id,
+                    BackgroundTaskRun.task_key == task_key,
+                )
+                .for_update()
+                .first()
+            )
+            if task_run is None:
+                return None
+            if (
+                task_run.state == "running"
+                and task_run.scheduled_at is not None
+                and task_run.lease_expires_at is not None
+                and task_run.lease_expires_at < current
+            ):
+                # 只处理当前 bootstrap 冲突行；其它过期租约仍由 worker housekeeper 负责。
+                TaskRunService.fail_task_run(
+                    task_run.id,
+                    error_message=BOOTSTRAP_LEASE_EXPIRED_ERROR_MESSAGE,
+                    result_summary={
+                        INTERNAL_FAILURE_CODE_KEY: FAILURE_CODE_QUEUE_LEASE_EXPIRED
+                    },
+                )
+                task_run = BackgroundTaskRun.get_by_id(task_run.id)
+            return task_run
 
     @classmethod
     def claim_next(
@@ -146,15 +197,7 @@ class TaskQueueService:
             )
         if not claimed:
             return None
-        task_run = claimed[0]
-        # 领取即 running：补一条与 mark_task_run_running 同构的 SSE 事件。
-        SystemEventService.publish(
-            event_type="task_run_updated",
-            payload=TaskRunService.to_task_run_resource(task_run).model_dump(mode="json"),
-            resource_type="task_run",
-            resource_id=task_run.id,
-        )
-        return task_run
+        return claimed[0]
 
     @classmethod
     def renew_leases(
@@ -183,26 +226,42 @@ class TaskQueueService:
     def recover_expired_leases(
         cls, *, error_message: str = LEASE_EXPIRED_ERROR_MESSAGE
     ) -> list[BackgroundTaskRun]:
-        """回收租约过期的 running 行：标 failed 并释放 mutex。
+        """在单个 PostgreSQL 事务内锁定并回收租约过期的 running 行。
 
-        只看租约不看 owner_pid——持有者存活就该续租，续不上即视为中断。
-        领域侧的联动恢复（BUSINESS_RECOVERY_HANDLERS）由调用方按回收结果触发。
+        固定一次 ``now``，候选通过 ``FOR UPDATE SKIP LOCKED`` 领取并在锁内再次校验；
+        heartbeat 先持锁/续租则本轮跳过，recovery 先持锁则 heartbeat 的 state 条件更新
+        为 0，并发 recovery 也只有持锁方能完成终态与通知。领域侧联动仍由调用方处理。
         """
         current = utc_now_for_db()
-        expired_runs = list(
-            BackgroundTaskRun.select()
-            .where(
-                BackgroundTaskRun.state == "running",
-                BackgroundTaskRun.lease_expires_at.is_null(False),
-                BackgroundTaskRun.lease_expires_at < current,
-            )
-            .order_by(BackgroundTaskRun.id.asc())
-        )
         recovered: list[BackgroundTaskRun] = []
-        for task_run in expired_runs:
-            recovered_run = TaskRunService.recover_task_run(
-                task_run.id, error_message=error_message, force=True
+        with get_database().atomic():
+            candidates = (
+                BackgroundTaskRun.select()
+                .where(
+                    BackgroundTaskRun.scheduled_at.is_null(False),
+                    BackgroundTaskRun.state == "running",
+                    BackgroundTaskRun.lease_expires_at.is_null(False),
+                    BackgroundTaskRun.lease_expires_at < current,
+                )
+                .order_by(BackgroundTaskRun.id.asc())
+                .for_update("FOR UPDATE SKIP LOCKED")
             )
-            if recovered_run is not None:
-                recovered.append(recovered_run)
+            for task_run in candidates:
+                # PostgreSQL 在锁等待后会重检 WHERE；这里再按同一个 fixed now 明确护栏。
+                if (
+                    task_run.scheduled_at is None
+                    or task_run.state != "running"
+                    or task_run.lease_expires_at is None
+                    or task_run.lease_expires_at >= current
+                ):
+                    continue
+                recovered_run = TaskRunService.fail_task_run(
+                    task_run.id,
+                    error_message=error_message,
+                    result_summary={
+                        INTERNAL_FAILURE_CODE_KEY: FAILURE_CODE_QUEUE_LEASE_EXPIRED
+                    },
+                )
+                if recovered_run.state == "failed":
+                    recovered.append(recovered_run)
         return recovered

@@ -14,7 +14,6 @@ from .catalog import (
     MovieSeries,
     MovieTag,
     Subtitle,
-    SubtitleImportJob,
     Tag,
 )
 from .collections import (
@@ -51,10 +50,7 @@ from .playback import (
 )
 from .system import (
     BackgroundTaskRun,
-    ResourceTaskAttempt,
-    ResourceTaskState,
     SchemaMigration,
-    SystemEvent,
     SystemNotification,
     User,
     UserRefreshToken,
@@ -62,7 +58,6 @@ from .system import (
 from .transfers import (
     DownloadClient,
     DownloadTask,
-    ImportJob,
     Indexer,
     IndexerDownloadClient,
     MediaRapidUploadBatch,
@@ -71,7 +66,6 @@ from .transfers import (
 from .videos import (
     VideoCollection,
     VideoCollectionItem,
-    VideoImportJob,
     VideoItem,
 )
 
@@ -98,7 +92,6 @@ __all__ = [
     "HotReviewItem",
     "Image",
     "ImageSearchSession",
-    "ImportJob",
     "Indexer",
     "IndexerDownloadClient",
     "Media",
@@ -118,19 +111,14 @@ __all__ = [
     "Playlist",
     "PlaylistMovie",
     "RankingItem",
-    "ResourceTaskAttempt",
-    "ResourceTaskState",
     "SchemaMigration",
     "Subtitle",
-    "SubtitleImportJob",
-    "SystemEvent",
     "SystemNotification",
     "Tag",
     "User",
     "UserRefreshToken",
     "VideoCollection",
     "VideoCollectionItem",
-    "VideoImportJob",
     "VideoItem",
     "create_database",
     "database_proxy",

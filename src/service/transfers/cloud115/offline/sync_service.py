@@ -19,10 +19,6 @@ from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common.media_import_status import (
-    IMPORT_JOB_STATE_COMPLETED,
-    IMPORT_JOB_STATE_FAILED,
-    IMPORT_JOB_STATE_PENDING,
-    IMPORT_JOB_STATE_RUNNING,
     IMPORT_STATUS_COMPLETED,
     IMPORT_STATUS_FAILED,
     IMPORT_STATUS_PENDING,
@@ -32,11 +28,10 @@ from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import rest_between_requests
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115Error, OfflineTask
-from src.model import DownloadClient, DownloadTask, ImportJob, get_database
+from src.model import BackgroundTaskRun, DownloadClient, DownloadTask
 from src.model.enums import DownloadClientKind
+from src.schema.transfers.media_import import ImportRequest
 from src.service.cloud115 import cloud115_client_for
-from src.service.transfers.cloud115.importer.common import Cloud115TargetDirCache
-from src.service.transfers.cloud115.importer.job_service import Cloud115ImportJobService
 from src.service.transfers.cloud115.offline.notifications import (
     create_cloud115_offline_abandoned_notification,
 )
@@ -44,6 +39,7 @@ from src.service.transfers.cloud115.offline.service import (
     fetch_cloud115_offline_tasks_by_hash,
 )
 from src.service.transfers.shared.common import canonicalize_btih
+from src.service.transfers.shared.import_task_service import ImportTaskService
 
 # 115 离线任务 status → 本系统下载状态。-1=失败, 0=待办, 1=进行中, 2=完成。
 CLOUD115_OFFLINE_STATE_MAP = {-1: "failed", 0: "queued", 1: "downloading", 2: "completed"}
@@ -151,33 +147,28 @@ class Cloud115OfflineSyncService:
     def _drain_pending_imports(cls, client: DownloadClient) -> int:
         """同库单消费者串行导入；成功后随机休息，失败立即停止本轮。"""
         triggered_count = 0
-        target_dir_cache = Cloud115TargetDirCache()
-
         while True:
             task = cls._next_pending_import(client.id)
             if task is None:
                 return triggered_count
 
-            response = cls._trigger_import(
-                task,
-                target_dir_cache=target_dir_cache,
-            )
+            response = cls._trigger_import(task)
             if response is None:
                 return triggered_count
             triggered_count += 1
 
-            job = cls._wait_for_import_job(response.import_job_id)
+            task_run = cls._wait_for_import_task(response.task_run_id)
             cls._reconcile_running_import(task)
             if (
-                job is None
-                or job.state != IMPORT_JOB_STATE_COMPLETED
-                or job.failed_count > 0
+                task_run is None
+                or task_run.state != "completed"
+                or int((task_run.result_summary or {}).get("failed_count") or 0) > 0
             ):
                 logger.warning(
-                    "cloud115 import queue stopped after failed job client_id={} task_id={} job_id={}",
+                    "cloud115 import queue stopped after failed task client_id={} task_id={} task_run_id={}",
                     client.id,
                     task.id,
-                    response.import_job_id,
+                    response.task_run_id,
                 )
                 return triggered_count
 
@@ -196,15 +187,12 @@ class Cloud115OfflineSyncService:
             time.sleep(delay)
 
     @classmethod
-    def _wait_for_import_job(cls, import_job_id: int) -> ImportJob | None:
-        """只轮询本地作业状态，不访问 115。"""
+    def _wait_for_import_task(cls, task_run_id: int) -> BackgroundTaskRun | None:
+        """只轮询统一 TaskRun，不访问 115。"""
         while True:
-            job = ImportJob.get_or_none(ImportJob.id == import_job_id)
-            if job is None or job.state in (
-                IMPORT_JOB_STATE_COMPLETED,
-                IMPORT_JOB_STATE_FAILED,
-            ):
-                return job
+            task_run = BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == task_run_id)
+            if task_run is None or task_run.state in ("completed", "failed"):
+                return task_run
             time.sleep(cls.IMPORT_POLL_INTERVAL_SECONDS)
 
     async def _fetch_remote_tasks(self, client: DownloadClient) -> dict[str, OfflineTask]:
@@ -218,74 +206,7 @@ class Cloud115OfflineSyncService:
 
     @classmethod
     def recover_interrupted_imports(cls) -> int:
-        """删除 Cloud115 半截 ImportJob，并把下载任务恢复为待导入。
-
-        BackgroundTaskRun 作为审计记录保留；条件删除/更新使 API 与 APS 重复执行安全。
-        """
-        tasks = list(
-            DownloadTask.select(DownloadTask)
-            .join(DownloadClient)
-            .where(
-                (DownloadClient.kind == DownloadClientKind.CLOUD115.value)
-                & (DownloadTask.import_status == IMPORT_STATUS_RUNNING)
-            )
-        )
-        recovered_count = 0
-        for task in tasks:
-            unfinished_jobs = list(
-                ImportJob.select()
-                .where(
-                    (ImportJob.download_task == task.id)
-                    & (ImportJob.state.in_((IMPORT_JOB_STATE_PENDING, IMPORT_JOB_STATE_RUNNING)))
-                )
-                .order_by(ImportJob.id.asc())
-            )
-            if any(cls._import_job_is_alive(job) for job in unfinished_jobs):
-                continue
-
-            # 有终态作业时交给正常对账回写，不能误重置后再次导入。
-            if not unfinished_jobs and ImportJob.select().where(
-                ImportJob.download_task == task.id
-            ).exists():
-                continue
-
-            with get_database().atomic():
-                candidate_still_exists = False
-                if unfinished_jobs:
-                    job_ids = [job.id for job in unfinished_jobs]
-                    ImportJob.delete().where(
-                        (ImportJob.id.in_(job_ids))
-                        & (ImportJob.state.in_((IMPORT_JOB_STATE_PENDING, IMPORT_JOB_STATE_RUNNING)))
-                    ).execute()
-                    # runner 若在条件删除前刚写入终态，该作业会保留下来，不能把 task 误重置为 pending。
-                    candidate_still_exists = ImportJob.select().where(
-                        ImportJob.id.in_(job_ids)
-                    ).exists()
-                remaining_unfinished = ImportJob.select().where(
-                    (ImportJob.download_task == task.id)
-                    & (ImportJob.state.in_((IMPORT_JOB_STATE_PENDING, IMPORT_JOB_STATE_RUNNING)))
-                ).exists()
-                updated = 0
-                if not candidate_still_exists and not remaining_unfinished:
-                    updated = (
-                        DownloadTask.update(import_status=IMPORT_STATUS_PENDING)
-                        .where(
-                            (DownloadTask.id == task.id)
-                            & (DownloadTask.import_status == IMPORT_STATUS_RUNNING)
-                        )
-                        .execute()
-                    )
-            if updated:
-                recovered_count += 1
-                logger.info("recovered interrupted cloud115 import task_id={}", task.id)
-        return recovered_count
-
-    @staticmethod
-    def _import_job_is_alive(job: ImportJob) -> bool:
-        # 队列托管后判活看 task_run：排队中或租约未过期即视为仍在执行。
-        from src.service.transfers.shared.base_import_job_service import BaseImportJobService
-
-        return BaseImportJobService._task_run_alive(job)
+        return ImportTaskService.recover_interrupted_downloads()
 
     @staticmethod
     def _apply_remote_state(task: DownloadTask, remote: OfflineTask) -> bool:
@@ -311,13 +232,9 @@ class Cloud115OfflineSyncService:
         cls,
         task: DownloadTask,
         *,
-        target_dir_cache: Cloud115TargetDirCache | None = None,
+        trigger_type: str = "scheduled",
     ):
-        """触发 cleanup-source 导入并把 ImportJob 关联回任务，返回 ImportJobTriggerResponse。
-
-        供两处复用：本服务对账时的自动触发（吞冲突留待下轮）与任务中心的手动导入
-        （异常原样抛给 API 层）。
-        """
+        """触发固定 move 的统一导入任务。"""
         target_ref = task.target_ref or {}
         source_cid = target_ref.get("cid")
         if not source_cid:
@@ -327,38 +244,33 @@ class Cloud115OfflineSyncService:
                 "cloud115 下载任务缺少落地目录 cid，无法导入",
                 {"task_id": task.id},
             )
-        response = Cloud115ImportJobService.trigger_cloud115_import(
-            task.client.media_library_id,
-            source_cid,
-            transfer_mode="cleanup-source",
-            managed_download_source=True,
-            target_dir_cache=target_dir_cache,
-            task_name=(
-                f"{Cloud115ImportJobService.TRIGGER_TASK_NAME_PREFIX} "
-                f"{task.movie or task.name}"
+        accepted = ImportTaskService.enqueue(
+            ImportRequest(
+                media_kind="jav",
+                backend="cloud115",
+                library_id=task.client.media_library_id,
+                source_cid=source_cid,
             ),
+            trigger_type=trigger_type,
+            download_task_id=task.id,
+            task_name=f"115 下载任务导入 {task.movie or task.name}",
         )
-        # 关联 ImportJob ← DownloadTask：后续状态对账与孤儿恢复都靠这条链。
-        ImportJob.update(download_task=task.id).where(
-            ImportJob.id == response.import_job_id
-        ).execute()
-        task.import_status = IMPORT_STATUS_RUNNING
-        task.save()
-        return response
+        from src.schema.transfers.downloads import DownloadTaskImportResponse
+
+        return DownloadTaskImportResponse(
+            task_id=task.id,
+            task_run_id=accepted.task_run_id,
+            status="accepted",
+        )
 
     @classmethod
     def _trigger_import(
         cls,
         task: DownloadTask,
-        *,
-        target_dir_cache: Cloud115TargetDirCache,
     ):
         """对账场景的自动触发：触发失败留待后续轮次处理。"""
         try:
-            return cls.trigger_task_import(
-                task,
-                target_dir_cache=target_dir_cache,
-            )
+            return cls.trigger_task_import(task)
         except ApiError as exc:
             if exc.code == "invalid_download_task_import_path":
                 # 缺 target_ref.cid 属数据缺陷，重试不可恢复：标失败停止自动重试。
@@ -381,21 +293,20 @@ class Cloud115OfflineSyncService:
 
     @staticmethod
     def _reconcile_running_import(task: DownloadTask) -> None:
-        """导入中的任务按最新关联 ImportJob 的终态回写 import_status。"""
-        job = (
-            ImportJob.select()
-            .where(ImportJob.download_task == task.id)
-            .order_by(ImportJob.id.desc())
-            .first()
+        """导入中的任务按关联 TaskRun 终态与摘要回写 import_status。"""
+        task_run = BackgroundTaskRun.get_or_none(
+            BackgroundTaskRun.id == task.import_task_run_id
         )
-        if job is None:
+        if task_run is None:
             return
-        if job.state == IMPORT_JOB_STATE_COMPLETED:
+        if task_run.state == "completed":
             task.import_status = (
-                IMPORT_STATUS_FAILED if job.failed_count > 0 else IMPORT_STATUS_COMPLETED
+                IMPORT_STATUS_FAILED
+                if int((task_run.result_summary or {}).get("failed_count") or 0) > 0
+                else IMPORT_STATUS_COMPLETED
             )
             task.save()
-        elif job.state == IMPORT_JOB_STATE_FAILED:
+        elif task_run.state == "failed":
             task.import_status = IMPORT_STATUS_FAILED
             task.save()
 

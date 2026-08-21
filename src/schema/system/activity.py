@@ -28,6 +28,10 @@ class NotificationResource(SchemaModel):
     category: str
     title: str
     content: str
+    event_type: str | None = None
+    dedupe_key: str | None = None
+    resource_type: str | None = None
+    resource_id: int | None = None
     is_read: bool
     created_at: datetime
     updated_at: datetime
@@ -55,14 +59,7 @@ class NotificationBatchReadResponse(SchemaModel):
 
 
 class ActivityBootstrapResource(SchemaModel):
-    latest_event_id: int
     notifications: PageResponse[NotificationResource]
     unread_count: int
     active_task_runs: list[TaskRunResource]
     task_runs: PageResponse[TaskRunResource]
-
-
-class SystemEventEnvelope(SchemaModel):
-    event_id: int
-    event: str
-    data: dict[str, Any]

@@ -1,10 +1,9 @@
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from src.api.exception.errors import ApiError
-from src.api.routers._utils import sse_streaming_response, to_sse_event
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
@@ -145,23 +144,6 @@ def list_download_task_files(task_id: int, current_user=Depends(get_current_user
     return DownloadTaskService.list_task_files(task_id)
 
 
-@router.get("/download-tasks/stream")
-def stream_download_tasks(
-    request: Request,
-    client_id: int | None = Query(default=None, gt=0),
-    movie_number: str | None = Query(default=None),
-    current_user=Depends(get_current_user),
-):
-    hub = request.app.state.download_progress_hub
-    subscription = hub.subscribe(client_id=client_id, movie_number=movie_number)
-
-    def stream():
-        for event, payload in hub.iter_events(subscription):
-            yield to_sse_event(event, payload)
-
-    return sse_streaming_response(stream())
-
-
 @router.post(
     "/download-tasks/{task_id}/pause",
     response_model=DownloadTaskActionResponse,
@@ -181,7 +163,6 @@ def resume_download_task(task_id: int, current_user=Depends(get_current_user)):
 @router.delete("/download-tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_download_task(
     task_id: int,
-    request: Request,
     delete_files: bool = Query(default=False),
     confirm_delete_files: bool = Query(default=False),
     current_user=Depends(get_current_user),
@@ -193,6 +174,5 @@ def delete_download_task(
             "Deleting downloaded files requires explicit confirmation",
             {"task_id": task_id},
         )
-    removed = DownloadTaskService.delete_task(task_id, delete_files=delete_files)
-    request.app.state.download_progress_hub.publish_task_removed(removed)
+    DownloadTaskService.delete_task(task_id, delete_files=delete_files)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

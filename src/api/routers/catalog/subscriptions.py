@@ -3,12 +3,17 @@ from fastapi import APIRouter, Depends, Query
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.catalog.subscriptions import (
     MovieSubscriptionListItemResource,
+    MovieSubscriptionSearchResetRequest,
+    MovieSubscriptionSearchResetResponse,
     MovieSubscriptionSort,
     MovieSubscriptionStatus,
     MovieSubscriptionStatusCountsResource,
 )
 from src.schema.common.pagination import PageResponse
 from src.service.catalog import MovieSubscriptionService
+from src.service.catalog.movie_subscription_search_state_service import (
+    MovieSubscriptionSearchStateService,
+)
 
 # 独立顶层资源而非挂在 /movies 下：避免与 /movies/{movie_number} 抢路由，也不用依赖 router
 # 注册顺序来保证匹配优先级。
@@ -41,8 +46,17 @@ def count_movie_subscriptions_by_status():
     return MovieSubscriptionService.count_by_status()
 
 
+@router.post("/search-resets", response_model=MovieSubscriptionSearchResetResponse)
+def reset_movie_subscription_searches(
+    payload: MovieSubscriptionSearchResetRequest | None = None,
+):
+    return MovieSubscriptionSearchResetResponse(
+        reset_count=MovieSubscriptionSearchStateService.reset(
+            payload.movie_ids if payload is not None else None
+        )
+    )
+
+
 # 批量取消订阅不在本域：不删文件走 POST /movies/unsubscriptions，要删媒体文件走
 # DELETE /media/{media_id}，两者都已存在，不在这里平行造一套。
-# 资源查询重置也不在本域：统一走 POST /system/resource-task-actions 的
-# reset_retry_budget（task_key=subscribed_movie_auto_download；resource_ids 缺省 +
-# state=exhausted 即旧 reset_all_exhausted 语义，未订阅影片由合格性钩子跳过）。
+# 查询预算由本域维护；重开全部已放弃订阅可直接调用 POST /search-resets。

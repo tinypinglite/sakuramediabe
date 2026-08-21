@@ -79,6 +79,8 @@ def test_status_endpoint_returns_zero_summary_when_library_is_empty(client, acco
         },
         "thumbnails": {
             "pending_media": 0,
+            "retry_wait_media": 0,
+            "terminal_failed_media": 0,
             "total": 0,
         },
     }
@@ -190,8 +192,10 @@ def test_status_endpoint_returns_aggregated_summary(client, account_user, monkey
         path="/library/main/abc-001-main.mp4",
         library=library_main,
         valid=True,
+        content_fingerprint="fingerprint-a-main",
         file_size_bytes=100,
     )
+    # 未完成指纹计算的媒体还不能生成缩略图，不计入 pending_media。
     Media.create(
         movie=movie_a,
         path="/library/main/abc-001-backup.mp4",
@@ -204,6 +208,7 @@ def test_status_endpoint_returns_aggregated_summary(client, account_user, monkey
         path="/library/main/abc-002.mp4",
         library=library_main,
         valid=False,
+        content_fingerprint="fingerprint-b",
         file_size_bytes=300,
     )
     Media.create(
@@ -211,6 +216,7 @@ def test_status_endpoint_returns_aggregated_summary(client, account_user, monkey
         path="/library/archive/abc-003.mp4",
         library=library_archive,
         valid=True,
+        content_fingerprint="fingerprint-c",
         file_size_bytes=400,
     )
 
@@ -236,7 +242,10 @@ def test_status_endpoint_returns_aggregated_summary(client, account_user, monkey
             "total": 2,
         },
         "thumbnails": {
-            "pending_media": 3,
+            # 仅两条有效且已有指纹、尚无 MediaThumbnail 的媒体可直接处理。
+            "pending_media": 2,
+            "retry_wait_media": 0,
+            "terminal_failed_media": 0,
             "total": 0,
         },
     }

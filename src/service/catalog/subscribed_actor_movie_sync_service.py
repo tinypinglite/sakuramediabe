@@ -2,9 +2,9 @@ from typing import Any
 
 from loguru import logger
 
-from src.metadata.factory import build_javdb_provider
-from src.common.service_helpers import emit_progress
 from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import emit_progress
+from src.metadata.factory import build_javdb_provider
 from src.model import Actor, Movie, MovieActor
 from src.service.catalog.catalog_import_service import CatalogImportService
 

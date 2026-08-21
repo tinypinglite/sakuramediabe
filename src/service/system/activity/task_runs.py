@@ -7,12 +7,11 @@ from typing import Any
 from src.api.exception.errors import ApiError
 from src.common.process import is_process_alive
 from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import validate_page
 from src.model import BackgroundTaskRun
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
-from src.common.service_helpers import validate_page
 from src.schema.system.activity import TaskRunResource
-from src.service.system.activity.events import SystemEventService
 from src.service.system.activity.filters import (
     normalize_allowed_filter,
     normalize_string_filter,
@@ -22,6 +21,7 @@ from src.service.system.activity.task_catalog import TASK_NAME_REGISTRY
 
 ALLOWED_TASK_TRIGGER_TYPES = {"scheduled", "manual", "startup", "internal"}
 ALLOWED_TASK_STATES = {"pending", "running", "completed", "failed"}
+ACTIVE_TASK_RUN_STATES = {"pending", "running"}
 TASK_RUN_SORT_FIELDS = {
     "started_at:desc": (BackgroundTaskRun.started_at.desc(), BackgroundTaskRun.id.desc()),
     "started_at:asc": (BackgroundTaskRun.started_at.asc(), BackgroundTaskRun.id.asc()),
@@ -68,6 +68,16 @@ def format_result_text(summary: dict[str, Any] | None) -> str | None:
 
 
 class TaskRunService:
+    @staticmethod
+    def _lock_task_run(task_run_id: int) -> BackgroundTaskRun:
+        """锁定并重读 task_run，供状态转移在同一事务内裁决唯一赢家。"""
+        return (
+            BackgroundTaskRun.select()
+            .where(BackgroundTaskRun.id == task_run_id)
+            .for_update()
+            .get()
+        )
+
     @staticmethod
     def to_task_run_resource(task_run: BackgroundTaskRun) -> TaskRunResource:
         return TaskRunResource.model_validate(task_run)
@@ -157,29 +167,20 @@ class TaskRunService:
                 params=params,
                 scheduled_at=scheduled_at,
             )
-            SystemEventService.publish(
-                event_type="task_run_created",
-                payload=cls.to_task_run_resource(task_run).model_dump(mode="json"),
-                resource_type="task_run",
-                resource_id=task_run.id,
-            )
             return task_run
 
     @classmethod
     def mark_task_run_running(cls, task_run_id: int) -> BackgroundTaskRun:
+        """仅执行 pending -> running；其它状态原样返回且不产生任何写入。"""
         with get_database().atomic():
-            task_run = BackgroundTaskRun.get_by_id(task_run_id)
+            task_run = cls._lock_task_run(task_run_id)
+            if task_run.state != "pending":
+                return task_run
             task_run.state = "running"
             if task_run.started_at is None:
                 task_run.started_at = now()
             task_run.updated_at = now()
             task_run.save()
-            SystemEventService.publish(
-                event_type="task_run_updated",
-                payload=cls.to_task_run_resource(task_run).model_dump(mode="json"),
-                resource_type="task_run",
-                resource_id=task_run.id,
-            )
             return task_run
 
     @classmethod
@@ -192,25 +193,39 @@ class TaskRunService:
         text: str | None = None,
         summary_patch: dict[str, Any] | None = None,
     ) -> BackgroundTaskRun:
+        """仅更新 active run 的显式进度字段；终态行原样返回且零写入。
+
+        返回值始终是锁内最新持久行。未发生更新时仍保持既有返回类型，调用方可从
+        ``state`` 判断任务已经终态化；实现不对模型实例做整行 ``save``，避免旧快照
+        把 state / mutex / finished_at 等并发终态字段写回。
+        """
         with get_database().atomic():
-            task_run = BackgroundTaskRun.get_by_id(task_run_id)
+            task_run = cls._lock_task_run(task_run_id)
+            if task_run.state not in ACTIVE_TASK_RUN_STATES:
+                return task_run
+            updates: dict[Any, Any] = {BackgroundTaskRun.updated_at: now()}
             if current is not None:
-                task_run.progress_current = int(current)
+                updates[BackgroundTaskRun.progress_current] = int(current)
             if total is not None:
-                task_run.progress_total = int(total)
+                updates[BackgroundTaskRun.progress_total] = int(total)
             if text is not None:
-                task_run.progress_text = text
+                updates[BackgroundTaskRun.progress_text] = text
             if summary_patch:
-                task_run.result_summary = merge_summary(task_run.result_summary or {}, summary_patch)
-            task_run.updated_at = now()
-            task_run.save()
-            SystemEventService.publish(
-                event_type="task_run_updated",
-                payload=cls.to_task_run_resource(task_run).model_dump(mode="json"),
-                resource_type="task_run",
-                resource_id=task_run.id,
+                updates[BackgroundTaskRun.result_summary] = merge_summary(
+                    task_run.result_summary or {}, summary_patch
+                )
+            # 行锁保证 summary 基于最新值合并；WHERE active 是数据库侧的最终护栏。
+            updated_count = (
+                BackgroundTaskRun.update(updates)
+                .where(
+                    BackgroundTaskRun.id == task_run_id,
+                    BackgroundTaskRun.state.in_(ACTIVE_TASK_RUN_STATES),
+                )
+                .execute()
             )
-            return task_run
+            if updated_count != 1:
+                return BackgroundTaskRun.get_by_id(task_run_id)
+            return BackgroundTaskRun.get_by_id(task_run_id)
 
     @classmethod
     def complete_task_run(
@@ -221,24 +236,44 @@ class TaskRunService:
         result_text: str | None = None,
         notify_result: bool = True,
     ) -> BackgroundTaskRun:
+        """把 active run 原子收口为 completed。
+
+        若行已是任一终态，返回锁内读到的当前行，不覆盖终态、summary、mutex，
+        也不重复发送通知；保留既有 ``BackgroundTaskRun`` 返回类型。
+        """
+        task_run, _transitioned = cls._complete_task_run_transition(
+            task_run_id,
+            result_summary=result_summary,
+            result_text=result_text,
+            notify_result=notify_result,
+        )
+        return task_run
+
+    @classmethod
+    def _complete_task_run_transition(
+        cls,
+        task_run_id: int,
+        *,
+        result_summary: dict[str, Any] | None = None,
+        result_text: str | None = None,
+        notify_result: bool = True,
+    ) -> tuple[BackgroundTaskRun, bool]:
+        """完成终态 CAS 的内部结果；bool 只供执行器判断自己是否赢得转移。"""
         with get_database().atomic():
-            task_run = BackgroundTaskRun.get_by_id(task_run_id)
+            task_run = cls._lock_task_run(task_run_id)
+            if task_run.state not in ACTIVE_TASK_RUN_STATES:
+                return task_run, False
             task_run.state = "completed"
             task_run.finished_at = now()
             task_run.mutex_key = None
+            task_run.lease_expires_at = None
             task_run.result_summary = merge_summary(task_run.result_summary or {}, result_summary)
             task_run.result_text = result_text or format_result_text(task_run.result_summary)
             task_run.updated_at = now()
             task_run.save()
-            SystemEventService.publish(
-                event_type="task_run_updated",
-                payload=cls.to_task_run_resource(task_run).model_dump(mode="json"),
-                resource_type="task_run",
-                resource_id=task_run.id,
-            )
             if notify_result:
                 NotificationService.notify_task_result(task_run, failed=False)
-            return task_run
+            return task_run, True
 
     @classmethod
     def fail_task_run(
@@ -249,24 +284,59 @@ class TaskRunService:
         result_summary: dict[str, Any] | None = None,
         notify_result: bool = True,
     ) -> BackgroundTaskRun:
+        """把 active run 原子收口为 failed；已终态时只返回当前持久行。"""
+        task_run, _transitioned = cls._fail_task_run_transition(
+            task_run_id,
+            error_message=error_message,
+            result_summary=result_summary,
+            notify_result=notify_result,
+        )
+        return task_run
+
+    @classmethod
+    def _fail_task_run_transition(
+        cls,
+        task_run_id: int,
+        *,
+        error_message: str,
+        result_summary: dict[str, Any] | None = None,
+        notify_result: bool = True,
+    ) -> tuple[BackgroundTaskRun, bool]:
+        """失败终态 CAS 的内部结果；bool 只供执行器判断自己是否赢得转移。"""
         with get_database().atomic():
-            task_run = BackgroundTaskRun.get_by_id(task_run_id)
-            task_run.state = "failed"
-            task_run.finished_at = now()
-            task_run.mutex_key = None
-            task_run.error_message = error_message
-            task_run.result_summary = merge_summary(task_run.result_summary or {}, result_summary)
-            task_run.updated_at = now()
-            task_run.save()
-            SystemEventService.publish(
-                event_type="task_run_updated",
-                payload=cls.to_task_run_resource(task_run).model_dump(mode="json"),
-                resource_type="task_run",
-                resource_id=task_run.id,
+            task_run = cls._lock_task_run(task_run_id)
+            transitioned = cls._fail_locked_task_run(
+                task_run,
+                error_message=error_message,
+                result_summary=result_summary,
+                notify_result=notify_result,
             )
-            if notify_result:
-                NotificationService.notify_task_result(task_run, failed=True)
-            return task_run
+            return task_run, transitioned
+
+    @staticmethod
+    def _fail_locked_task_run(
+        task_run: BackgroundTaskRun,
+        *,
+        error_message: str,
+        result_summary: dict[str, Any] | None,
+        notify_result: bool,
+    ) -> bool:
+        """在调用方已持有行锁时尝试失败收口，返回是否真正完成状态转移。"""
+        if task_run.state not in ACTIVE_TASK_RUN_STATES:
+            return False
+        task_run.state = "failed"
+        task_run.finished_at = now()
+        task_run.mutex_key = None
+        task_run.lease_expires_at = None
+        task_run.error_message = error_message
+        task_run.result_summary = merge_summary(
+            task_run.result_summary or {}, result_summary
+        )
+        task_run.updated_at = now()
+        task_run.save()
+        if notify_result:
+            NotificationService.notify_task_result(task_run, failed=True)
+        return True
 
     @classmethod
     def recover_task_run(
@@ -279,20 +349,29 @@ class TaskRunService:
         force: bool = False,
         notify_result: bool = True,
     ) -> BackgroundTaskRun | None:
-        task_run = BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == task_run_id)
-        if task_run is None or task_run.state not in {"pending", "running"}:
-            return None
-        if not force:
-            if task_run.owner_pid is None and not allow_null_owner:
+        with get_database().atomic():
+            task_run = BackgroundTaskRun.get_or_none(
+                BackgroundTaskRun.id == task_run_id
+            )
+            if task_run is None:
                 return None
-            if task_run.owner_pid is not None and is_process_alive(task_run.owner_pid):
+            task_run = cls._lock_task_run(task_run.id)
+            if task_run.state not in ACTIVE_TASK_RUN_STATES:
                 return None
-        return cls.fail_task_run(
-            task_run_id,
-            error_message=error_message,
-            result_summary=result_summary,
-            notify_result=notify_result,
-        )
+            if not force:
+                if task_run.owner_pid is None and not allow_null_owner:
+                    return None
+                if task_run.owner_pid is not None and is_process_alive(
+                    task_run.owner_pid
+                ):
+                    return None
+            transitioned = cls._fail_locked_task_run(
+                task_run,
+                error_message=error_message,
+                result_summary=result_summary,
+                notify_result=notify_result,
+            )
+            return task_run if transitioned else None
 
     @classmethod
     def recover_interrupted_task_runs(

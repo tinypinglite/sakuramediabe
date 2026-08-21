@@ -2,18 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import paginate, validate_page
 from src.model import BackgroundTaskRun, SystemNotification
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
 from src.schema.system.activity import (
     NotificationBatchReadResponse,
-    NotificationReadResponse,
     NotificationResource,
 )
-from src.common.service_helpers import paginate, validate_page
-from src.service.system.activity.events import SystemEventService
 from src.service.system.activity.filters import (
     normalize_allowed_filter,
 )
@@ -31,6 +28,10 @@ class NotificationDraft:
     category: str
     title: str
     content: str
+    event_type: str | None = None
+    dedupe_key: str | None = None
+    resource_type: str | None = None
+    resource_id: int | None = None
     related_task_run_id: int | None = None
     related_resource_type: str | None = None
     related_resource_id: int | None = None
@@ -55,6 +56,10 @@ class NotificationService:
                 "category": notification.category,
                 "title": notification.title,
                 "content": notification.content,
+                "event_type": notification.event_type,
+                "dedupe_key": notification.dedupe_key,
+                "resource_type": notification.resource_type,
+                "resource_id": notification.resource_id,
                 "is_read": notification.is_read,
                 "created_at": notification.created_at,
                 "updated_at": notification.updated_at,
@@ -73,31 +78,82 @@ class NotificationService:
         )
         with get_database().atomic():
             notification = SystemNotification.create(
-                category=normalized_category or "info",
-                title=draft.title,
-                content=draft.content,
-                related_task_run=draft.related_task_run_id,
-                related_resource_type=draft.related_resource_type,
-                related_resource_id=draft.related_resource_id,
+                **cls._notification_values(draft, normalized_category)
             )
-            SystemEventService.publish(
-                event_type="notification_created",
-                payload=cls.to_notification_resource(notification).model_dump(
-                    mode="json"
-                ),
-                resource_type="notification",
-                resource_id=notification.id,
+            return cls.to_notification_resource(notification)
+
+    @staticmethod
+    def _notification_values(
+        draft: NotificationDraft, normalized_category: str | None
+    ) -> dict:
+        return {
+            "category": normalized_category or "info",
+            "title": draft.title,
+            "content": draft.content,
+            "event_type": draft.event_type,
+            "dedupe_key": draft.dedupe_key,
+            "resource_type": draft.resource_type,
+            "resource_id": draft.resource_id,
+            "related_task_run": draft.related_task_run_id,
+            "related_resource_type": draft.related_resource_type,
+            "related_resource_id": draft.related_resource_id,
+        }
+
+    @staticmethod
+    def release_notification_dedupe_key(dedupe_key: str) -> int:
+        """释放已解决事件的幂等键，保留通知历史以便下次同类事件重新提醒。"""
+        return (
+            SystemNotification.update(dedupe_key=None)
+            .where(SystemNotification.dedupe_key == dedupe_key)
+            .execute()
+        )
+
+    @classmethod
+    def create_once(cls, draft: NotificationDraft) -> NotificationResource:
+        """按 dedupe_key 原子创建通知，重复调用返回已有记录。"""
+        dedupe_key = (draft.dedupe_key or "").strip()
+        if not dedupe_key:
+            raise ValueError("notification_dedupe_key_required")
+        normalized_category = normalize_allowed_filter(
+            draft.category,
+            field_name="category",
+            allowed_values=ALLOWED_NOTIFICATION_CATEGORIES,
+        )
+        values = cls._notification_values(draft, normalized_category)
+        values["dedupe_key"] = dedupe_key
+        with get_database().atomic():
+            # PostgreSQL 唯一约束裁决并发竞争，避免先查后写的重复通知窗口。
+            result = (
+                SystemNotification.insert(**values)
+                .on_conflict(
+                    action="IGNORE",
+                    conflict_target=(SystemNotification.dedupe_key,),
+                )
+                .returning(SystemNotification)
+                .execute()
             )
+            notification = next(iter(result), None)
+            if notification is None:
+                notification = SystemNotification.get(
+                    SystemNotification.dedupe_key == dedupe_key
+                )
             return cls.to_notification_resource(notification)
 
     @classmethod
     def notify_task_result(cls, task_run: BackgroundTaskRun, *, failed: bool) -> None:
+        # 一条 task_run 最多只有一条终态通知。TaskRunService 的 active -> terminal
+        # 行锁负责裁决赢家，这里的持久幂等键再防调用重放或事务重试重复插入通知。
+        dedupe_key = f"task_run_result:{task_run.id}"
         if failed:
-            cls.create(
+            cls.create_once(
                 NotificationDraft(
                     category="error",
                     title=f"{task_run.task_name}执行失败",
                     content=task_run.error_message or "后台任务执行失败",
+                    event_type="task_run_result",
+                    dedupe_key=dedupe_key,
+                    resource_type="task_run",
+                    resource_id=task_run.id,
                     related_task_run_id=task_run.id,
                 )
             )
@@ -105,11 +161,15 @@ class NotificationService:
         # 常态成功和 skipped 不发通知，仅带 failed 统计的完成态提示 warning。
         if not _detect_failed_summary(task_run.result_summary or {}):
             return
-        cls.create(
+        cls.create_once(
             NotificationDraft(
                 category="warning",
                 title=f"{task_run.task_name}已完成",
                 content=task_run.result_text or "后台任务已完成",
+                event_type="task_run_result",
+                dedupe_key=dedupe_key,
+                resource_type="task_run",
+                resource_id=task_run.id,
                 related_task_run_id=task_run.id,
             )
         )
@@ -166,38 +226,6 @@ class NotificationService:
         )
 
     @classmethod
-    def mark_notification_read(cls, notification_id: int) -> NotificationReadResponse:
-        with get_database().atomic():
-            notification = SystemNotification.get_or_none(
-                SystemNotification.id == notification_id
-            )
-            if notification is None:
-                raise ApiError(
-                    404,
-                    "notification_not_found",
-                    "通知不存在",
-                    {"notification_id": notification_id},
-                )
-            if not notification.is_read:
-                notification.is_read = True
-                notification.read_at = utc_now_for_db()
-                notification.updated_at = utc_now_for_db()
-                notification.save()
-                SystemEventService.publish(
-                    event_type="notification_updated",
-                    payload=cls.to_notification_resource(notification).model_dump(
-                        mode="json"
-                    ),
-                    resource_type="notification",
-                    resource_id=notification.id,
-                )
-            return NotificationReadResponse(
-                id=notification.id,
-                is_read=notification.is_read,
-                read_at=notification.read_at,
-            )
-
-    @classmethod
     def mark_notifications_read(cls, ids: list[int]) -> NotificationBatchReadResponse:
         now = utc_now_for_db()
         with get_database().atomic():
@@ -212,15 +240,6 @@ class NotificationService:
                     .execute()
                 )
             unread_count = cls.get_unread_count()
-            if updated_count:
-                SystemEventService.publish(
-                    event_type="notifications_read",
-                    payload={
-                        "ids": list(ids),
-                        "updated_count": updated_count,
-                        "unread_count": unread_count,
-                    },
-                )
             return NotificationBatchReadResponse(
                 updated_count=updated_count, unread_count=unread_count
             )
@@ -235,11 +254,6 @@ class NotificationService:
                 .execute()
             )
             unread_count = cls.get_unread_count()
-            if updated_count:
-                SystemEventService.publish(
-                    event_type="notifications_read_all",
-                    payload={"updated_count": updated_count, "unread_count": unread_count},
-                )
             return NotificationBatchReadResponse(
                 updated_count=updated_count, unread_count=unread_count
             )

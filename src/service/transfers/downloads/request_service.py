@@ -216,7 +216,16 @@ class DownloadRequestService:
             )
             task.progress = remote_task.get("progress", 0.0)
             task.download_state = "queued"
-            task.save()
+            # 重复提交只收口任务元数据，不能覆盖后台进度采样写入的快照列。
+            task.save(
+                only=[
+                    DownloadTask.movie,
+                    DownloadTask.name,
+                    DownloadTask.save_path,
+                    DownloadTask.progress,
+                    DownloadTask.download_state,
+                ]
+            )
 
         return DownloadRequestCreateResponse(
             task=DownloadTaskResource.from_model(task),

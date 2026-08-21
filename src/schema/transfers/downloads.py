@@ -223,6 +223,14 @@ class DownloadTaskResource(SchemaModel):
     progress: float
     download_state: str
     import_status: str
+    # 下载器采样快照；未完成首轮采样的存量任务保持默认值 / None。
+    raw_state: str = ""
+    download_speed_bytes: int = 0
+    uploaded_speed_bytes: int = 0
+    downloaded_bytes: int = 0
+    total_size_bytes: int = 0
+    eta_seconds: int | None = None
+    progress_synced_at: datetime | None = None
     # 内联影片元数据：让前端下载卡片可以直接展示中文标题与封面缩略图，
     # 避免每张卡片再打一次 GET /movies/search/local 二次查。仅当 movie_number 命中本地
     # 影片库时才会有值；未入库的番号（比如 predownload）保持 None，前端做 placeholder 处理。
@@ -249,6 +257,13 @@ class DownloadTaskResource(SchemaModel):
             "progress": task.progress,
             "download_state": task.download_state,
             "import_status": task.import_status,
+            "raw_state": task.raw_state,
+            "download_speed_bytes": task.download_speed_bytes,
+            "uploaded_speed_bytes": task.uploaded_speed_bytes,
+            "downloaded_bytes": task.downloaded_bytes,
+            "total_size_bytes": task.total_size_bytes,
+            "eta_seconds": task.eta_seconds,
+            "progress_synced_at": task.progress_synced_at,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
         }
@@ -288,29 +303,6 @@ class DownloadTaskActionResponse(SchemaModel):
     status: str = "ok"
 
 
-class DownloadTaskProgressResource(SchemaModel):
-    task_id: int
-    client_id: int
-    movie_number: str | None = None
-    name: str
-    info_hash: str
-    progress: float
-    raw_state: str
-    download_state: str
-    download_speed_bytes: int
-    uploaded_speed_bytes: int
-    downloaded_bytes: int
-    total_size_bytes: int
-    eta_seconds: int | None = None
-
-
-class DownloadClientTransferResource(SchemaModel):
-    client_id: int
-    download_speed_bytes: int
-    upload_speed_bytes: int
-    connection_status: str | None = None
-
-
 class DownloadRequestCreateResponse(SchemaModel):
     task: DownloadTaskResource
     created: bool
@@ -328,7 +320,6 @@ class DownloadClientSyncResponse(SchemaModel):
 
 class DownloadTaskImportResponse(SchemaModel):
     task_id: int
-    import_job_id: int
     task_run_id: int
     status: str
 

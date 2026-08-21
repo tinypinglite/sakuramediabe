@@ -41,6 +41,7 @@ def _seed_tasks():
             download_state=state,
             import_status="pending",
         )
+    return download_client
 
 
 def test_download_tasks_filters_by_multi_state_query(client, account_user):
@@ -97,3 +98,50 @@ def test_download_tasks_ignores_body_as_filter(client, account_user):
 
     assert response.status_code == 200, response.text
     assert response.json()["total"] == 3
+
+
+def test_download_tasks_returns_snapshot_defaults_and_polling_updates(client, account_user):
+    token = _login(client, account_user.username)
+    download_client = _seed_tasks()
+
+    first = client.get(
+        "/download-tasks",
+        params={"client_id": download_client.id, "movie_number": "ABP-001"},
+        headers=_auth(token),
+    )
+
+    assert first.status_code == 200, first.text
+    old_item = first.json()["items"][0]
+    assert old_item["raw_state"] == ""
+    assert old_item["download_speed_bytes"] == 0
+    assert old_item["uploaded_speed_bytes"] == 0
+    assert old_item["downloaded_bytes"] == 0
+    assert old_item["total_size_bytes"] == 0
+    assert old_item["eta_seconds"] is None
+    assert old_item["progress_synced_at"] is None
+
+    DownloadTask.update(
+        raw_state="downloading",
+        download_speed_bytes=2_048,
+        uploaded_speed_bytes=128,
+        downloaded_bytes=1_024,
+        total_size_bytes=4_096,
+        eta_seconds=90,
+        progress_synced_at="2026-08-20 12:00:00",
+    ).where(DownloadTask.info_hash == "hash-0").execute()
+
+    second = client.get(
+        "/download-tasks",
+        params={"client_id": download_client.id, "movie_number": "ABP-001"},
+        headers=_auth(token),
+    )
+
+    assert second.status_code == 200, second.text
+    item = second.json()["items"][0]
+    assert item["raw_state"] == "downloading"
+    assert item["download_speed_bytes"] == 2_048
+    assert item["uploaded_speed_bytes"] == 128
+    assert item["downloaded_bytes"] == 1_024
+    assert item["total_size_bytes"] == 4_096
+    assert item["eta_seconds"] == 90
+    assert item["progress_synced_at"] == "2026-08-20T12:00:00"

@@ -6,8 +6,8 @@
 
 - 所有配置节明文读写，敏感字段（密钥、密码、`database.url`、各 `api_key`）**不脱敏**——接口在已鉴权的单账号体系内，前端自律。
 - 修改采用**嵌套 dict partial** 语义：只更新请求体里显式给出的字段，其余保持不变。
-- 修改经由 `Settings` 模型校验（类型 + cron/URL 语义），通过后**落盘 toml 并热更新 api 进程内存**（复用 `update_settings`）。
-- 每个配置项带**生效方式**标注，接口如实告知「即时生效 / 需重启」，不制造「改了以为生效」的假象。
+- 修改经由 `Settings` 模型校验（类型 + cron/URL 语义），通过后**原子写入 TOML**。
+- 普通配置不会修改运行中进程的 `settings` 快照：写入后必须同时重启 API 与 APS，避免两个进程使用不一致配置。
 
 与现有 `/indexer-settings`（承载 DB `Indexer` 表明细）**并存**：该能力不属于纯 toml 字段读写，统一配置接口不接管。`media.others_number_features`（原 `/collection-number-features`）的规范化已下沉到 `Media` 模型层，改动统一走 `PATCH /config`。
 
@@ -20,36 +20,26 @@
 - **`enable_docs` 顶层字段**：字段仍在 `Settings` 里（默认 `False` = 关闭 Swagger/ReDoc），排障时可通过手动改 `/data/config/config.toml` 或环境变量打开并重启 api 进程生效，通过接口不暴露也不修改，避免把开发调试开关混入用户可改的配置集合。
 - **`plugins` 节**：包含插件根目录（`root_dir`，默认 `/data/plugins`）、可信插件启用清单、任务 cron 覆盖及插件私有配置。API 与 APS 都在 import 阶段加载插件，且私有配置可能含凭据，因此本接口既不返回也不修改该节；安装/启停请走 `/system/plugins` 管理 API 或 `plugins` CLI，或直接编辑 `config.toml`。JavDB 登录账号等榜单凭据按插件放在 `plugins.settings.<plugin_id>` 下，不再属于 `metadata` 节。具体开发契约见 [插件系统开发指南](./plugins.md)。
 
-## 生效方式（三档）
+## 生效方式
 
-系统为**双进程部署**（`api` 与 `aps` 调度进程各持一份 `settings` 快照），配置写只发生在 api 进程，故生效方式分三档：
+系统为**双进程部署**（`api` 与 `aps` 调度进程各持一份启动时的 `settings` 快照）。`PATCH /config` 只将已校验的完整配置原子写入 TOML，不更新 API 进程内存，也不清理依赖缓存。
 
-| 档位 | 含义 |
-|---|---|
-| `hot` | api 进程内即时生效（每次使用现读 settings，或依赖缓存已在刷新时清理） |
-| `restart_api` | 需重启 api 进程（连接池、日志、文档等在启动期读取一次） |
-| `restart_scheduler` | 需重启 aps 调度进程（cron 装配时烘进 CronTrigger，或由定时任务消费） |
+每次局部更新都以当前已落盘的 TOML 为基准完成串行读改写，因此连续修改不同配置项不会相互覆盖。
 
-节级默认：
+因此，**每次普通配置更新都需要重启 API 和 APS 两个进程后才会生效**。更新响应固定返回 `restart_required: ["api", "aps"]`，客户端不应再按字段区分热更新或单进程重启。
 
-| 配置节 | 生效方式 |
-|---|---|
-| `media` `metadata` `media_import` `image_search` `qdrant` | `hot` |
-| `database` `logging` | `restart_api` |
-| `scheduler` `downloads` | `restart_scheduler` |
-
-> 注：`hot` 节中被定时任务消费的部分（如图搜、下载清理），其**定时执行路径**实为「需重启 aps」，只有 api 进程内的交互 / 手动触发才真正即时。
+`GET /config` 在重启前仍会返回当前进程加载的旧快照；`PATCH /config` 的 `values` 则是刚刚成功写入、将在下次启动时加载的新配置。
 
 ## 端点列表总览
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| `GET` | `/config` | 读取全部配置（明文）与每项生效方式 |
+| `GET` | `/config` | 读取当前进程加载的全部配置（明文） |
 | `PATCH` | `/config` | 局部修改配置（嵌套 dict partial） |
 
 ## `GET /config`
 
-需要 Bearer Token。返回全部配置节的明文快照与生效方式映射。
+需要 Bearer Token。返回当前 API 进程加载的全部配置节明文快照。
 
 响应：
 
@@ -59,17 +49,12 @@
     "database": { "engine": "postgres", "url": "postgresql://..." },
     "metadata": { "javdb_host": "..." },
     "scheduler": { "movie_heat_cron": "15 0 * * *" }
-  },
-  "effects": {
-    "database": "restart_api",
-    "metadata": "hot",
-    "scheduler": "restart_scheduler"
   }
 }
 ```
 
 - `values` 覆盖除只读键（`auth` 节 / `enable_docs` / `plugins`）外的全部配置节（见上文「本 API 不接管的键」）。
-- `effects` 只列出可修改的节，前端可据此提示用户「改后是否需要重启」。
+- 若刚执行过 `PATCH /config` 但尚未重启，这里仍是旧快照；请以 PATCH 响应的 `values` 确认持久化结果。
 
 ## `PATCH /config`
 
@@ -89,16 +74,13 @@
 ```json
 {
   "values": { "...": "更新后的全部配置" },
-  "applied": ["metadata.javdb_host"],
-  "pending_restart": [
-    { "field": "scheduler.movie_heat_cron", "restart": "scheduler" }
-  ]
+  "restart_required": ["api", "aps"]
 }
 ```
 
-- `applied`：本次已即时生效（`hot`）的字段。
-- `pending_restart`：需重启才生效的字段，`restart` 取 `api` 或 `scheduler`。
-- 校验通过后配置整体落盘并热更新；非法值不会落盘。
+- `values`：已成功写入 TOML、将在重启后加载的完整配置快照。
+- `restart_required`：固定为 `api` 与 `aps`；两个进程均重启后，本次更新才会生效。
+- 校验通过后配置整体原子落盘；非法值不会落盘，也不会影响当前运行中的配置。
 
 ### 校验与错误
 
@@ -110,6 +92,7 @@
 | `invalid_config_value` | 422 | 类型不符、子节不是对象、cron 表达式非法、URL 格式非法等 |
 
 - **cron**：`scheduler.*_cron` 必须能被 APScheduler 解析，否则拒绝——避免非法 cron 落盘后拖垮 aps 进程重启。
+- **下载进度快照**：`scheduler.download_progress_snapshot_interval_seconds` 控制 APS 宿主内部 qB 采样周期，默认 `5` 秒，允许 `1` 至 `60` 秒；修改后重启 APS 生效。该采样器不进入任务中心，也不会创建 TaskRun。
 - **URL**：`qdrant.url`、`image_search.inference_base_url`、`metadata.gfriends_*_url` 必须是 http/https。
 
 这些语义校验分档执行：

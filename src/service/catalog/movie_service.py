@@ -25,8 +25,8 @@ from src.common.service_helpers import (
     resolve_sort_expression,
     with_movie_card_relations,
 )
-from src.metadata.factory import build_javdb_provider
 from src.metadata._providers.models import JavdbMovieReviewResource
+from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import (
     Actor,
@@ -66,10 +66,6 @@ from src.schema.catalog.movies import (
 )
 from src.schema.common.pagination import PageResponse
 from src.service.collections import PlaylistService
-
-from src.service.transfers.downloads.auto_subscribed.search_state_service import (
-    SubscribedMovieSearchStateService,
-)
 
 
 class MovieService:
@@ -686,31 +682,54 @@ class MovieService:
                 },
             ) from exc
 
-    @staticmethod
-    def _reset_search_state_for_new_subscriptions(movie_ids: list[int]) -> None:
-        """未订阅 -> 订阅的影片要清掉上一轮订阅遗留的资源查询状态。
-
-        取消订阅不会删这些状态行，所以一部曾被判 exhausted 的影片重新订阅后，状态行还是
-        exhausted，自动下载任务会直接跳过它——用户侧表现为"重新订阅了却完全没动静"。
-        """
-        if not movie_ids:
-            return
-        SubscribedMovieSearchStateService.reset(movie_ids)
-
     @classmethod
     def set_subscription(cls, movie_number: str, subscribed: bool) -> None:
         movie = cls._require_movie(movie_number)
         was_subscribed = bool(movie.is_subscribed)
         movie.is_subscribed = subscribed
+        reset_search_state = False
         if subscribed:
             if not was_subscribed or movie.subscribed_at is None:
                 movie.subscribed_at = utc_now_for_db()
+                reset_search_state = True
         else:
             movie.subscribed_at = None
+        if reset_search_state:
+            cls._reset_subscription_search_state(movie)
         # 窄更新：受保护字段白名单开放后裸 save() 会被护栏拒绝，订阅状态与标题无关。
-        movie.save(only=[Movie.is_subscribed, Movie.subscribed_at])
-        if subscribed and not was_subscribed:
-            cls._reset_search_state_for_new_subscriptions([movie.id])
+        movie.save(
+            only=[
+                Movie.is_subscribed,
+                Movie.subscribed_at,
+                *cls._subscription_search_state_fields(),
+            ]
+        )
+
+    @staticmethod
+    def _subscription_search_state_fields() -> tuple:
+        return (
+            Movie.subscription_search_state,
+            Movie.subscription_search_attempt_count,
+            Movie.subscription_search_retry_round,
+            Movie.subscription_search_last_attempted_at,
+            Movie.subscription_search_last_succeeded_at,
+            Movie.subscription_search_next_retry_at,
+            Movie.subscription_search_error_code,
+            Movie.subscription_search_last_error,
+            Movie.subscription_search_last_error_at,
+        )
+
+    @staticmethod
+    def _reset_subscription_search_state(movie: Movie) -> None:
+        movie.subscription_search_state = "pending"
+        movie.subscription_search_attempt_count = 0
+        movie.subscription_search_retry_round = (movie.subscription_search_retry_round or 0) + 1
+        movie.subscription_search_last_attempted_at = None
+        movie.subscription_search_last_succeeded_at = None
+        movie.subscription_search_next_retry_at = None
+        movie.subscription_search_error_code = None
+        movie.subscription_search_last_error = None
+        movie.subscription_search_last_error_at = None
 
     @classmethod
     def unsubscribe_movie(cls, movie_number: str) -> None:
@@ -779,17 +798,20 @@ class MovieService:
             if key not in matched_keys
         ]
 
-        newly_subscribed_ids: list[int] = []
         for movie in matched_movies:
             # 与单条 set_subscription(True) 一致：仅在原本未订阅或订阅时间为空时写入当前时间。
             was_subscribed = bool(movie.is_subscribed)
             movie.is_subscribed = True
             if not was_subscribed or movie.subscribed_at is None:
                 movie.subscribed_at = utc_now_for_db()
-            movie.save(only=[Movie.is_subscribed, Movie.subscribed_at])
-            if not was_subscribed:
-                newly_subscribed_ids.append(movie.id)
-        cls._reset_search_state_for_new_subscriptions(newly_subscribed_ids)
+                cls._reset_subscription_search_state(movie)
+            movie.save(
+                only=[
+                    Movie.is_subscribed,
+                    Movie.subscribed_at,
+                    *cls._subscription_search_state_fields(),
+                ]
+            )
 
         return MovieSubscriptionBatchResponse(
             requested_count=requested_count,

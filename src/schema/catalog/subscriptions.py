@@ -31,16 +31,14 @@ class MovieSubscriptionStatus(str, Enum):
     # 导入失败：有活跃下载任务，但没有一个还在途——导入这一趟已经跑完，库里却没有 Media。
     # 除了 import_status=failed，也包含"跑完了零产出"（如整包只有小于阈值的样本文件，扫描记
     # skipped、任务落 completed）。文件已经在盘上，卡的是入库这一步，重下没有意义。
-    # **注意与下面的 FAILED 区分**：FAILED 是"索引器查询出错"，两者都叫 failed 但语义完全
-    # 不同，前端文案必须分别念作「导入失败」与「查询出错」。
     IMPORT_FAILED = "import_failed"
-    # 已放弃：老片本轮没找到次数达到上限（默认 3），不再自动查，需要用户手动重置。
+    # 已放弃：老片连续找不到资源达到上限，等待用户重开预算。
     EXHAUSTED = "exhausted"
-    # 查询出错：索引器调用失败，不计入本轮没找到次数，下一轮会重试。
+    # 查询出错：索引器或下载提交链路故障，不消耗“未找到”预算。
     FAILED = "failed"
-    # 缺资源：查过但一直没找到可用资源，仍在继续查。
+    # 缺资源：查过但没有可用候选，下一轮仍会继续搜索。
     MISSING = "missing"
-    # 待查：订阅后还没查过资源。
+    # 待查：订阅后尚未进入过资源查询。
     PENDING = "pending"
 
 
@@ -54,39 +52,7 @@ class MovieSubscriptionSort(str, Enum):
     ATTEMPT_COUNT_DESC = "attempt_count:desc"
 
 
-class MovieSubscriptionImportOperationResource(SchemaModel):
-    """最新相关导入作业的操作上下文（仅 import_failed 档返回）。
-
-    available_actions 由后端按作业状态计算，前端只按枚举渲染：
-    open_import_job / retry_failed_files / rerun_import / delete_failed_download。
-
-    failure_reason / failure_detail 来自最新导入作业 failed_files 的首条失败条目：
-    让订阅行能直接展示"为什么没导进去"，无需前端再跳导入中心猜。
-
-    download_task_id 是这条失败导入关联的下载任务：订阅行据此复用下载中心的
-    "删除下载记录"逻辑（删任务后可重新参与自动下载）。
-    """
-
-    import_job_id: int
-    # 关联下载任务 id；导入作业为手动目录导入（无 download_task）时为 None。
-    download_task_id: int | None = None
-    state: str
-    # 导入作业已结束但没有 Media 产出时标记为 no_media；真正存在失败项时为 failed。
-    outcome: str = "failed"
-    imported_count: int = 0
-    skipped_count: int = 0
-    failed_count: int = 0
-    # failed_files 里 kind=file 的可重导条目数（retry_failed_files 是否可用的依据）。
-    retryable_file_count: int = 0
-    available_actions: list[str] = []
-    # 失败原因原始码（no_media_files_found 等），没有失败条目时为 None。
-    failure_reason: str | None = None
-    # 失败详情文案（例如"下载目录中没有扫描到可导入的视频"），可能为空串。
-    failure_detail: str | None = None
-
-
 class MovieSubscriptionListItemResource(SchemaModel):
-    # 统一 action 协议的操作主键（resource_ids 收整数 movie id），前端选择态以它为准。
     movie_id: int
     movie_number: str
     title: str
@@ -94,10 +60,7 @@ class MovieSubscriptionListItemResource(SchemaModel):
     release_date: str | None = None
     subscribed_at: datetime | None = None
     status: MovieSubscriptionStatus
-    # 是否算新片（按发布时间判定）。新片每轮都查、不计次数、永不放弃，因此下面那对计数对它无意义。
     is_fresh: bool = False
-    # 老片本轮没找到资源的次数 / 放弃阈值（默认 3）。成功找到资源后计数清零，
-    # 所以下载中 / 已入库等状态恒为 0；is_fresh=true 时恒为 0。
     attempt_count: int = 0
     attempt_limit: int = 0
     last_searched_at: datetime | None = None
@@ -105,8 +68,6 @@ class MovieSubscriptionListItemResource(SchemaModel):
     # 该影片已判死的下载任务数：试过几个种子都失败了。
     dead_download_task_count: int = 0
     media_count: int = 0
-    # import_failed 档的可操作上下文：关联最新导入作业与可用动作（其余档为 null）。
-    import_operation: MovieSubscriptionImportOperationResource | None = None
 
     @field_validator("release_date", mode="before")
     @classmethod
@@ -131,6 +92,11 @@ class MovieSubscriptionStatusCountsResource(SchemaModel):
     failed: int = 0
 
 
-# 资源查询重置的请求/响应模型已删除：统一走 POST /system/resource-task-actions
-# 的 reset_retry_budget。重置不放开选种黑名单——同一个 info_hash 就是同一个 swarm，
-# 换索引器它照样是死的；重置真正要的是让影片重新去找**别的**种子。
+class MovieSubscriptionSearchResetRequest(SchemaModel):
+    """省略 movie_ids 时重开全部已放弃订阅；传入时只重开指定影片。"""
+
+    movie_ids: list[int] | None = None
+
+
+class MovieSubscriptionSearchResetResponse(SchemaModel):
+    reset_count: int

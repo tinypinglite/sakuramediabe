@@ -72,7 +72,7 @@ class _CandidateMovie:
     评分与落库只用 id / heat / release_date / created_at。
     """
 
-    __slots__ = ("id", "heat", "release_date", "created_at", "is_subscribed")
+    __slots__ = ("created_at", "heat", "id", "is_subscribed", "release_date")
 
     def __init__(
         self,

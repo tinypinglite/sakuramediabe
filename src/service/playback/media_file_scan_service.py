@@ -5,9 +5,10 @@ from pathlib import Path
 from loguru import logger
 
 from src.api.exception.errors import ApiError
-from src.common.service_helpers import emit_progress
 from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import emit_progress
 from src.model import Media, MediaLibrary
+from src.service.playback.media_thumbnail_state import thumbnail_state_reset_values
 
 
 @dataclass(frozen=True)
@@ -169,9 +170,13 @@ class MediaFileScanService:
 
         result["file_exists"] = file_exists
         if media.valid != file_exists:
-            media.valid = file_exists
+            updates = {Media.valid: file_exists}
+            if file_exists:
+                updates.update(thumbnail_state_reset_values(media))
+            for field, value in updates.items():
+                setattr(media, field.name, value)
             media.updated_at = checked_at
-            media.save(only=[Media.valid, Media.updated_at])
+            media.save(only=[*updates.keys(), Media.updated_at])
             result["updated"] = True
             result["invalidated"] = not file_exists
             result["revived"] = file_exists
@@ -203,6 +208,8 @@ class MediaFileScanService:
             updates[Media.valid] = file_exists
             result["invalidated"] = not file_exists
             result["revived"] = file_exists
+            if file_exists:
+                updates.update(thumbnail_state_reset_values(media))
 
         if not updates:
             return result

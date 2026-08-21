@@ -1,14 +1,10 @@
 """影片导入相关状态/结果的集中定义（transfers 域）。
 
 放在 ``src/common`` 这个零依赖叶子层，是为了让 service 与 schema 两侧都能直接引用而不触发循环导入。
-把原本散落在 transfers/common.py、media_import_service.py、media_import_job_service.py、
-download_sync_service.py、download_task_service.py 中的下列取值统一收口到一处，并为每个值
-附带中文解释，作为"落库/序列化原始字符串"与"API 展示文案"的唯一权威来源：
+把导入执行器共用的状态和失败原因收口到一处：
 
 - ``DownloadTask.import_status``：下载任务的导入阶段状态
-- ``ImportJob.state``：可视化导入作业的执行状态
-- ``failed_files[].kind``：失败条目分类，决定该项是否可被重导/删除/重命名
-- ``failed_files[].reason``：单条导入失败的具体原因
+- 单文件处理结果的分类与原因
 
 约定：
 - 每个 ``*_*`` 常量的值即落库与序列化使用的原始字符串，不要直接写字面量，统一引用本模块常量。
@@ -41,22 +37,6 @@ ALLOWED_IMPORT_STATUSES = set(IMPORT_STATUS_DESCRIPTIONS)
 UNFINISHED_IMPORT_STATUSES = (IMPORT_STATUS_PENDING, IMPORT_STATUS_RUNNING)
 
 
-# ===== ImportJob.state：可视化导入作业的执行状态 =====
-IMPORT_JOB_STATE_PENDING = "pending"
-IMPORT_JOB_STATE_RUNNING = "running"
-IMPORT_JOB_STATE_COMPLETED = "completed"
-IMPORT_JOB_STATE_FAILED = "failed"
-
-IMPORT_JOB_STATE_DESCRIPTIONS: dict[str, str] = {
-    IMPORT_JOB_STATE_PENDING: "待执行：作业已创建，尚未开始扫描导入",
-    IMPORT_JOB_STATE_RUNNING: "执行中：正在扫描、抓取元数据或导入文件",
-    IMPORT_JOB_STATE_COMPLETED: "已完成：本次导入无失败文件",
-    IMPORT_JOB_STATE_FAILED: "已失败：存在单文件失败或作业级异常",
-}
-# 仅终态作业才允许执行失败文件的删除/重命名/重导，避免与运行中的导入线程竞争。
-TERMINAL_JOB_STATES = (IMPORT_JOB_STATE_COMPLETED, IMPORT_JOB_STATE_FAILED)
-
-
 # ===== failed_files[].kind：失败条目分类 =====
 FAILED_FILE_KIND_FILE = "file"        # 单个媒体文件级失败，可重导/删除/重命名
 FAILED_FILE_KIND_SKIPPED = "skipped"  # 主动跳过（如小文件），仅信息展示
@@ -79,10 +59,6 @@ FAILURE_REASON_METADATA_UPSERT_FAILED = "metadata_upsert_failed"
 FAILURE_REASON_MEDIA_IMPORT_FAILED = "media_import_failed"
 FAILURE_REASON_FILE_TOO_SMALL = "file_too_small"
 FAILURE_REASON_SOURCE_DELETE_FAILED = "source_delete_failed"
-FAILURE_REASON_IMPORT_JOB_CRASHED = "import_job_crashed"
-FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED = "import_job_bootstrap_failed"
-FAILURE_REASON_IMPORT_JOB_INTERRUPTED = "import_job_interrupted"
-FAILURE_REASON_RETRY_SOURCES_MISSING = "retry_sources_missing"
 FAILURE_REASON_NO_MEDIA_FILES_FOUND = "no_media_files_found"
 FAILURE_REASON_ALREADY_INDEXED_PATH = "already_indexed_path"
 FAILURE_REASON_DUPLICATE_FINGERPRINT = "duplicate_fingerprint"
@@ -93,7 +69,6 @@ FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED = "cloud115_metadata_probe_failed"
 FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED = "cloud115_subtitle_download_failed"
 FAILURE_REASON_SUBTITLE_MOVIE_NOT_FOUND = "subtitle_movie_not_found"
 FAILURE_REASON_SUBTITLE_IMPORT_FAILED = "subtitle_import_failed"
-FAILURE_REASON_NO_SUBTITLE_FILES_FOUND = "no_subtitle_files_found"
 
 FAILURE_REASON_DESCRIPTIONS: dict[str, str] = {
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND: "未识别番号：无法从文件名/路径解析出影片番号",
@@ -106,21 +81,16 @@ FAILURE_REASON_DESCRIPTIONS: dict[str, str] = {
     # 已废弃的历史 reason（本地 VR/FC2 合并已删除，新导入不再产生），仅为兼容旧 failed_files 展示保留标签。
     "multi_part_merge_failed": "多分段合并失败：历史遗留原因，当前版本不再产生",
     "merge_subtitle_skipped_multiple_sidecars": "字幕未合并：历史遗留告警，当前版本不再产生",
-    FAILURE_REASON_IMPORT_JOB_CRASHED: "导入流程崩溃：导入过程整体异常中断",
-    FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED: "作业启动失败：导入作业入队/引导阶段失败",
-    FAILURE_REASON_IMPORT_JOB_INTERRUPTED: "导入进程中断：作业未正常结束（孤儿恢复判失败）",
-    FAILURE_REASON_RETRY_SOURCES_MISSING: "源文件缺失：待重导的源文件均已不存在",
     FAILURE_REASON_NO_MEDIA_FILES_FOUND: "未发现媒体文件：下载目录中没有扫描到可导入的视频",
     FAILURE_REASON_ALREADY_INDEXED_PATH: "已在库中：该文件路径已登记，跳过重复导入",
     FAILURE_REASON_DUPLICATE_FINGERPRINT: "内容重复：库中已存在相同内容的文件，跳过导入",
     FAILURE_REASON_CLOUD115_FILE_CENSORED: "115 已封禁：文件被 115 标记违规，已登记为失效（拿不到直链也播不了）",
-    FAILURE_REASON_CLOUD115_TRANSFER_FAILED: "115 搬运失败：云端复制或对账阶段异常",
+    FAILURE_REASON_CLOUD115_TRANSFER_FAILED: "115 搬运失败：云端移动阶段异常",
     FAILURE_REASON_CLOUD115_RENAME_FAILED: "115 改名失败：目标文件名未按预期生效",
     FAILURE_REASON_CLOUD115_METADATA_PROBE_FAILED: "115 媒体探测失败：无法在读取预算内解析视频技术信息",
     FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED: "字幕下载失败：影片已入库，但字幕从 115 下载失败（仅告警）",
     FAILURE_REASON_SUBTITLE_MOVIE_NOT_FOUND: "影片不存在：库中没有该番号对应的影片，先导入影片或删除该字幕文件",
     FAILURE_REASON_SUBTITLE_IMPORT_FAILED: "字幕导入失败：字幕文件复制或登记异常",
-    FAILURE_REASON_NO_SUBTITLE_FILES_FOUND: "未发现字幕文件：目录中没有可导入的 .srt 文件",
 }
 
 # 失败原因 -> 条目分类：决定该失败项是否可被用户重导/删除/重命名。
@@ -136,10 +106,6 @@ _FAILED_FILE_KIND_BY_REASON: dict[str, str] = {
     # 若掉到默认 file 会被前端当作可删除项暴露，误操作会删掉已入库媒体的源文件。
     "multi_part_merge_failed": FAILED_FILE_KIND_FILE,
     "merge_subtitle_skipped_multiple_sidecars": FAILED_FILE_KIND_WARNING,
-    FAILURE_REASON_IMPORT_JOB_CRASHED: FAILED_FILE_KIND_JOB,
-    FAILURE_REASON_IMPORT_JOB_BOOTSTRAP_FAILED: FAILED_FILE_KIND_JOB,
-    FAILURE_REASON_IMPORT_JOB_INTERRUPTED: FAILED_FILE_KIND_JOB,
-    FAILURE_REASON_RETRY_SOURCES_MISSING: FAILED_FILE_KIND_JOB,
     FAILURE_REASON_NO_MEDIA_FILES_FOUND: FAILED_FILE_KIND_JOB,
     FAILURE_REASON_ALREADY_INDEXED_PATH: FAILED_FILE_KIND_SKIPPED,
     FAILURE_REASON_DUPLICATE_FINGERPRINT: FAILED_FILE_KIND_SKIPPED,
@@ -151,7 +117,6 @@ _FAILED_FILE_KIND_BY_REASON: dict[str, str] = {
     FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED: FAILED_FILE_KIND_WARNING,
     FAILURE_REASON_SUBTITLE_MOVIE_NOT_FOUND: FAILED_FILE_KIND_FILE,
     FAILURE_REASON_SUBTITLE_IMPORT_FAILED: FAILED_FILE_KIND_FILE,
-    FAILURE_REASON_NO_SUBTITLE_FILES_FOUND: FAILED_FILE_KIND_JOB,
 }
 
 
@@ -173,11 +138,6 @@ def make_failure_item(path, reason: str, detail: str = "") -> dict[str, str]:
 def describe_import_status(value: str) -> str:
     """返回 import_status 的中文说明；未知取值回退原值。"""
     return IMPORT_STATUS_DESCRIPTIONS.get(value or "", value or "")
-
-
-def describe_import_job_state(value: str) -> str:
-    """返回 ImportJob.state 的中文说明；未知取值回退原值。"""
-    return IMPORT_JOB_STATE_DESCRIPTIONS.get(value or "", value or "")
 
 
 def describe_failed_file_kind(value: str) -> str:

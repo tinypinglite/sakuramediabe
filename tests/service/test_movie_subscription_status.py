@@ -10,8 +10,6 @@
    读的是同一个"活跃任务"集合，两边一旦脱节就会出现"页面说缺资源、调度说别搜"。
 """
 
-import json
-
 import pytest
 
 from src.common.media_import_status import (
@@ -23,7 +21,6 @@ from src.common.media_import_status import (
 from src.model import (
     DownloadClient,
     DownloadTask,
-    ImportJob,
     Media,
     MediaLibrary,
     Movie,
@@ -53,7 +50,9 @@ def _subscribe(movie_number: str) -> Movie:
     )
 
 
-def _task(client, movie_number: str, *, download_state: str, import_status: str, seq: int = 0):
+def _task(
+    client, movie_number: str, *, download_state: str, import_status: str, seq: int = 0
+):
     # (client, info_hash) 有唯一约束，同一部片挂多条任务时必须给不同的 seq。
     return DownloadTask.create(
         client=client,
@@ -94,61 +93,6 @@ def test_finished_import_without_media_is_import_failed(client, import_status):
     )
 
     assert _status_of("ABP-001") == MovieSubscriptionStatus.IMPORT_FAILED.value
-
-
-def test_zero_output_import_operation_is_marked_no_media(client):
-    _subscribe("ABP-005")
-    task = _task(
-        client,
-        "ABP-005",
-        download_state="completed",
-        import_status=IMPORT_STATUS_COMPLETED,
-    )
-    ImportJob.create(
-        source_path="cloud115:source-005",
-        source_cid="source-005",
-        library=client.media_library,
-        download_task=task,
-        state="completed",
-        imported_count=0,
-        skipped_count=6,
-        failed_count=0,
-        failed_files=json.dumps([{"path": "sample.mp4", "reason": "file_too_small"}]),
-    )
-
-    operation = MovieSubscriptionService._load_latest_import_operations(
-        ["ABP-005"]
-    )["ABP-005"]
-
-    assert operation.outcome == "no_media"
-
-
-def test_malformed_failed_files_json_shape_does_not_break_import_operation(client):
-    _subscribe("ABP-006")
-    task = _task(
-        client,
-        "ABP-006",
-        download_state="completed",
-        import_status=IMPORT_STATUS_COMPLETED,
-    )
-    ImportJob.create(
-        source_path="cloud115:source-006",
-        source_cid="source-006",
-        library=client.media_library,
-        download_task=task,
-        state="completed",
-        imported_count=0,
-        skipped_count=0,
-        failed_count=0,
-        failed_files="null",
-    )
-
-    operation = MovieSubscriptionService._load_latest_import_operations(
-        ["ABP-006"]
-    )["ABP-006"]
-
-    assert operation.retryable_file_count == 0
-    assert operation.failure_reason is None
 
 
 @pytest.mark.parametrize(
@@ -264,10 +208,10 @@ def test_status_counts_sum_equals_total(client):
         counts.imported
         + counts.import_failed
         + counts.downloading
+        + counts.pending
+        + counts.missing
         + counts.exhausted
         + counts.failed
-        + counts.missing
-        + counts.pending
     )
     assert per_status_sum == counts.total == 4
 
@@ -343,47 +287,50 @@ def test_status_filter_selects_only_import_failed(client):
 
     assert [item.movie_number for item in page.items] == ["FIL-001"]
     assert page.total == 1
-    # movie_id 是统一 action 协议（resource_ids）的操作主键，必须随列表带出。
     assert page.items[0].movie_id == Movie.get(Movie.movie_number == "FIL-001").id
 
 
-def test_search_state_branches_map_kernel_vocabulary(client):
-    """kernel 记账（Wave 2）后的搜索状态档位：
-    exhausted → 已放弃；failed_retryable 里「查过没找到」归 MISSING、真故障才亮 FAILED；
-    succeeded（提交过、种子后来判死）归 MISSING；无状态行 → PENDING。"""
+def test_search_state_branches_restore_subscription_statuses(client):
     from src.common.runtime_time import utc_now_for_db
-    from src.model import ResourceTaskState
-    from src.service.transfers.downloads.auto_subscribed.search_state_service import (
+    from src.service.catalog.movie_subscription_search_state_service import (
         ERROR_CODE_NO_CANDIDATE,
-        RESOURCE_TYPE,
-        TASK_KEY,
+        STATE_EXHAUSTED,
+        STATE_FAILED_RETRYABLE,
+        STATE_SUCCEEDED,
     )
 
     now = utc_now_for_db()
-
-    def _search_state(movie, *, state, error_code=None, attempted=True):
-        return ResourceTaskState.create(
-            task_key=TASK_KEY,
-            resource_type=RESOURCE_TYPE,
-            resource_id=movie.id,
-            state=state,
-            attempt_count=1,
-            last_attempted_at=now if attempted else None,
-            error_code=error_code,
-        )
-
     exhausted = _subscribe("SRCH-001")
-    _search_state(exhausted, state="exhausted")
     no_candidate = _subscribe("SRCH-002")
-    _search_state(no_candidate, state="failed_retryable", error_code=ERROR_CODE_NO_CANDIDATE)
     infra_failed = _subscribe("SRCH-003")
-    _search_state(infra_failed, state="failed_retryable", error_code="indexer_search_failed")
-    submitted_then_dead = _subscribe("SRCH-004")
-    _search_state(submitted_then_dead, state="succeeded")
-    _subscribe("SRCH-005")
+    succeeded = _subscribe("SRCH-004")
+    Movie.update(
+        subscription_search_state=STATE_EXHAUSTED,
+        subscription_search_attempt_count=3,
+        subscription_search_last_attempted_at=now,
+    ).where(Movie.id == exhausted.id).execute()
+    Movie.update(
+        subscription_search_state=STATE_FAILED_RETRYABLE,
+        subscription_search_attempt_count=1,
+        subscription_search_error_code=ERROR_CODE_NO_CANDIDATE,
+        subscription_search_last_attempted_at=now,
+    ).where(Movie.id == no_candidate.id).execute()
+    Movie.update(
+        subscription_search_state=STATE_FAILED_RETRYABLE,
+        subscription_search_error_code="indexer_search_failed",
+        subscription_search_last_error="indexer timeout",
+        subscription_search_last_attempted_at=now,
+    ).where(Movie.id == infra_failed.id).execute()
+    Movie.update(
+        subscription_search_state=STATE_SUCCEEDED,
+        subscription_search_last_attempted_at=now,
+    ).where(Movie.id == succeeded.id).execute()
 
     assert _status_of("SRCH-001") == MovieSubscriptionStatus.EXHAUSTED.value
     assert _status_of("SRCH-002") == MovieSubscriptionStatus.MISSING.value
     assert _status_of("SRCH-003") == MovieSubscriptionStatus.FAILED.value
     assert _status_of("SRCH-004") == MovieSubscriptionStatus.MISSING.value
-    assert _status_of("SRCH-005") == MovieSubscriptionStatus.PENDING.value
+
+    page = MovieSubscriptionService.list_subscriptions(page=1, page_size=20)
+    item = next(item for item in page.items if item.movie_number == "SRCH-003")
+    assert item.last_error == "indexer timeout"

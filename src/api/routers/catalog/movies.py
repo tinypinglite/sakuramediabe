@@ -196,8 +196,7 @@ def refresh_movie_metadata(movie_number: str):
     return MovieMetadataRefreshService.refresh_movie_metadata(movie_number)
 
 
-# 影片单片翻译 / 互动同步端点已删除：统一走 POST /system/resource-task-actions
-# 的 rerun（only_ids=[movie_id]，强制语义，含无状态行播种），响应携带 task_run_id。
+# 影片单片翻译端点已删除；互动同步由常规定时任务负责。
 
 
 @router.post("/{movie_number}/heat-recompute", response_model=MovieDetailResource)

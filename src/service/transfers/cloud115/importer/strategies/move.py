@@ -1,7 +1,7 @@
 """cloud115 导入的 cleanup-source (move) 策略：源直接移动进库，不复制、不留副本。
 
-拆自 ``service._import_group_by_move`` + 三个 move-only 辅助（_cleanup_duplicate_source /
-_discard_version_dirs / _restore_locator_name）。
+拆自 ``service._import_group_by_move`` + move-only 辅助
+（_discard_version_dirs / _restore_locator_name）。
 
 关键差异（与 copy 相对照，见文件顶部 service.py 注释）：
 - 115 的 move 保持 fid/pickcode 不变，Media 只靠 pickcode 定位，登记先于搬运；
@@ -40,66 +40,18 @@ from src.service.transfers.cloud115.importer.common import (
     probe_cloud115_media,
     verify_cloud115_renamed_file,
 )
-from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
+from src.service.transfers.cloud115.importer.media_registrar import (
+    Cloud115MediaRegistrar,
+)
 from src.service.transfers.cloud115.importer.strategies.common import (
     import_subtitle,
     record_files_failure,
     register_media,
 )
-from src.service.transfers.cloud115.importer.types import CloudImportGroup, CloudSourceFile
-
-
-async def _cleanup_duplicate_source(
-    client: Cloud115Client,
-    *,
-    movie: Movie,
-    cloud_file: CloudSourceFile,
-    failure_items: list[dict],
-    stats: dict,
-) -> None:
-    """库内已有该内容的独立副本时，只清掉这一份多余的源（含配对字幕）。
-
-    字幕先下载到本地再删远端；下载失败就整份保留不删，让用户可以重导。
-    """
-    if cloud_file.subtitle is not None:
-        try:
-            await import_subtitle(
-                client,
-                movie=movie,
-                cloud_file=cloud_file,
-            )
-        except Exception as exc:
-            stats["failed"] += 1
-            item = make_failure_item(
-                cloud_file.rel_path,
-                FAILURE_REASON_CLOUD115_SUBTITLE_DOWNLOAD_FAILED,
-                str(exc),
-            )
-            item["kind"] = FAILED_FILE_KIND_FILE
-            failure_items.append(item)
-            logger.warning(
-                "Cloud115 duplicate source subtitle failed rel_path={} detail={}",
-                cloud_file.rel_path, exc,
-            )
-            return
-
-    fids = [cloud_file.fid]
-    if cloud_file.subtitle is not None:
-        fids.append(cloud_file.subtitle.fid)
-    try:
-        await client.delete_files(fids)
-    except Exception as exc:
-        stats["failed"] += 1
-        # 源还在，重导可以再试一次删除。
-        item = make_failure_item(
-            cloud_file.rel_path, FAILURE_REASON_SOURCE_DELETE_FAILED, str(exc)
-        )
-        item["kind"] = FAILED_FILE_KIND_FILE
-        failure_items.append(item)
-        logger.warning(
-            "Cloud115 duplicate source delete failed rel_path={} detail={}",
-            cloud_file.rel_path, exc,
-        )
+from src.service.transfers.cloud115.importer.types import (
+    CloudImportGroup,
+    CloudSourceFile,
+)
 
 
 async def _discard_version_dirs(
@@ -151,40 +103,61 @@ async def import_group_by_move(
     重导），或文件已在受管目录且 Media 有效（可播）。不会出现"文件已搬进库、
     却没有任何记录"的孤儿——移动语义下源已消失，那种孤儿是无法自动收回的。
     """
-    # 1) 按库内已有记录分流。fid 相同说明登记的就是这个源文件本身（上一轮登记
-    # 成功但搬运没走完），必须继续搬运；只有 fid 不同才是真正多余的副本，删源。
+    # 本次扫描组内的字幕引用关系必须在分流前固定下来。只有所有引用它的视频都成功
+    # 搬走，远端字幕才失去用途；任何保留在源目录的重复文件都仍需要这份 sidecar。
+    subtitle_source_fids: dict[str, set[str]] = {}
+    for cloud_file in group.files:
+        if cloud_file.subtitle is not None:
+            subtitle_source_fids.setdefault(cloud_file.subtitle.fid, set()).add(
+                cloud_file.fid
+            )
+    retained_subtitle_fids = set(group.retained_duplicate_subtitle_fids)
+
+    # 1) 按库内已有记录分流。只有归属当前 Movie 的同 fid 记录，才说明登记的是这个
+    # 源文件本身（上一轮登记成功但搬运没走完）；跨域/跨影片命中与 fid 不同都按重复
+    # 冲突跳过，并保留用户源文件。
     pending: list[CloudSourceFile] = []
     # 续做搬运的文件：Media 不是新建的，但本轮确实把它搬进了库，统计上算导入成功，
     # 否则用户重导后会看到"跳过"，与他刚刚完成的重试动作对不上。
     resuming_fids: set[str] = set()
+    source_locator_by_fid: dict[str, dict] = {}
+    existing_source_by_fid: dict[str, Media] = {}
     for cloud_file in group.files:
-        existing_valid = Cloud115MediaRegistrar.find_library_media(
-            library, cloud_file.sha1, valid=True
+        source_locator = Cloud115MediaRegistrar.build_locator(
+            fid=cloud_file.fid,
+            pickcode=cloud_file.pickcode,
+            name=normalize_jav_media_filename(group.movie_number, cloud_file.name),
+            source_path=cloud_file.rel_path,
         )
-        if existing_valid is None:
+        source_locator_by_fid[cloud_file.fid] = source_locator
+        existing_source = Cloud115MediaRegistrar.find_movie_source_media(
+            library,
+            movie,
+            cloud_file.sha1,
+            locator=source_locator,
+        )
+        if existing_source is not None:
             pending.append(cloud_file)
+            existing_source_by_fid[cloud_file.fid] = existing_source
+            if bool(existing_source.valid):
+                resuming_fids.add(cloud_file.fid)
             continue
-        registered_fid = str(
-            (existing_valid.backend_locator or {}).get("fid") or ""
+
+        # 没有当前 Movie + 完整 locator 的精确记录时，任意同指纹 Media 都是独立
+        # 内容记录，不能因 fid 偶合而续搬或在登记阶段复用。
+        fingerprint_conflict = Cloud115MediaRegistrar.find_library_media(
+            library, cloud_file.sha1
         )
-        if registered_fid == cloud_file.fid:
+        if fingerprint_conflict is None:
             pending.append(cloud_file)
-            resuming_fids.add(cloud_file.fid)
             continue
         stats["skipped"] += 1
         failure_items.append(
             make_failure_item(
                 cloud_file.rel_path,
                 FAILURE_REASON_DUPLICATE_FINGERPRINT,
-                f"库中已存在相同内容（media_id={existing_valid.id}）",
+                f"库中已存在独立的相同内容（media_id={fingerprint_conflict.id}）",
             )
-        )
-        await _cleanup_duplicate_source(
-            client,
-            movie=movie,
-            cloud_file=cloud_file,
-            failure_items=failure_items,
-            stats=stats,
         )
 
     if not pending:
@@ -193,11 +166,11 @@ async def import_group_by_move(
     # 2) 探测用源 pickcode：move 不改 pickcode，与搬运后探测等价，但失败时源未动。
     probe_results: dict[str, MediaMetadataProbeResult | None] = {}
     for cloud_file in pending:
-        existing_valid = Cloud115MediaRegistrar.find_library_media(
-            library, cloud_file.sha1, valid=True
-        )
+        existing_source = existing_source_by_fid.get(cloud_file.fid)
         if cloud_file.censored or (
-            existing_valid is not None and existing_valid.video_info is not None
+            existing_source is not None
+            and bool(existing_source.valid)
+            and existing_source.video_info is not None
         ):
             probe_results[cloud_file.sha1] = None
             continue
@@ -301,6 +274,17 @@ async def import_group_by_move(
     try:
         with get_database().atomic():
             for cloud_file in pending:
+                # 扫描阶段只负责分流提示；事务内重新按当前 Movie + 完整 locator 加锁
+                # 定位，防止多命中或扫描/登记之间的并发写入改变复用对象。
+                validated_existing = Cloud115MediaRegistrar.find_movie_source_media(
+                    library,
+                    movie,
+                    cloud_file.sha1,
+                    locator=source_locator_by_fid[cloud_file.fid],
+                    for_update=True,
+                )
+                if validated_existing is not None and bool(validated_existing.valid):
+                    resuming_fids.add(cloud_file.fid)
                 media, is_new = register_media(
                     library=library,
                     movie=movie,
@@ -311,6 +295,7 @@ async def import_group_by_move(
                         group.movie_number, cloud_file.name
                     ),
                     metadata=probe_results[cloud_file.sha1],
+                    validated_existing=validated_existing,
                 )
                 registered.append((cloud_file, media, is_new))
     except Exception as exc:
@@ -405,13 +390,29 @@ async def import_group_by_move(
         else:
             stats["skipped"] += 1
 
-    # 8) 视频本身已经移走，只剩配对字幕的远端源要清理（本地副本已落盘）。
+    # 8) 视频本身已经移走，只剩配对字幕的远端源要清理（本地副本已落盘）。共享字幕
+    # 仅在本组所有引用源均已搬走时删除；重复/失败而保留的任一源仍引用它时必须保留。
     # 清不掉只残留一个 .srt，且源视频已不在、无法通过重导再试，只作告警。
+    moved_source_fids = {cloud_file.fid for cloud_file, _media, _is_new in moved}
+    handled_subtitle_fids: set[str] = set()
     for cloud_file, _media, _is_new in moved:
         if cloud_file.subtitle is None:
             continue
+        subtitle_fid = cloud_file.subtitle.fid
+        if subtitle_fid in handled_subtitle_fids:
+            continue
+        handled_subtitle_fids.add(subtitle_fid)
+        if subtitle_fid in retained_subtitle_fids or not subtitle_source_fids[
+            subtitle_fid
+        ].issubset(moved_source_fids):
+            logger.info(
+                "Cloud115 shared source subtitle retained movie_number={} subtitle_fid={}",
+                group.movie_number,
+                subtitle_fid,
+            )
+            continue
         try:
-            await client.delete_files([cloud_file.subtitle.fid])
+            await client.delete_files([subtitle_fid])
         except Exception as exc:
             failure_items.append(
                 make_failure_item(

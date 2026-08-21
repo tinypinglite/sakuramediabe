@@ -13,7 +13,6 @@ from loguru import logger
 
 from src.common import subtitle_matches_movie_number
 from src.common.fs_browse import SUPPORTED_VIDEO_EXTENSIONS, video_suffix
-from src.common.service_helpers import emit_progress
 from src.common.media_import_status import (
     FAILURE_REASON_CLOUD115_TRANSFER_FAILED,
     FAILURE_REASON_DUPLICATE_FINGERPRINT,
@@ -21,20 +20,19 @@ from src.common.media_import_status import (
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
     make_failure_item,
 )
+from src.common.service_helpers import emit_progress
 from src.config.config import settings
 from src.lib.cloud115 import Cloud115Client, DirEntry
 from src.model import MediaLibrary
-from src.service.transfers.cloud115.importer.common import (
-    CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE,
-    collect_cloud115_source_files,
-)
-from src.service.transfers.cloud115.importer.media_registrar import Cloud115MediaRegistrar
+from src.service.transfers.cloud115.importer.common import collect_cloud115_source_files
 from src.service.transfers.cloud115.importer.types import (
     CloudImportGroup,
     CloudSourceFile,
     CloudSubtitleFile,
 )
-from src.service.transfers.imports.source_scanner import parse_movie_number_from_scan_path
+from src.service.transfers.imports.source_scanner import (
+    parse_movie_number_from_scan_path,
+)
 
 ImportProgressCallback = Callable[[dict], None]
 
@@ -42,17 +40,12 @@ ImportProgressCallback = Callable[[dict], None]
 def _entry_is_video(entry: DirEntry) -> bool:
     return video_suffix(entry.name) in SUPPORTED_VIDEO_EXTENSIONS
 
-
-
-
 async def scan_cloud115_source(
     client: Cloud115Client,
     *,
     library: MediaLibrary,
     source_cid: str,
     source_name: str,
-    transfer_mode: str,
-    only_files: list[str] | None,
     failure_items: list[dict],
     progress_callback: ImportProgressCallback | None = None,
 ) -> tuple[list[CloudImportGroup], int, int]:
@@ -60,7 +53,6 @@ async def scan_cloud115_source(
     minimum_size = settings.media.allowed_min_video_file_size
     skipped_count = 0
     failed_count = 0
-    only_set = set(only_files) if only_files is not None else None
 
     emit_progress(
         progress_callback,
@@ -93,9 +85,6 @@ async def scan_cloud115_source(
             continue
         rel_dir_parts = rel_dirs[entry.parent_id]
         rel_path = "/".join([*rel_dir_parts, entry.name])
-        # 失败重导先按相对路径收窄，再做体积/SHA/番号校验；未选择文件不能污染本次统计。
-        if only_set is not None and rel_path not in only_set:
-            continue
         if entry.size < minimum_size:
             skipped_count += 1
             failure_items.append(
@@ -151,7 +140,7 @@ async def scan_cloud115_source(
 
     # 分组：复用上面识别好的番号，番号解析不出的计入失败清单。
     grouped: dict[str, CloudImportGroup] = {}
-    seen_sha1: set[str] = set()
+    first_group_by_sha1: dict[str, CloudImportGroup] = {}
     for video in videos:
         movie_number = video.movie_number
         if not movie_number:
@@ -161,7 +150,8 @@ async def scan_cloud115_source(
             )
             continue
         # 批内同 sha1 只导第一个。
-        if video.sha1 in seen_sha1:
+        first_group = first_group_by_sha1.get(video.sha1)
+        if first_group is not None:
             skipped_count += 1
             failure_items.append(
                 make_failure_item(
@@ -169,23 +159,17 @@ async def scan_cloud115_source(
                     "同批次存在相同内容文件",
                 )
             )
+            if video.subtitle is not None:
+                # 视频虽不进入 group.files，仍留在源目录并继续引用这份字幕；把事实
+                # 显式交给 move 策略，避免成功搬走首个副本后误删共享 sidecar。
+                first_group.retained_duplicate_subtitle_fids.add(video.subtitle.fid)
             continue
         # 库内去重（限本库；sha1: 前缀与本地 sha256 裸 hex 值域天然不相交）。
-        existing = Cloud115MediaRegistrar.find_library_media(library, video.sha1, valid=True)
-        if (
-            existing is not None
-            and transfer_mode != CLOUD115_TRANSFER_MODE_CLEANUP_SOURCE
-        ):
-            skipped_count += 1
-            failure_items.append(
-                make_failure_item(
-                    video.rel_path, FAILURE_REASON_DUPLICATE_FINGERPRINT,
-                    f"库中已存在相同内容（media_id={existing.id}）",
-                )
-            )
-            continue
-        seen_sha1.add(video.sha1)
-        grouped.setdefault(movie_number, CloudImportGroup(movie_number=movie_number)).files.append(video)
+        group = grouped.setdefault(
+            movie_number, CloudImportGroup(movie_number=movie_number)
+        )
+        group.files.append(video)
+        first_group_by_sha1[video.sha1] = group
 
     logger.info(
         "Cloud115 import scan summary source_cid={} videos={} grouped_numbers={} skipped={} failed={}",

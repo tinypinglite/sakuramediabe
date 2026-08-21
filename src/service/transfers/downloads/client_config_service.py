@@ -28,6 +28,10 @@ from src.schema.transfers.downloads import (
     DownloadClientUpdateRequest,
 )
 from src.service.cloud115 import Cloud115KeepaliveService
+from src.service.transfers.downloads.clients.qbittorrent import (
+    QBittorrentClient,
+    QBittorrentClientError,
+)
 from src.service.transfers.downloads.common import (
     ensure_name_available,
     require_client,
@@ -38,10 +42,6 @@ from src.service.transfers.downloads.common import (
     validate_download_client_kind,
     validate_media_library_id,
     validate_non_empty,
-)
-from src.service.transfers.downloads.clients.qbittorrent import (
-    QBittorrentClient,
-    QBittorrentClientError,
 )
 
 

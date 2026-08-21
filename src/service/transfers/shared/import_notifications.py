@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import Any
 
 from src.schema.system.activity import NotificationResource
@@ -27,15 +28,25 @@ def create_new_media_reminder(
     if len(unique_items) > 3:
         sample_text = f"{sample_text} 等 {len(unique_items)} 部影片"
     related_resource_id = unique_items[0].get("movie_id")
-    return NotificationService.create(
-        NotificationDraft(
-            category="reminder",
-            title="有新的影片可以播放了",
-            content=f"本次后台处理新增可播放影片 {len(unique_items)} 部：{sample_text}",
-            related_task_run_id=related_task_run_id,
-            related_resource_type="movie",
-            related_resource_id=(
-                related_resource_id if isinstance(related_resource_id, int) else None
-            ),
+    draft = NotificationDraft(
+        category="reminder",
+        title="有新的影片可以播放了",
+        content=f"本次后台处理新增可播放影片 {len(unique_items)} 部：{sample_text}",
+        related_task_run_id=related_task_run_id,
+        related_resource_type="movie",
+        related_resource_id=(
+            related_resource_id if isinstance(related_resource_id, int) else None
+        ),
+    )
+    if related_task_run_id is None:
+        # 保留通用入口的旧行为；下载导入链路始终会提供 task run。
+        return NotificationService.create(draft)
+    return NotificationService.create_once(
+        replace(
+            draft,
+            event_type="download_import_new_media",
+            dedupe_key=f"download_import_new_media:task_run:{related_task_run_id}",
+            resource_type="background_task_run",
+            resource_id=related_task_run_id,
         )
     )

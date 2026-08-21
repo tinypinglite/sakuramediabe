@@ -4,8 +4,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from src.common.service_helpers import emit_progress
 from src.common import resolve_image_file_path
+from src.common.service_helpers import emit_progress
 from src.config.config import settings
 from src.model import Image, Media, MediaThumbnail, Movie
 from src.service.discovery.joytag_embedder_client import (

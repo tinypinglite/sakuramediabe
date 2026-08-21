@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from src.common.runtime_time import utc_now_for_db
 from src.model import Media, MediaLibrary
-from src.service.playback.media_thumbnail_service import MediaThumbnailService
-from src.service.system.resource_task_state_service import ResourceTaskStateService
 
 
 class Cloud115MediaRegistrar:
@@ -51,6 +49,35 @@ class Cloud115MediaRegistrar:
         )
         if valid is not None:
             query = query.where(Media.valid == valid)
+        return query.order_by(Media.id.desc()).first()
+
+    @classmethod
+    def find_movie_source_media(
+        cls,
+        library: MediaLibrary,
+        movie,
+        sha1: str,
+        *,
+        locator: dict,
+        valid: bool | None = None,
+        for_update: bool = False,
+    ) -> Media | None:
+        """精确查找当前 JAV 影片登记的同一远端源文件。
+
+        指纹可以对应多条 Media，续搬不能只凭 SHA1 或 fid 猜测归属；locator 由统一
+        builder 构造并受同库唯一索引保护，可作为事务内复用的精确身份。
+        """
+        query = Media.select().where(
+            Media.library == library,
+            Media.movie == movie.movie_number,
+            Media.video_item.is_null(True),
+            Media.content_fingerprint == cls.build_fingerprint(sha1),
+            Media.backend_locator == locator,
+        )
+        if valid is not None:
+            query = query.where(Media.valid == valid)
+        if for_update:
+            query = query.for_update()
         return query.order_by(Media.id.desc()).first()
 
     # ---- 写入 ----
@@ -123,13 +150,4 @@ class Cloud115MediaRegistrar:
             video_info=video_info,
             special_tags=special_tags,
             valid=valid,
-        )
-
-    # ---- 副作用 ----
-
-    @staticmethod
-    def reset_thumbnail_state(media_id: int) -> None:
-        """新登记/复活的媒体，缩略图任务回到全新待处理状态。"""
-        ResourceTaskStateService.reset_for_requeue(
-            MediaThumbnailService.TASK_KEY, media_id
         )

@@ -1,26 +1,15 @@
 from fastapi import APIRouter, Depends, Query
 
-from src.api.routers._utils import sse_streaming_response
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.common.pagination import PageResponse
 from src.schema.system.activity import (
     ActivityBootstrapResource,
     NotificationBatchReadResponse,
     NotificationReadBatchRequest,
-    NotificationReadResponse,
     NotificationResource,
     TaskRunResource,
 )
-from src.schema.system.resource_task_state import (
-    ResourceTaskActionRequest,
-    ResourceTaskActionResponse,
-    ResourceTaskActionSkippedItem,
-    ResourceTaskDefinitionResource,
-    ResourceTaskRecordResource,
-)
-from src.service.system import ActivityService, SystemEventService
-from src.service.system.resource_task_action_service import ResourceTaskActionService
-from src.service.system.resource_task_state_service import ResourceTaskStateService
+from src.service.system import ActivityService
 
 router = APIRouter(
     tags=["activity"],
@@ -60,14 +49,6 @@ def list_notifications(
     )
 
 
-@router.patch(
-    "/system/notifications/{notification_id}/read",
-    response_model=NotificationReadResponse,
-)
-def mark_notification_read(notification_id: int):
-    return ActivityService.mark_notification_read(notification_id)
-
-
 @router.post(
     "/system/notifications/read",
     response_model=NotificationBatchReadResponse,
@@ -101,67 +82,3 @@ def list_task_runs(
         trigger_type=trigger_type,
         sort=sort,
     )
-
-
-@router.get("/system/task-runs/{task_run_id}", response_model=TaskRunResource)
-def get_task_run(task_run_id: int):
-    """单条 task_run 详情：202 入队后前端凭 task_run_id 追溯终态与错误信息。"""
-    return ActivityService.get_task_run_resource(task_run_id)
-
-
-@router.get(
-    "/system/resource-task-states/definitions",
-    response_model=list[ResourceTaskDefinitionResource],
-)
-def list_resource_task_state_definitions():
-    return ResourceTaskStateService.list_definition_resources()
-
-
-@router.get(
-    "/system/resource-task-states",
-    response_model=PageResponse[ResourceTaskRecordResource],
-)
-def list_resource_task_states(
-    task_key: str = Query(...),
-    page: int = Query(default=1),
-    page_size: int = Query(default=20),
-    state: str | None = Query(default=None),
-    search: str | None = Query(default=None),
-    sort: str | None = Query(default=None),
-):
-    return ResourceTaskStateService.list_record_resources(
-        task_key=task_key,
-        page=page,
-        page_size=page_size,
-        state=state,
-        search=search,
-        sort=sort,
-    )
-
-
-@router.post("/system/resource-task-actions", response_model=ResourceTaskActionResponse)
-def apply_resource_task_action(payload: ResourceTaskActionRequest):
-    """统一资源任务操作（Wave 4）：retry_now / rerun / reset_retry_budget。
-
-    资源级操作的唯一入口。后端判定可执行性并允许部分成功；retry_now / rerun 会入队
-    一个带 only_ids 的可跟踪 run（响应携带 task_run_id），连点由 mutex 去重（409，
-    单资源互斥到资源粒度）。resource_ids 缺省时按 state 圈定整批（仅 reset_retry_budget）。
-    """
-    outcome = ResourceTaskActionService.apply(
-        task_key=payload.task_key,
-        action=payload.action,
-        resource_ids=payload.resource_ids,
-        state=payload.state,
-    )
-    return ResourceTaskActionResponse(
-        task_key=outcome.task_key,
-        action=outcome.action,
-        task_run_id=outcome.task_run_id,
-        accepted_resource_ids=outcome.accepted_resource_ids,
-        skipped=[ResourceTaskActionSkippedItem(**item) for item in outcome.skipped],
-    )
-
-
-@router.get("/system/events/stream")
-def stream_system_events(after_event_id: int = Query(default=0)):
-    return sse_streaming_response(SystemEventService.stream(after_event_id=after_event_id))

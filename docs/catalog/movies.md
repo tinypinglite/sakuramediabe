@@ -18,9 +18,7 @@
 - `POST /movies/{movie_number}/metadata-refresh`：严格刷新本地已有影片的远端元数据
 - `POST /movies/{movie_number}/heat-recompute`：手动重算单部影片热度
 
-> 单片互动同步端点已删除：统一走 `POST /system/resource-task-actions` 的
-> `rerun`（`resource_ids=[movie_id]`，202 入队语义），见
-> [任务中心文档](../system/task-runs.md)。
+> 互动同步由 `movie_interaction_sync` 定时任务批量执行，见[任务中心文档](../system/task-runs.md)。
 - `GET /movies`：分页查询影片列表
 - `GET /movies/latest`：分页查询最新入库影片
 - `GET /movies/subscribed-actors/latest`：分页查询已订阅演员的最新影片
@@ -91,8 +89,7 @@
 
 其中：
 
-- `id`: 影片主键（整数）。对外主标识仍是 `movie_number`，但统一资源任务操作
-  （`POST /system/resource-task-actions` 的 `resource_ids`）收的是这个 id，列表与详情都会返回
+- `id`: 影片主键（整数）。对外主标识仍是 `movie_number`，列表与详情都会返回
 - `series_name`: 系列名称，可为 `null`
 - `series_id`: 系列 ID，可为 `null`；系列名来自独立 `movie_series` 表
 - `title`：标题；翻译链路下线后，存量 `title_zh`（中文标题）已合并进本字段
@@ -205,15 +202,10 @@ heat = ROUND(3100 × (7/34 × W + 5/34 × I + 17/34 × C + 5/34 × R))
 | `POST` | `/movies/unsubscriptions` | 批量取消订阅影片（部分成功） |
 | `GET` | `/movies/{movie_number}` | 查询影片详情 |
 
-> 订阅的**管理视图**（订阅列表、资源查询状态与次数、缺失影片、重置查询状态）在独立的顶层资源
+> 订阅的**管理视图**（订阅列表、下载/入库状态与缺失影片）在独立的顶层资源
 > `/movie-subscriptions`，见 [subscriptions.md](./subscriptions.md)。本文档只覆盖订阅状态的写入侧。
 > 批量取消订阅就是上表的 `POST /movies/unsubscriptions`，管理页也调它——订阅管理域不另造一套；
 > 要连媒体文件一起删的走 `DELETE /media/{media_id}`。
->
-> 写入侧的一条联动：影片从「未订阅」变为「订阅」时，会顺带重置该影片的资源查询状态行
-> （`ResourceTaskState`，`task_key=subscribed_movie_auto_download`；重置 = 重开预算而非删行，
-> 尝试历史保留在 `resource_task_attempt`）。取消订阅不重置，不重置的话曾被判 `exhausted`
-> 的影片重新订阅后会一直被自动下载跳过。
 
 ## 详细接口定义
 
@@ -461,25 +453,9 @@ Authorization: Bearer <token>
 }
 ```
 
-### 单片互动同步（已并入统一 action 协议）
+### 互动同步
 
-`POST /movies/{movie_number}/interaction-sync` 已删除（影片简介翻译链路整体下线）。对等调用：
-
-```json
-POST /system/resource-task-actions
-{
-  "task_key": "movie_interaction_sync",
-  "action": "rerun",
-  "resource_ids": [movie_id]
-}
-```
-
-- `resource_ids` 收整数影片主键，取影片摘要 / 详情响应里的 `id` 字段（不是 `movie_number`，
-  也不是 `javdb_id`）
-- `rerun` 是强制语义：互动同步不受批量调度刷新窗口限制
-- 202 入队语义：执行在 worker，响应携带 `task_run_id`，前端经 SSE / 单条查询跟进后
-  刷新影片详情
-- 影片缺 JavDB ID 由合格性钩子逐条跳过（`movie_javdb_id_missing`），不再返回 422
+互动数由定时任务批量刷新；已删除或缺少 JavDB ID 的影片不会进入候选。
 
 ### `POST /movies/{movie_number}/heat-recompute`
 
@@ -1090,14 +1066,14 @@ Authorization: Bearer <token>
 ### 手动字幕导入
 
 支持用户把按番号命名的 `.srt` 放进服务器某个目录（浏览白名单 `media_import.browse_roots` 内），
-在 GUI 里选择该目录后由后端递归扫描并归档到对应影片的字幕目录。异步执行，进度走
-`/system/events/stream`，失败文件支持改名后重导。
+在 GUI 里选择该目录后由后端递归扫描并归档到对应影片的字幕目录。异步执行，进度通过
+通用 TaskRun 查询接口轮询。字幕导入不再维护独立作业列表。
 
 **命名规则（v1）**：
 
 - 只接受 `.srt`（后缀大小写不敏感），不支持 `.ass` / `.ssa` / `.vtt`
 - 番号必须写在**文件名里**，父目录名不参与识别
-- 文件名中必须能解析出一个番号，解析不出则进入失败列表，改名后重导
+- 文件名中必须能解析出一个番号，解析不出则计入 TaskRun 的 `failed_count`
 - 番号以外的内容随意（语种标记、分辨率、字幕组、括号序号、年份等）
 - 一个文件只写一个番号：解析器按规则顺序取第一条命中，多个番号结果不可预期
 
@@ -1121,18 +1097,19 @@ Authorization: Bearer <token>
   源文件始终保留（硬链接优先、复制兜底，不删源）
 - 同一影片已存在相同内容（sha256 相同）的字幕时跳过，不重复导入
 - 源文件名里的 `.chs` / `.cht` 等标注**不会**保留到字幕列表，只显示 `<番号>-<N>.srt`
-- 解析不出番号 / 库中无对应影片 / 搬运登记异常进入失败列表（`kind=file`，可改名/删除/重导）；
-  目录里没有任何 `.srt` 时作业判失败并给出任务级失败原因
+- 解析不出番号 / 库中无对应影片 / 搬运登记异常只记日志并累加 `failed_count`；
+  不持久化无界失败文件清单
+- 扫描正常结束时 TaskRun 为 `completed`，包括空目录和存在单文件失败的情况；
+  `result_summary` 返回 `imported_count` / `skipped_count` / `failed_count`
+- 源路径非法或扫描级异常会使 TaskRun 进入 `failed`。修正源目录后重新 POST 整个目录
 
-接口（均需 Bearer Token）：
+接口（需 Bearer Token）：
 
-- `POST /subtitle-imports`：创建字幕导入作业，body `{"source_path": "<绝对路径>"}`，返回 `202`
-- `GET /subtitle-imports`：分页列表
-- `GET /subtitle-imports/{subtitle_import_job_id}`：作业详情（含失败文件）
-- `POST /subtitle-imports/{subtitle_import_job_id}/retry`：重导失败文件
-- `POST /subtitle-imports/{subtitle_import_job_id}/rerun`：整作业重跑
-- `DELETE /subtitle-imports/{subtitle_import_job_id}/failed-files`：删除失败源文件
-- `POST /subtitle-imports/{subtitle_import_job_id}/failed-files/rename`：重命名失败源文件
+- `POST /subtitle-imports`：发布字幕导入 TaskRun，body
+  `{"source_path": "<绝对路径>"}`，返回 `202`
+- 响应为通用任务触发结构：`task_run_id` / `task_key` / `state`；后续轮询
+  `GET /system/task-runs`
+- 原字幕作业列表、详情、失败文件重试/删除/改名端点已删除
 
 ### `PUT /movies/{movie_number}/subscription`
 

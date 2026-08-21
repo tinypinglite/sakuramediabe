@@ -4,7 +4,7 @@
 只有磁力链的候选直接放行、内容校验推迟到下载完成后的导入阶段（磁力本身不含文件列表，
 要拿到只能走 BEP-9 从 swarm 换 metadata，冷门种子实测几十秒到几分钟都换不到，做不了
 提交前的同步闸门）。放行的代价是原盘/合集包会真实下载下来：原盘导入时无合格视频会
-明确失败（`ImportJob` failed + `DownloadTask.import_status=failed`），合集包会混入媒体库，
+明确失败（TaskRun 摘要含失败计数且 `DownloadTask.import_status=failed`），合集包会混入媒体库，
 由用户删任务清理。
 
 有文件列表时的判据建立在导入侧既有的约束上——受支持的视频后缀

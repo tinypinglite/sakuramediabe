@@ -7,14 +7,17 @@ from src.config.config import settings
 from src.metadata.factory import refresh_gfriends_filetree
 from src.plugins.contracts import PluginRegistration
 from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
-from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
 from src.scheduler.contracts import JobDefinition
 from src.scheduler.queue_tasks import QUEUE_TASK_REGISTRY
+from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
 from src.service.catalog import (
     MovieCollectionService,
     MovieHeatService,
     MovieInteractionSyncService,
     SubscribedActorMovieSyncService,
+)
+from src.service.catalog.movie_subscription_search_state_service import (
+    MovieSubscriptionSearchStateService,
 )
 from src.service.discovery import (
     DailyRecommendationService,
@@ -28,8 +31,7 @@ from src.service.playback import (
     MediaFileScanService,
     MediaThumbnailService,
 )
-from src.service.system import ActivityCleanupService, ResourceTaskAttemptCleanupService
-from src.service.system.resource_task_runner import ResourceTaskLedger
+from src.service.system import ActivityCleanupService
 from src.service.transfers.cloud115.offline.sync_service import (
     Cloud115OfflineSyncService,
 )
@@ -90,12 +92,10 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="auto-download-subscribed-movies",
         cli_help="执行一次已订阅缺失影片自动下载",
         cron_setting="subscribed_movie_auto_download_cron",
-        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
         service_factory=lambda reporter: SubscribedMovieAutoDownloadService().run(reporter=reporter),
         business_recovery=lambda: {
-            "recovered_running_movies": ResourceTaskLedger.recover_running(
-                "subscribed_movie_auto_download",
-                error_message="订阅影片资源查询任务中断，等待重试",
+            "recovered_running_movies": (
+                MovieSubscriptionSearchStateService.recover_interrupted_running_movies()
             )
         },
         format_stats=_build_stats_formatter(
@@ -128,13 +128,7 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="sync-movie-interactions",
         cli_help="执行一次影片互动数同步",
         cron_setting="movie_interaction_sync_cron",
-        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
         service_factory=lambda reporter: MovieInteractionSyncService().run(reporter=reporter),
-        business_recovery=lambda: {
-            "recovered_running_movies": MovieInteractionSyncService.recover_interrupted_running_movies(
-                error_message=MovieInteractionSyncService.INTERRUPTED_SYNC_ERROR_MESSAGE,
-            )
-        },
         format_stats=_build_stats_formatter(
             "movie interaction sync finished:",
             "candidate_movies",
@@ -271,7 +265,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="generate-media-thumbnails",
         cli_help="执行一次媒体缩略图生成",
         cron_setting="media_thumbnail_cron",
-        # 已迁 kernel（Wave 2）：runner 直接使用 reporter.emit 上报进度。
         service_factory=lambda reporter: MediaThumbnailService.generate_pending_thumbnails(
             reporter=reporter,
         ),
@@ -283,7 +276,7 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
             "deferred_media",
             "retryable_failed_media",
             "terminal_failed_media",
-            "exhausted_media",
+            "backend_failed_lanes",
         ),
     ),
     JobDefinition(
@@ -384,26 +377,13 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         task_key="activity_record_cleanup",
         log_name="activity-record-cleanup",
         cli_name="cleanup-activity-records",
-        cli_help="执行一次活动中心记录清理（事件流 / 任务运行 / 已读通知）",
+        cli_help="执行一次活动中心记录清理（任务运行 / 已读通知）",
         cron_setting="activity_cleanup_cron",
         service_factory=lambda _reporter: ActivityCleanupService().cleanup(),
         format_stats=_build_stats_formatter(
             "activity record cleanup finished:",
-            "deleted_events",
             "deleted_task_runs",
             "deleted_notifications",
-        ),
-    ),
-    JobDefinition(
-        task_key="resource_task_attempt_cleanup",
-        log_name="resource-task-attempt-cleanup",
-        cli_name="cleanup-resource-task-attempts",
-        cli_help="执行一次资源任务尝试历史保留期清理",
-        cron_setting="resource_task_attempt_cleanup_cron",
-        service_factory=lambda _reporter: ResourceTaskAttemptCleanupService().cleanup(),
-        format_stats=_build_stats_formatter(
-            "resource task attempt cleanup finished:",
-            "deleted_attempts",
         ),
     ),
     JobDefinition(

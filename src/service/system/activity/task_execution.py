@@ -38,6 +38,18 @@ class TaskRunConflictError(RuntimeError):
         )
 
 
+class TaskRunFinalizedError(RuntimeError):
+    """当前执行器未赢得 TaskRun 状态转移，持久终态是唯一可信结果。"""
+
+    def __init__(self, task_run: BackgroundTaskRun):
+        self.task_run = task_run
+        detail = task_run.error_message or task_run.result_text or "任务已由其它执行器收口"
+        super().__init__(
+            f"task_run 已终态化 task_run_id={task_run.id} "
+            f"state={task_run.state} detail={detail}"
+        )
+
+
 def _build_task_skip_result(blocking_task_run: BackgroundTaskRun) -> dict[str, Any]:
     return {
         "task_skipped": True,
@@ -170,7 +182,11 @@ class TaskExecutionService:
                         return _build_task_skip_result(blocking_task_run)
                     raise TaskRunConflictError(blocking_task_run) from exc
 
-            cls.mark_task_run_running(task_run.id)
+            task_run = cls.mark_task_run_running(task_run.id)
+            if task_run.state != "running":
+                # terminal run 绝不能再次进入插件/领域执行体。队列 worker 传入的行已由
+                # claim_next 置 running，因此 running 原样返回仍是合法的预领取执行。
+                raise TaskRunFinalizedError(task_run)
             reporter = cls.create_task_reporter(
                 task_run.id, extra_callbacks=extra_callbacks
             )
@@ -183,12 +199,22 @@ class TaskExecutionService:
                 try:
                     result = func(reporter)
                 except Exception as exc:
-                    cls.fail_task_run(
+                    failed_run, transitioned = cls._fail_task_run_transition(
                         task_run.id,
                         error_message=str(exc),
                         result_summary=reporter.summary,
                         notify_result=notify_result,
                     )
+                    if not transitioned:
+                        if failed_run.state == "completed":
+                            # 本执行体虽抛错，但另一路已经成功收口；调用者必须观察持久
+                            # completed，而不是继续传播这条迟到异常。
+                            if task_logger:
+                                task_logger.warning(
+                                    "Scheduler task exception ignored after persisted completion"
+                                )
+                            return dict(failed_run.result_summary or {})
+                        raise TaskRunFinalizedError(failed_run) from exc
                     if task_logger:
                         elapsed_ms = int((time.time() - started_at) * 1000)
                         task_logger.exception(
@@ -199,11 +225,17 @@ class TaskExecutionService:
                 result_summary = reporter.summary
                 if isinstance(result, dict):
                     result_summary = merge_summary(result_summary, result)
-                cls.complete_task_run(
+                completed_run, transitioned = cls._complete_task_run_transition(
                     task_run.id,
                     result_summary=result_summary,
                     notify_result=notify_result,
                 )
+                if not transitioned:
+                    if completed_run.state == "failed":
+                        # 本地执行成功也不能覆盖已持久化的失败终态。
+                        raise TaskRunFinalizedError(completed_run)
+                    # 另一执行器已先完成时，以数据库 summary 作为可观察结果。
+                    return dict(completed_run.result_summary or {})
                 if task_logger:
                     elapsed_ms = int((time.time() - started_at) * 1000)
                     task_logger.info(

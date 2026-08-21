@@ -6,7 +6,11 @@ from peewee import JOIN, Case, fn
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import require_by_id, resolve_sort_expression, validate_page
+from src.common.service_helpers import (
+    require_by_id,
+    resolve_sort_expression,
+    validate_page,
+)
 from src.model import (
     Image,
     Media,

@@ -26,6 +26,14 @@ class MediaRapidUploadFilterStatus(str, Enum):
     NONE = "none"
 
 
+class MediaThumbnailGenerationState(str, Enum):
+    # 由 Media 持久化：成功产物仍在 MediaThumbnail，状态用于列表筛选与运维处置。
+    PENDING = "pending"
+    RETRY_WAIT = "retry_wait"
+    TERMINAL = "terminal"
+    SUCCEEDED = "succeeded"
+
+
 class MediaProgressUpdateRequest(SchemaModel):
     position_seconds: int = Field(ge=0)
 
@@ -117,6 +125,8 @@ class MediaListItemResource(SchemaModel):
     resolution: str | None = None
     special_tags: str
     valid: bool
+    thumbnail_generation_state: MediaThumbnailGenerationState
+    thumbnail_last_error_code: str | None = None
     # 仅 JAV 媒体有意义，非 JAV 视频恒为 None。
     heat: int | None = None
     # 上一次 115 秒传结果的紧凑投影，用来在列表上提示"是否值得再点秒传"。

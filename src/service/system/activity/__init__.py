@@ -1,5 +1,4 @@
 from .context import TASK_RUN_CONTEXT, TaskRunContext
-from .events import SystemEventService
 from .facade import ActivityService
 from .notifications import NotificationDraft, NotificationService
 from .task_execution import TaskRunConflictError, TaskRunReporter
@@ -10,7 +9,6 @@ __all__ = [
     "ActivityService",
     "NotificationDraft",
     "NotificationService",
-    "SystemEventService",
     "TaskRunConflictError",
     "TaskRunContext",
     "TaskRunReporter",

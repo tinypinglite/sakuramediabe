@@ -2,7 +2,6 @@ import os
 
 import peewee
 
-from src.common.runtime_time import utc_now_for_db
 from src.model.base import BaseModel, JsonTextField
 from src.model.mixins import TimestampedMixin
 
@@ -22,9 +21,9 @@ class BackgroundTaskRun(TimestampedMixin, BaseModel):
     error_message = peewee.TextField(null=True)
     started_at = peewee.DateTimeField(null=True)
     finished_at = peewee.DateTimeField(null=True)
-    # 队列化扩展列（任务架构 Wave 0，见 docs/development/task-architecture.md）：
+    # 持久队列字段：
     # pending 行即队列元素；scheduled_at 决定可领取时间；lease_expires_at 是 worker
-    # 租约（过期即可回收，取代 owner_pid 判活）；params 携带运行参数（如 only_ids）。
+    # 租约过期即可回收，取代 owner_pid 判活；params 仅用于队列专属任务执行凭据。
     params = JsonTextField(null=True, default=None)
     scheduled_at = peewee.DateTimeField(null=True)
     lease_expires_at = peewee.DateTimeField(null=True)
@@ -43,6 +42,11 @@ class SystemNotification(TimestampedMixin, BaseModel):
     category = peewee.CharField(max_length=32, index=True)
     title = peewee.CharField(max_length=255)
     content = peewee.TextField()
+    # 事件身份与展示关联分离：旧 related_resource_* 继续服务现有 API。
+    event_type = peewee.CharField(max_length=64, null=True)
+    dedupe_key = peewee.CharField(max_length=255, null=True, unique=True)
+    resource_type = peewee.CharField(max_length=64, null=True)
+    resource_id = peewee.IntegerField(null=True)
     is_read = peewee.BooleanField(default=False, index=True)
     read_at = peewee.DateTimeField(null=True)
     related_task_run = peewee.ForeignKeyField(
@@ -57,14 +61,3 @@ class SystemNotification(TimestampedMixin, BaseModel):
 
     class Meta:
         table_name = "system_notification"
-
-
-class SystemEvent(TimestampedMixin, BaseModel):
-    event_type = peewee.CharField(max_length=64, index=True)
-    resource_type = peewee.CharField(max_length=64, null=True, index=True)
-    resource_id = peewee.IntegerField(null=True)
-    payload = JsonTextField(default=dict)
-    emitted_at = peewee.DateTimeField(default=utc_now_for_db, index=True)
-
-    class Meta:
-        table_name = "system_event"

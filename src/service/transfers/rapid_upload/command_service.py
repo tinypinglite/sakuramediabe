@@ -30,6 +30,7 @@ from src.service.transfers.rapid_upload.states import (
     TASK_KEY,
 )
 from src.service.transfers.rapid_upload.types import ItemSpec
+from src.service.transfers.shared.write_mutex import cloud115_write_mutex_key
 
 
 class MediaRapidUploadCommandService:
@@ -109,11 +110,23 @@ class MediaRapidUploadCommandService:
         specs: list[ItemSpec],
         retry_of_batch_id: int | None,
     ) -> MediaRapidUploadTriggerResponse:
-        task_run = ActivityService.create_task_run(
-            task_key=TASK_KEY,
-            task_name=f"批量媒体秒传（{len(specs)} 个）",
-            trigger_type="manual",
-        )
+        mutex_key = cloud115_write_mutex_key(target_library)
+        try:
+            # 秒传和普通 115 导入共享全局写锁，必须在建批次前先竞争同一把锁。
+            task_run = ActivityService.create_task_run(
+                task_key=TASK_KEY,
+                task_name=f"批量媒体秒传（{len(specs)} 个）",
+                trigger_type="manual",
+                mutex_key=mutex_key,
+            )
+        except IntegrityError as exc:
+            blocking = ActivityService.find_task_run_by_mutex_key(mutex_key)
+            raise ApiError(
+                409,
+                "cloud115_write_task_conflict",
+                "已有 115 导入或秒传任务",
+                {"blocking_task_run_id": blocking.id if blocking else None},
+            ) from exc
 
         batch: MediaRapidUploadBatch | None = None
         try:

@@ -31,7 +31,6 @@ from src.model import (
     MediaThumbnail,
     Movie,
     MovieActor,
-    ResourceTaskState,
     VideoItem,
 )
 from src.model.base import get_database
@@ -52,6 +51,7 @@ from src.schema.playback.media import (
     MediaProgressResource,
     MediaProgressUpdateRequest,
     MediaRapidUploadFilterStatus,
+    MediaThumbnailGenerationState,
     MediaThumbnailResource,
     MediaValidityCheckResponse,
 )
@@ -418,6 +418,8 @@ class MediaService:
                 resolution=media.resolution,
                 special_tags=media.special_tags,
                 valid=media.valid,
+                thumbnail_generation_state=media.thumbnail_generation_state,
+                thumbnail_last_error_code=media.thumbnail_last_error_code,
                 heat=movie.heat,
                 last_rapid_upload_status=last_rapid_upload_status,
                 created_at=media.created_at,
@@ -440,6 +442,8 @@ class MediaService:
             resolution=media.resolution,
             special_tags=media.special_tags,
             valid=media.valid,
+            thumbnail_generation_state=media.thumbnail_generation_state,
+            thumbnail_last_error_code=media.thumbnail_last_error_code,
             heat=None,
             last_rapid_upload_status=last_rapid_upload_status,
             created_at=media.created_at,
@@ -454,6 +458,7 @@ class MediaService:
         library_id: int | None = None,
         actor_ids: list[int] | None = None,
         rapid_upload_status: MediaRapidUploadFilterStatus | None = None,
+        thumbnail_generation_state: MediaThumbnailGenerationState | None = None,
         sort: str | None = None,
         page: int = 1,
         page_size: int = 20,
@@ -517,6 +522,10 @@ class MediaService:
                         )
                     )
                 )
+        if thumbnail_generation_state is not None:
+            base_query = base_query.where(
+                Media.thumbnail_generation_state == thumbnail_generation_state.value
+            )
 
         total = base_query.count()
         order_by = cls._build_media_list_sort(sort)
@@ -711,11 +720,6 @@ class MediaService:
             for image_id in thumbnail_image_ids:
                 image = Image.get_or_none(Image.id == image_id)
                 obsolete_image_paths |= ImageCleanupService.delete_image_record_if_unused(image)
-
-            ResourceTaskState.delete().where(
-                ResourceTaskState.resource_type == "media",
-                ResourceTaskState.resource_id == media.id,
-            ).execute()
 
         ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
 

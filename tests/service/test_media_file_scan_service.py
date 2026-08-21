@@ -168,3 +168,37 @@ def test_media_file_scan_does_not_sync_subtitles(
 
     assert stats["scanned_media"] == 1
     assert subtitle_sync_calls == []
+
+
+def test_media_file_scan_revival_reopens_terminal_thumbnail_state(test_db, tmp_path) -> None:
+    media_path = tmp_path / "SCAN-TERMINAL.mp4"
+    library = MediaLibrary.create(
+        name="Local terminal",
+        backend="local",
+        backend_config={"root_path": str(tmp_path)},
+    )
+    media = Media.create(
+        movie=_movie(2),
+        library=library,
+        path=str(media_path),
+        content_fingerprint="scan-terminal-fingerprint",
+        valid=False,
+        thumbnail_generation_state=Media.THUMBNAIL_STATE_TERMINAL,
+        thumbnail_attempt_count=2,
+        thumbnail_deferred_count=3,
+        thumbnail_last_error_code="video_stream_missing",
+        thumbnail_last_error="missing video stream",
+    )
+    media_path.touch()
+
+    stats = MediaFileScanService().scan_media_files()
+    stored = Media.get_by_id(media.id)
+
+    assert stats["revived_media"] == 1
+    assert stored.valid is True
+    assert stored.thumbnail_generation_state == Media.THUMBNAIL_STATE_PENDING
+    assert stored.thumbnail_attempt_count == 0
+    assert stored.thumbnail_deferred_count == 0
+    assert stored.thumbnail_last_error_code is None
+    assert stored.thumbnail_last_error is None
+    assert stored.thumbnail_source_fingerprint == "scan-terminal-fingerprint"

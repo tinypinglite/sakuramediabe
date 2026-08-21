@@ -6,13 +6,9 @@ from src.service.playback.thumbnails.task_service import MediaThumbnailTaskServi
 
 class MediaThumbnailService:
     TASK_KEY = MediaThumbnailTaskService.TASK_KEY
-    INTERRUPTED_GENERATION_ERROR_MESSAGE = (
-        MediaThumbnailTaskService.INTERRUPTED_GENERATION_ERROR_MESSAGE
-    )
 
     count_pending_media = MediaThumbnailTaskService.count_pending_media
-    recover_interrupted_running_media = (
-        MediaThumbnailTaskService.recover_interrupted_running_media
-    )
+    count_retry_wait_media = MediaThumbnailTaskService.count_retry_wait_media
+    count_terminal_failed_media = MediaThumbnailTaskService.count_terminal_failed_media
     generate_pending_thumbnails = MediaThumbnailTaskService.generate_pending_thumbnails
     list_media_thumbnails = ThumbnailArtifactService.list_media_thumbnails

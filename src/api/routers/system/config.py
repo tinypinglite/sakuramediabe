@@ -20,7 +20,7 @@ def get_config(current_user=Depends(get_current_user)):
 
 @router.patch("", response_model=ConfigUpdateResource)
 def update_config(
-    # 嵌套 dict partial：{"metadata": {"javdb_host": "..."}, "enable_docs": true}，未知 key 由 service 层拒绝。
+    # 嵌套 dict partial：{"metadata": {"javdb_host": "..."}}，未知 key 由 service 层拒绝。
     payload: dict[str, Any] = Body(...),
     current_user=Depends(get_current_user),
 ):

@@ -1,7 +1,6 @@
 """影片同步小任务 service。
 
-单影片翻译 / 互动同步的入队入口已并入统一 action 协议
-（POST /system/resource-task-actions 的 rerun + only_ids），本类只剩热度重算：
+单影片翻译入口已删除；互动同步由常规定时任务负责，本类只剩热度重算：
 毫秒级纯 SQL，保持同步响应。
 """
 

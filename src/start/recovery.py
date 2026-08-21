@@ -4,52 +4,40 @@ from collections.abc import Callable
 
 from loguru import logger
 
-from src.service.catalog import (
-    MovieInteractionSyncService,
-    SubtitleImportJobService,
-)
-from src.service.playback import MediaThumbnailService
 from src.service.system import ActivityService
-from src.service.system.resource_task_runner import ResourceTaskLedger
-from src.service.transfers.cloud115.offline.sync_service import Cloud115OfflineSyncService
-from src.service.transfers.downloads.sync_service import DownloadSyncService
-from src.service.transfers.imports.job_service import MediaImportJobService
 from src.service.transfers.rapid_upload.facade import MediaRapidUploadService
-from src.service.videos import VideoImportJobService
-
+from src.service.transfers.shared.import_task_service import ImportTaskService
 
 # 注册表: task_key -> 业务层回收 callable。
 # 启动恢复在任务层 (BackgroundTaskRun) 回收之后，按 task_key 查表联动清理业务状态。
-def _recover_media_directory_imports() -> dict:
-    """回收普通目录导入，并让 Cloud115 下载导入回到可重试状态。"""
-    result = MediaImportJobService.recover_orphaned_jobs()
-    result["cloud115_download_import_recovered_count"] = (
-        Cloud115OfflineSyncService.recover_interrupted_imports()
-    )
-    return result
-
-
 BUSINESS_RECOVERY_HANDLERS: dict[str, Callable[[], object]] = {
-    "movie_interaction_sync": lambda: MovieInteractionSyncService.recover_interrupted_running_movies(
-        error_message=MovieInteractionSyncService.INTERRUPTED_SYNC_ERROR_MESSAGE,
-    ),
-    "media_thumbnail_generation": lambda: MediaThumbnailService.recover_interrupted_running_media(
-        error_message=MediaThumbnailService.INTERRUPTED_GENERATION_ERROR_MESSAGE,
-    ),
-    # Wave 2：task_key 与资源状态 key 已合并，崩溃回收走 kernel 的 running 复位。
-    "subscribed_movie_auto_download": lambda: ResourceTaskLedger.recover_running(
-        "subscribed_movie_auto_download",
-        error_message="订阅影片资源查询任务中断，等待重试",
-    ),
-    "download_task_import": lambda: DownloadSyncService().recover_orphaned_imports_only(),
-    "media_directory_import": _recover_media_directory_imports,
-    "video_directory_import": lambda: VideoImportJobService.recover_orphaned_jobs(),
-    "subtitle_directory_import": lambda: SubtitleImportJobService.recover_orphaned_jobs(),
+    "library_import": ImportTaskService.recover_interrupted_downloads,
     "media_rapid_upload": lambda: MediaRapidUploadService.recover_interrupted_batches(),
 }
 
 # 秒传批次需要在业务恢复完成、统计已收敛后才能发送一条汇总通知。
 BUSINESS_MANAGED_NOTIFICATION_TASK_KEYS = {"media_rapid_upload"}
+
+
+def recover_business_states(task_keys: set[str]) -> None:
+    """优先调用 JobDefinition 声明的恢复钩子，队列专属任务再查宿主注册表。"""
+    from src.scheduler.registry import JOB_REGISTRY_BY_KEY
+
+    for task_key in sorted(task_keys):
+        job_def = JOB_REGISTRY_BY_KEY.get(task_key)
+        handler = (
+            job_def.business_recovery
+            if job_def is not None and job_def.business_recovery is not None
+            else BUSINESS_RECOVERY_HANDLERS.get(task_key)
+        )
+        if handler is None:
+            continue
+        try:
+            logger.info(
+                "Recovering business state task_key={} stats={}", task_key, handler()
+            )
+        except Exception:
+            logger.exception("Business recovery failed task_key={}", task_key)
 
 
 def recover_interrupted_tasks(
@@ -73,10 +61,6 @@ def recover_interrupted_tasks(
         ):
             recovered_task_keys.add(task_run.task_key)
 
-    # 按注册表的插入顺序遍历，保证回收顺序确定性。
-    for task_key, handler in BUSINESS_RECOVERY_HANDLERS.items():
-        if task_key in recovered_task_keys:
-            logger.info("Recovering business state for task_key={}", task_key)
-            handler()
+    recover_business_states(recovered_task_keys)
 
     return recovered_task_keys

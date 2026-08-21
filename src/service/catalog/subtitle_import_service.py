@@ -2,8 +2,8 @@
 
 用户把按番号命名的 .srt 放进浏览白名单内的目录后，后台递归扫描：
 从文件名解析番号 -> 查影片 -> 归档到 ``movies/<shard>/<番号>/subtitles/<番号>-<N>.srt``
-并登记 ``Subtitle``。解析不出番号 / 影片不存在 / 文件搬运登记异常进入作业失败列表；
-同一影片已存在相同内容时按 ``duplicate_fingerprint`` 语义跳过。源文件始终保留（不删源）。
+并登记 ``Subtitle``。单文件失败只记日志与 TaskRun 计数；同一影片已存在相同内容时按
+``duplicate_fingerprint`` 语义跳过。源文件始终保留（不删源）。
 """
 
 from __future__ import annotations
@@ -12,67 +12,69 @@ from pathlib import Path
 
 from loguru import logger
 
-from src.common.fs_browse import is_within_allowed_roots
+from src.api.exception.errors import ApiError
+from src.common.fs_browse import (
+    assert_within_allowed_roots,
+    is_within_allowed_roots,
+    normalize_abs_path,
+)
 from src.common.media_import_status import (
     FAILURE_REASON_DUPLICATE_FINGERPRINT,
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
-    FAILURE_REASON_NO_SUBTITLE_FILES_FOUND,
-    FAILURE_REASON_RETRY_SOURCES_MISSING,
     FAILURE_REASON_SUBTITLE_IMPORT_FAILED,
     FAILURE_REASON_SUBTITLE_MOVIE_NOT_FOUND,
-    IMPORT_JOB_STATE_RUNNING,
-    make_failure_item,
 )
 from src.common.movie_numbers import parse_movie_number_from_text
-from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import emit_progress, find_movie_by_number
 from src.config.config import settings
-from src.model import SubtitleImportJob, get_database
+from src.schema.system.jobs import ManualJobTriggerResponse
 from src.service.catalog.subtitle_asset_service import SubtitleAssetService
-from src.service.transfers.shared.import_job_state import finalize_import_job
+from src.service.system.task_queue_service import (
+    TaskQueueConflictError,
+    TaskQueueService,
+)
 
 
 class SubtitleImportService:
+    TASK_KEY = "subtitle_directory_import"
+
+    @classmethod
+    def trigger_directory_import(cls, source_path: str) -> ManualJobTriggerResponse:
+        """发布一条可跨进程领取的 TaskRun，路径留待 worker 执行时严格校验。"""
+        try:
+            task_run = TaskQueueService.enqueue(
+                task_key=cls.TASK_KEY,
+                task_name="字幕目录导入",
+                trigger_type="manual",
+                params={"source_path": source_path},
+                conflict="raise",
+            )
+        except TaskQueueConflictError as exc:
+            raise ApiError(
+                409,
+                "subtitle_import_conflict",
+                "已有字幕导入任务在排队或执行",
+                {"blocking_task_run_id": exc.blocking_task_run_id},
+            ) from exc
+        if task_run is None:
+            raise RuntimeError("subtitle_import_enqueue_returned_none")
+        return ManualJobTriggerResponse(
+            task_run_id=task_run.id,
+            task_key=task_run.task_key,
+            state=task_run.state,
+        )
+
     def import_subtitles_from_source(
         self,
         source_path: str,
-        subtitle_import_job_id: int,
         *,
         progress_callback=None,
-        only_files: list[str] | None = None,
-    ) -> SubtitleImportJob:
-        """执行一次完整的手动字幕导入，并把中间状态写回作业行。
-
-        ``only_files`` 提供时仅导入这些绝对路径，用于失败文件的子集重导。
-        """
-        database = get_database()
-        if database.is_closed():
-            database.connect()
-
-        source_entry = Path(source_path).expanduser().resolve()
-        if not source_entry.exists() or (
-            not source_entry.is_dir() and not source_entry.is_file()
-        ):
-            logger.warning(
-                "Subtitle import rejected invalid source path source_path={}", source_path
-            )
-            raise ValueError("source_path_not_found")
-
-        # 子集重导时把目标文件归一化为绝对路径集合，扫描阶段据此过滤。
-        only_file_set: set[str] | None = None
-        if only_files is not None:
-            only_file_set = {str(Path(item).expanduser().resolve()) for item in only_files}
-
-        job = SubtitleImportJob.get_or_none(SubtitleImportJob.id == subtitle_import_job_id)
-        if job is None:
-            raise ValueError("subtitle_import_job_not_found")
-        job.state = IMPORT_JOB_STATE_RUNNING
-        job.started_at = job.started_at or utc_now_for_db()
-        job.imported_count = 0
-        job.skipped_count = 0
-        job.failed_count = 0
-        job.failed_files = "[]"
-        job.save()
+    ) -> dict[str, int]:
+        """执行一次完整扫描；扫描完成即返回统计，不再维护字幕作业副本。"""
+        source_entry = normalize_abs_path(source_path)
+        if not source_entry.is_dir() and not source_entry.is_file():
+            raise ValueError("source_path_not_file_or_directory")
+        assert_within_allowed_roots(source_entry, settings.media_import.browse_roots)
 
         candidate_paths = self._iter_subtitle_paths(source_entry)
         total = len(candidate_paths)
@@ -80,7 +82,6 @@ class SubtitleImportService:
         skipped_count = 0
         failed_count = 0
         processed_count = 0
-        failure_items: list[dict[str, str]] = []
         # 每个影片已归档字幕的内容指纹缓存：同一影片内容相同的字幕只导入一份。
         existing_hashes: dict[int, set[str]] = {}
 
@@ -97,8 +98,6 @@ class SubtitleImportService:
         )
 
         for subtitle_path in candidate_paths:
-            if only_file_set is not None and str(subtitle_path) not in only_file_set:
-                continue
             processed_count += 1
             try:
                 status, reason, detail = self._import_single_subtitle(
@@ -106,22 +105,29 @@ class SubtitleImportService:
                     existing_hashes=existing_hashes,
                 )
             except Exception as exc:
-                status, reason, detail = "failed", FAILURE_REASON_SUBTITLE_IMPORT_FAILED, str(exc)
+                status, reason, detail = (
+                    "failed",
+                    FAILURE_REASON_SUBTITLE_IMPORT_FAILED,
+                    str(exc),
+                )
                 logger.exception(
-                    "Subtitle import crashed source={} detail={}", str(subtitle_path), exc
+                    "Subtitle import crashed source={} detail={}",
+                    str(subtitle_path),
+                    exc,
                 )
 
             if status == "imported":
                 imported_count += 1
             elif status == "skipped":
                 skipped_count += 1
-                failure_items.append(
-                    make_failure_item(subtitle_path, reason, detail)
-                )
             else:
                 failed_count += 1
-                failure_items.append(
-                    make_failure_item(subtitle_path, reason, detail)
+                # 失败文件不再持久化路径清单；保留精准日志供排查，任务仅汇总计数。
+                logger.warning(
+                    "Subtitle import item failed source={} reason={} detail={}",
+                    str(subtitle_path),
+                    reason,
+                    detail,
                 )
 
             emit_progress(
@@ -136,31 +142,8 @@ class SubtitleImportService:
                 },
             )
 
-        # 空目录（或重导时全部源文件已不存在）给用户一个可解释的任务级失败，
-        # 避免"completed 零产出"让前端看不出问题。
-        if total == 0:
-            failure_items.append(
-                make_failure_item(source_entry, FAILURE_REASON_NO_SUBTITLE_FILES_FOUND)
-            )
-            failed_count = max(failed_count, 1)
-        elif only_file_set is not None and processed_count == 0:
-            failure_items.append(
-                make_failure_item(source_entry, FAILURE_REASON_RETRY_SOURCES_MISSING)
-            )
-            failed_count = max(failed_count, 1)
-
-        # 与媒体导入口径一致：存在单文件失败或任务级失败才判 failed，跳过项不影响终态。
-        finalize_import_job(
-            job,
-            imported_count=imported_count,
-            skipped_count=skipped_count,
-            failed_count=failed_count,
-            failure_items=failure_items,
-        )
-
         logger.info(
-            "Subtitle import finished job_id={} source_path={} imported={} skipped={} failed={}",
-            job.id,
+            "Subtitle import finished source_path={} imported={} skipped={} failed={}",
             str(source_entry),
             imported_count,
             skipped_count,
@@ -177,7 +160,11 @@ class SubtitleImportService:
                 "failed_count": failed_count,
             },
         )
-        return job
+        return {
+            "imported_count": imported_count,
+            "skipped_count": skipped_count,
+            "failed_count": failed_count,
+        }
 
     def _import_single_subtitle(
         self,

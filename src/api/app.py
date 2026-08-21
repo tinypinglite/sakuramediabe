@@ -52,12 +52,10 @@ from src.api.routers.transfers.downloads import router as downloads_router
 from src.api.routers.transfers.media_import import router as media_import_router
 from src.api.routers.transfers.rapid_uploads import router as rapid_uploads_router
 from src.api.routers.videos.collections import router as video_collections_router
-from src.api.routers.videos.imports import router as video_imports_router
 from src.api.routers.videos.items import router as videos_router
 from src.common.database import ensure_database_ready
 from src.common.logging import configure_logging
 from src.config.config import ensure_runtime_config, settings
-from src.service.transfers.downloads.progress_service import DownloadProgressHub
 from src.start.recovery import recover_interrupted_tasks
 
 
@@ -73,14 +71,7 @@ def _create_lifespan():
             trigger_types=("startup", "manual", "internal"),
             error_message="API进程重启，任务已中断",
         )
-        # 进度 Hub 仅在有 SSE 订阅时才连接 qBittorrent，关闭应用时负责停止所有轮询线程。
-        app.state.download_progress_hub = DownloadProgressHub(
-            poll_interval_seconds=settings.downloads.progress_stream_poll_interval_seconds,
-        )
-        try:
-            yield
-        finally:
-            app.state.download_progress_hub.close()
+        yield
 
     return lifespan
 
@@ -135,7 +126,6 @@ def create_app() -> FastAPI:
 
     app.include_router(videos_router)
     app.include_router(video_collections_router)
-    app.include_router(video_imports_router)
 
     app.add_exception_handler(ApiError, api_error_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)

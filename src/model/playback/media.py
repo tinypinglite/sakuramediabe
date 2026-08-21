@@ -9,6 +9,12 @@ from src.model.videos.items import VideoItem
 
 
 class Media(TimestampedMixin, BaseModel):
+    # 缩略图状态属于 Media 本身：MediaThumbnail 是成功产物，不能承担失败、退避和人工重试状态。
+    THUMBNAIL_STATE_PENDING = "pending"
+    THUMBNAIL_STATE_RETRY_WAIT = "retry_wait"
+    THUMBNAIL_STATE_TERMINAL = "terminal"
+    THUMBNAIL_STATE_SUCCEEDED = "succeeded"
+
     # 解耦后一条 Media 归属 movie（JAV）或 video_item（非 JAV）之一，由 service 层保证恰好其一。
     movie = peewee.ForeignKeyField(
         Movie,
@@ -50,6 +56,19 @@ class Media(TimestampedMixin, BaseModel):
     video_info = JsonTextField(null=True)
     special_tags = peewee.CharField(max_length=255, default="普通")
     valid = peewee.BooleanField(default=True)
+    # 失败次数与退避信息落在媒体领域，避免通用任务台账被移除后又失去收口语义。
+    thumbnail_generation_state = peewee.CharField(
+        max_length=32,
+        default=THUMBNAIL_STATE_PENDING,
+    )
+    thumbnail_attempt_count = peewee.IntegerField(default=0)
+    thumbnail_deferred_count = peewee.IntegerField(default=0)
+    thumbnail_next_retry_at = peewee.DateTimeField(null=True)
+    thumbnail_last_error_code = peewee.CharField(max_length=64, null=True)
+    thumbnail_last_error = peewee.TextField(null=True)
+    thumbnail_terminal_at = peewee.DateTimeField(null=True)
+    # 记录本次状态对应的内容版本；内容变化或文件恢复后可重新打开终态失败。
+    thumbnail_source_fingerprint = peewee.CharField(max_length=255, null=True)
 
     @property
     def display_path(self) -> str:
@@ -74,7 +93,10 @@ class Media(TimestampedMixin, BaseModel):
     class Meta:
         table_name = "media"
         # 同库同 locator 只允许登记一条；NULL 不参与唯一约束，本地行（locator=NULL）不受影响。
-        indexes = ((("library", "backend_locator"), True),)
+        indexes = (
+            (("library", "backend_locator"), True),
+            (("thumbnail_generation_state", "thumbnail_next_retry_at"), False),
+        )
 
 
 class MediaThumbnail(TimestampedMixin, BaseModel):

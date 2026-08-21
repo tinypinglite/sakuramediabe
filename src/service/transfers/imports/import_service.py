@@ -1,7 +1,7 @@
 """媒体导入 service。
 
 顶层编排 ``import_from_source``：调 ``media_source_scanner`` 完成扫描分组、并发抓取远端元数据、
-再委托 ``media_import_writer`` 完成落库。ImportJob 状态维护与 DownloadTask 状态回写在这里收口。
+再委托 ``media_import_writer`` 完成落库，最终返回统一统计结果。
 """
 
 import time
@@ -18,24 +18,17 @@ from pydantic import BaseModel
 # 导入状态/失败原因的取值统一收口到 media_import_status 模块。
 from src.common.media_import_status import (
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED,
-    FAILURE_REASON_IMPORT_JOB_CRASHED,
     FAILURE_REASON_MEDIA_IMPORT_FAILED,
     FAILURE_REASON_METADATA_FETCH_FAILED,
     FAILURE_REASON_METADATA_UPSERT_FAILED,
     FAILURE_REASON_NO_MEDIA_FILES_FOUND,
-    FAILURE_REASON_RETRY_SOURCES_MISSING,
-    IMPORT_JOB_STATE_PENDING,
-    IMPORT_JOB_STATE_RUNNING,
-    IMPORT_STATUS_COMPLETED,
-    IMPORT_STATUS_FAILED,
-    IMPORT_STATUS_RUNNING,
     make_failure_item,
 )
 from src.common.service_helpers import emit_progress
-from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
-from src.model import DownloadTask, ImportJob, MediaLibrary, Movie, get_database
+from src.model import MediaLibrary, Movie, get_database
 from src.model.enums import MediaLibraryBackend
+from src.schema.transfers.media_import import ImportResult
 
 # 从子模块而非 src.service.catalog 包导入：走包会执行 catalog/__init__.py，而其中的
 # movie_subscription_service 又要导入 transfers 域，形成 catalog <-> transfers 的包级循环，
@@ -43,15 +36,13 @@ from src.model.enums import MediaLibraryBackend
 from src.service.catalog.catalog_import_service import CatalogImportService
 from src.service.catalog.movie_image_service import ImageDownloadError
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
-
-from src.service.transfers.shared.file_transfer import delete_source_files
-from src.service.transfers.shared.import_job_state import finalize_import_job
-from src.service.transfers.imports.writer import import_single_scanned_file
 from src.service.transfers.imports.source_scanner import (
     ImportTransferMode,
     find_media_library_containing_path,
     scan_source_files,
 )
+from src.service.transfers.imports.writer import import_single_scanned_file
+from src.service.transfers.shared.file_transfer import delete_source_files
 
 ImportProgressCallback = Callable[[dict[str, object]], None]
 
@@ -201,16 +192,10 @@ class MediaImportService:
         source_path: str,
         library_id: int,
         *,
-        download_task_id: int | None = None,
-        import_job_id: int | None = None,
         progress_callback: ImportProgressCallback | None = None,
         transfer_mode: ImportTransferMode = "auto",
-        only_files: list[str] | None = None,
-    ) -> ImportJob:
-        """执行一次完整的媒体导入，并把中间状态写回 ImportJob。
-
-        ``only_files`` 提供时仅导入这些绝对路径，用于失败文件的子集重导。
-        """
+    ) -> ImportResult:
+        """执行一次完整的本地 JAV 导入并返回统计。"""
         if transfer_mode not in ("auto", "cleanup-source"):
             logger.warning("Import rejected invalid transfer mode transfer_mode={}", transfer_mode)
             raise ValueError("invalid_transfer_mode")
@@ -219,11 +204,6 @@ class MediaImportService:
         if not source_entry.exists() or (not source_entry.is_dir() and not source_entry.is_file()):
             logger.warning("Import rejected invalid source path source_path={}", source_path)
             raise ValueError("source_path_not_found")
-
-        # 子集重导时把目标文件归一化为绝对路径集合，扫描阶段据此过滤。
-        only_file_set: set[str] | None = None
-        if only_files is not None:
-            only_file_set = {str(Path(item).expanduser().resolve()) for item in only_files}
 
         library = MediaLibrary.get_or_none(MediaLibrary.id == library_id)
         if library is None:
@@ -248,60 +228,17 @@ class MediaImportService:
                 )
                 raise ValueError("cleanup_source_inside_media_library")
 
-        download_task = None
-        if download_task_id is not None:
-            download_task = DownloadTask.get_or_none(DownloadTask.id == download_task_id)
-            if download_task is None:
-                logger.warning(
-                    "Import rejected because download task not found download_task_id={}",
-                    download_task_id,
-                )
-                raise ValueError("download_task_not_found")
-
         logger.info(
-            "Import start source_path={} library_id={} library_root={} download_task_id={}",
+            "Import start source_path={} library_id={} library_root={}",
             str(source_entry),
             library_id,
             library.backend_config.get("root_path"),
-            download_task_id,
         )
-        # 支持创建新任务，也支持复用已有 ImportJob 做重试，后者需要把统计字段全部重置。
-        if import_job_id is None:
-            job = ImportJob.create(
-                source_path=str(source_entry),
-                library=library,
-                download_task=download_task,
-                state=IMPORT_JOB_STATE_PENDING,
-                transfer_mode=transfer_mode,
-            )
-        else:
-            job = ImportJob.get_by_id(import_job_id)
-            job.source_path = str(source_entry)
-            job.library = library
-            job.download_task = download_task
-            job.state = IMPORT_JOB_STATE_PENDING
-            job.transfer_mode = transfer_mode
-            job.imported_count = 0
-            job.skipped_count = 0
-            job.failed_count = 0
-            job.failed_files = "[]"
-            job.started_at = None
-            job.finished_at = None
-            job.save()
-        logger.info("Import job created job_id={} state={}", job.id, job.state)
         failure_items: list[dict[str, str]] = []
         imported_count = 0
         skipped_count = 0
         failed_count = 0
         new_playable_movies: dict[int, dict[str, object]] = {}
-
-        job.state = IMPORT_JOB_STATE_RUNNING
-        job.started_at = utc_now_for_db()
-        job.save()
-        if download_task is not None:
-            download_task.import_status = IMPORT_STATUS_RUNNING
-            download_task.save()
-        logger.info("Import job running job_id={}", job.id)
 
         try:
             # 第一阶段只扫描和分组文件，不碰远端元数据和目标媒体库。
@@ -313,39 +250,25 @@ class MediaImportService:
                 source_entry,
                 failure_items,
                 transfer_mode=transfer_mode,
-                only_file_set=only_file_set,
                 on_duplicate_source_paths=_cleanup_duplicate_sources,
             )
             skipped_count += grouped_skipped_count
             failed_count += grouped_failed_count
             logger.info(
-                "Import scan completed job_id={} grouped_numbers={} skipped={} failed={}",
-                job.id,
+                "Import scan completed grouped_numbers={} skipped={} failed={}",
                 len(grouped_files),
                 grouped_skipped_count,
                 grouped_failed_count,
             )
-            # 子集重导源文件全部缺失，或下载任务目录完全没有媒体候选时，
-            # 都不能静默判 completed，否则下载页会显示“已导入”但媒体库没有任何记录。
-            if (
-                (only_file_set is not None or download_task is not None)
-                and not grouped_files
-                and grouped_skipped_count == 0
-                and grouped_failed_count == 0
-            ):
+            # 空来源不能静默成功，否则下载页会显示“已导入”但没有任何媒体。
+            if not grouped_files and grouped_skipped_count == 0 and grouped_failed_count == 0:
                 failed_count += 1
-                failure_reason = (
-                    FAILURE_REASON_RETRY_SOURCES_MISSING
-                    if only_file_set is not None
-                    else FAILURE_REASON_NO_MEDIA_FILES_FOUND
-                )
-                failure_detail = (
-                    "待重导的源文件均已不存在"
-                    if only_file_set is not None
-                    else "下载目录中没有扫描到可导入的视频"
-                )
                 failure_items.append(
-                    make_failure_item(source_entry, failure_reason, failure_detail)
+                    make_failure_item(
+                        source_entry,
+                        FAILURE_REASON_NO_MEDIA_FILES_FOUND,
+                        "导入来源中没有扫描到可导入的视频",
+                    )
                 )
             total_movie_numbers = len(grouped_files)
             completed_movie_numbers = 0
@@ -371,10 +294,9 @@ class MediaImportService:
                 ) as metadata_futures:
                     for movie_number, group in grouped_files.items():
                         logger.info(
-                            "Import processing movie_number={} files={} job_id={}",
+                            "Import processing movie_number={} files={}",
                             movie_number,
                             len(group.files),
-                            job.id,
                         )
                         emit_progress(
                             progress_callback,
@@ -478,8 +400,7 @@ class MediaImportService:
                             except Exception as exc:
                                 failed_count += 1
                                 logger.exception(
-                                    "Import media failed job_id={} movie_number={} source={} detail={}",
-                                    job.id,
+                                    "Import media failed movie_number={} source={} detail={}",
                                     movie_number,
                                     str(file_entry.path),
                                     exc,
@@ -514,24 +435,11 @@ class MediaImportService:
                             },
                         )
 
-            # 整个导入过程中即使有单文件失败，也会把已成功结果保留下来，并以 failed 状态返回统计信息。
-            finalize_import_job(
-                job,
-                imported_count=imported_count,
-                skipped_count=skipped_count,
-                failed_count=failed_count,
-                failure_items=failure_items,
-            )
-            if download_task is not None:
-                download_task.import_status = IMPORT_STATUS_FAILED if failed_count > 0 else IMPORT_STATUS_COMPLETED
-                download_task.save()
             logger.info(
-                "Import job finished job_id={} state={} imported={} skipped={} failed={}",
-                job.id,
-                job.state,
-                job.imported_count,
-                job.skipped_count,
-                job.failed_count,
+                "Import finished imported={} skipped={} failed={}",
+                imported_count,
+                skipped_count,
+                failed_count,
             )
             emit_progress(
                 progress_callback,
@@ -546,25 +454,15 @@ class MediaImportService:
                     "new_playable_movies": list(new_playable_movies.values()),
                 },
             )
-            return job
-        except Exception as exc:
-            # 走到这里说明导入流程本身崩溃了，而不是单个文件失败，需要额外补一条任务级错误。
-            failure_items.append(
-                make_failure_item(source_entry, FAILURE_REASON_IMPORT_JOB_CRASHED, str(exc))
-            )
-            finalize_import_job(
-                job,
+            return ImportResult(
                 imported_count=imported_count,
                 skipped_count=skipped_count,
-                failed_count=failed_count + 1,
-                failure_items=failure_items,
+                failed_count=failed_count,
+                new_playable_movies=list(new_playable_movies.values()),
             )
-            if download_task is not None:
-                download_task.import_status = IMPORT_STATUS_FAILED
-                download_task.save()
+        except Exception as exc:
             logger.exception(
-                "Import job crashed job_id={} source_path={} detail={}",
-                job.id,
+                "Import crashed source_path={} detail={}",
                 str(source_entry),
                 exc,
             )

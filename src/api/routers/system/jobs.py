@@ -69,9 +69,25 @@ def trigger_job(task_key: str, payload: dict | None = None):
         )
 
     params = None
-    if job_def.params_schema is not None:
+    if payload is None:
+        if job_def.service_factory is None:
+            # handler-only 没有无参执行体，缺 body / JSON null 都不能创建必失败的队列行。
+            raise ApiError(
+                422,
+                "invalid_job_params",
+                f"任务 {task_key} 必须提供请求参数",
+            )
+    elif job_def.params_schema is None:
+        # factory-only 不接受任何显式 body，避免调用方误以为参数会生效。
+        raise ApiError(
+            422,
+            "invalid_job_params",
+            f"任务 {task_key} 不支持请求参数",
+        )
+    else:
         try:
-            params = job_def.params_schema.model_validate(payload or {}).model_dump()
+            # 显式 JSON 对象严格按 schema 校验；空对象同样代表一次带参调用。
+            params = job_def.params_schema.model_validate(payload).model_dump()
         except Exception as exc:
             raise ApiError(
                 422,

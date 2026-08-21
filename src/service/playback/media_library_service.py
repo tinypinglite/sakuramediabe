@@ -12,7 +12,8 @@ from src.lib.cloud115 import (
     Cloud115Error,
     Cloud115QrLogin,
 )
-from src.model import DownloadClient, ImportJob, Media, MediaLibrary
+from src.model import DownloadClient, Media, MediaLibrary
+from src.model.base import get_database
 from src.model.enums import MediaLibraryBackend
 from src.schema.playback.cloud115_libraries import (
     Cloud115BrowseResponse,
@@ -32,6 +33,9 @@ from src.service.cloud115 import (
     find_or_create_subdir,
     map_cloud115_error,
     require_cloud115_library,
+)
+from src.service.cloud115.notifications import (
+    release_cloud115_auth_expired_notification,
 )
 from src.service.playback.cloud115_qrlogin_service import Cloud115QrLoginService
 from src.service.transfers.rapid_upload.query_service import (
@@ -343,7 +347,10 @@ class MediaLibraryService:
         config["app"] = app
         library.backend_config = config
         library.updated_at = utc_now_for_db()
-        library.save(only=[MediaLibrary.backend_config, MediaLibrary.updated_at])
+        with get_database().atomic():
+            library.save(only=[MediaLibrary.backend_config, MediaLibrary.updated_at])
+            # 重新授权已持久化，释放旧事件键以便下次真实失效能再次提醒。
+            release_cloud115_auth_expired_notification(library.id)
         return MediaLibraryResource.from_model(library)
 
     @classmethod
@@ -409,7 +416,6 @@ class MediaLibraryService:
         if (
             Media.select().where(Media.library == library.id).exists()
             or DownloadClient.select().where(DownloadClient.media_library == library.id).exists()
-            or ImportJob.select().where(ImportJob.library == library.id).exists()
             or MediaRapidUploadQueryService.has_active_library(library.id)
             or MediaRapidUploadQueryService.has_library_history(library.id)
         ):

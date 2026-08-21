@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover
 from src.model import Media
 from src.service.playback.thumbnails.contracts import (
     PreparedThumbnailSource,
+    ThumbnailBackendUnavailable,
     ThumbnailGenerationResult,
 )
 
@@ -20,6 +21,14 @@ from src.service.playback.thumbnails.contracts import (
 class LocalThumbnailBackend:
     key = "local"
     INTERVAL_SECONDS = 10
+
+    @staticmethod
+    def ensure_available() -> None:
+        if av is None:
+            raise ThumbnailBackendUnavailable(
+                "PyAV 未安装，无法生成本地媒体缩略图",
+                error_code="pyav_not_installed",
+            )
 
     @staticmethod
     def _lower_process_priority() -> None:
@@ -45,6 +54,7 @@ class LocalThumbnailBackend:
 
     @classmethod
     def prepare(cls, media: Media) -> PreparedThumbnailSource:
+        cls.ensure_available()
         video_path = Path(media.path).expanduser().resolve()
         if not video_path.exists() or not video_path.is_file():
             raise FileNotFoundError("video_file_missing")
@@ -68,8 +78,7 @@ class LocalThumbnailBackend:
         prepared: PreparedThumbnailSource,
         output_dir: Path,
     ) -> ThumbnailGenerationResult:
-        if av is None:
-            return ThumbnailGenerationResult(RuntimeError("pyav_not_installed"))
+        cls.ensure_available()
         cls._lower_process_priority()
         container = None
         first_error: Exception | None = None
