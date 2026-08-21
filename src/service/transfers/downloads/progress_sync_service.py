@@ -35,12 +35,13 @@ class DownloadProgressSyncService:
             )
         # cloud115 使用独立离线任务对账；这里绝不借 qB 客户端采样。
         if client.kind != DownloadClientKind.QBITTORRENT.value:
-            return {
-                "client_id": client.id,
-                "scanned_count": 0,
-                "updated_count": 0,
-                "unchanged_count": 0,
-            }
+            return self._empty_client_summary(client.id)
+
+        # 采样只服务本地已登记任务；没有任务时不触发 qB Web API 请求。
+        if not DownloadTask.select(DownloadTask.id).where(
+            DownloadTask.client == client.id
+        ).exists():
+            return self._empty_client_summary(client.id)
 
         qb_client = self.qbittorrent_client_cls.from_download_client(client)
         try:
@@ -112,6 +113,15 @@ class DownloadProgressSyncService:
             "scanned_count": len(remote_by_hash),
             "updated_count": updated_count,
             "unchanged_count": unchanged_count,
+        }
+
+    @staticmethod
+    def _empty_client_summary(client_id: int) -> dict[str, int]:
+        return {
+            "client_id": client_id,
+            "scanned_count": 0,
+            "updated_count": 0,
+            "unchanged_count": 0,
         }
 
     def sync_all_clients(self) -> dict[str, int | list[int]]:

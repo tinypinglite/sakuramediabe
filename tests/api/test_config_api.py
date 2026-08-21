@@ -101,4 +101,4 @@ def test_legacy_download_progress_poll_settings_are_ignored_on_startup():
 
     assert "progress_stream_poll_interval_seconds" not in loaded.downloads.model_dump()
     assert "cloud115_progress_poll_interval_seconds" not in loaded.downloads.model_dump()
-    assert loaded.scheduler.download_progress_snapshot_interval_seconds == 5.0
+    assert loaded.scheduler.download_progress_snapshot_interval_seconds == 20.0

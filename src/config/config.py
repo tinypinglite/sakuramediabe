@@ -235,7 +235,7 @@ class Scheduler(BaseModel):
     subscribed_movie_auto_download_cron: str = "30 2 * * *"
     download_task_sync_cron: str = "*/5 * * * *"
     # 宿主内部 qB 进度快照采样周期；不进入任务注册表，也不创建 TaskRun。
-    download_progress_snapshot_interval_seconds: float = Field(default=5.0, ge=1.0, le=60.0)
+    download_progress_snapshot_interval_seconds: float = Field(default=20.0, ge=1.0, le=60.0)
     download_task_auto_import_cron: str = "*/10 * * * *"
     download_small_file_cleanup_cron: str = "*/5 * * * *"
     # qB 停滞/慢速任务清理：每天凌晨 1 点跑（早于订阅自动下载 02:30，删完当天就能换种重下）。

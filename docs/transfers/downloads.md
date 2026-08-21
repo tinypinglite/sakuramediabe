@@ -432,7 +432,7 @@ metadata，生产实测 6 条冷门磁力在 120 秒内只换到 1 条（耗时 
 `?download_state=downloading&download_state=stalled`），命中的是并集；未传或传空表示不过滤。
 取值集合与下文 `download_state` 枚举一致，非法取值返回 422。
 
-qB 快照由 APS 宿主内部 IntervalTrigger 采样器维护，默认每 `5` 秒执行一次
+qB 快照由 APS 宿主内部 IntervalTrigger 采样器维护，默认每 `20` 秒执行一次
 （`[scheduler].download_progress_snapshot_interval_seconds`，允许 `1` 至 `60` 秒）。
 它不进入 `JOB_REGISTRY`、不出现在任务中心，也不创建 TaskRun；同一时刻最多运行一个实例。
 采样只更新本地已登记的受管任务，不创建、删除或触发导入；值未变化时不写库，qB 请求失败时

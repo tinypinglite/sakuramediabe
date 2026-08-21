@@ -92,7 +92,7 @@
 | `invalid_config_value` | 422 | 类型不符、子节不是对象、cron 表达式非法、URL 格式非法等 |
 
 - **cron**：`scheduler.*_cron` 必须能被 APScheduler 解析，否则拒绝——避免非法 cron 落盘后拖垮 aps 进程重启。
-- **下载进度快照**：`scheduler.download_progress_snapshot_interval_seconds` 控制 APS 宿主内部 qB 采样周期，默认 `5` 秒，允许 `1` 至 `60` 秒；修改后重启 APS 生效。该采样器不进入任务中心，也不会创建 TaskRun。
+- **下载进度快照**：`scheduler.download_progress_snapshot_interval_seconds` 控制 APS 宿主内部 qB 采样周期，默认 `20` 秒，允许 `1` 至 `60` 秒；修改后重启 APS 生效。该采样器不进入任务中心，也不会创建 TaskRun。
 - **URL**：`qdrant.url`、`image_search.inference_base_url`、`metadata.gfriends_*_url` 必须是 http/https。
 
 这些语义校验分档执行：

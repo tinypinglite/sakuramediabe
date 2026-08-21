@@ -192,6 +192,26 @@ def test_sync_preserves_previous_snapshot_when_qb_request_fails(qb_env):
     assert FakeQBClient.close_calls == 1
 
 
+def test_sync_all_clients_skips_qb_request_when_client_has_no_local_tasks(qb_env):
+    class ForbiddenQBClient:
+        @classmethod
+        def from_download_client(cls, _client):
+            raise AssertionError("qB progress sync must not request an empty client")
+
+    summary = DownloadProgressSyncService(
+        qbittorrent_client_cls=ForbiddenQBClient
+    ).sync_all_clients()
+
+    assert summary == {
+        "total_clients": 1,
+        "scanned_count": 0,
+        "updated_count": 0,
+        "unchanged_count": 0,
+        "failed_count": 0,
+        "failed_client_ids": [],
+    }
+
+
 def test_cloud115_only_clients_never_construct_or_request_qb_client(test_db):
     library = MediaLibrary.create(name="cloud-downloads", backend="local", backend_config={})
     cloud_client = DownloadClient.create(
@@ -295,6 +315,12 @@ def test_sync_all_clients_isolates_expected_api_failure(qb_env, monkeypatch):
 
 def test_sync_all_clients_logs_qb_failure_once(qb_env):
     messages = []
+    DownloadTask.create(
+        client=qb_env,
+        name="ABP-001",
+        info_hash="a" * 40,
+        save_path="/mnt/downloads/ABP-001",
+    )
     FakeQBClient.error = QBittorrentClientError("connection refused")
     sink_id = logger.add(lambda message: messages.append(str(message)), level="WARNING")
     try:
