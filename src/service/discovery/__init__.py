@@ -9,6 +9,9 @@ from .joytag_embedder_client import (
     get_joytag_embedder_client,
 )
 from .moment_recommendation_service import MomentRecommendationService
+from .movie_plot_image_search_index_service import MoviePlotImageSearchIndexService
+from .movie_plot_image_search_service import get_movie_plot_image_search_service
+from .qdrant_plot_image_store import get_qdrant_plot_image_store
 from .qdrant_thumbnail_store import (
     QdrantThumbnailStore,
     ThumbnailVectorRecord,
@@ -28,6 +31,7 @@ __all__ = [
     "JoyTagEmbedderClient",
     "JoyTagEmbeddingResult",
     "MomentRecommendationService",
+    "MoviePlotImageSearchIndexService",
     "MovieRecommendationService",
     "QdrantThumbnailStore",
     "RankingCatalogService",
@@ -36,5 +40,7 @@ __all__ = [
     "ThumbnailVectorSearchHit",
     "get_image_search_service",
     "get_joytag_embedder_client",
+    "get_movie_plot_image_search_service",
+    "get_qdrant_plot_image_store",
     "get_qdrant_thumbnail_store",
 ]

@@ -4,6 +4,8 @@ from .hot_reviews import HotReviewListItemResource, HotReviewListResource
 from .image_search import (
     ImageSearchResultItemResource,
     ImageSearchSessionPageResource,
+    MoviePlotImageSearchResultItemResource,
+    MoviePlotImageSearchSessionPageResource,
 )
 from .moment_recommendations import (
     MomentRecommendationItemResource,
@@ -26,6 +28,8 @@ __all__ = [
     "ImageSearchSessionPageResource",
     "MomentRecommendationItemResource",
     "MomentRecommendationPageResource",
+    "MoviePlotImageSearchResultItemResource",
+    "MoviePlotImageSearchSessionPageResource",
     "RankedMovieListItemResource",
     "RankingBoardItemsResource",
     "RankingBoardResource",

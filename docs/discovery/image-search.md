@@ -16,7 +16,7 @@
 
 ## 前置条件与数据准备
 
-API 本身只负责“上传查询图 -> 检索已索引缩略图”。要让搜索返回结果，必须先有可检索的缩略图向量数据。
+缩略图搜索 API 只负责“上传查询图 -> 检索已索引缩略图”。要让搜索返回结果，必须先有可检索的缩略图向量数据。
 
 当前数据链路如下：
 
@@ -33,6 +33,8 @@ API 本身只负责“上传查询图 -> 检索已索引缩略图”。要让搜
 - 当前索引任务只扫描 `joytag_index_status = PENDING` 的缩略图
 - 推理失败按单张缩略图隔离：某一张解码失败（`invalid_image`）或输出向量退化（`degenerate_vector`）时，只有该缩略图被标记 `FAILED`，同批其余缩略图和整个索引任务继续执行；只有推理服务整体故障（`inference_failed`、连接超时等）才会中止任务并让未处理缩略图保持 `PENDING`
 - `degenerate_vector` 表示模型输出含 NaN/inf 或范数为零，属于推理侧故障而非图片非法；joytag-infer 日志会打出 `reason`（`nan` / `inf` / `norm_overflow` / `zero_vector`）、输出统计与该图的输入像素统计，用于定位是输入退化还是推理引擎数值问题
+
+剧情图搜索使用独立的 `movie_plot_image_vectors` collection 和 `index-image-search-plot-images` 任务，不影响现有缩略图 collection 或接口。历史剧情图升级后默认进入 `PENDING`，由该任务回填。
 
 容器部署与 JoyTag 模型准备可参考 [../deployment/docker.md](../deployment/docker.md)。
 
@@ -100,6 +102,12 @@ API 本身只负责“上传查询图 -> 检索已索引缩略图”。要让搜
 |---|---|---|
 | `POST` | `/image-search/sessions` | 创建搜索会话并返回第一页结果 |
 | `GET` | `/image-search/sessions/{session_id}/results` | 按游标读取会话结果页 |
+| `POST` | `/image-search/plot-sessions` | 创建剧情图搜索会话并返回第一页结果 |
+| `GET` | `/image-search/plot-sessions/{session_id}/results` | 按游标读取剧情图结果页 |
+
+## 剧情图搜索
+
+剧情图接口的鉴权、上传字段、筛选字段、游标和分数规则均与缩略图搜索一致；结果项为 `plot_image_id`、影片信息、分数和图片资源，不含媒体或播放时刻。
 
 ## POST /image-search/sessions
 
@@ -276,6 +284,7 @@ api_key = ""
 
 [scheduler]
 image_search_index_cron = "*/10 * * * *"
+plot_image_search_index_cron = "30 0 * * *"
 image_search_optimize_cron = "0 */6 * * *"
 ```
 

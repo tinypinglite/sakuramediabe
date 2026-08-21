@@ -303,6 +303,8 @@ def test_create_app_registers_image_search_routes():
 
     assert "/image-search/sessions" in paths
     assert "/image-search/sessions/{session_id}/results" in paths
+    assert "/image-search/plot-sessions" in paths
+    assert "/image-search/plot-sessions/{session_id}/results" in paths
     assert "/daily-recommendations" in paths
     assert "/moment-recommendations" in paths
     assert "/hot-reviews" in paths

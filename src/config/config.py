@@ -252,6 +252,7 @@ class Scheduler(BaseModel):
     # 空跑只查 DB 不读盘，30 分钟一次足够；有新导入时缩略图会在同一活跃窗口内跟上。
     media_thumbnail_cron: str = "*/30 * * * *"
     image_search_index_cron: str = "0 0 * * *"
+    plot_image_search_index_cron: str = "30 0 * * *"
     image_search_optimize_cron: str = "0 3 * * *"
     movie_similarity_recompute_cron: str = "30 3 * * *"
     moment_recommendation_generate_cron: str = "0 4 * * *"
@@ -459,6 +460,8 @@ def refresh_runtime_settings(new_settings: Settings) -> None:
     try:
         from src.service.discovery import (
             get_image_search_service,
+            get_movie_plot_image_search_service,
+            get_qdrant_plot_image_store,
             get_qdrant_thumbnail_store,
         )
         from src.service.discovery.joytag_embedder_client import (
@@ -466,6 +469,8 @@ def refresh_runtime_settings(new_settings: Settings) -> None:
         )
 
         get_image_search_service.cache_clear()
+        get_movie_plot_image_search_service.cache_clear()
+        get_qdrant_plot_image_store.cache_clear()
         get_qdrant_thumbnail_store.cache_clear()
         get_joytag_embedder_client.cache_clear()
     except Exception:

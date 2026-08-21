@@ -418,10 +418,11 @@ class CatalogImportService:
         new_relative_paths = {prepared.image_task.relative_path for prepared in prepared_files}
         finalized = False
         obsolete_paths: set[str] = set()
+        old_plot_image_ids: list[int] = []
         try:
             lock_context = self.persist_lock or nullcontext()
             with lock_context, get_database().atomic():
-                persisted_movie, obsolete_paths = self._refresh_movie_metadata_records_strict(
+                persisted_movie, obsolete_paths, old_plot_image_ids = self._refresh_movie_metadata_records_strict(
                     movie=movie,
                     detail=detail,
                     actors=actors,
@@ -431,6 +432,19 @@ class CatalogImportService:
                     plot_tasks=plot_tasks,
                     actor_image_tasks_by_javdb_id=actor_image_tasks_by_javdb_id,
                 )
+            if old_plot_image_ids:
+                try:
+                    from src.service.discovery.qdrant_plot_image_store import (
+                        get_qdrant_plot_image_store,
+                    )
+
+                    get_qdrant_plot_image_store().delete_by_plot_image_ids(old_plot_image_ids)
+                except Exception as exc:
+                    logger.warning(
+                        "Delete refreshed plot image vectors failed count={} detail={}",
+                        len(old_plot_image_ids),
+                        exc,
+                    )
             self.image_service.finalize_prepared_image_files(prepared_files)
             self.image_service.delete_obsolete_image_files(obsolete_paths - new_relative_paths)
             finalized = True
@@ -455,7 +469,7 @@ class CatalogImportService:
         cover_task: ImagePersistTask | None,
         plot_tasks: list[ImagePersistTask],
         actor_image_tasks_by_javdb_id: dict[str, ImagePersistTask],
-    ) -> tuple[Movie, set[str]]:
+    ) -> tuple[Movie, set[str], list[int]]:
         # 事务内先锁行重读（v2-lite 字段主权）：锁定期间当前 owner 状态稳定，
         # 之后受保护字段写入以本次读取为准，杜绝旧快照覆盖插件刚写入的值。
         movie = (
@@ -484,6 +498,7 @@ class CatalogImportService:
         )
         if old_plot_links:
             MoviePlotImage.delete().where(MoviePlotImage.movie == movie).execute()
+        old_plot_image_ids = [link.id for link in old_plot_links]
 
         # 演员关系同样按远端列表全量替换，避免残留已下线演员。
         MovieActor.delete().where(MovieActor.movie == movie).execute()
@@ -591,7 +606,7 @@ class CatalogImportService:
         # 受保护字段可能未全部落库（被插件接管的字段保留插件值）：重读该行，
         # 保证返回对象与库内真实状态一致（内存中的远端值不得外泄给调用方）。
         movie = Movie.get_by_id(movie.id)
-        return movie, obsolete_paths
+        return movie, obsolete_paths, old_plot_image_ids
 
     def _refresh_actor_from_javdb_resource_strict(
         self,

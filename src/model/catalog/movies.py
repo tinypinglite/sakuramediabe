@@ -260,8 +260,13 @@ class MovieTag(BaseModel):
 
 
 class MoviePlotImage(BaseModel):
+    JOYTAG_INDEX_STATUS_PENDING = 0
+    JOYTAG_INDEX_STATUS_FAILED = 1
+    JOYTAG_INDEX_STATUS_SUCCESS = 2
+
     movie = peewee.ForeignKeyField(Movie, backref="plot_image_links", on_delete="CASCADE")
     image = peewee.ForeignKeyField(Image, backref="movie_plot_links", on_delete="CASCADE")
+    joytag_index_status = peewee.IntegerField(default=JOYTAG_INDEX_STATUS_PENDING, index=True)
 
     class Meta:
         table_name = "movie_plot_image"

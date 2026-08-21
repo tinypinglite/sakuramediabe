@@ -25,6 +25,7 @@ from src.service.discovery import (
     HotReviewSyncService,
     ImageSearchIndexService,
     MomentRecommendationService,
+    MoviePlotImageSearchIndexService,
     MovieRecommendationService,
 )
 from src.service.playback import (
@@ -183,6 +184,16 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次以图搜图缩略图向量索引",
         cron_setting="image_search_index_cron",
         handler=lambda reporter, _params: ImageSearchIndexService().index_pending_thumbnails(
+            progress_callback=reporter.progress_callback,
+        ),
+    ),
+    JobDefinition(
+        task_key="plot_image_search_index",
+        log_name="plot-image-search-index",
+        cli_name="index-image-search-plot-images",
+        cli_help="执行一次以图搜图剧情图向量索引",
+        cron_setting="plot_image_search_index_cron",
+        handler=lambda reporter, _params: MoviePlotImageSearchIndexService().index_pending_plot_images(
             progress_callback=reporter.progress_callback,
         ),
     ),

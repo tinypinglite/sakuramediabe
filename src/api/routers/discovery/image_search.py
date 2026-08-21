@@ -13,8 +13,14 @@ from fastapi import (
 
 from src.api.routers._utils import parse_csv_positive_ints
 from src.api.routers.deps import db_deps, get_current_user
-from src.schema.discovery import ImageSearchSessionPageResource
-from src.service.discovery import get_image_search_service
+from src.schema.discovery import (
+    ImageSearchSessionPageResource,
+    MoviePlotImageSearchSessionPageResource,
+)
+from src.service.discovery import (
+    get_image_search_service,
+    get_movie_plot_image_search_service,
+)
 
 router = APIRouter(
     prefix="/image-search",
@@ -59,6 +65,53 @@ def get_image_search_results(
     service = get_image_search_service()
     try:
         return service.list_results(session_id, cursor=cursor)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/plot-sessions", response_model=MoviePlotImageSearchSessionPageResource)
+async def create_plot_image_search_session(
+    file: Annotated[UploadFile, File(...)],
+    page_size: Annotated[int | None, Form()] = None,
+    movie_ids: Annotated[str | None, Form()] = None,
+    exclude_movie_ids: Annotated[str | None, Form()] = None,
+    score_threshold: Annotated[float | None, Form()] = None,
+):
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+    try:
+        return get_movie_plot_image_search_service().create_session_and_first_page(
+            image_bytes=image_bytes,
+            page_size=page_size,
+            movie_ids=parse_csv_positive_ints(
+                movie_ids, "movie_ids", error_code="invalid_image_search_filter"
+            ),
+            exclude_movie_ids=parse_csv_positive_ints(
+                exclude_movie_ids,
+                "exclude_movie_ids",
+                error_code="invalid_image_search_filter",
+            ),
+            score_threshold=score_threshold,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get(
+    "/plot-sessions/{session_id}/results",
+    response_model=MoviePlotImageSearchSessionPageResource,
+)
+def get_plot_image_search_results(
+    session_id: Annotated[str, Path(min_length=1)],
+    cursor: Annotated[str | None, Query(min_length=1)] = None,
+):
+    try:
+        return get_movie_plot_image_search_service().list_results(
+            session_id, cursor=cursor
+        )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

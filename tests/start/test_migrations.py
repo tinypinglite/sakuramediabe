@@ -21,6 +21,7 @@ from src.start.migrations.runner import (
     CONSOLIDATED_MIGRATION_NAME,
     MOVIE_BLACKLIST_MIGRATION_NAME,
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
+    MOVIE_PLOT_IMAGE_SEARCH_MIGRATION_NAME,
     SUPPORTED_BASE_MIGRATION_NAME,
     MigrationExecution,
     MigrationRunSummary,
@@ -88,6 +89,7 @@ def test_current_migrations_are_discoverable_in_order():
         MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
         ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
         MOVIE_BLACKLIST_MIGRATION_NAME,
+        MOVIE_PLOT_IMAGE_SEARCH_MIGRATION_NAME,
     ]
 
 
@@ -136,12 +138,14 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=MOVIE_COLLECTION_OWNER_MIGRATION_NAME, applied=True),
         MigrationExecution(name=ACTOR_GENDER_BACKFILL_MIGRATION_NAME, applied=True),
         MigrationExecution(name=MOVIE_BLACKLIST_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=MOVIE_PLOT_IMAGE_SEARCH_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
         MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
         ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
         MOVIE_BLACKLIST_MIGRATION_NAME,
+        MOVIE_PLOT_IMAGE_SEARCH_MIGRATION_NAME,
     ]
 
 
@@ -162,6 +166,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
     clean_db.execute_sql(
         "ALTER TABLE background_task_run ADD COLUMN owner_pid INTEGER NULL"
     )
+    _drop_columns(clean_db, "movie_plot_image", ("joytag_index_status",))
 
     library = MediaLibrary.create(
         name="migration-library",
@@ -293,7 +298,12 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
 
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 4
+    assert summary.applied_count == 5
+    assert "joytag_index_status" in _column_names(clean_db, "movie_plot_image")
+    assert any(
+        index.name == "movieplotimage_joytag_index_status"
+        for index in clean_db.get_indexes("movie_plot_image")
+    )
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
