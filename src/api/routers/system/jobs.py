@@ -1,5 +1,5 @@
 import peewee
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
@@ -56,7 +56,11 @@ def list_jobs():
     return [_build_job_metadata(job_def, latest.get(job_def.task_key)) for job_def in JOB_REGISTRY]
 
 
-@router.post("/system/jobs/{task_key}/run", response_model=ManualJobTriggerResponse)
+@router.post(
+    "/system/jobs/{task_key}/run",
+    response_model=ManualJobTriggerResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 def trigger_job(task_key: str, payload: dict | None = None):
     job_def = JOB_REGISTRY_BY_KEY.get(task_key)
     if job_def is None:
@@ -70,8 +74,10 @@ def trigger_job(task_key: str, payload: dict | None = None):
 
     params = None
     if payload is None:
-        if job_def.service_factory is None:
-            # handler-only 没有无参执行体，缺 body / JSON null 都不能创建必失败的队列行。
+        if (job_def.manual_only and job_def.params_schema is not None) or (
+            job_def.service_factory is None and job_def.handler is None
+        ):
+            # 声明参数模型的 manual_only 任务必须显式提供参数；无参任务可直接入队。
             raise ApiError(
                 422,
                 "invalid_job_params",

@@ -24,13 +24,7 @@ from src.plugins.loader import (
     check_plugin_dir,
     load_enabled_plugins,
 )
-from src.scheduler.contracts import JobDefinition
-from src.scheduler.job_execution_adapter import (
-    JobExecutionResolutionError,
-    resolve_job_definition_handler,
-    resolve_job_execution,
-)
-from src.scheduler.queue_tasks import QueueTaskDefinition
+from src.scheduler.contracts import JobDefinition, JobExecutionError
 from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
 from src.scheduler.registry import _build_job_registry
 from src.service.discovery.ranking_service import (
@@ -91,7 +85,7 @@ class FetchParams(BaseModel):
     movie_number: str
 
 def register(context: PluginContext) -> PluginRegistration:
-    def run(reporter):
+    def run(reporter, params):
         return {"ok": True}
     def fetch(reporter, params):
         return params
@@ -107,7 +101,7 @@ def register(context: PluginContext) -> PluginRegistration:
                 cli_name="demo-sync",
                 cli_help="演示定时任务",
                 default_cron="0 5 * * *",
-                service_factory=run,
+                handler=run,
             ),
             JobDefinition(
                 task_key="demo_fetch",
@@ -116,7 +110,7 @@ def register(context: PluginContext) -> PluginRegistration:
                 cli_help="演示带参任务",
                 manual_only=True,
                 params_schema=FetchParams,
-                params_handler=fetch,
+                handler=fetch,
             ),
         ),
     )
@@ -273,7 +267,7 @@ def test_job_params_validation_rules():
         )
 
 
-def test_job_execution_adapter_preserves_mixed_plugin_null_vs_empty_params():
+def test_job_definition_preserves_mixed_plugin_null_vs_empty_params():
     calls = []
 
     class EmptyParams(BaseModel):
@@ -299,23 +293,11 @@ def test_job_execution_adapter_preserves_mixed_plugin_null_vs_empty_params():
     )
     reporter = object()
 
-    no_params = resolve_job_execution(
-        task_key=job_def.task_key,
-        raw_params=None,
-        job_def=job_def,
-        queue_def=None,
-    )
-    explicit_empty = resolve_job_execution(
-        task_key=job_def.task_key,
-        raw_params=EmptyParams.model_validate({}).model_dump(),
-        job_def=job_def,
-        queue_def=None,
-    )
-    no_params.func(reporter)
-    explicit_empty.func(reporter)
+    job_def.build_executor(None)(reporter)
+    job_def.build_executor(EmptyParams.model_validate({}).model_dump())(reporter)
 
     assert calls == [("factory", reporter), ("params", reporter, {})]
-    # adapter 只包装 handler，不得重写社区插件的稳定任务标识。
+    # 执行器只包装 handler，不得重写社区插件的稳定任务标识。
     assert (
         job_def.task_key,
         job_def.cli_name,
@@ -324,7 +306,7 @@ def test_job_execution_adapter_preserves_mixed_plugin_null_vs_empty_params():
     ) == identity
 
 
-def test_job_execution_adapter_manual_only_empty_model_uses_params_handler():
+def test_job_definition_manual_only_empty_model_uses_params_handler():
     calls = []
 
     class EmptyParams(BaseModel):
@@ -340,17 +322,11 @@ def test_job_execution_adapter_manual_only_empty_model_uses_params_handler():
         params_handler=lambda reporter, params: calls.append(params) or {},
     ).model_copy(update={"plugin_id": "demo_plugin"})
 
-    execution = resolve_job_execution(
-        task_key=job_def.task_key,
-        raw_params={},
-        job_def=job_def,
-        queue_def=None,
-    )
-    execution.func(object())
+    job_def.build_executor({})(object())
 
     assert calls == [{}]
-    assert execution.log_name == "demo-manual-empty"
-    assert execution.notify_result is True
+    assert job_def.log_name == "demo-manual-empty"
+    assert job_def.notify_result is True
 
 
 def test_job_definition_handler_nonempty_params_truth_table():
@@ -390,72 +366,34 @@ def test_job_definition_handler_nonempty_params_truth_table():
     )
     params = ValueParams(value=7).model_dump()
 
-    resolve_job_definition_handler(job_def=params_only, raw_params=params)(object())
-    resolve_job_definition_handler(job_def=mixed, raw_params=params)(object())
+    params_only.build_executor(params)(object())
+    mixed.build_executor(params)(object())
 
     assert calls == [("params_only", {"value": 7}), ("mixed", {"value": 7})]
-    with pytest.raises(JobExecutionResolutionError, match="不支持带参执行"):
-        resolve_job_definition_handler(job_def=factory_only, raw_params=params)
+    with pytest.raises(JobExecutionError, match="不支持带参执行"):
+        factory_only.build_executor(params)
 
 
-def test_job_execution_adapter_queue_override_keeps_existing_priority():
+def test_job_definition_handler_is_the_single_queue_execution_entrypoint():
     calls = []
     job_def = JobDefinition(
-        task_key="builtin_overlap",
-        log_name="builtin-overlap",
-        cli_name="builtin-overlap",
-        cli_help="overlap",
-        default_cron="0 5 * * *",
-        service_factory=lambda reporter: calls.append("factory") or {},
-    )
-    queue_def = QueueTaskDefinition(
-        task_key=job_def.task_key,
-        log_name="builtin-overlap-subset",
-        handler=lambda reporter, params: calls.append(("queue", params)) or {},
+        task_key="queue_only",
+        log_name="queue-only",
+        cli_name="queue-only",
+        cli_help="queue only",
+        manual_only=True,
+        handler=lambda reporter, params: calls.append(params) or {},
         notify_result=False,
     )
 
-    explicit_empty = resolve_job_execution(
-        task_key=job_def.task_key,
-        raw_params={},
-        job_def=job_def,
-        queue_def=queue_def,
-    )
-    no_params = resolve_job_execution(
-        task_key=job_def.task_key,
-        raw_params=None,
-        job_def=job_def,
-        queue_def=queue_def,
-    )
-    explicit_empty.func(object())
-    no_params.func(object())
+    job_def.build_executor({})(object())
+    job_def.build_executor(None)(object())
 
-    assert calls == [("queue", {}), "factory"]
-    assert explicit_empty.log_name == "builtin-overlap-subset"
-    assert explicit_empty.notify_result is False
+    assert calls == [{}, {}]
+    assert job_def.notify_result is False
 
 
-def test_job_execution_adapter_queue_only_accepts_null_empty_and_nonempty_params():
-    calls = []
-    queue_def = QueueTaskDefinition(
-        task_key="queue_only",
-        log_name="queue-only",
-        handler=lambda reporter, params: calls.append(params.copy()) or {},
-    )
-
-    for raw_params in (None, {}, {"value": 7}):
-        execution = resolve_job_execution(
-            task_key=queue_def.task_key,
-            raw_params=raw_params,
-            job_def=None,
-            queue_def=queue_def,
-        )
-        execution.func(object())
-
-    assert calls == [{}, {}, {"value": 7}]
-
-
-def test_job_execution_adapter_rejects_missing_legal_handler():
+def test_job_definition_rejects_missing_execution_entrypoint():
     class EmptyParams(BaseModel):
         pass
 
@@ -477,27 +415,10 @@ def test_job_execution_adapter_rejects_missing_legal_handler():
         service_factory=lambda reporter: {},
     )
 
-    with pytest.raises(JobExecutionResolutionError, match="缺少无参执行体"):
-        resolve_job_execution(
-            task_key=params_only.task_key,
-            raw_params=None,
-            job_def=params_only,
-            queue_def=None,
-        )
-    with pytest.raises(JobExecutionResolutionError, match="不支持带参执行"):
-        resolve_job_execution(
-            task_key=factory_only.task_key,
-            raw_params={},
-            job_def=factory_only,
-            queue_def=None,
-        )
-    with pytest.raises(JobExecutionResolutionError, match="未在注册表"):
-        resolve_job_execution(
-            task_key="missing",
-            raw_params={"value": 7},
-            job_def=None,
-            queue_def=None,
-        )
+    with pytest.raises(JobExecutionError, match="缺少无参执行体"):
+        params_only.build_executor(None)
+    with pytest.raises(JobExecutionError, match="不支持带参执行"):
+        factory_only.build_executor({})
 
 
 def test_host_api_version_range_enforced():
@@ -548,11 +469,8 @@ def test_manifest_host_api_version_range_enforced(tmp_path):
     assert PLUGIN_LOAD_ERRORS[plugin_id]["stage"] == "validate_registration"
 
 
-def test_manifest_register_version_mismatch_accepts_manifest(tmp_path):
-    """register 不显式传 host_api_version 时默认跟随宿主（v1 老插件漂移为 2）：
-
-    manifest 声明 1 仍以 manifest 为准正常加载，不静默拒绝（运行期行为按 v2 语义）。
-    """
+def test_manifest_register_version_mismatch_rejects_legacy_plugin(tmp_path):
+    """旧 Host API 不再通过兼容分支加载。"""
     import json
 
     from src.config.config import Plugins
@@ -580,16 +498,13 @@ def test_manifest_register_version_mismatch_accepts_manifest(tmp_path):
         encoding="utf-8",
     )
 
-    loaded = load_enabled_plugins(
-        Plugins(enabled=[plugin_id]),
-        root_dir=tmp_path,
-    )
-    assert [registration.plugin_id for registration in loaded] == [plugin_id]
-    assert PLUGIN_LOAD_ERRORS == {}
+    loaded = load_enabled_plugins(Plugins(enabled=[plugin_id]), root_dir=tmp_path)
+    assert loaded == ()
+    assert PLUGIN_LOAD_ERRORS[plugin_id]["stage"] == "validate_registration"
 
 
 def test_registry_skips_plugin_job_conflicting_with_queue_key():
-    def run(reporter):
+    def run(reporter, params):
         return {}
 
     registration = PluginRegistration(
@@ -603,7 +518,7 @@ def test_registry_skips_plugin_job_conflicting_with_queue_key():
                 cli_name="bad-job",
                 cli_help="x",
                 default_cron="0 5 * * *",
-                service_factory=run,
+                handler=run,
             ),
         ),
     )
@@ -613,7 +528,7 @@ def test_registry_skips_plugin_job_conflicting_with_queue_key():
 
 
 def test_registry_isolates_plugin_job_conflicting_with_builtin():
-    def run(reporter):
+    def run(reporter, params):
         return {}
 
     builtin = JobDefinition(
@@ -622,7 +537,7 @@ def test_registry_isolates_plugin_job_conflicting_with_builtin():
         cli_name="builtin-x",
         cli_help="x",
         cron_setting="movie_heat_cron",
-        service_factory=run,
+        service_factory=lambda reporter: run(reporter, {}),
     )
     plugin_job = JobDefinition(
         task_key="builtin_x",
@@ -630,7 +545,7 @@ def test_registry_isolates_plugin_job_conflicting_with_builtin():
         cli_name="plugin-x",
         cli_help="x",
         default_cron="0 5 * * *",
-        service_factory=run,
+        handler=run,
     ).model_copy(update={"plugin_id": "bad_plugin"})
     registration = PluginRegistration(
         plugin_id="bad_plugin",

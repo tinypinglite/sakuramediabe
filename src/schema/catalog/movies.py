@@ -200,6 +200,18 @@ class MovieJavdbSearchRequest(SchemaModel):
         return normalized
 
 
+class MovieHeatRecomputeParams(SchemaModel):
+    movie_number: str = Field(min_length=1)
+
+    @field_validator("movie_number")
+    @classmethod
+    def validate_movie_number(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("movie_number cannot be blank")
+        return normalized
+
+
 class MovieSeriesListRequest(SchemaModel):
     series_id: int = Field(ge=1)
     sort: str | None = None

@@ -24,7 +24,7 @@ def _zip_bytes(plugin_id: str = "api_plugin", version: str = "1.0.0") -> bytes:
             "plugin_id": plugin_id,
             "display_name": "API 演示",
             "version": version,
-            "host_api_version": 1,
+            "host_api_version": 3,
         },
         ensure_ascii=False,
     )

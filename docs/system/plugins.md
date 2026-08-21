@@ -1,7 +1,7 @@
 # SakuraMedia 插件系统开发指南
 
 > 本文面向插件开发者，描述当前版本的稳定契约
-> （插件通过 `host_api_version` 与宿主协商兼容版本，当前为 2）。
+> （当前插件 Host API 为 3；旧版本插件不再兼容加载）。
 
 ## 1. 插件是什么
 
@@ -32,9 +32,9 @@
 
 | 插件类型 | 说明 | 典型场景 |
 |---|---|---|
-| 定时任务插件 | `default_cron` + `service_factory`，按 cron 入队执行 | 定时抓取外部站点/榜单的番号列表并批量导入影片元数据；定时为主库影片抓字幕；定时拉取外部数据缓存到插件 `data_dir` |
-| 手动任务插件 | `manual_only` + `params_schema` + `params_handler`，无 cron、只能手动触发（通常配合参数模型） | 手动指定番号补抓单部影片元数据或字幕；按插件自定义参数处理 `data_dir` 里的任务清单 |
-| 混合任务插件 | 同一任务同时声明 cron 与参数模型 | 定时全量批量抓取，手动指定单个番号重试/补抓 |
+| 定时任务插件 | `default_cron` + `handler`，按 cron 入队执行 | 定时抓取外部站点/榜单的番号列表并批量导入影片元数据；定时为主库影片抓字幕；定时拉取外部数据缓存到插件 `data_dir` |
+| 手动任务插件 | `manual_only` + `params_schema` + `handler`，无 cron、只能手动触发（通常配合参数模型） | 手动指定番号补抓单部影片元数据或字幕；按插件自定义参数处理 `data_dir` 里的任务清单 |
+| 混合任务插件 | `default_cron` + `params_schema` + `handler` | 定时全量批量抓取，手动指定单个番号重试/补抓 |
 | 排行榜来源插件 | 声明 `discovery.ranking_source` 扩展点 + 注册同步任务，宿主负责注册、编排与写库（见 6.6） | 提供 JavDB 等站点的排行榜来源；未安装时 `/ranking-sources` 返回空列表 |
 
 注意：表格里的"抓榜单/抓字幕"都是**插件自己访问外部站点抓取**，宿主只提供
@@ -98,7 +98,7 @@
   "plugin_id": "subtitle_fetch",
   "display_name": "字幕抓取",
   "version": "1.0.0",
-  "host_api_version": 2,
+  "host_api_version": 3,
   "requires_python": ">=3.10",
   "author": "example",
   "homepage": "https://example.com/subtitle_fetch"
@@ -190,7 +190,7 @@ uv run python -m src.start.commands plugins clear-field-owners \
 | `plugin_id` | 是 | `^[a-z][a-z0-9_]*$`，与目录名、`plugins.enabled` 项一致 |
 | `display_name` | 是 | 展示名 |
 | `version` | 是 | 插件版本（PEP 440） |
-| `host_api_version` | 是 | 插件声明的宿主接口版本，必须满足 `MIN_SUPPORTED <= v <= HOST_API_VERSION`（当前 `MIN_SUPPORTED=1`、`HOST_API_VERSION=2`；以 manifest 声明为准） |
+| `host_api_version` | 是 | 必须等于当前 Host API 版本 `3`；旧版本插件拒绝加载 |
 | `requires_python` | 否 | 与宿主 Python 解释器（3.10）校验 |
 | `author` / `homepage` | 否 | 展示信息 |
 
@@ -224,7 +224,7 @@ def register(context: PluginContext) -> PluginRegistration:
 | `plugin_id` | 必须与 manifest / 目录名一致 |
 | `display_name` | 展示名 |
 | `version` | 必须与 manifest 完全一致 |
-| `host_api_version` | 区间校验（当前 `[1, 2]`，以 manifest 声明为准；与 register 声明不一致时告警但以 manifest 为准，见 4.2） |
+| `host_api_version` | 必须等于当前版本 `3`，且必须与 `register()` 返回值一致 |
 | `jobs` | `JobDefinition` 元组，允许为空 |
 | `extensions` | `PluginExtension` 元组，允许为空；业务领域扩展声明，当前登记的扩展点见 6.6 |
 
@@ -244,22 +244,20 @@ from src.scheduler.contracts import JobDefinition
 | `cli_name` | 是 | `aps` 子命令名；全局唯一 |
 | `cli_help` | 是 | CLI 帮助与任务中心展示文案 |
 | `default_cron` | 视形态 | 定时任务的默认 cron 表达式 |
-| `service_factory` | 视形态 | `Callable[[TaskRunReporter], Any]`，cron 执行体 |
+| `handler` | 是 | `Callable[[TaskRunReporter, dict], Any]`；无参数触发时收到空对象 `{}` |
 | `params_schema` | 否 | pydantic `BaseModel` 子类，手动触发时校验请求体 |
-| `params_handler` | 否 | `Callable[[TaskRunReporter, dict], Any]`，带参执行体 |
 | `manual_only` | 否 | `True` 表示无 cron，只能手动触发（可配合参数模型） |
 | `manual_trigger_allowed` | 否 | 是否允许 HTTP 手动触发，默认 `True` |
 | `business_recovery` | 否 | 崩溃恢复时联动清理插件业务状态的钩子 |
-| `format_stats` | 否 | 把结果 dict 格式化为 CLI 统计文案 |
 | `cron_setting` | - | **插件禁止声明**（宿主 Scheduler 字段，由 loader 拒绝） |
 | `plugin_id` | - | **禁止自行声明**（loader 注入） |
 
 校验规则（违反则加载失败并隔离该插件）：
 
-- 必须提供 `service_factory` 或 `params_handler` 至少一个；
-- cron 任务必须提供 `service_factory`；
+- 必须提供 `handler`，插件不能声明 `service_factory` 或 `params_handler`；
+- handler 签名固定为 `(reporter, params)`，所有任务都由同一队列 worker 执行；
 - `manual_only` 任务不能声明任何 cron，且必须允许手动触发；
-- `params_schema` 与 `params_handler` 必须成对出现；
+- `params_schema` 只能配合统一 `handler` 使用；
 - `default_cron` 必须是合法 crontab 表达式；
 - 同插件内 `task_key` 不能重复。
 
@@ -274,7 +272,7 @@ JobDefinition(
     cli_name="sync-daily",
     cli_help="每日同步",
     default_cron="0 4 * * *",
-    service_factory=lambda reporter: run_sync(reporter),
+    handler=lambda reporter, params: run_sync(reporter, params),
 )
 ```
 
@@ -291,13 +289,12 @@ JobDefinition(
     cli_help="按番号抓取",
     manual_only=True,
     params_schema=Params,
-    params_handler=lambda reporter, params: fetch_one(reporter, params),
+    handler=lambda reporter, params: fetch_one(reporter, params),
 )
 ```
 
-**混合任务**：同时声明 `default_cron + service_factory` 与
-`params_schema + params_handler`。定时触发走 `service_factory`（无参），
-手动触发带 body 时走 `params_handler`。
+**混合任务**：同时声明 `default_cron`、`params_schema` 和 `handler`。
+定时触发时 handler 收到 `{}`，手动触发带 body 时收到校验后的参数对象。
 
 ### 5.4 任务唯一性
 
@@ -501,11 +498,11 @@ def register(context: PluginContext) -> PluginRegistration:
   和同步管线，必须把插件的 `source_key` / boards 收编进自己的注册表，
   跨插件冲突由宿主裁决。
 
-### 6.8 影片快照与受保护字段（v2 契约）
+### 6.8 影片快照与受保护字段（领域 v2 契约）
 
-`HOST_API_VERSION` 为 2（`MIN_SUPPORTED_HOST_API_VERSION` 保持 1，v1 插件可以继续
-加载，但运行期行为按 v2 语义：`import_movie_by_number` 返回的是不可变
-`MovieSnapshot` 而非可写 ORM 对象，仍依赖旧返回值属性的插件必须升级）。
+插件 Host API 当前为 3；影片快照能力沿用领域 v2 语义：
+`import_movie_by_number` 返回不可变 `MovieSnapshot` 而非可写 ORM 对象。
+旧 Host API 插件必须先升级任务契约和声明版本。
 读取与导入只返回不可变 `MovieSnapshot`，插件拿不到任何可写 ORM
 对象；受保护字段（插件可写白名单，见 v2-lite 设计文档）只能经
 `context.movies.patch` 写入。
@@ -691,9 +688,8 @@ enabled = ["subtitle_fetch"]
 
 **宿主升级会破坏我的插件吗？**
 
-`host_api_version` 区间校验提供了兼容信号：契约只增不减时提高
-`HOST_API_VERSION`；破坏性行为变更不会强制提高 `MIN_SUPPORTED_HOST_API_VERSION`
-（v1 插件仍可加载，但运行期行为按最新版本语义执行，见 6.8 的 v2 说明）。
+`host_api_version` 必须精确匹配当前版本；破坏性契约变更会直接拒绝旧插件，
+不再保留旧任务执行适配层。
 插件应只依赖本文描述的公开契约，不绑定宿主内部实现。
 
 **插件任务会并发运行吗？**

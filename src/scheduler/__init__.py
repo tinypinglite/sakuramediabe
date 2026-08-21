@@ -1,8 +1,7 @@
 from .contracts import JobDefinition
 from .logging import get_task_logger
-from .progress import TqdmProgressAdapter
 
-__all__ = ["JOB_REGISTRY", "JobDefinition", "TqdmProgressAdapter", "get_task_logger"]
+__all__ = ["JOB_REGISTRY", "JobDefinition", "get_task_logger"]
 
 
 def __getattr__(name: str):

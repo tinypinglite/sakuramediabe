@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from datetime import timedelta
 from typing import Any
 
@@ -21,10 +20,8 @@ from src.common.runtime_time import (
 from src.config.config import Scheduler, settings
 from src.model import BackgroundTaskRun
 from src.scheduler.contracts import JobDefinition
-from src.scheduler.job_execution_adapter import resolve_job_definition_handler
 from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.scheduler.worker import TaskWorker
-from src.service.system import ActivityService
 from src.service.system.activity_service import TaskRunConflictError
 from src.service.system.task_queue_service import (
     BOOTSTRAP_QUEUE_TASK_KEYS,
@@ -39,7 +36,6 @@ from src.service.transfers.downloads.progress_sync_service import (
 )
 from src.start.recovery import recover_interrupted_tasks
 
-INTERRUPTED_TASK_RUN_ERROR_MESSAGE = "任务执行中断，等待重试"
 DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID = "_internal_download_progress_snapshot"
 BOOTSTRAP_RETRY_GRACE_SECONDS = 1
 BOOTSTRAP_ERROR_RETRY_SECONDS = 5
@@ -83,75 +79,17 @@ def resolve_job_cron_expr(job_def: JobDefinition) -> str | None:
     return getattr(Scheduler(), job_def.cron_setting)
 
 
-def _prepare_recovery(
-    job_def: JobDefinition,
-    params: dict[str, Any] | None = None,
-) -> tuple[Callable[..., Any], dict[str, int], int]:
-    """统一执行 stale task_run 回收，并把回收统计折叠进任务结果。"""
-    recovered_task_runs = ActivityService.recover_interrupted_task_runs(
-        task_key=job_def.task_key,
-        error_message=INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
-        allow_null_owner=True,
-    )
-    recovery_stats: dict[str, int] = {
-        "recovered_task_runs": len(recovered_task_runs),
-    }
-    if recovered_task_runs and job_def.business_recovery:
-        recovery_stats.update(job_def.business_recovery())
-
-    # 同步旧入口也必须保留 NULL / 显式空对象的差别；queue override 不在此参与分派。
-    func = resolve_job_definition_handler(job_def=job_def, raw_params=params)
-    if recovered_task_runs:
-        original_func = func
-
-        def func_with_recovery(reporter):
-            result = original_func(reporter)
-            if isinstance(result, dict):
-                result.update(recovery_stats)
-                return result
-            return result
-
-        func = func_with_recovery
-
-    return func, recovery_stats, len(recovered_task_runs)
-
-
 def run_job(
     job_def: JobDefinition,
     *,
     trigger_type: str = "scheduled",
-    extra_callbacks: list[Callable[[dict[str, Any]], None]] | None = None,
     params: dict[str, Any] | None = None,
-) -> Any:
-    """通用任务执行入口，供 APS 定时触发和 CLI 手动触发共用。"""
+) -> BackgroundTaskRun | None:
+    """统一任务入口：只入队，实际执行始终由 worker 完成。"""
     ensure_database_ready()
-
-    # 统一先回收当前 task_key 遗留的 task_run，确保 stale mutex 不会卡死后续调度。
-    func, _recovery_stats, _recovered_count = _prepare_recovery(job_def, params=params)
-
-    conflict_policy = "raise" if trigger_type == "manual" else "skip"
-    result = ActivityService.run_task(
-        task_key=job_def.task_key,
-        trigger_type=trigger_type,
-        func=func,
-        log_task_name=job_def.log_name,
-        extra_callbacks=extra_callbacks,
-        mutex_key=f"aps:{job_def.task_key}" if trigger_type in {"manual", "scheduled"} else None,
-        conflict_policy=conflict_policy,
-    )
-    if (
-        trigger_type == "scheduled"
-        and isinstance(result, dict)
-        and result.get("task_skipped") is True
-        and result.get("reason") == "mutex_conflict"
-    ):
-        logger.info(
-            "定时任务因同任务仍在运行而跳过 task_key={} blocking_task_run_id={} blocking_trigger_type={}",
-            job_def.task_key,
-            result.get("blocking_task_run_id"),
-            result.get("blocking_trigger_type"),
-        )
-    return result
+    if trigger_type == "scheduled":
+        return enqueue_scheduled_job(job_def)
+    return submit_manual_job(job_def, params=params)
 
 
 def enqueue_scheduled_job(job_def: JobDefinition) -> BackgroundTaskRun | None:
@@ -212,7 +150,7 @@ def _schedule_bootstrap_job(
     """把一次性引导任务挂成立刻入队的 date job。
 
     复用注册表里 cron 任务的 task_key 与队列 mutex，因此与定时触发天然互斥；
-    ``params=None`` 保留无参 factory 语义，显式参数则交给宿主私有 queue override。
+    参数统一交给任务自己的 handler 或参数执行体。
     """
     if job_key not in BOOTSTRAP_QUEUE_TASK_KEYS:
         raise ValueError(f"unsupported_bootstrap_task_key: {job_key}")
@@ -360,7 +298,7 @@ def _bootstrap_gfriends_filetree_refresh(scheduler: BlockingScheduler) -> None:
             scheduler,
             "gfriends_filetree_refresh",
             job_id="bootstrap_gfriends_filetree_refresh",
-            # 启动预热尊重现有 TTL，不强制刷新；cron 的 NULL 参数仍走 force=True factory。
+            # 启动预热尊重现有 TTL，不强制刷新；cron 的空参数由 handler 默认 force=True。
             params={"force": False},
         )
     except Exception:

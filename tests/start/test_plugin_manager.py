@@ -30,7 +30,7 @@ def _make_plugin_dir(
                 "plugin_id": plugin_id,
                 "display_name": "演示",
                 "version": version,
-                "host_api_version": 1,
+                "host_api_version": 3,
             },
             ensure_ascii=False,
         ),

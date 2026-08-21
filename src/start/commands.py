@@ -17,7 +17,6 @@ from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import init_database
 from src.model.enums import MediaLibraryBackend
 from src.plugins.manager import PluginManager
-from src.scheduler.progress import TqdmProgressAdapter
 from src.schema.playback.media_libraries import MediaLibraryCreateRequest
 from src.service.catalog import MovieThinCoverBackfillService
 from src.service.catalog.movie_asset_shard_migration_service import (
@@ -332,29 +331,26 @@ def aps(ctx: click.Context):
 
 
 # ---------------------------------------------------------------------------
-# 基于 JOB_REGISTRY 自动注册 APS 子命令，每个命令带 tqdm 进度条
+# 基于 JOB_REGISTRY 自动注册 APS 子命令；命令只负责提交队列
 # ---------------------------------------------------------------------------
 
 
 def _run_cli_job(job_def, params=None):
     from src.start.aps import run_job
 
-    adapter = TqdmProgressAdapter()
     try:
-        stats = run_job(
+        task_run = run_job(
             job_def,
             trigger_type="manual",
             params=params,
-            extra_callbacks=[adapter.callback],
         )
     except TaskRunConflictError as exc:
         raise click.ClickException(str(exc))
-    finally:
-        adapter.close()
-    if job_def.format_stats and isinstance(stats, dict):
-        click.echo(job_def.format_stats(stats))
-    else:
-        click.echo(f"{job_def.cli_name} finished: {stats}")
+    if task_run is None:
+        raise click.ClickException(f"{job_def.cli_name} 未能入队")
+    click.echo(
+        f"{job_def.cli_name} queued: task_run_id={task_run.id} state={task_run.state}"
+    )
 
 
 def _register_aps_command(job_def, group):
@@ -382,7 +378,10 @@ def _register_aps_command(job_def, group):
             decoded = json.loads(params_json)
             if decoded is None:
                 # JSON null 仅对可走 factory 的非 manual_only 任务等同省略参数。
-                if job_def.service_factory is None or job_def.manual_only:
+                if (
+                    job_def.service_factory is None
+                    and job_def.handler is None
+                ) or job_def.manual_only:
                     raise click.BadParameter(
                         "当前任务的参数不能为 JSON null",
                         param_hint="--params-json",

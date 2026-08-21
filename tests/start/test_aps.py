@@ -9,7 +9,6 @@ from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.service.system import TaskRunConflictError
 from src.start.aps import (
     DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID,
-    INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
     _bootstrap_gfriends_filetree_refresh,
     _bootstrap_movie_similarity_index,
     _schedule_bootstrap_job,
@@ -19,27 +18,6 @@ from src.start.aps import (
     run_job,
 )
 from src.start.commands import main
-
-
-class _FakeReporter:
-    task_run_id = 1
-
-    def progress_callback(self, _payload):
-        return None
-
-
-def _mock_recover_interrupted_task_runs(monkeypatch, recovered_task_runs=None):
-    captured = {}
-
-    def fake_recover_interrupted_task_runs(**kwargs):
-        captured.update(kwargs)
-        return list(recovered_task_runs or [])
-
-    monkeypatch.setattr(
-        "src.start.aps.ActivityService.recover_interrupted_task_runs",
-        fake_recover_interrupted_task_runs,
-    )
-    return captured
 
 
 @pytest.fixture(autouse=True)
@@ -64,20 +42,18 @@ def test_aps_command_invokes_scheduler_entrypoint(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# CLI 命令测试: 统一 mock run_job
+# CLI 命令测试: 统一 mock queue submission
 # ---------------------------------------------------------------------------
 
 
-def _test_cli_command(monkeypatch, cli_name, return_stats, expected_output):
+def _test_cli_command(monkeypatch, cli_name, _return_stats, _expected_output):
     """通用 CLI 命令测试辅助函数。"""
     called = {"job": 0}
 
-    def fake_run_job(
-        job_def, *, trigger_type="scheduled", extra_callbacks=None, params=None
-    ):
+    def fake_run_job(job_def, *, trigger_type="scheduled", params=None):
         called["job"] += 1
         assert trigger_type == "manual"
-        return return_stats
+        return type("TaskRun", (), {"id": 7, "state": "pending"})()
 
     monkeypatch.setattr("src.start.aps.run_job", fake_run_job)
 
@@ -86,7 +62,7 @@ def _test_cli_command(monkeypatch, cli_name, return_stats, expected_output):
 
     assert result.exit_code == 0, result.output
     assert called["job"] == 1
-    assert expected_output in result.output
+    assert "task_run_id=7 state=pending" in result.output
 
 
 def test_dynamic_aps_cli_mixed_job_distinguishes_omitted_and_explicit_empty_params(
@@ -256,11 +232,9 @@ def test_aps_subcommand_prepares_database_before_running_job(monkeypatch):
     def fake_prepare_database():
         events.append("db.ready")
 
-    def fake_run_job(
-        job_def, *, trigger_type="scheduled", extra_callbacks=None, params=None
-    ):
+    def fake_run_job(job_def, *, trigger_type="scheduled", params=None):
         events.append(("job", trigger_type))
-        return {"candidate_count": 1, "updated_count": 1, "formula_version": "v3"}
+        return type("TaskRun", (), {"id": 7, "state": "pending"})()
 
     runner = CliRunner()
     monkeypatch.setattr("src.start.commands._ensure_database_ready", fake_prepare_database)
@@ -597,7 +571,7 @@ def test_similarity_bootstrap_enqueues_startup_run_and_worker_executes_factory(
     assert stored.mutex_key is None
 
 
-def test_gfriends_bootstrap_explicit_params_preserve_force_false_and_cron_null_factory(
+def test_gfriends_bootstrap_explicit_params_preserve_force_false_and_cron_null_handler(
     test_db, monkeypatch, tmp_path
 ):
     from src.model import BackgroundTaskRun
@@ -617,11 +591,6 @@ def test_gfriends_bootstrap_explicit_params_preserve_force_false_and_cron_null_f
     )
     monkeypatch.setattr(
         "src.metadata.factory.refresh_gfriends_filetree",
-        fake_refresh_gfriends_filetree,
-    )
-    # cron factory 在 registry 模块绑定同一函数名，单独替换以验证 NULL 分派。
-    monkeypatch.setattr(
-        "src.scheduler.registry.refresh_gfriends_filetree",
         fake_refresh_gfriends_filetree,
     )
     scheduler = build_scheduler()
@@ -1178,202 +1147,31 @@ def test_subtitle_task_run_has_no_domain_recovery_handler():
 
 
 # ---------------------------------------------------------------------------
-# run_job 直接调用测试
+# run_job 只入队测试
 # ---------------------------------------------------------------------------
 
 
-def test_run_job_ensures_database_and_calls_activity_service(monkeypatch):
-    events = []
+def test_run_job_manual_returns_pending_task_run(test_db):
+    task_run = run_job(JOB_REGISTRY_BY_KEY["movie_heat_update"], trigger_type="manual")
 
-    def fake_ensure_database_ready():
-        events.append("ready")
+    assert task_run.state == "pending"
+    assert task_run.task_key == "movie_heat_update"
+    assert task_run.scheduled_at is not None
 
-    def fake_run_task(
-        *,
-        task_key,
-        trigger_type,
-        func,
-        task_name=None,
-        task_run_id=None,
-        log_task_name=None,
-        extra_callbacks=None,
-        mutex_key=None,
-        conflict_policy="raise",
-    ):
-        events.append(("run_task", task_key, log_task_name, mutex_key, conflict_policy))
-        return func(_FakeReporter())
 
-    monkeypatch.setattr("src.start.aps.ensure_database_ready", fake_ensure_database_ready)
-    monkeypatch.setattr("src.start.aps.ActivityService.run_task", fake_run_task)
-    recovered_payload = _mock_recover_interrupted_task_runs(monkeypatch)
-
-    job_def = JOB_REGISTRY_BY_KEY["movie_heat_update"]
+def test_run_job_scheduled_delegates_to_enqueue(monkeypatch):
+    captured = []
+    marker = object()
+    monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: None)
     monkeypatch.setattr(
-        "src.scheduler.registry.MovieHeatService.update_movie_heat",
-        lambda: {
-            "candidate_count": 12, "updated_count": 11, "formula_version": "v3",
-        },
+        "src.start.aps.enqueue_scheduled_job",
+        lambda job_def: captured.append(job_def.task_key) or marker,
     )
 
-    result = run_job(job_def)
+    result = run_job(JOB_REGISTRY_BY_KEY["actor_subscription_sync"])
 
-    assert result["candidate_count"] == 12
-    assert recovered_payload == {
-        "task_key": "movie_heat_update",
-        "error_message": INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
-        "allow_null_owner": True,
-    }
-    assert events == ["ready", ("run_task", "movie_heat_update", "movie-heat-update", "aps:movie_heat_update", "skip")]
-
-
-def test_run_job_mixed_explicit_empty_params_uses_params_handler(monkeypatch):
-    from pydantic import BaseModel
-
-    from src.scheduler.contracts import JobDefinition
-
-    calls = []
-
-    class EmptyParams(BaseModel):
-        pass
-
-    job_def = JobDefinition(
-        task_key="demo_sync_mixed",
-        log_name="demo-sync-mixed",
-        cli_name="demo-sync-mixed",
-        cli_help="sync mixed",
-        default_cron="0 5 * * *",
-        service_factory=lambda reporter: calls.append("factory") or {},
-        params_schema=EmptyParams,
-        params_handler=lambda reporter, params: calls.append(("params", params)) or {},
-    ).model_copy(update={"plugin_id": "demo_plugin"})
-
-    monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: None)
-    _mock_recover_interrupted_task_runs(monkeypatch)
-    monkeypatch.setattr(
-        "src.start.aps.ActivityService.run_task",
-        lambda **kwargs: kwargs["func"](_FakeReporter()),
-    )
-
-    result = run_job(job_def, trigger_type="manual", params={})
-
-    assert result == {}
-    assert calls == [("params", {})]
-
-
-def test_run_job_manual_uses_raise_conflict_policy(monkeypatch):
-    captured = {}
-
-    def fake_run_task(
-        *,
-        task_key,
-        trigger_type,
-        func,
-        task_name=None,
-        task_run_id=None,
-        log_task_name=None,
-        extra_callbacks=None,
-        mutex_key=None,
-        conflict_policy="raise",
-    ):
-        captured.update(
-            {
-                "task_key": task_key,
-                "trigger_type": trigger_type,
-                "mutex_key": mutex_key,
-                "conflict_policy": conflict_policy,
-            }
-        )
-        return {"ok": True}
-
-    monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: None)
-    monkeypatch.setattr("src.start.aps.ActivityService.run_task", fake_run_task)
-    recovered_payload = _mock_recover_interrupted_task_runs(monkeypatch)
-
-    result = run_job(JOB_REGISTRY_BY_KEY["actor_subscription_sync"], trigger_type="manual")
-
-    assert result == {"ok": True}
-    assert recovered_payload == {
-        "task_key": "actor_subscription_sync",
-        "error_message": INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
-        "allow_null_owner": True,
-    }
-    assert captured == {
-        "task_key": "actor_subscription_sync",
-        "trigger_type": "manual",
-        "mutex_key": "aps:actor_subscription_sync",
-        "conflict_policy": "raise",
-    }
-
-
-def test_run_job_scheduled_skip_logs_and_returns_skip_payload(monkeypatch):
-    events = []
-
-    def fake_run_task(
-        *,
-        task_key,
-        trigger_type,
-        func,
-        task_name=None,
-        task_run_id=None,
-        log_task_name=None,
-        extra_callbacks=None,
-        mutex_key=None,
-        conflict_policy="raise",
-    ):
-        return {
-            "task_skipped": True,
-            "reason": "mutex_conflict",
-            "blocking_task_run_id": 7,
-            "blocking_trigger_type": "manual",
-        }
-
-    monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: None)
-    monkeypatch.setattr("src.start.aps.ActivityService.run_task", fake_run_task)
-    monkeypatch.setattr("src.start.aps.logger.info", lambda message, *args: events.append(message.format(*args)))
-    recovered_payload = _mock_recover_interrupted_task_runs(monkeypatch)
-
-    result = run_job(JOB_REGISTRY_BY_KEY["actor_subscription_sync"], trigger_type="scheduled")
-
-    assert result["task_skipped"] is True
-    assert recovered_payload == {
-        "task_key": "actor_subscription_sync",
-        "error_message": INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
-        "allow_null_owner": True,
-    }
-    assert any("定时任务因同任务仍在运行而跳过 task_key=actor_subscription_sync" in event for event in events)
-
-
-def test_run_job_recovers_task_runs_for_job_without_business_recovery(monkeypatch):
-    def fake_run_task(
-        *,
-        task_key,
-        trigger_type,
-        func,
-        task_name=None,
-        task_run_id=None,
-        log_task_name=None,
-        extra_callbacks=None,
-        mutex_key=None,
-        conflict_policy="raise",
-    ):
-        return func(_FakeReporter())
-
-    monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: None)
-    monkeypatch.setattr("src.start.aps.ActivityService.run_task", fake_run_task)
-    recovered_payload = _mock_recover_interrupted_task_runs(monkeypatch, recovered_task_runs=[object()])
-    monkeypatch.setattr(
-        "src.scheduler.registry.MovieHeatService.update_movie_heat",
-        lambda: {"candidate_count": 1, "updated_count": 1, "formula_version": "v3"},
-    )
-
-    result = run_job(JOB_REGISTRY_BY_KEY["movie_heat_update"])
-
-    assert result["recovered_task_runs"] == 1
-    assert recovered_payload == {
-        "task_key": "movie_heat_update",
-        "error_message": INTERRUPTED_TASK_RUN_ERROR_MESSAGE,
-        "allow_null_owner": True,
-    }
+    assert result is marker
+    assert captured == ["actor_subscription_sync"]
 
 
 # ---------------------------------------------------------------------------
@@ -1538,11 +1336,6 @@ def test_internal_download_progress_sampler_writes_directly_without_task_run(mon
         "src.start.aps.DownloadProgressSyncService",
         FakeProgressSyncService,
     )
-    monkeypatch.setattr(
-        "src.start.aps.ActivityService.run_task",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not create TaskRun")),
-    )
-
     _sync_download_progress_snapshots()
 
     assert events == ["db", "sync"]
@@ -1686,10 +1479,10 @@ def test_task_worker_rapid_failure_suppresses_generic_notification(
     test_db, monkeypatch
 ):
     from src.model import BackgroundTaskRun, SystemNotification
+    from src.scheduler.contracts import JobDefinition
     from src.scheduler.queue_tasks import (
         LANE_RAPID_UPLOAD,
         QUEUE_TASK_REGISTRY,
-        QueueTaskDefinition,
     )
     from src.scheduler.worker import TaskWorker
     from src.service.system.task_queue_service import TaskQueueService
@@ -1700,9 +1493,12 @@ def test_task_worker_rapid_failure_suppresses_generic_notification(
     monkeypatch.setitem(
         QUEUE_TASK_REGISTRY,
         "media_rapid_upload",
-        QueueTaskDefinition(
+        JobDefinition(
             task_key="media_rapid_upload",
             log_name="media-rapid-upload",
+            cli_name="media-rapid-upload",
+            cli_help="rapid upload",
+            manual_only=True,
             handler=fail_rapid_upload,
             lane=LANE_RAPID_UPLOAD,
             notify_result=False,
@@ -1751,7 +1547,8 @@ def test_default_lane_never_claims_import_lane_tasks(test_db):
 def test_task_worker_dispatches_queue_task_handler_with_params(test_db, monkeypatch):
     from src.common.runtime_time import utc_now_for_db
     from src.model import BackgroundTaskRun
-    from src.scheduler.queue_tasks import QUEUE_TASK_REGISTRY, QueueTaskDefinition
+    from src.scheduler.contracts import JobDefinition
+    from src.scheduler.queue_tasks import QUEUE_TASK_REGISTRY
     from src.scheduler.worker import TaskWorker
     from src.service.system.activity_service import ActivityService
     from src.service.system.task_queue_service import TaskQueueService
@@ -1760,9 +1557,12 @@ def test_task_worker_dispatches_queue_task_handler_with_params(test_db, monkeypa
     monkeypatch.setitem(
         QUEUE_TASK_REGISTRY,
         "library_import",
-        QueueTaskDefinition(
+        JobDefinition(
             task_key="library_import",
             log_name="library-import",
+            cli_name="library-import",
+            cli_help="library import",
+            manual_only=True,
             handler=lambda reporter, params: calls.append(params) or {"ok": 1},
             lane="import",
         ),
@@ -1780,51 +1580,39 @@ def test_task_worker_dispatches_queue_task_handler_with_params(test_db, monkeypa
     assert BackgroundTaskRun.get_by_id(queued.id).state == "completed"
 
 
-def test_task_worker_single_movie_params_beats_cron_factory(test_db, monkeypatch):
-    """与 cron 同 key 的运行带 params 时走单资源 handler，不带 params 走批任务 factory。"""
-    from src.common.runtime_time import utc_now_for_db
-    from src.scheduler.queue_tasks import QUEUE_TASK_REGISTRY, QueueTaskDefinition
+def test_task_worker_uses_one_job_definition_for_all_params(test_db, monkeypatch):
+    """同一个 JobDefinition 统一承接无参 cron 和显式参数任务。"""
+    from src.scheduler.contracts import JobDefinition
     from src.scheduler.worker import TaskWorker
-    from src.service.system.activity_service import ActivityService
     from src.service.system.task_queue_service import TaskQueueService
 
-    single_calls = []
-    batch_calls = []
-    monkeypatch.setitem(
-        QUEUE_TASK_REGISTRY,
-        "movie_interaction_sync",
-        QueueTaskDefinition(
-            task_key="movie_interaction_sync",
-            log_name="movie-interaction-sync",
-            handler=lambda reporter, params: single_calls.append(params) or {},
-        ),
+    calls = []
+    job_def = JobDefinition(
+        task_key="demo_unified_worker",
+        log_name="demo-unified-worker",
+        cli_name="demo-unified-worker",
+        cli_help="unified worker",
+        default_cron="0 5 * * *",
+        handler=lambda _reporter, params: calls.append(params.copy()) or {},
     )
-    job_def = JOB_REGISTRY_BY_KEY["movie_interaction_sync"]
-    fake_def = job_def.model_copy(
-        update={"service_factory": lambda _reporter: batch_calls.append(1) or {}}
-    )
-    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, "movie_interaction_sync", fake_def)
+    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, job_def.task_key, job_def)
 
-    ActivityService.create_task_run(
-        task_key="movie_interaction_sync",
+    TaskQueueService.enqueue(
+        task_key=job_def.task_key,
         trigger_type="manual",
-        params={"movie_id": 42},
-        scheduled_at=utc_now_for_db(),
+        params={"movie_number": "ABC-123"},
     )
     TaskWorker()._execute(TaskQueueService.claim_next())
-    ActivityService.create_task_run(
-        task_key="movie_interaction_sync",
+    TaskQueueService.enqueue(
+        task_key=job_def.task_key,
         trigger_type="manual",
         params={},
-        scheduled_at=utc_now_for_db(),
     )
     TaskWorker()._execute(TaskQueueService.claim_next())
-    ActivityService.create_task_run(
-        task_key="movie_interaction_sync",
+    TaskQueueService.enqueue(
+        task_key=job_def.task_key,
         trigger_type="scheduled",
-        scheduled_at=utc_now_for_db(),
     )
     TaskWorker()._execute(TaskQueueService.claim_next())
 
-    assert single_calls == [{"movie_id": 42}, {}]
-    assert batch_calls == [1]
+    assert calls == [{"movie_number": "ABC-123"}, {}, {}]

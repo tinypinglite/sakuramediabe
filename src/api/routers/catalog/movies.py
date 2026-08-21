@@ -31,6 +31,7 @@ from src.schema.catalog.movies import (
 )
 from src.schema.catalog.subtitles import MovieSubtitleListResource
 from src.schema.common.pagination import PageResponse
+from src.schema.system.jobs import ManualJobTriggerResponse
 from src.service.catalog import (
     MovieMetadataRefreshService,
     MovieService,
@@ -199,7 +200,11 @@ def refresh_movie_metadata(movie_number: str):
 # 影片单片翻译端点已删除；互动同步由常规定时任务负责。
 
 
-@router.post("/{movie_number}/heat-recompute", response_model=MovieDetailResource)
+@router.post(
+    "/{movie_number}/heat-recompute",
+    response_model=ManualJobTriggerResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 def recompute_movie_heat(movie_number: str):
     return MovieTaskService.recompute_movie_heat(movie_number)
 

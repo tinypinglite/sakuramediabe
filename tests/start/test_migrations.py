@@ -113,14 +113,12 @@ def test_run_pending_migrations_supports_fresh_database_and_is_idempotent(clean_
     assert _schema_migration_names(clean_db) == [CONSOLIDATED_MIGRATION_NAME]
 
 
-def test_run_pending_migrations_supports_current_schema_without_base_marker(clean_db):
+def test_run_pending_migrations_rejects_current_schema_without_base_marker(clean_db):
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
     clean_db.create_tables(TEST_MODELS)
 
-    summary = run_pending_migrations(clean_db)
-
-    assert summary.applied_count == 1
-    assert _schema_migration_names(clean_db) == [CONSOLIDATED_MIGRATION_NAME]
+    with pytest.raises(ValueError, match="unsupported_migration_source"):
+        run_pending_migrations(clean_db)
 
 
 def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_memory(clean_db):

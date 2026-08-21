@@ -21,7 +21,11 @@
   "cron_setting": "movie_heat_cron",
   "cron_expr": "15 0 * * *",
   "manual_trigger_allowed": true,
-  "params_schema": null,
+  "params_schema": {
+    "properties": {"movie_number": {"type": "string", "minLength": 1}},
+    "required": ["movie_number"],
+    "type": "object"
+  },
   "last_task_run": {
     "id": 12,
     "task_key": "movie_heat_update",
@@ -109,20 +113,16 @@
 
 成功响应：
 
-- `200 OK`：返回新建的任务运行记录 ID 与初始状态
+- `202 Accepted`：返回新建的任务运行记录 ID 与初始状态
 
 请求体：
 
-- 仅有 `service_factory` 的无参数任务：省略请求体或传 JSON `null`；传任何非 `null` JSON 对象都会返回 `422 invalid_job_params`。
-- 同时声明 `service_factory`、`params_schema` 和 `params_handler` 的任务：省略请求体或传 JSON `null` 时以 `params=NULL` 入队并执行 `service_factory`；显式传 `{}` 或其他 JSON 对象时，严格通过 `params_schema` 校验后入队并执行 `params_handler`。
-- 仅有 `params_schema` 和 `params_handler` 的 handler-only 任务：必须显式传 JSON 对象；省略请求体或传 JSON `null` 都会返回 `422 invalid_job_params`。若 schema 允许空对象，可传 `{}`。
-- 例如字幕抓取任务可传 `{"movie_number": "ABP-123"}`。
+- 新插件任务统一声明 `handler(reporter, params)`；无参数触发时 `params` 为 `{}`。
+- 声明 `params_schema` 的任务，显式传 JSON 对象时按 schema 校验后入队；声明参数模型的 `manual_only` 任务必须提供请求体。
+- 无参数内建任务可省略请求体或传 JSON `null`；传不支持的对象会返回 `422 invalid_job_params`。
+- 例如单片热度重算可传 `{"movie_number": "ABP-123"}`。
 
-动态 APS CLI 的分派规则与 HTTP 一致：
-
-- 混合任务省略 `--params-json` 或显式传 `--params-json 'null'` 时执行 `service_factory`，显式传 `--params-json '{}'` 或其他对象时校验后执行 `params_handler`；JSON `null` 等同省略仅适用于带 `service_factory` 的非 `manual_only` 任务。
-- handler-only / `manual_only` 任务必须提供非 `null` 的 `--params-json`。
-- factory-only 任务不提供 `--params-json` 选项。
+动态 APS CLI 与 HTTP 使用相同参数校验；命令只提交队列并打印 `task_run_id`，不等待任务结果。
 
 错误响应：
 

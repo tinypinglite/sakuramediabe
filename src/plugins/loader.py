@@ -14,8 +14,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
-from loguru import logger
-
 from src.config.config import Plugins
 from src.plugins.context import PluginContext
 from src.plugins.contracts import (
@@ -94,6 +92,12 @@ def _validate_plugin_jobs(
                 plugin_id,
                 "validate_jobs",
                 f"任务 {job.task_key} 不允许引用宿主 Scheduler 字段",
+            )
+        if job.handler is None or job.service_factory is not None or job.params_handler is not None:
+            raise PluginLoadError(
+                plugin_id,
+                "validate_jobs",
+                f"任务 {job.task_key} 必须使用新的 handler 契约",
             )
         jobs.append(job.model_copy(update={"plugin_id": plugin_id}))
     return tuple(jobs)
@@ -189,11 +193,7 @@ def _load_plugin_dir(
             "register 返回的 version 与 manifest 不一致: "
             f"register={registration.version} manifest={manifest.version}",
         )
-    if not (
-        MIN_SUPPORTED_HOST_API_VERSION
-        <= manifest.host_api_version
-        <= HOST_API_VERSION
-    ):
+    if manifest.host_api_version != HOST_API_VERSION:
         raise PluginLoadError(
             plugin_id,
             "validate_registration",
@@ -202,24 +202,10 @@ def _load_plugin_dir(
             f"host=[{MIN_SUPPORTED_HOST_API_VERSION},{HOST_API_VERSION}]",
         )
     if registration.host_api_version != manifest.host_api_version:
-        # manifest 是插件版本的唯一声明入口；register 返回的 host_api_version 默认
-        # 跟随宿主当前版本漂移（v1 时代默认 1，宿主升级 v2 后默认 2），老插件因此
-        # 常出现声明不一致，属预期漂移，不拒绝加载，以 manifest 为准并告警。
-        logger.warning(
-            "插件 Host API 版本声明不一致 plugin_id={} manifest={} register={}，以 manifest 为准",
+        raise PluginLoadError(
             plugin_id,
-            manifest.host_api_version,
-            registration.host_api_version,
-        )
-    if manifest.host_api_version < HOST_API_VERSION:
-        # 运行期行为统一按 v2 语义（v2-lite 字段主权）：import_movie_by_number 返回
-        # 不可变 MovieSnapshot 而非可写 ORM 对象，依赖旧返回值的 v1 插件必须升级。
-        logger.warning(
-            "插件声明旧版 Host API plugin_id={} manifest={} host={}：运行期行为按 v2 语义，"
-            "import_movie_by_number 返回 MovieSnapshot，依赖旧返回值的插件必须升级",
-            plugin_id,
-            manifest.host_api_version,
-            HOST_API_VERSION,
+            "validate_registration",
+            "register 返回的 host_api_version 与 manifest 不一致",
         )
 
     jobs = _validate_plugin_jobs(

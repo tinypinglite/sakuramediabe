@@ -1,7 +1,7 @@
-"""插件契约 v2 回归测试：MovieSnapshot / context.movies / import_movie_by_number。
+"""插件契约回归测试：MovieSnapshot / context.movies / import_movie_by_number。
 
 覆盖 v2-lite 设计文档第 4 节的保证：读取与导入只返回不可变快照、patch 走
-唯一网关、v1 插件（host_api_version=1）继续兼容加载。白名单当前真实开放
+唯一网关。插件 Host API 只接受当前版本。白名单当前真实开放
 title / summary。
 """
 
@@ -145,16 +145,16 @@ def test_import_movie_by_number_returns_snapshot(monkeypatch):
     assert not hasattr(snapshot, "save")
 
 
-def test_host_api_v2_and_v1_compatibility(tmp_path):
-    """契约 v2 是纯加法：v2 插件默认加载，v1 插件（MIN=1）继续兼容加载。"""
+def test_host_api_accepts_only_current_version(tmp_path):
+    """破坏性契约变更后，旧 Host API 不再兼容加载。"""
     import json
 
     from src.config.config import Plugins
 
-    assert HOST_API_VERSION == 2
-    assert MIN_SUPPORTED_HOST_API_VERSION == 1
+    assert HOST_API_VERSION == 3
+    assert MIN_SUPPORTED_HOST_API_VERSION == 3
 
-    for plugin_id, declared in (("v1_plugin", 1), ("v2_plugin", 2)):
+    for plugin_id, declared in (("legacy_plugin", 2), ("current_plugin", HOST_API_VERSION)):
         pkg = tmp_path / plugin_id
         pkg.mkdir(parents=True, exist_ok=True)
         (pkg / "manifest.json").write_text(
@@ -177,11 +177,8 @@ def test_host_api_v2_and_v1_compatibility(tmp_path):
         (pkg / "__init__.py").write_text(source, encoding="utf-8")
 
     loaded = load_enabled_plugins(
-        Plugins(enabled=["v1_plugin", "v2_plugin"]),
+        Plugins(enabled=["legacy_plugin", "current_plugin"]),
         root_dir=tmp_path,
     )
-    assert [registration.plugin_id for registration in loaded] == [
-        "v1_plugin",
-        "v2_plugin",
-    ]
-    assert PLUGIN_LOAD_ERRORS == {}
+    assert [registration.plugin_id for registration in loaded] == ["current_plugin"]
+    assert PLUGIN_LOAD_ERRORS["legacy_plugin"]["stage"] == "register"

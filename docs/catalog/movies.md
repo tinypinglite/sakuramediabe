@@ -464,11 +464,12 @@ Authorization: Bearer <token>
   - `movie_number`：影片番号
 - 行为：
   - 按与 `metadata-refresh` 相同的标准化规则匹配本地影片
-  - 仅按当前热度公式重算这部影片的 `heat`
-  - 成功后返回最新 `MovieDetailResource`
+  - 创建 `movie_heat_update` 任务，仅按当前热度公式重算这部影片的 `heat`
+  - 立即返回 `202 Accepted`、`task_run_id`、`task_key` 和初始 `state`
+  - 任务完成后的结果通过任务中心接口轮询
 - 错误：
   - `404 movie_not_found`
-  - `500 movie_heat_recompute_failed`
+  - `409 movie_heat_recompute_conflict`
 
 ### `GET /movies/{movie_number}/collection-status`
 
@@ -1318,7 +1319,7 @@ GET /movies/ABC-001
 - `movie_not_found`：影片不存在（404）
 - `movie_interaction_sync_failed`：影片互动数同步失败（502）
 - `movie_javdb_id_missing`：影片缺少 JavDB ID，无法同步互动数（422）
-- `movie_heat_recompute_failed`：影片热度重算失败（500）
+- `movie_heat_recompute_conflict`：影片热度任务正在执行（409）
 - `movie_review_fetch_failed`：影片评论拉取失败（502）
 - `movie_subscription_has_media`：影片存在媒体文件，无法取消订阅（409）
 - `validation_error`：请求参数校验失败（422，例如 `actor_id` 不是整数）

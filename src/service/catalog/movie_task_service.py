@@ -1,46 +1,48 @@
-"""影片同步小任务 service。
-
-单影片翻译入口已删除；互动同步由常规定时任务负责，本类只剩热度重算：
-毫秒级纯 SQL，保持同步响应。
-"""
-
-from loguru import logger
+"""影片同步任务 service。"""
 
 from src.api.exception.errors import ApiError
-from src.schema.catalog.movies import MovieDetailResource
+from src.schema.catalog.movies import MovieHeatRecomputeParams
+from src.schema.system.jobs import ManualJobTriggerResponse
 from src.service.catalog.movie_heat_service import MovieHeatService
 from src.service.catalog.movie_service import MovieService
-from src.service.system.activity_service import ActivityService
+from src.service.system.activity_service import TaskRunConflictError
 
 
 class MovieTaskService:
-    """聚合影片相关的同步小任务。"""
+    """聚合影片相关的异步任务入口。"""
 
     @classmethod
-    def recompute_movie_heat(cls, movie_number: str) -> MovieDetailResource:
+    def recompute_movie_heat(cls, movie_number: str) -> ManualJobTriggerResponse:
         movie, _ = MovieService.require_movie_by_normalized_number(movie_number)
         try:
-            ActivityService.run_task(
-                task_key="movie_heat_update",
-                trigger_type="manual",
-                func=lambda _reporter: {
-                    # 单影片热度重算沿用现有公式，并把结果写入活动中心汇总。
-                    "movie_id": movie.id,
-                    "movie_number": movie.movie_number,
-                    "updated_count": MovieHeatService.update_single_movie_heat(movie.id),
-                    "formula_version": MovieHeatService.FORMULA_VERSION,
-                },
+            from src.scheduler.registry import JOB_REGISTRY_BY_KEY
+            from src.start.aps import submit_manual_job
+
+            task_run = submit_manual_job(
+                JOB_REGISTRY_BY_KEY["movie_heat_update"],
+                params={"movie_number": movie.movie_number},
             )
-        except Exception as exc:
-            logger.exception(
-                "Movie heat recompute failed movie_number={} detail={}",
-                movie.movie_number,
-                exc,
-            )
+        except TaskRunConflictError as exc:
+            blocking = exc.blocking_task_run
             raise ApiError(
-                500,
-                "movie_heat_recompute_failed",
-                "影片热度重算失败",
-                {"movie_number": movie.movie_number, "movie_id": movie.id, "detail": str(exc)},
+                409,
+                "movie_heat_recompute_conflict",
+                "影片热度任务正在执行",
+                {"blocking_task_run_id": blocking.id},
             ) from exc
-        return MovieService.get_movie_detail(movie.movie_number)
+        return ManualJobTriggerResponse(
+            task_run_id=task_run.id,
+            task_key=task_run.task_key,
+            state=task_run.state,
+        )
+
+    @staticmethod
+    def execute_movie_heat(_reporter, params: dict) -> dict[str, int | str]:
+        payload = MovieHeatRecomputeParams.model_validate(params)
+        movie, _ = MovieService.require_movie_by_normalized_number(payload.movie_number)
+        return {
+            "movie_id": movie.id,
+            "movie_number": movie.movie_number,
+            "updated_count": MovieHeatService.update_single_movie_heat(movie.id),
+            "formula_version": MovieHeatService.FORMULA_VERSION,
+        }

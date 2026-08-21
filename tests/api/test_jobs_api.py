@@ -38,9 +38,8 @@ def test_mixed_job_trigger_preserves_missing_null_empty_and_nonempty_body(
         cli_name="demo-http-params",
         cli_help="HTTP params",
         default_cron="0 5 * * *",
-        service_factory=lambda reporter: {},
+        handler=lambda reporter, params: {},
         params_schema=Params,
-        params_handler=lambda reporter, params: {},
     ).model_copy(update={"plugin_id": "demo_plugin"})
     monkeypatch.setitem(JOB_REGISTRY_BY_KEY, job_def.task_key, job_def)
 
@@ -48,7 +47,7 @@ def test_mixed_job_trigger_preserves_missing_null_empty_and_nonempty_body(
     endpoint = f"/system/jobs/{job_def.task_key}/run"
 
     missing = client.post(endpoint, headers=auth_headers)
-    assert missing.status_code == 200
+    assert missing.status_code == 202
     missing_run = BackgroundTaskRun.get_by_id(missing.json()["task_run_id"])
     _release_task_run(missing_run)
     explicit_null = client.post(
@@ -56,11 +55,11 @@ def test_mixed_job_trigger_preserves_missing_null_empty_and_nonempty_body(
         content="null",
         headers={**auth_headers, "Content-Type": "application/json"},
     )
-    assert explicit_null.status_code == 200
+    assert explicit_null.status_code == 202
     null_run = BackgroundTaskRun.get_by_id(explicit_null.json()["task_run_id"])
     _release_task_run(null_run)
     explicit_empty = client.post(endpoint, json={}, headers=auth_headers)
-    assert explicit_empty.status_code == 200
+    assert explicit_empty.status_code == 202
     empty_run = BackgroundTaskRun.get_by_id(explicit_empty.json()["task_run_id"])
     _release_task_run(empty_run)
     explicit_nonempty = client.post(
@@ -68,7 +67,7 @@ def test_mixed_job_trigger_preserves_missing_null_empty_and_nonempty_body(
         json={"value": 7},
         headers=auth_headers,
     )
-    assert explicit_nonempty.status_code == 200
+    assert explicit_nonempty.status_code == 202
     nonempty_run = BackgroundTaskRun.get_by_id(explicit_nonempty.json()["task_run_id"])
 
     assert missing_run.params is None
@@ -90,7 +89,7 @@ def test_handler_only_job_rejects_missing_and_null_body(
         cli_help="HTTP handler only",
         manual_only=True,
         params_schema=EmptyParams,
-        params_handler=lambda reporter, params: {},
+        handler=lambda reporter, params: {},
     ).model_copy(update={"plugin_id": "demo_plugin"})
     monkeypatch.setitem(JOB_REGISTRY_BY_KEY, job_def.task_key, job_def)
     auth_headers = _auth_headers(client, account_user.username)
@@ -137,7 +136,7 @@ def test_factory_only_job_rejects_explicit_body(client, account_user, monkeypatc
     assert BackgroundTaskRun.select().count() == 0
 
 
-def test_builtin_jobs_keep_direct_execution_without_parameter_forms(client, account_user):
+def test_builtin_jobs_accept_parameterless_async_trigger(client, account_user):
     task_keys = (
         "subscribed_movie_auto_download",
         "movie_interaction_sync",
@@ -150,5 +149,29 @@ def test_builtin_jobs_keep_direct_execution_without_parameter_forms(client, acco
         assert job_def.params_schema is None
         assert job_def.params_handler is None
         response = client.post(f"/system/jobs/{task_key}/run", headers=auth_headers)
-        assert response.status_code == 200, response.text
+        assert response.status_code == 202, response.text
         _release_task_run(BackgroundTaskRun.get_by_id(response.json()["task_run_id"]))
+
+
+def test_movie_heat_recompute_api_returns_async_task(monkeypatch, client, account_user):
+    from src.schema.system.jobs import ManualJobTriggerResponse
+
+    monkeypatch.setattr(
+        "src.api.routers.catalog.movies.MovieTaskService.recompute_movie_heat",
+        lambda _movie_number: ManualJobTriggerResponse(
+            task_run_id=77,
+            task_key="movie_heat_update",
+            state="pending",
+        ),
+    )
+    response = client.post(
+        "/movies/ABP-001/heat-recompute",
+        headers=_auth_headers(client, account_user.username),
+    )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "task_run_id": 77,
+        "task_key": "movie_heat_update",
+        "state": "pending",
+    }
