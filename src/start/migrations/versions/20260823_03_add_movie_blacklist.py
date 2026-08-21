@@ -10,6 +10,9 @@ def migrate(database) -> None:
         "ALTER TABLE movie ADD COLUMN IF NOT EXISTS is_blacklisted BOOLEAN NOT NULL DEFAULT FALSE"
     )
     database.execute_sql(
+        "CREATE INDEX IF NOT EXISTS movie_is_blacklisted ON movie (is_blacklisted)"
+    )
+    database.execute_sql(
         """
         DO $$
         BEGIN
