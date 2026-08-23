@@ -403,6 +403,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         toml_file=SETTINGS_TOML_PATH,
         extra="ignore",
+        env_nested_delimiter="__",
     )
 
     @model_validator(mode="before")
@@ -426,9 +427,9 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (
             init_settings,
-            TomlConfigSettingsSource(settings_cls),
             env_settings,
             dotenv_settings,
+            TomlConfigSettingsSource(settings_cls),
             file_secret_settings,
         )
 
