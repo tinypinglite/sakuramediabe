@@ -31,7 +31,6 @@ from src.model import (
     get_database,
 )
 from src.model.catalog.movies import PROTECTED_MOVIE_FIELDS
-from src.service.catalog.movie_collection_service import MovieCollectionService
 from src.service.catalog.movie_heat_service import MovieHeatService
 from src.service.catalog.movie_image_service import (
     ImageDownloadError,
@@ -232,11 +231,6 @@ class CatalogImportService:
             movie.title = detail.title
             movie.javdb_id = detail.javdb_id
             movie.movie_number = detail.movie_number
-            # 新建行尚无 owner，按宿主自动规则初始化合集字段；后续人工/插件接管
-            # 通过 field_owners 表达，自动同步会尊重 owner。
-            movie.is_collection = MovieCollectionService.matches_configured_collection(
-                detail.movie_number,
-            )
             movie.save()
             logger.debug(
                 "Catalog import movie saved movie_id={} movie_number={}",

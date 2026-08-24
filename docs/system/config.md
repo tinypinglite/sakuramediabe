@@ -9,7 +9,7 @@
 - 修改经由 `Settings` 模型校验（类型 + cron/URL 语义），通过后**原子写入 TOML**。
 - 普通配置不会修改运行中进程的 `settings` 快照：写入后必须同时重启 API 与 APS，避免两个进程使用不一致配置。
 
-与现有 `/indexer-settings`（承载 DB `Indexer` 表明细）**并存**：该能力不属于纯 toml 字段读写，统一配置接口不接管。`media.others_number_features`（原 `/collection-number-features`）的规范化已下沉到 `Media` 模型层，改动统一走 `PATCH /config`。
+与现有 `/indexer-settings`（承载 DB `Indexer` 表明细）**并存**：该能力不属于纯 toml 字段读写，统一配置接口不接管。
 
 **本 API 不接管的键**：以下顶层键既不出现在 `GET /config` 的响应中，`PATCH /config` 收到也会直接返回 `readonly_config_key`：
 

@@ -10,7 +10,6 @@ from src.scheduler.queue_tasks import (
 )
 from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
 from src.service.catalog import (
-    MovieCollectionService,
     MovieHeatService,
     MovieInteractionSyncService,
     MovieTaskService,
@@ -106,14 +105,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次 JavDB 热评同步",
         cron_setting="hot_review_sync_cron",
         handler=lambda _reporter, _params: HotReviewSyncService().sync_all_hot_reviews(),
-    ),
-    JobDefinition(
-        task_key="movie_collection_sync",
-        log_name="movie-collection-sync",
-        cli_name="sync-movie-collections",
-        cli_help="执行一次合集影片标记同步",
-        cron_setting="movie_collection_sync_cron",
-        handler=lambda _reporter, _params: MovieCollectionService.sync_movie_collections(),
     ),
     JobDefinition(
         task_key="download_task_sync",

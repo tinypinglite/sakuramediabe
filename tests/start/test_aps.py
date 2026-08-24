@@ -53,7 +53,6 @@ def test_aps_command_invokes_scheduler_entrypoint(monkeypatch):
         "update-movie-heat",
         "sync-movie-interactions",
         "sync-hot-reviews",
-        "sync-movie-collections",
         "generate-media-thumbnails",
         "scan-media-files",
         "cleanup-download-small-files",
@@ -229,7 +228,6 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_sync_cron", "*/15 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_auto_import_cron", "*/10 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_small_file_cleanup_cron", "*/5 * * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.movie_collection_sync_cron", "0 1 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_file_scan_cron", "0 */6 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_interaction_sync_cron", "0 5 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_thumbnail_cron", "*/5 * * * *")
@@ -254,7 +252,6 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     # 验证部分 cron 表达式
     assert str(scheduler.get_job("actor_subscription_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='0']"
     assert str(scheduler.get_job("subscribed_movie_auto_download").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='30']"
-    assert str(scheduler.get_job("movie_collection_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='1', minute='0']"
     assert str(scheduler.get_job("hot_review_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='1', minute='20']"
     assert str(scheduler.get_job("movie_interaction_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"
     assert str(scheduler.get_job("movie_heat_update").trigger) == "cron[month='*', day='*', day_of_week='*', hour='0', minute='15']"

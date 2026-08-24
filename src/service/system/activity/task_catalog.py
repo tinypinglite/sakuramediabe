@@ -4,7 +4,6 @@ TASK_NAME_REGISTRY = {
     "movie_heat_update": "影片热度更新",
     "movie_interaction_sync": "影片互动数同步",
     "hot_review_sync": "JavDB 热评同步",
-    "movie_collection_sync": "合集影片同步",
     "movie_similarity_recompute": "影片相似度重算",
     "download_task_sync": "下载任务状态同步",
     "download_task_auto_import": "已完成下载自动导入",

@@ -33,14 +33,6 @@ from pydantic_settings import (
 from src.plugins.manifest import PLUGIN_ID_PATTERN
 
 
-# 这里处理的是番号**前缀**（如 OFJE），不是完整番号，所以只做去空白 + 大写：
-# 前缀要跟已归一化的番号做 startswith 比较，大写是必须的；而 normalize_movie_number 的
-# _→- 与抹 PPV- 是番号整体的形状规则，对前缀无意义（抹 PPV- 更会把 PPV-XXX 削成 XXX）。
-# 两者是不同数据类型的不同规则，不要在这里去复用番号归一化。
-def _normalize_number_feature(value: str) -> str:
-    return (value or "").strip().upper()
-
-
 # 校验分档：
 # - 无 context（默认，覆盖启动期 Settings() 从 toml 加载）：仅 warn 保留原值，避免存量非法配置让进程启动即崩。
 # - context={"strict": True}（覆盖配置 API 写入路径）：直接 raise，阻止把非法值写入磁盘。
@@ -91,9 +83,6 @@ class Auth(BaseModel):
 
 
 class Media(BaseModel):
-    others_number_features: set[str] = Field(default_factory=lambda: {
-        "OFJE", "CJOB", "DVAJ", "REBD"
-    })
     inner_sub_tags: set[str] = Field(
         default_factory=lambda: {"中字", "中文", "字幕组", "-UC", "-C"}
     )
@@ -148,26 +137,6 @@ class Media(BaseModel):
     media_clip_max_duration_seconds: int = 900
     # 单次 ffmpeg 切片的墙钟超时（秒）：兜住坏文件/慢挂载导致的进程卡死，超时即杀进程。
     media_clip_ffmpeg_timeout_seconds: int = 120
-
-    @field_validator("others_number_features", mode="before")
-    @classmethod
-    def _normalize_others_number_features(cls, value, info: ValidationInfo):
-        # 规范化：对每一项按番号习惯归一（去空白 / 大写 / _→- / 抹 PPV-）；空结果按分档处理：
-        # - 严格档（配置 API 写入）：抛错，阻止把空/纯空白项写入磁盘
-        # - 宽松档（启动加载）：静默丢弃，兼容存量脏值
-        # 保持返回 set[str]，避免上游 movie_collection_service 等按集合语义比较的地方被打破。
-        if value is None:
-            return set()
-        strict = _validation_is_strict(info)
-        normalized: set[str] = set()
-        for item in value:
-            result = _normalize_number_feature(str(item))
-            if result:
-                normalized.add(result)
-            elif strict:
-                raise ValueError(f"invalid number feature: {item!r}")
-        return normalized
-
 
 class Metadata(BaseModel):
     # 不再提供显式代理配置：所有外部站点请求统一跟随容器环境变量
@@ -240,7 +209,6 @@ class Scheduler(BaseModel):
     # cloud115 离线任务对账：远端进度回写 + 完成触发导入 + 超时放弃。cron 最小粒度即 1 分钟；
     # 没有活跃任务时对账是零请求空转，不会打扰 115。
     cloud115_offline_sync_cron: str = "* * * * *"
-    movie_collection_sync_cron: str = "0 1 * * *"
     movie_heat_cron: str = "15 0 * * *"
     movie_interaction_sync_cron: str = "0 5 * * *"
     hot_review_sync_cron: str = "20 1 * * *"

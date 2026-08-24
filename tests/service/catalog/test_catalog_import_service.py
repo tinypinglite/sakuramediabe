@@ -105,6 +105,20 @@ def test_import_movie_if_missing_creates_new_movie(test_db):
     assert refreshed.watched_count == 100
 
 
+def test_import_movie_if_missing_does_not_mark_collection(test_db):
+    detail = _build_detail(
+        javdb_id="javdb-OFJE-456",
+        movie_number="OFJE-456",
+        title="JavDB标题",
+        summary="JavDB描述",
+    )
+
+    movie, created = CatalogImportService().import_movie_if_missing(detail)
+
+    assert created is True
+    assert Movie.get_by_id(movie.id).is_collection is False
+
+
 def test_import_movie_if_missing_updates_actor_gender_from_movie_detail(test_db):
     detail = _build_detail(
         javdb_id="javdb-ABP-457",
