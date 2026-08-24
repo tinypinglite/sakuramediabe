@@ -9,7 +9,6 @@ from src.scheduler.queue_tasks import (
     _run_gfriends_filetree_refresh,
 )
 from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
-from src.schema.catalog.movies import MovieHeatRecomputeParams
 from src.service.catalog import (
     MovieCollectionService,
     MovieHeatService,
@@ -91,7 +90,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次影片热度重算",
         cron_setting="movie_heat_cron",
         handler=_run_movie_heat,
-        params_schema=MovieHeatRecomputeParams,
     ),
     JobDefinition(
         task_key="movie_interaction_sync",

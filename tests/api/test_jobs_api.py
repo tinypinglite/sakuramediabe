@@ -112,6 +112,7 @@ def test_handler_only_job_rejects_missing_and_null_body(
 def test_builtin_jobs_accept_parameterless_async_trigger(client, account_user):
     task_keys = (
         "subscribed_movie_auto_download",
+        "movie_heat_update",
         "movie_interaction_sync",
         "media_thumbnail_generation",
     )
