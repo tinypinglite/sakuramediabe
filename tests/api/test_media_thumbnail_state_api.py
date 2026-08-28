@@ -12,8 +12,8 @@ def _auth_headers(client, username: str) -> dict[str, str]:
 def test_media_list_exposes_and_filters_thumbnail_terminal_state(client, account_user):
     library = MediaLibrary.create(
         name="thumbnail-api-library",
-        backend="local",
-        backend_config={"root_path": "/library"},
+        provider_key="test",
+        provider_config={},
     )
     terminal_movie = Movie.create(
         movie_number="THAPI-001", javdb_id="thapi-1", title="terminal"
@@ -24,16 +24,14 @@ def test_media_list_exposes_and_filters_thumbnail_terminal_state(client, account
     terminal_media = Media.create(
         movie=terminal_movie,
         library=library,
-        path="/library/terminal.mp4",
-        content_fingerprint="terminal-fingerprint",
+        file_name="terminal.mp4",
         thumbnail_generation_state=Media.THUMBNAIL_STATE_TERMINAL,
         thumbnail_last_error_code="video_file_missing",
     )
     Media.create(
         movie=pending_movie,
         library=library,
-        path="/library/pending.mp4",
-        content_fingerprint="pending-fingerprint",
+        file_name="pending.mp4",
     )
 
     response = client.get(

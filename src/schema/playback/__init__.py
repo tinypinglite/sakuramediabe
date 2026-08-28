@@ -4,15 +4,6 @@ from .clips import (
     MediaClipResource,
     MediaClipUpdateRequest,
 )
-from .cloud115_libraries import (
-    Cloud115BrowseResponse,
-    Cloud115DirEntryResource,
-    Cloud115LibraryCreateRequest,
-    Cloud115LibraryReauthRequest,
-    Cloud115QrStatusRequest,
-    Cloud115QrStatusResource,
-    Cloud115QrTokenResource,
-)
 from .media import (
     MediaPointCreateRequest,
     MediaPointListItemResource,
@@ -22,23 +13,18 @@ from .media import (
 )
 from .media_libraries import (
     MediaLibraryCreateRequest,
+    MediaLibraryProviderResource,
     MediaLibraryResource,
     MediaLibraryUpdateRequest,
 )
 
 __all__ = [
-    "Cloud115BrowseResponse",
-    "Cloud115DirEntryResource",
-    "Cloud115LibraryCreateRequest",
-    "Cloud115LibraryReauthRequest",
-    "Cloud115QrStatusRequest",
-    "Cloud115QrStatusResource",
-    "Cloud115QrTokenResource",
     "MediaClipCreateRequest",
     "MediaClipDetailResource",
     "MediaClipResource",
     "MediaClipUpdateRequest",
     "MediaLibraryCreateRequest",
+    "MediaLibraryProviderResource",
     "MediaLibraryResource",
     "MediaLibraryUpdateRequest",
     "MediaPointCreateRequest",

@@ -1,4 +1,5 @@
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from shutil import move
 
 from loguru import logger
 from PIL import Image as PILImage
@@ -10,6 +11,7 @@ from src.common.media_paths import (
     normalize_asset_dir_name,
 )
 from src.model import Image, Media, MediaThumbnail, get_database
+from src.plugins.provider_protocol import ThumbnailArtifact
 from src.schema.catalog.actors import ImageResource
 from src.schema.playback.media import MediaThumbnailResource
 
@@ -17,78 +19,99 @@ from src.schema.playback.media import MediaThumbnailResource
 class ThumbnailArtifactService:
     @staticmethod
     def thumbnail_directory(media: Media) -> Path:
-        # JAV 走分片番号目录，videos 域仍按自增 id 平铺（量级远低于番号，不需要分片）。
         namespace = (
             Path(movie_asset_relative_dir(normalize_asset_dir_name(media.movie_number)))
             if media.movie_number
             else Path("videos") / str(media.video_item_id)
         )
-        return (
-            media_image_root_path()
-            / namespace
-            / MOVIE_MEDIA_SUBDIR
-            / media.content_fingerprint
-            / "thumbnails"
-        )
+        return media_image_root_path() / namespace / MOVIE_MEDIA_SUBDIR / str(media.id) / "thumbnails"
 
     @staticmethod
-    def parse_offset_seconds(file_path: Path) -> int | None:
-        if not file_path.stem.isdigit():
-            return None
-        offset = int(file_path.stem)
-        return offset if offset >= 0 else None
-
-    @classmethod
-    def collect_webp_files(cls, webp_dir: Path) -> tuple[list[Path], int]:
-        webp_files = list(webp_dir.glob("*.webp"))
-        parseable = [
-            (offset, path)
-            for path in webp_files
-            if (offset := cls.parse_offset_seconds(path)) is not None
-        ]
-        parseable.sort(key=lambda item: (item[0], item[1].name))
-        return [item[1] for item in parseable], len(webp_files)
+    def clear_directory(directory: Path) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        for entry in directory.iterdir():
+            if entry.is_file() or entry.is_symlink():
+                entry.unlink()
 
     @staticmethod
-    def clear_directory(webp_dir: Path) -> None:
-        webp_dir.mkdir(parents=True, exist_ok=True)
-        for existing_file in webp_dir.glob("*.webp"):
-            existing_file.unlink()
+    def _workspace_file(workspace: Path, relative_path: str) -> Path:
+        normalized = (relative_path or "").strip().replace("\\", "/")
+        if not normalized or normalized.startswith("/"):
+            raise ValueError("thumbnail_artifact_path_invalid")
+        parts = normalized.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            raise ValueError("thumbnail_artifact_path_invalid")
+        candidate = (workspace / PurePosixPath(*parts)).resolve()
+        try:
+            candidate.relative_to(workspace.resolve())
+        except ValueError as exc:
+            raise ValueError("thumbnail_artifact_path_invalid") from exc
+        return candidate
 
     @classmethod
-    def persist(cls, media: Media, webp_files: list[Path]) -> int:
-        created_count = 0
+    def validate_artifact(
+        cls,
+        workspace: Path,
+        artifact: ThumbnailArtifact,
+    ) -> Path:
+        if artifact.offset_seconds < 0:
+            raise ValueError("thumbnail_offset_invalid")
+        if not artifact.relative_path.lower().endswith(".webp"):
+            raise ValueError("thumbnail_artifact_not_webp")
+        source = cls._workspace_file(workspace, artifact.relative_path)
+        if not source.is_file() or source.stat().st_size <= 0:
+            raise ValueError("thumbnail_artifact_empty")
+        try:
+            with PILImage.open(source) as image:
+                if image.format != "WEBP":
+                    raise ValueError("thumbnail_artifact_not_webp")
+                image.verify()
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("thumbnail_artifact_invalid") from exc
+        return source
+
+    @classmethod
+    def persist(
+        cls,
+        media: Media,
+        artifacts: list[tuple[ThumbnailArtifact, Path]],
+    ) -> int:
+        target_dir = cls.thumbnail_directory(media)
+        cls.clear_directory(target_dir)
         image_root = media_image_root_path()
         initial_index_status = (
-            MediaThumbnail.JOYTAG_INDEX_STATUS_PENDING
+            MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_PENDING
             if media.movie_number
-            else MediaThumbnail.JOYTAG_INDEX_STATUS_SKIPPED
+            else MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_SKIPPED
         )
-        with get_database().atomic():
-            for webp_file in webp_files:
-                offset = cls.parse_offset_seconds(webp_file)
-                if offset is None:
-                    logger.warning(
-                        "Skipping generated thumbnail media_id={} file_name={} reason=offset_parse_failed",
-                        media.id,
-                        webp_file.name,
+        moved_paths: list[Path] = []
+        try:
+            with get_database().atomic():
+                for artifact, source in artifacts:
+                    target = target_dir / f"{artifact.offset_seconds}.webp"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    move(str(source), str(target))
+                    moved_paths.append(target)
+                    relative_path = target.relative_to(image_root).as_posix()
+                    image = Image.create(
+                        origin=relative_path,
+                        small=relative_path,
+                        medium=relative_path,
+                        large=relative_path,
                     )
-                    continue
-                relative_path = webp_file.relative_to(image_root).as_posix()
-                image = Image.create(
-                    origin=relative_path,
-                    small=relative_path,
-                    medium=relative_path,
-                    large=relative_path,
-                )
-                MediaThumbnail.create(
-                    media=media,
-                    image=image,
-                    offset=offset,
-                    joytag_index_status=initial_index_status,
-                )
-                created_count += 1
-        return created_count
+                    MediaThumbnail.create(
+                        media=media,
+                        image=image,
+                        offset=artifact.offset_seconds,
+                        image_search_index_status=initial_index_status,
+                    )
+        except Exception:
+            for path in moved_paths:
+                path.unlink(missing_ok=True)
+            raise
+        return len(moved_paths)
 
     @staticmethod
     def read_dimensions(image_origin: str) -> tuple[int | None, int | None]:

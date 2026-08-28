@@ -33,18 +33,18 @@ def _create_movie(movie_number: str, *, is_subscribed: bool = True) -> Movie:
 def _create_media(movie: Movie) -> Media:
     library, _ = MediaLibrary.get_or_create(
         name="test-library",
-        defaults={"backend": "local", "backend_config": {"root_path": "/library"}},
+        defaults={"provider_key": "test", "provider_config": {}},
     )
     return Media.create(
         movie=movie,
         library=library,
-        path=f"/library/{movie.movie_number}.mp4",
+        file_name=f"{movie.movie_number}.mp4",
         valid=True,
     )
 
 
 def test_batch_unsubscribe_skips_movies_with_media(client, account_user):
-    """核心回归：批量取消订阅时存在本地 media 的影片必须进 skipped[has_media]，
+    """核心回归：批量取消订阅时存在 provider media 的影片必须进 skipped[has_media]，
     与单条 unsubscribe_movie 抛 409 movie_subscription_has_media 语义一致。"""
     token = _login(client, account_user.username)
     with_media = _create_movie("ABC-001")

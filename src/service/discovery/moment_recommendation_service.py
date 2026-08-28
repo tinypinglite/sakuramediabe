@@ -27,9 +27,9 @@ from src.schema.discovery import (
     MomentRecommendationItemResource,
     MomentRecommendationPageResource,
 )
-from src.service.discovery.joytag_embedder_client import (
-    JoyTagInferenceClientError,
-    get_joytag_embedder_client,
+from src.service.discovery.embedding_client import (
+    EmbeddingClientError,
+    get_embedding_client,
 )
 from src.service.discovery.qdrant_movie_similarity_store import (
     MovieSimilarityIndexError,
@@ -96,7 +96,7 @@ class MomentRecommendationService:
         movie_recommendation_service: MovieRecommendationService | None = None,
     ) -> None:
         self.store = store or get_qdrant_thumbnail_store()
-        self.embedder = embedder or get_joytag_embedder_client()
+        self.embedder = embedder or get_embedding_client()
         self.movie_recommendation_service = (
             movie_recommendation_service or MovieRecommendationService()
         )
@@ -176,11 +176,11 @@ class MomentRecommendationService:
         if not image_bytes:
             return None
         try:
-            inference = self.embedder.infer_image_bytes(image_bytes)
-        except (JoyTagInferenceClientError, ValueError) as exc:
-            logger.warning("Moment recommendation JoyTag inference skipped point_id={} detail={}", seed.point.id, exc)
+            vector = self.embedder.embed_images([image_bytes])[0]
+        except (EmbeddingClientError, ValueError) as exc:
+            logger.warning("Moment recommendation embedding skipped point_id={} detail={}", seed.point.id, exc)
             return None
-        return [float(item) for item in inference.vector]
+        return [float(item) for item in vector]
 
     @classmethod
     def _add_candidate(
@@ -516,7 +516,6 @@ class MomentRecommendationService:
                 continue
             base_resource = MovieListItemResource.from_attributes_model(movie)
             base_resource.can_play = bool(getattr(movie, "can_play", False))
-            base_resource.is_4k = bool(getattr(movie, "is_4k", False))
             items.append(
                 MomentRecommendationItemResource(
                     recommendation_id=row.id,

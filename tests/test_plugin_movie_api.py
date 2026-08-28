@@ -183,8 +183,8 @@ def test_host_api_accepts_only_current_version(tmp_path):
 
     from src.config.config import Plugins
 
-    assert HOST_API_VERSION == 3
-    assert MIN_SUPPORTED_HOST_API_VERSION == 3
+    assert HOST_API_VERSION == 4
+    assert MIN_SUPPORTED_HOST_API_VERSION == 4
 
     for plugin_id, declared in (("legacy_plugin", 2), ("current_plugin", HOST_API_VERSION)):
         pkg = tmp_path / plugin_id

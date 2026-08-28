@@ -181,6 +181,30 @@ def test_loader_clears_stale_error_on_success(tmp_path):
     assert PLUGIN_LOAD_ERRORS == {}
 
 
+def test_loader_clears_modules_after_failed_import(tmp_path):
+    import sys
+
+    root = tmp_path / "root"
+    plugin_dir = _write_plugin_dir(
+        root,
+        "broken_plugin",
+        init_source="from .state import VALUE\nraise RuntimeError(VALUE)\n",
+    )
+    (plugin_dir / "state.py").write_text("VALUE = 'boom'\n", encoding="utf-8")
+
+    loaded = load_enabled_plugins(
+        Plugins(enabled=["broken_plugin"]),
+        root_dir=root,
+    )
+
+    assert loaded == ()
+    assert PLUGIN_LOAD_ERRORS["broken_plugin"]["stage"] == "import"
+    assert not any(
+        name.startswith("sakuramedia_plugins.broken_plugin")
+        for name in sys.modules
+    )
+
+
 def test_registration_version_mismatch_rejected(tmp_path):
     root = tmp_path / "root"
     source = (

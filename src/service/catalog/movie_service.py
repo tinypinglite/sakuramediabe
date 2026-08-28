@@ -19,7 +19,6 @@ from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     build_ordered_expressions,
     find_movie_by_number,
-    media_special_tag_match_expression,
     playable_exists_expression,
     require_record,
     resolve_sort_expression,
@@ -43,6 +42,7 @@ from src.model import (
     MovieTag,
     Tag,
 )
+from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
 from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.movies import (
     MovieBlacklistBatchRequest,
@@ -59,7 +59,6 @@ from src.schema.catalog.movies import (
     MovieNumberParseResponse,
     MovieNumberSource,
     MovieReviewSort,
-    MovieSpecialTagFilter,
     MovieSubscriptionBatchResponse,
     MovieSubscriptionSkippedItem,
     TagMatchMode,
@@ -91,21 +90,6 @@ class MovieService:
 
     _playable_exists_expression = staticmethod(playable_exists_expression)
 
-    @staticmethod
-    def _media_exists_expression(*conditions):
-        media_query = Media.select(Media.id).where(
-            Media.movie == Movie.movie_number,
-            *conditions,
-        )
-        return fn.EXISTS(media_query)
-
-    @classmethod
-    def _special_tag_exists_expression(cls, media_tag: str):
-        return cls._media_exists_expression(
-            Media.valid == True,
-            media_special_tag_match_expression(media_tag),
-        )
-
     @classmethod
     def _filtered_movies(
         cls,
@@ -115,7 +99,6 @@ class MovieService:
         year: int | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
-        special_tag: MovieSpecialTagFilter | None = None,
         series_id: int | None = None,
         director_name: str | None = None,
         maker_name: str | None = None,
@@ -171,10 +154,6 @@ class MovieService:
 
         if collection_type == MovieCollectionType.SINGLE:
             filtered_query = filtered_query.where(Movie.is_collection == False)
-        if special_tag is not None:
-            filtered_query = filtered_query.where(
-                cls._special_tag_exists_expression(special_tag.to_media_tag())
-            )
         if series_id is not None:
             # 系列影片查询统一使用本地 movie_series.id，避免系列名变更导致匹配不稳定。
             filtered_query = filtered_query.where(Movie.series == series_id)
@@ -230,7 +209,6 @@ class MovieService:
         year: int | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
-        special_tag: MovieSpecialTagFilter | None = None,
         sort: str | None = None,
         series_id: int | None = None,
         director_name: str | None = None,
@@ -242,7 +220,6 @@ class MovieService:
     ):
         """列表查询统一在这里补齐封面图和 ``can_play`` 计算列。"""
         can_play_expression = cls._playable_exists_expression().alias("can_play")
-        is_4k_expression = cls._special_tag_exists_expression("4K").alias("is_4k")
         query, _thin_cover_alias = with_movie_card_relations(
             cls._filtered_movies(
                 actor_id=actor_id,
@@ -251,7 +228,6 @@ class MovieService:
                 year=year,
                 status=status,
                 collection_type=collection_type,
-                special_tag=special_tag,
                 series_id=series_id,
                 director_name=director_name,
                 maker_name=maker_name,
@@ -259,7 +235,7 @@ class MovieService:
                 heat_min=heat_min,
                 heat_max=heat_max,
                 blacklisted=blacklisted,
-            ).select(Movie, can_play_expression, is_4k_expression)
+            ).select(Movie, can_play_expression)
         )
         return query.order_by(*cls._build_movie_list_sort(sort, status))
 
@@ -267,10 +243,9 @@ class MovieService:
     def _latest_movies_query(cls):
         """按最近导入媒体时间倒序列出影片，而不是按影片自身创建时间。"""
         can_play_expression = cls._playable_exists_expression().alias("can_play")
-        is_4k_expression = cls._special_tag_exists_expression("4K").alias("is_4k")
         latest_media_created_at = fn.MAX(Media.created_at)
         query, thin_cover_alias = with_movie_card_relations(
-            Movie.select(Movie, can_play_expression, is_4k_expression)
+            Movie.select(Movie, can_play_expression)
             .join(Media)
             .switch(Movie)
             .where(Movie.is_blacklisted == False)
@@ -285,9 +260,8 @@ class MovieService:
     def _subscribed_actor_latest_movies_query(cls):
         """列出至少关联一位已订阅演员的影片，按上映日期倒序。"""
         can_play_expression = cls._playable_exists_expression().alias("can_play")
-        is_4k_expression = cls._special_tag_exists_expression("4K").alias("is_4k")
         query, thin_cover_alias = with_movie_card_relations(
-            Movie.select(Movie, can_play_expression, is_4k_expression)
+            Movie.select(Movie, can_play_expression)
             .join(MovieActor, JOIN.INNER, on=(MovieActor.movie == Movie.id))
             .join(Actor, JOIN.INNER, on=(MovieActor.actor == Actor.id))
             .switch(Movie)
@@ -362,8 +336,6 @@ class MovieService:
     @staticmethod
     def _media_items(movie: Movie) -> list[MovieMediaResource]:
         """把媒体、播放进度和打点信息折叠成详情页需要的资源结构。"""
-        from src.service.playback.media_service import MediaService
-
         media_items = list(
             Media.select(Media, MediaLibrary)
             .join(MediaLibrary, JOIN.LEFT_OUTER)
@@ -414,10 +386,9 @@ class MovieService:
                 )
             media.points = points_by_media_id.get(media.id, [])
             media.play_url = build_signed_media_url(media.id)
-            media.library_backend = (
-                "cloud115"
-                if MediaService.is_cloud115_media(media)
-                else ("local" if media.library_id is not None else None)
+            media.provider_key = media.library.provider_key if media.library_id is not None else None
+            media.playback_deliveries = list(
+                MEDIA_PROVIDER_REGISTRY.require(media.library.provider_key).playback_deliveries
             )
             resources.append(MovieMediaResource.from_attributes_model(media))
         return resources
@@ -425,9 +396,8 @@ class MovieService:
     @staticmethod
     def get_movie_detail(movie_number: str) -> MovieDetailResource:
         """组装影片详情页所需的所有关联资源。"""
-        is_4k_expression = MovieService._special_tag_exists_expression("4K").alias("is_4k")
         query, _thin_cover_alias = with_movie_card_relations(
-            Movie.select(Movie, is_4k_expression)
+            Movie.select(Movie)
         )
         movie = (
             query
@@ -459,7 +429,6 @@ class MovieService:
         year: int | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
-        special_tag: MovieSpecialTagFilter | None = None,
         number_source: MovieNumberSource = MovieNumberSource.ALL,
         sort: str | None = None,
         director_name: str | None = None,
@@ -478,7 +447,6 @@ class MovieService:
             year=year,
             status=status,
             collection_type=collection_type,
-            special_tag=special_tag,
             director_name=director_name,
             maker_name=maker_name,
             number_source=number_source,
@@ -494,7 +462,6 @@ class MovieService:
                 year=year,
                 status=status,
                 collection_type=collection_type,
-                special_tag=special_tag,
                 sort=sort,
                 director_name=director_name,
                 maker_name=maker_name,

@@ -1,2 +1,0 @@
--r requirements.base.txt
-openvino==2025.4.1

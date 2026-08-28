@@ -24,7 +24,6 @@ from src.schema.catalog.movies import (
     MovieNumberSource,
     MovieReviewSort,
     MovieSeriesListRequest,
-    MovieSpecialTagFilter,
     MovieSubscriptionBatchRequest,
     MovieSubscriptionBatchResponse,
     SimilarMovieListItemResource,
@@ -56,7 +55,6 @@ def list_movies(
     year: int | None = Query(default=None, ge=1),
     status: MovieListStatus = MovieListStatus.ALL,
     collection_type: MovieCollectionType = MovieCollectionType.ALL,
-    special_tag: MovieSpecialTagFilter | None = None,
     number_source: MovieNumberSource = MovieNumberSource.ALL,
     sort: str | None = Query(default=None),
     director_name: str | None = Query(default=None),
@@ -74,7 +72,6 @@ def list_movies(
         year=year,
         status=status,
         collection_type=collection_type,
-        special_tag=special_tag,
         number_source=number_source,
         sort=sort,
         director_name=parse_optional_exact_text(

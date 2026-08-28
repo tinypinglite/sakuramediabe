@@ -2,7 +2,7 @@
 
 ## 资源说明
 
-以图搜图能力采用搜索会话资源建模。客户端上传一张查询图片，服务端同步完成 JoyTag 向量化、执行 Qdrant 检索，并直接返回第一页结果。
+图像检索采用搜索会话资源建模。客户端可上传查询图片或输入文本；服务端通过通用嵌入 HTTP 协议取得查询向量，执行 Qdrant 检索，并直接返回第一页结果。
 
 所有时间字段都由后端按当前运行环境时区转换后返回，格式为不带时区后缀的本地时间字符串。
 
@@ -22,21 +22,20 @@
 
 1. 导入媒体后生成 `Media`
 2. 定时任务或单次命令 `generate-media-thumbnails` 为媒体生成 `MediaThumbnail`
-3. 新建缩略图默认 `joytag_index_status = PENDING`
-4. 定时任务或单次命令 `index-image-search-thumbnails` 读取待索引缩略图，调用 JoyTag 生成向量，并写入 Qdrant
+3. 新建缩略图默认 `image_search_index_status = PENDING`
+4. 定时任务或单次命令 `index-image-search-thumbnails` 读取待索引缩略图，调用 嵌入服务生成向量，并写入 Qdrant
 5. 定时任务或单次命令 `optimize-image-search-index` 负责压缩数据和建立/维护索引，但不是“可以搜索”的前置条件
 
 补充说明：
 
 - 如果 Qdrant collection 尚未建立，或还没有任何已索引缩略图，创建搜索会话仍然会成功，但 `items` 会是空数组
 - 删除媒体时，服务会 best-effort 删除对应 `media_id` 的向量记录
-- 当前索引任务只扫描 `joytag_index_status = PENDING` 的缩略图
-- 推理失败按单张缩略图隔离：某一张解码失败（`invalid_image`）或输出向量退化（`degenerate_vector`）时，只有该缩略图被标记 `FAILED`，同批其余缩略图和整个索引任务继续执行；只有推理服务整体故障（`inference_failed`、连接超时等）才会中止任务并让未处理缩略图保持 `PENDING`
-- `degenerate_vector` 表示模型输出含 NaN/inf 或范数为零，属于推理侧故障而非图片非法；joytag-infer 日志会打出 `reason`（`nan` / `inf` / `norm_overflow` / `zero_vector`）、输出统计与该图的输入像素统计，用于定位是输入退化还是推理引擎数值问题
+- 当前索引任务只扫描 `image_search_index_status = PENDING` 的缩略图
+- 整批嵌入请求失败会中止当前索引任务，未处理图片保持 `PENDING`；应从嵌入服务日志定位具体原因
 
-剧情图搜索使用独立的 `movie_plot_image_vectors` collection 和 `index-image-search-plot-images` 任务，不影响现有缩略图 collection 或接口。历史剧情图升级后默认进入 `PENDING`，由该任务回填。
+剧情图搜索使用独立的 `movie_plot_image_vectors` collection 和 `index-image-search-plot-images` 任务，不影响缩略图 collection 或接口。
 
-容器部署与 JoyTag 模型准备可参考 [../deployment/docker.md](../deployment/docker.md)。
+嵌入服务必须提供 `GET /v1/embedding-space`、`POST /v1/embed/images` 与 `POST /v1/embed/texts`；前者声明稳定的 `space_id`、向量维度和 `image` / `text` 模态。
 
 ## 资源模型
 
@@ -59,10 +58,10 @@
       "score": 0.91,
       "image": {
         "id": 10,
-        "origin": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=...",
-        "small": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=...",
-        "medium": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=...",
-        "large": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=..."
+        "origin": "/files/images/movies/ABC-001/media/456/thumbnails/120.webp?expires=1700000900&signature=...",
+        "small": "/files/images/movies/ABC-001/media/456/thumbnails/120.webp?expires=1700000900&signature=...",
+        "medium": "/files/images/movies/ABC-001/media/456/thumbnails/120.webp?expires=1700000900&signature=...",
+        "large": "/files/images/movies/ABC-001/media/456/thumbnails/120.webp?expires=1700000900&signature=..."
       }
     }
   ]
@@ -101,9 +100,12 @@
 | Method | Endpoint | Purpose |
 |---|---|---|
 | `POST` | `/image-search/sessions` | 创建搜索会话并返回第一页结果 |
+| `POST` | `/image-search/text-sessions` | 以文本创建缩略图搜索会话并返回第一页结果 |
 | `GET` | `/image-search/sessions/{session_id}/results` | 按游标读取会话结果页 |
 | `POST` | `/image-search/plot-sessions` | 创建剧情图搜索会话并返回第一页结果 |
+| `POST` | `/image-search/plot-text-sessions` | 以文本创建剧情图搜索会话并返回第一页结果 |
 | `GET` | `/image-search/plot-sessions/{session_id}/results` | 按游标读取剧情图结果页 |
+| `POST` | `/image-search/reset` | 清空两个向量集合并排队重建 |
 
 ## 剧情图搜索
 
@@ -181,10 +183,10 @@ curl -X POST \
       "score": 0.91,
       "image": {
         "id": 10,
-        "origin": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=...",
-        "small": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=...",
-        "medium": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=...",
-        "large": "/files/images/movies/ABC-001/media/fingerprint/thumbnails/120.webp?expires=1700000900&signature=..."
+        "origin": "/files/images/movies/ABC-001/media/456/thumbnails/120.webp?expires=1700000900&signature=...",
+        "small": "/files/images/movies/ABC-001/media/456/thumbnails/120.webp?expires=1700000900&signature=...",
+        "medium": "/files/images/movies/ABC-001/media/456/thumbnails/120.webp?expires=1700000900&signature=...",
+        "large": "/files/images/movies/ABC-001/media/456/thumbnails/120.webp?expires=1700000900&signature=..."
       }
     }
   ]
@@ -268,7 +270,7 @@ Authorization: Bearer <token>
 
 ```toml
 [image_search]
-inference_base_url = "http://joytag-infer:8001"
+inference_base_url = "http://siglip2-embed:8080"
 inference_timeout_seconds = 30
 inference_connect_timeout_seconds = 3
 inference_api_key = ""
@@ -283,14 +285,14 @@ url = "http://qdrant:6333"
 api_key = ""
 
 [scheduler]
-image_search_index_cron = "*/10 * * * *"
-plot_image_search_index_cron = "30 0 * * *"
+image_search_index_cron = "2-59/5 * * * *"
+plot_image_search_index_cron = "4-59/5 * * * *"
 image_search_optimize_cron = "0 */6 * * *"
 ```
 
 当前实现说明：
 
-- JoyTag 推理由独立 `joytag-infer` 服务负责，主服务只保存检索会话、索引状态并访问 Qdrant
+- 嵌入由独立服务负责；主服务只依赖通用 HTTP 协议，不依赖具体模型实现
 - 媒体技术信息在导入阶段写入 `media`；后续媒体巡检任务只修正 `media.valid`，不会补齐 `video_info`
 - 嵌入维度不是在 API 文档层硬编码的常量；主服务会通过远端运行时状态读取维度，并要求与 Qdrant collection 中的向量维度一致
 - 远端推理服务可按部署镜像选择 CPU、OpenVINO 或 CUDA 后端
@@ -303,10 +305,8 @@ image_search_optimize_cron = "0 */6 * * *"
 
 ## 当前实现边界
 
-- 当前公开接口只有：
-  - `POST /image-search/sessions`
-  - `GET /image-search/sessions/{session_id}/results`
-- 当前主服务只支持通过远端 `joytag-infer` 服务完成查询图向量化
+- 缩略图和剧情图是独立的检索域，各自使用独立的 Qdrant collection 和文本/图片入口
+- 更换模型或 `space_id` 后必须调用 `POST /image-search/reset`，旧向量不会保留
 - 搜索会话状态当前没有细分生命周期，接口层只返回 `ready`
 - 结果分页依赖会话中持久化保存的查询向量、筛选条件和 `next_cursor`
 - 接口文档描述的是当前实现，不包含模型可插拔、多账号隔离或异步搜索任务等扩展语义

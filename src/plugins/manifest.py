@@ -1,9 +1,4 @@
-"""插件声明（manifest）模型与校验。
-
-manifest.json 是插件目录的唯一声明入口：标识、版本、宿主接口版本、
-Python 版本约束与展示信息。插件就是插件根目录下的一个子目录，
-没有 zip 打包、依赖声明或文件哈希。
-"""
+"""插件 manifest 的标识、兼容性、展示信息与可选依赖声明。"""
 
 from __future__ import annotations
 
@@ -12,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from packaging.requirements import InvalidRequirement, Requirement
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PLUGIN_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -28,6 +24,7 @@ class PluginManifest(BaseModel):
     version: str = Field(min_length=1)
     host_api_version: int = Field(ge=1)
     requires_python: str | None = None
+    dependencies: list[str] = Field(default_factory=list)
     author: str | None = None
     homepage: str | None = None
 
@@ -39,6 +36,16 @@ class PluginManifest(BaseModel):
                 f"plugin_id 只能包含小写字母、数字、下划线且必须以字母开头: {value}"
             )
         return value
+
+    @field_validator("dependencies")
+    @classmethod
+    def _validate_dependencies(cls, values: list[str]) -> list[str]:
+        for value in values:
+            try:
+                Requirement(value)
+            except InvalidRequirement as exc:
+                raise ValueError(f"dependencies 包含无效 PEP 508 声明: {value}") from exc
+        return values
 
 
 def load_manifest_from_dict(data: dict[str, Any]) -> PluginManifest:

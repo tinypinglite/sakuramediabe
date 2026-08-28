@@ -1,16 +1,9 @@
-import time
 from collections.abc import Sequence
-from pathlib import Path
 
 import peewee
 from loguru import logger
 
 from src.api.exception.errors import ApiError
-from src.common import (
-    build_signed_cloud115_merged_hls_url,
-    build_signed_media_url,
-    build_signed_merged_media_url,
-)
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     paginate,
@@ -18,7 +11,6 @@ from src.common.service_helpers import (
     require_record,
     resolve_sort,
     resolve_sort_expression,
-    unlink_ignore_missing,
     validate_page,
     with_movie_card_relations,
 )
@@ -34,26 +26,24 @@ from src.model import (
     VideoItem,
 )
 from src.model.base import get_database
+from src.plugins.provider_protocol import (
+    MEDIA_PROVIDER_REGISTRY,
+    ProviderOperationError,
+    ProviderUnavailableError,
+)
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
     InvalidMediaResource,
     MediaListItemResource,
-    MediaPlayUrlKind,
-    MediaPlayUrlMode,
-    MediaPlayUrlResource,
-    MediaPlayUrlSegmentResource,
-    MediaPlayUrlSource,
     MediaPointCreateRequest,
     MediaPointKind,
     MediaPointListItemResource,
     MediaPointResource,
     MediaProgressResource,
     MediaProgressUpdateRequest,
-    MediaRapidUploadFilterStatus,
     MediaThumbnailGenerationState,
     MediaThumbnailResource,
-    MediaValidityCheckResponse,
 )
 from src.service.catalog.image_cleanup_service import ImageCleanupService
 
@@ -61,11 +51,8 @@ from src.service.catalog.image_cleanup_service import ImageCleanupService
 # 绕开包级 __init__ 的初始化顺序依赖。
 from src.service.collections.playlist_service import PlaylistService
 from src.service.discovery import get_qdrant_thumbnail_store
-from src.service.playback.media_file_scan_service import MediaFileScanService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
-from src.service.transfers.rapid_upload.query_service import (
-    MediaRapidUploadQueryService,
-)
+from src.service.playback.provider_helpers import media_handle_for
 
 
 class MediaService:
@@ -80,199 +67,6 @@ class MediaService:
     }
     # 非 JAV 视频没有关联 Movie，heat 恒为空，需要排在末尾（不受排序方向影响）。
     MEDIA_LIST_NULLABLE_SORT_FIELDS = {"heat"}
-
-    @staticmethod
-    @staticmethod
-    def is_cloud115_media(media: Media) -> bool:
-        # backend 判定的权威来源是所属库（Media 不冗余 backend 字段）。
-        from src.model.enums import MediaLibraryBackend
-
-        library = media.library
-        return library is not None and library.backend == MediaLibraryBackend.CLOUD115.value
-
-    @staticmethod
-    def resolve_movie_play_url(
-        movie_number: str | None,
-        movie_id: int | None,
-        source: MediaPlayUrlSource,
-        mode: MediaPlayUrlMode,
-    ) -> MediaPlayUrlResource:
-        """解析影片播放链接：按播放源（本地/115）与播放模式（单个/合并）返回签名地址。
-
-        合并顺序按 ``Media.id`` 升序（与详情页媒体列表一致）；本地多分段返回虚拟合并
-        URL（真实规格校验在合并流端点进行，本方法只负责链接解析）；115 多资源合并返回
-        后端 HLS 全量代理的合播 m3u8 地址。
-
-        只选取 ``valid`` 媒体，本地候选额外要求 ``path`` 非空——library 被 SET NULL
-        的云端孤儿行 path 恒空，不能当成本地源给一个必然 404 的链接。
-        """
-        if movie_number:
-            movie = Movie.get_or_none(Movie.movie_number == movie_number)
-        elif movie_id is not None:
-            movie = Movie.get_or_none(Movie.id == movie_id)
-        else:
-            raise ApiError(422, "invalid_movie_filter", "需要 movie_number 或 movie_id")
-        if movie is None:
-            raise ApiError(404, "movie_not_found", "影片不存在")
-
-        # 联表取 library，避免 is_cloud115_media 逐条懒加载造成 N+1。
-        medias = list(
-            Media.select(Media, MediaLibrary)
-            .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
-            .where(Media.movie == movie.movie_number, Media.valid == True)
-            .order_by(Media.id)
-        )
-        local = [m for m in medias if not MediaService.is_cloud115_media(m) and m.path]
-        cloud115 = [m for m in medias if MediaService.is_cloud115_media(m)]
-
-        def _segments(items: list[Media]) -> list[MediaPlayUrlSegmentResource]:
-            return [
-                MediaPlayUrlSegmentResource(
-                    media_id=item.id,
-                    duration_seconds=item.duration_seconds or 0,
-                )
-                for item in items
-            ]
-
-        is_local = source == MediaPlayUrlSource.LOCAL
-        candidates = local if is_local else cloud115
-        if not candidates:
-            return MediaPlayUrlResource(kind=MediaPlayUrlKind.NONE)
-
-        if not is_local and mode == MediaPlayUrlMode.MERGED:
-            media_ids = [item.id for item in candidates]
-            return MediaPlayUrlResource(
-                play_url=build_signed_cloud115_merged_hls_url(media_ids),
-                kind=MediaPlayUrlKind.CLOUD115_MERGED,
-                segment_count=len(candidates),
-                segments=_segments(candidates),
-            )
-
-        if mode == MediaPlayUrlMode.MERGED and len(candidates) >= 2:
-            media_ids = [item.id for item in candidates]
-            return MediaPlayUrlResource(
-                play_url=build_signed_merged_media_url(media_ids),
-                kind=MediaPlayUrlKind.MERGED_LOCAL,
-                segment_count=len(candidates),
-                segments=_segments(candidates),
-            )
-
-        first = candidates[0]
-        return MediaPlayUrlResource(
-            play_url=build_signed_media_url(first.id),
-            kind=(
-                MediaPlayUrlKind.SINGLE_LOCAL
-                if is_local
-                else MediaPlayUrlKind.SINGLE_CLOUD115
-            ),
-            segment_count=1,
-            segments=_segments(candidates[:1]),
-        )
-
-    # 115 直链进程内缓存：键 (media_id, signature, user_agent)
-    # signature 由 /stream 签名 URL 提供，变了说明前端换了会话；UA 变要重取因为 115
-    # 用 f= 指纹绑 UA，共享会 403。TTL 6h 远小于直链 t= 实测寿命，留足播放余量。
-    _CLOUD115_URL_TTL_SECONDS = 6 * 60 * 60
-    _cloud115_url_cache: dict[tuple[int, str, str], tuple[str, float]] = {}
-
-    # 这些错误只表示 HLS 当前不可用，不应阻断仍可通过原画直链完成的播放。
-    _CLOUD115_HLS_FALLBACK_CODES = {
-        "cloud115_membership_required",
-        "cloud115_video_transcoding",
-        "cloud115_rate_limited",
-        "cloud115_upstream_error",
-        "cloud115_hls_unavailable",
-        "hls_not_video",
-    }
-
-    @classmethod
-    async def resolve_cloud115_playback_url(
-        cls, media: Media, user_agent: str, signature: str
-    ) -> str:
-        """优先返回最高码率 HLS；可恢复的 HLS 错误静默降级到原画直链。"""
-        from src.service.playback.cloud115_hls_service import Cloud115HlsService
-
-        try:
-            return await Cloud115HlsService.resolve_highest_variant_url(
-                media,
-                user_agent=user_agent,
-            )
-        except ApiError as exc:
-            if exc.code not in cls._CLOUD115_HLS_FALLBACK_CODES:
-                # cookies 失效、媒体不存在/被封等确定性错误必须原样暴露。
-                raise
-            logger.info(
-                "cloud115 hls unavailable, falling back to direct stream "
-                "media_id={} code={} detail={}",
-                media.id,
-                exc.code,
-                exc.message,
-            )
-            return await cls.resolve_cloud115_stream_url(media, user_agent, signature)
-
-    @classmethod
-    async def resolve_cloud115_stream_url(
-        cls, media: Media, user_agent: str, signature: str
-    ) -> str:
-        """按 (media_id, signature, user_agent) 复用直链；未命中才调 115 downurl。
-
-        UA 绑定链路：播放器请求 /stream 的 UA → 绑进直链 f= 指纹 → 302 后播放器
-        跟随请求 CDN 时 UA 天然一致；缓存命中直接复用该链。
-
-       
-        """
-        from src.lib.cloud115 import Cloud115Error
-        from src.service.cloud115 import (
-            cloud115_client_for,
-            map_cloud115_error,
-        )
-
-        locator = media.backend_locator or {}
-        pickcode = locator.get("pickcode")
-        if not pickcode:
-            raise ApiError(
-                404, "media_locator_missing",
-                "媒体缺少 cloud115 定位信息",
-                {"media_id": media.id},
-            )
-
-        cache_key = (media.id, signature, user_agent)
-        now = time.monotonic()
-        cached = cls._cloud115_url_cache.get(cache_key)
-        if cached is not None:
-            url, expires_at = cached
-            if expires_at > now:
-                logger.info(
-                    "cloud115 stream url cache hit media_id={} pickcode={}",
-                    media.id, pickcode,
-                )
-                return url
-            cls._cloud115_url_cache.pop(cache_key, None)
-
-        # 惰性清理已过期项，避免 dict 长期运行下无限膨胀（signature 每 12h 换一批）。
-        for stale_key in [k for k, (_, exp) in cls._cloud115_url_cache.items() if exp <= now]:
-            cls._cloud115_url_cache.pop(stale_key, None)
-
-        try:
-            async with cloud115_client_for(media.library) as client:
-                direct = await client.get_download_url(pickcode, user_agent)
-        except Cloud115Error as exc:
-            logger.warning(
-                "cloud115 stream url refetch failed media_id={} pickcode={} detail={}",
-                media.id, pickcode, exc,
-            )
-            raise map_cloud115_error(exc) from exc
-
-        cls._cloud115_url_cache[cache_key] = (
-            direct.url,
-            now + cls._CLOUD115_URL_TTL_SECONDS,
-        )
-        # 记录签名 UA 与新链地址，便于线上出问题时对比播放器实际访问 CDN 的报文。
-        logger.info(
-            "cloud115 stream url refetched media_id={} pickcode={} ua={!r} url={}",
-            media.id, pickcode, user_agent, direct.url,
-        )
-        return direct.url
 
     @staticmethod
     def _require_media(media_id: int) -> Media:
@@ -331,45 +125,6 @@ class MediaService:
         validate_page(page, page_size, error_code="invalid_media_point_filter")
 
     @staticmethod
-    def _delete_local_media_file(media: Media) -> None:
-        unlink_ignore_missing(Path(media.path))
-
-    @classmethod
-    def _delete_cloud115_media_file(cls, media: Media) -> None:
-        """删 115 云端文件（进回收站，有误删缓冲）；文件已不在时容忍继续删记录。
-
-        cookies 失效 / 限流等上游异常向上抛（映射成 ApiError），不静默吞——
-        否则记录删了云端文件还在，库目录会积累孤儿文件。
-        """
-        from src.lib.cloud115 import Cloud115Error, Cloud115NotFoundError
-        from src.service.cloud115 import (
-            cloud115_client_for,
-            map_cloud115_error,
-        )
-
-        locator = media.backend_locator or {}
-        fid = locator.get("fid")
-        if not fid:
-            # 没有 fid 无从删起：记录本身仍应可删（对齐本地 FileNotFoundError 容忍语义）
-            logger.warning("Delete cloud115 media without fid media_id={}", media.id)
-            return
-
-        async def _delete() -> None:
-            async with cloud115_client_for(media.library) as client:
-                await client.delete_files([fid])
-
-        import asyncio
-
-        try:
-            asyncio.run(_delete())
-        except Cloud115NotFoundError:
-            logger.info(
-                "Cloud115 file already gone media_id={} fid={}", media.id, fid
-            )
-        except Cloud115Error as exc:
-            raise map_cloud115_error(exc) from exc
-
-    @staticmethod
     def _media_point_kind_filter(kind: MediaPointKind):
         # 按归属过滤：JAV 取有番号媒体，VIDEO 取非 JAV 视频媒体，ALL 不限制。
         if kind == MediaPointKind.JAV:
@@ -393,8 +148,6 @@ class MediaService:
     @staticmethod
     def _to_media_list_item_resource(
         media: Media,
-        *,
-        last_rapid_upload_status: str | None = None,
     ) -> MediaListItemResource:
         # 按归属拆分：JAV 媒体展示番号、影片封面与热度，非 JAV 媒体回退到 VideoItem 标题。
         if media.movie_number:
@@ -412,16 +165,14 @@ class MediaService:
                 else None,
                 library_id=media.library_id,
                 library_name=media.library.name if media.library_id is not None else None,
-                path=media.display_path,
+                file_name=media.file_name,
                 file_size_bytes=media.file_size_bytes,
                 duration_seconds=media.duration_seconds,
                 resolution=media.resolution,
-                special_tags=media.special_tags,
                 valid=media.valid,
                 thumbnail_generation_state=media.thumbnail_generation_state,
                 thumbnail_last_error_code=media.thumbnail_last_error_code,
                 heat=movie.heat,
-                last_rapid_upload_status=last_rapid_upload_status,
                 created_at=media.created_at,
                 updated_at=media.updated_at,
             )
@@ -436,16 +187,14 @@ class MediaService:
             else None,
             library_id=media.library_id,
             library_name=media.library.name if media.library_id is not None else None,
-            path=media.display_path,
+            file_name=media.file_name,
             file_size_bytes=media.file_size_bytes,
             duration_seconds=media.duration_seconds,
             resolution=media.resolution,
-            special_tags=media.special_tags,
             valid=media.valid,
             thumbnail_generation_state=media.thumbnail_generation_state,
             thumbnail_last_error_code=media.thumbnail_last_error_code,
             heat=None,
-            last_rapid_upload_status=last_rapid_upload_status,
             created_at=media.created_at,
             updated_at=media.updated_at,
         )
@@ -457,13 +206,12 @@ class MediaService:
         kind: MediaPointKind = MediaPointKind.ALL,
         library_id: int | None = None,
         actor_ids: list[int] | None = None,
-        rapid_upload_status: MediaRapidUploadFilterStatus | None = None,
         thumbnail_generation_state: MediaThumbnailGenerationState | None = None,
         sort: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> PageResponse[MediaListItemResource]:
-        """跨 JAV 与 videos 域分页列出全部媒体，支持归属/库/订阅女优/上次秒传状态筛选与排序。"""
+        """跨 JAV 与 videos 域分页列出全部媒体，支持归属/库/订阅女优筛选与排序。"""
         validate_page(page, page_size, error_code="invalid_media_filter")
 
         # 非 JAV 媒体没有 movie，Movie 改为 LEFT OUTER，并补 VideoItem 兜底标题/封面。
@@ -505,23 +253,6 @@ class MediaService:
                 Movie.id.in_(actor_movie_ids)
             )
             base_query = base_query.where(Media.movie.in_(movie_numbers))
-        if rapid_upload_status is not None:
-            if rapid_upload_status == MediaRapidUploadFilterStatus.NONE:
-                # NONE 反选：排除"最新非 retried item 存在且非 succeeded"的 media，
-                # 剩下的就是"从未秒传过 or 最近一次已成功切云端"。
-                base_query = base_query.where(
-                    Media.id.not_in(
-                        MediaRapidUploadQueryService.active_media_id_subquery()
-                    )
-                )
-            else:
-                base_query = base_query.where(
-                    Media.id.in_(
-                        MediaRapidUploadQueryService.media_id_subquery_for_status(
-                            rapid_upload_status.value
-                        )
-                    )
-                )
         if thumbnail_generation_state is not None:
             base_query = base_query.where(
                 Media.thumbnail_generation_state == thumbnail_generation_state.value
@@ -534,17 +265,7 @@ class MediaService:
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        # 一次子查询批量拿本页所有 media 的最新秒传状态，避免逐条 N+1。
-        rapid_upload_status = MediaRapidUploadQueryService.get_latest_status_by_media(
-            [media.id for media in rows]
-        )
-        items = [
-            cls._to_media_list_item_resource(
-                media,
-                last_rapid_upload_status=rapid_upload_status.get(media.id),
-            )
-            for media in rows
-        ]
+        items = [cls._to_media_list_item_resource(media) for media in rows]
         return PageResponse[MediaListItemResource](
             items=items,
             page=page,
@@ -690,27 +411,38 @@ class MediaService:
     @classmethod
     def delete_media(cls, media_id: int) -> None:
         media = cls._require_media(media_id)
-        # 秒传运行期间源文件正在被哈希或清理，禁止并发删除同一媒体。
-        if MediaRapidUploadQueryService.has_active_media(media.id):
+        media_handle = media_handle_for(media)
+        try:
+            storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
+            storage.delete_media(media=media_handle)
+        except ProviderUnavailableError as exc:
             raise ApiError(
-                409,
-                "media_rapid_upload_in_progress",
-                "媒体正在执行秒传，暂不能删除",
-                {"media_id": media.id},
-            )
-
+                503,
+                "provider_not_installed",
+                "媒体提供方未安装",
+            ) from exc
+        except ProviderOperationError as exc:
+            if exc.code == "source_not_found":
+                # Provider 已确认来源不存在，宿主记录已无对应远端对象，继续清理本地元数据。
+                pass
+            else:
+                status_code = {
+                    "authentication_failed": 401,
+                    "unavailable": 503,
+                    "invalid_config": 422,
+                    "unsupported": 422,
+                }[exc.code]
+                raise ApiError(
+                    status_code,
+                    f"provider_{exc.code}",
+                    exc.safe_message,
+                ) from exc
         thumbnails = list(
             MediaThumbnail.select(MediaThumbnail, Image)
             .join(Image)
             .where(MediaThumbnail.media == media)
         )
         thumbnail_image_ids = [thumbnail.image_id for thumbnail in thumbnails]
-
-        # 删除语义对齐本地：删 Media = 文件也没了。cloud115 走 SDK 删（进回收站），本地 unlink。
-        if cls.is_cloud115_media(media):
-            cls._delete_cloud115_media_file(media)
-        elif media.path:
-            cls._delete_local_media_file(media)
 
         with get_database().atomic():
             # 依赖 DB 外键 CASCADE 自动清 MediaProgress / MediaPoint / MediaThumbnail。
@@ -735,22 +467,6 @@ class MediaService:
         cls._require_media(media_id)
         return MediaThumbnailService.list_media_thumbnails(media_id)
 
-    @classmethod
-    def check_media_validity(cls, media_id: int) -> MediaValidityCheckResponse:
-        cls._require_media(media_id)
-        result = MediaFileScanService().check_media_file(media_id)
-        return MediaValidityCheckResponse(
-            id=result.id,
-            path=result.path,
-            file_exists=result.file_exists,
-            valid_before=result.valid_before,
-            valid_after=result.valid_after,
-            updated=result.updated,
-            invalidated=result.invalidated,
-            revived=result.revived,
-            checked_at=result.checked_at,
-        )
-
     @staticmethod
     def _to_invalid_media_resource(media: Media) -> InvalidMediaResource:
         # 按归属拆分：JAV 媒体展示番号与影片封面，非 JAV 媒体回退到 VideoItem 标题。
@@ -766,7 +482,7 @@ class MediaService:
                 thin_cover_image=ImageResource.from_attributes_model(movie.thin_cover_image)
                 if movie.thin_cover_image_id is not None
                 else None,
-                path=media.display_path,
+                file_name=media.file_name,
                 library_id=media.library_id,
                 library_name=media.library.name if media.library_id is not None else None,
                 file_size_bytes=media.file_size_bytes,
@@ -780,7 +496,7 @@ class MediaService:
             cover_image=ImageResource.from_attributes_model(video_item.cover_image)
             if video_item is not None and video_item.cover_image_id is not None
             else None,
-            path=media.display_path,
+            file_name=media.file_name,
             library_id=media.library_id,
             library_name=media.library.name if media.library_id is not None else None,
             file_size_bytes=media.file_size_bytes,
@@ -827,7 +543,7 @@ class MediaService:
                 (Movie.movie_number.contains(normalized))
                 | (Movie.title.contains(normalized))
                 | (VideoItem.title.contains(normalized))
-                | (Media.path.contains(normalized))
+                | (Media.file_name.contains(normalized))
             )
         return paginate(
             base_query.order_by(Media.updated_at.desc(), Media.id.desc()),

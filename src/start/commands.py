@@ -9,18 +9,15 @@ import click
 from loguru import logger
 
 import src.common.logging as app_logging
-from src.api.exception.errors import ApiError
 from src.common.logging import configure_logging
 from src.config.config import settings
 from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import init_database
-from src.model.enums import MediaLibraryBackend
 from src.plugins.manager import PluginManager
-from src.schema.playback.media_libraries import MediaLibraryCreateRequest
 from src.service.catalog import MovieThinCoverBackfillService
-from src.service.playback import MediaLibraryService
 from src.service.system import TaskRunConflictError
+from src.service.system.plugin_removal_service import PluginRemovalService
 from src.start.initdb import create_tables
 
 
@@ -201,6 +198,94 @@ def migrate():
     )
 
 
+@main.command(name="upgrade-v053")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Build and validate the complete upgrade plan without database writes.",
+)
+def upgrade_v053(dry_run: bool):
+    """单向迁移精确 v0.5.3 数据，并仅为该迁移安装官方存储插件。"""
+    from src.plugins.bundled_providers import install_bundled_provider_plugins_once
+    from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
+    from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
+    from src.start.legacy_v053_upgrade import (
+        LegacyV053UpgradeError,
+        classify_database_schema,
+        upgrade_v053_database,
+    )
+
+    logger.info("v0.5.3 upgrade command started")
+    database = _connect_database_for_migration()
+    state = classify_database_schema(database)
+    logger.info("v0.5.3 upgrade command schema state={}", state)
+    if state == "unsupported":
+        raise click.ClickException(
+            "unsupported_schema: only the exact v0.5.3 schema can use this bridge"
+        )
+    if state == "legacy_v053":
+        try:
+            logger.info("v0.5.3 upgrade preparing bundled official providers")
+            install_result = install_bundled_provider_plugins_once()
+            logger.info(
+                "v0.5.3 upgrade bundled providers ready installed={} "
+                "already_completed={}",
+                install_result.installed,
+                install_result.already_completed,
+            )
+            registrations = load_enabled_plugins(
+                settings.plugins,
+                root_dir=Path(settings.plugins.root_dir).expanduser(),
+            )
+            logger.info(
+                "v0.5.3 upgrade enabled plugins loaded registrations={} enabled={}",
+                len(registrations),
+                len(settings.plugins.enabled),
+            )
+            for provider_key in ("local", "cloud115"):
+                MEDIA_PROVIDER_REGISTRY.require(provider_key)
+                logger.info(
+                    "v0.5.3 upgrade required provider available provider={}",
+                    provider_key,
+                )
+            logger.info("v0.5.3 upgrade official provider preparation completed")
+        except Exception as exc:
+            failures = {
+                plugin_id: value
+                for plugin_id, value in PLUGIN_LOAD_ERRORS.items()
+                if plugin_id
+                in {
+                    "sakuramedia_local_provider",
+                    "sakuramedia_115_provider",
+                }
+            }
+            detail = f" errors={failures}" if failures else ""
+            raise click.ClickException(
+                f"v0.5.3 官方存储插件安装或加载失败: {exc}{detail}"
+            ) from exc
+    else:
+        logger.info(
+            "v0.5.3 upgrade provider preparation skipped schema_state={}", state
+        )
+    try:
+        logger.info("v0.5.3 upgrade invoking database bridge")
+        summary = upgrade_v053_database(database, dry_run=dry_run)
+    except LegacyV053UpgradeError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        "upgrade-v053 finished: "
+        f"dry_run={str(dry_run).lower()} "
+        f"upgraded={str(summary.upgraded).lower()} "
+        f"media={summary.media_count} invalid_media={summary.invalid_media_count}"
+    )
+    logger.info(
+        "v0.5.3 upgrade command finished upgraded={} media={} invalid_media={}",
+        summary.upgraded,
+        summary.media_count,
+        summary.invalid_media_count,
+    )
+
+
 @main.command(name="wait-db")
 @click.option(
     "--timeout",
@@ -219,13 +304,15 @@ def migrate():
     help="Seconds between connection attempts.",
 )
 def wait_db(timeout_seconds: float, interval_seconds: float):
-    """等待 PostgreSQL 可连接；供容器启动时在迁移前对齐数据库就绪时序"""
+    """落盘运行配置并等待 PostgreSQL 可连接"""
     import time
 
     from peewee import OperationalError
 
+    from src.config.config import ensure_runtime_config
     from src.model.base import create_database
 
+    ensure_runtime_config()
     deadline = time.monotonic() + timeout_seconds
     attempt = 0
     last_error: OperationalError | None = None
@@ -294,7 +381,7 @@ def test_javdb(movie_number: str, output_json: bool):
 class _LazyApsGroup(click.Group):
     """APS 子命令组：首次调用时才从 JOB_REGISTRY 注册子命令。
 
-    插件在 import 期加载有副作用（依赖安装、插件代码执行），插件管理 CLI
+    插件在 import 期会执行插件代码，插件管理 CLI
     （plugins list/install 等）不应为此被迫加载全部插件，因此注册表访问
     推迟到真正执行 APS 子命令时。
     """
@@ -422,17 +509,23 @@ def plugins_install(plugin_path: Path, sha256: str | None, no_enable: bool):
         return manager.install(plugin_path, enable=not no_enable)
 
     result = _plugin_operation(_install)
+    restart_message = (
+        "重启服务容器后同步依赖并生效"
+        if PluginManager().pending_restart_for(result["plugin_id"]) == ["container"]
+        else "重启 api 与 aps 后生效"
+    )
     click.echo(
         f"插件 {result['plugin_id']} v{result['version']} 已安装；"
-        "重启 api 与 aps 后生效"
+        f"{restart_message}"
     )
 
 
 @plugins_group.command("remove")
 @click.argument("plugin_id")
 def plugins_remove(plugin_id: str):
-    """删除插件目录（含 data/，请先自行备份）。"""
-    _plugin_operation(lambda: PluginManager().remove(plugin_id))
+    """删除插件代码并保留 data/；被媒体库使用的 provider 不可删除。"""
+    _ensure_database_ready()
+    _plugin_operation(lambda: PluginRemovalService.remove(plugin_id))
     click.echo(f"插件 {plugin_id} 已删除")
 
 
@@ -440,8 +533,14 @@ def plugins_remove(plugin_id: str):
 @click.argument("plugin_id")
 def plugins_enable(plugin_id: str):
     """启用插件（写入 enabled，重启后生效）。"""
-    _plugin_operation(lambda: PluginManager().set_enabled(plugin_id, True))
-    click.echo(f"插件 {plugin_id} 已启用；重启 api 与 aps 后生效")
+    manager = PluginManager()
+    _plugin_operation(lambda: manager.set_enabled(plugin_id, True))
+    restart_message = (
+        "重启服务容器后同步依赖并生效"
+        if manager.pending_restart_for(plugin_id) == ["container"]
+        else "重启 api 与 aps 后生效"
+    )
+    click.echo(f"插件 {plugin_id} 已启用；{restart_message}")
 
 
 @plugins_group.command("disable")
@@ -463,6 +562,20 @@ def plugins_check(plugin_dir: Path):
     except Exception as exc:
         raise click.ClickException(f"插件校验失败: {exc}") from exc
     click.echo(f"插件 {plugin_dir.name} 校验通过")
+
+
+@plugins_group.command("sync-dependencies", hidden=True)
+def plugins_sync_dependencies():
+    """启动前同步已启用插件声明的依赖；失败由加载器隔离。"""
+    from src.plugins.dependencies import sync_plugin_dependencies
+
+    manager = PluginManager()
+    failures = sync_plugin_dependencies(
+        settings.plugins,
+        root_dir=manager.root_dir,
+    )
+    for plugin_id, message in failures.items():
+        click.echo(f"插件 {plugin_id} {message}")
 
 
 @plugins_group.command("clear-field-owners")
@@ -498,51 +611,6 @@ def plugins_clear_field_owners(plugin_id: str, fields: tuple[str, ...]):
 # ---------------------------------------------------------------------------
 # 非 APS 命令（保持不变）
 # ---------------------------------------------------------------------------
-
-
-@main.command(name="add-media-library")
-@click.option("--name", required=True, type=str, help="Media library name.")
-@click.option(
-    "--root-path",
-    required=True,
-    type=str,
-    help="Absolute root path for media library.",
-)
-def add_media_library(name: str, root_path: str):
-    logger.info("CLI add-media-library start name={} root_path={}", name, root_path)
-    _ensure_database_ready()
-    try:
-        library = MediaLibraryService.create_library(
-            MediaLibraryCreateRequest(
-                name=name,
-                backend=MediaLibraryBackend.LOCAL,
-                backend_config={"root_path": root_path},
-            )
-        )
-    except ApiError as exc:
-        logger.warning(
-            "CLI add-media-library validation failed code={} detail={}",
-            exc.code,
-            exc.details,
-        )
-        raise click.ClickException(exc.code)
-    except Exception:
-        logger.exception("CLI add-media-library crashed name={} root_path={}", name, root_path)
-        raise
-
-    library_root_path = library.backend_config.get("root_path", "")
-    logger.info(
-        "CLI add-media-library finished library_id={} name={} root_path={}",
-        library.id,
-        library.name,
-        library_root_path,
-    )
-    click.echo(
-        "media library created: "
-        f"library_id={library.id} "
-        f"name={library.name} "
-        f"root_path={library_root_path}"
-    )
 
 
 @main.command(name="reset-account")

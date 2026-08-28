@@ -10,6 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from src.config.config import settings
+from src.plugins import HOST_API_VERSION
 from src.plugins.installer import PluginInstallError
 from src.plugins.manager import PluginManager, PluginSettingsValidationError
 from src.start.commands import main
@@ -30,7 +31,7 @@ def _make_plugin_dir(
                 "plugin_id": plugin_id,
                 "display_name": "演示",
                 "version": version,
-                "host_api_version": 3,
+                "host_api_version": HOST_API_VERSION,
             },
             ensure_ascii=False,
         ),
@@ -239,15 +240,25 @@ def test_manager_install_zip_rejects_broken_register(tmp_path):
     assert not (root / ".staging" / "demo_plugin").exists()
 
 
-def test_manager_remove_disables_and_deletes(tmp_path):
+def test_manager_remove_disables_and_preserves_data(tmp_path):
     root = tmp_path / "root"
     manager = PluginManager(root_dir=root)
     manager.install(_make_plugin_dir(tmp_path), enable=True)
+    data_file = root / "demo_plugin" / "data" / "state.json"
+    data_file.parent.mkdir(parents=True)
+    data_file.write_text('{"v": 1}', encoding="utf-8")
+
     manager.remove("demo_plugin")
 
-    assert not (root / "demo_plugin").exists()
+    assert data_file.read_text(encoding="utf-8") == '{"v": 1}'
+    assert not (root / "demo_plugin" / "manifest.json").exists()
     assert manager.get_plugin("demo_plugin") is None
     assert "demo_plugin" not in manager._enabled_ids()
+
+    manager.install(_make_plugin_dir(tmp_path, version="2.0.0"), enable=False)
+
+    assert manager.get_plugin("demo_plugin")["version"] == "2.0.0"
+    assert data_file.read_text(encoding="utf-8") == '{"v": 1}'
 
 
 def test_manager_install_requires_manifest(tmp_path):

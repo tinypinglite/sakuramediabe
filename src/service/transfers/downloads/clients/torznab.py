@@ -11,8 +11,6 @@ from src.schema.transfers.downloads import (
     DownloadCandidateResource,
 )
 from src.service.transfers.downloads.common import resolve_preferred_client
-from src.service.transfers.downloads.guards.tag_rules import detect_candidate_tags
-from src.service.transfers.shared.common import canonicalize_btih
 
 
 def _describe_search_error(exc: Exception) -> str:
@@ -37,7 +35,6 @@ class TorznabClientError(Exception):
 
 class TorznabClient:
     FC2_QUERY_PATTERN = re.compile(r"^FC2-?(\d+)$", re.IGNORECASE)
-    MAGNET_BTIH_PATTERN = re.compile(r"xt=urn:btih:([^&]+)", re.IGNORECASE)
 
     def __init__(
         self,
@@ -50,7 +47,7 @@ class TorznabClient:
         candidates: list[DownloadCandidateResource] = []
         normalized_kind = (indexer_kind or "").strip().lower() or None
         search_query = self._build_search_query(movie_number)
-        # 一趟 JOIN 取全部索引器绑定关系，候选卡片的 resolved_client 按全局 kind 偏好预解析。
+        # 一趟 JOIN 取全部索引器绑定关系；候选按索引器绑定顺序解析默认 client。
         clients_by_indexer = self._load_clients_by_indexer()
         for indexer in Indexer.select().order_by(Indexer.id.asc()):
             if normalized_kind and indexer.kind != normalized_kind:
@@ -144,23 +141,21 @@ class TorznabClient:
         # Torznab 协议中磁力链可能出现在 magneturl 属性、link 或 guid 任一字段
         # （只有磁力链没有 .torrent 文件时，聚合器如 Jackett 会把磁力链直接塞进 link/guid），
         # 因此按内容而非字段名分流：磁力链归 magnet_url，其余链接归 torrent_url。
-        magnet_url, torrent_url = self._split_download_links(
+        source_uri = self._resolve_source_uri(
             attr_map.get("magneturl"),
             item.get("link"),
             item.get("guid"),
         )
         return DownloadCandidateResource(
-            source="torznab",
+            source_uri=source_uri,
             indexer_name=indexer.name or remote_indexer["id"] or remote_indexer["name"],
             indexer_kind=indexer.kind,
             resolved_client_id=resolved_client.id,
             resolved_client_name=resolved_client.name,
-            resolved_client_kind=resolved_client.kind,
             download_clients=[
                 DownloadCandidateClientResource(
                     id=download_client.id,
                     name=download_client.name,
-                    kind=download_client.kind,
                 )
                 for download_client in download_clients
             ],
@@ -168,41 +163,13 @@ class TorznabClient:
             title=full_title or title,
             size_bytes=size_bytes,
             seeders=seeders,
-            magnet_url=magnet_url,
-            torrent_url=torrent_url,
-            info_hash=self._resolve_info_hash(attr_map.get("infohash"), magnet_url),
-            tags=detect_candidate_tags(full_title or title, movie_number, size_bytes),
         )
 
     @classmethod
-    def _resolve_info_hash(cls, raw_info_hash, magnet_url: str) -> str:
-        """确定候选的种子身份，**零网络开销**。
-
-        torznab 规范里 ``infohash`` 是可选属性，但实际索引器基本都给（生产 knaben +
-        sukebei 实测 68/68 覆盖）；给不出时磁力链里的 btih 同样是现成的。两者都没有就返回空串，
-        由调用方决定怎么处理——绝不为了拿 hash 去下载 .torrent 文件：那是每候选一次网络往返，
-        而选种阶段只是想知道"这个种子我是不是已经试过了"。
-        """
-        attribute_value = str(raw_info_hash or "").strip()
-        if attribute_value:
-            try:
-                return canonicalize_btih(attribute_value)
-            except ValueError:
-                logger.warning("Ignore unparseable torznab infohash value={}", attribute_value)
-
-        matched = cls.MAGNET_BTIH_PATTERN.search(magnet_url or "")
-        if matched:
-            try:
-                return canonicalize_btih(matched.group(1))
-            except ValueError:
-                logger.warning("Ignore unparseable magnet btih magnet={}", (magnet_url or "")[:80])
-        return ""
-
-    @classmethod
-    def _split_download_links(cls, *raw_links) -> tuple[str, str]:
-        # 按内容把候选链接分流成磁力链与 .torrent 文件地址，各取第一个有效值
+    def _resolve_source_uri(cls, *raw_links) -> str:
+        # The provider receives one opaque URI and decides whether it is a
+        # magnet, torrent URL, or another supported source.
         magnet_url = ""
-        torrent_url = ""
         for raw in raw_links:
             link = cls._coerce_text(raw)
             if not link:
@@ -210,8 +177,8 @@ class TorznabClient:
             if link.lower().startswith("magnet:"):
                 magnet_url = magnet_url or link
             else:
-                torrent_url = torrent_url or link
-        return magnet_url, torrent_url
+                return link
+        return magnet_url
 
     @staticmethod
     def _coerce_mapping(value) -> dict:

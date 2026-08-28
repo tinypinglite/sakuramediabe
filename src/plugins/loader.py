@@ -21,8 +21,13 @@ from src.plugins.contracts import (
     MIN_SUPPORTED_HOST_API_VERSION,
     PluginRegistration,
 )
+from src.plugins.dependencies import (
+    dependency_failure_message,
+    enable_dependency_site_packages,
+)
 from src.plugins.extensions import EXTENSION_VALIDATORS
 from src.plugins.manifest import MANIFEST_FILENAME, load_manifest_from_file
+from src.plugins.provider_protocol import refresh_media_provider_registry
 from src.scheduler.contracts import JobDefinition
 
 PLUGIN_MODULE_NAMESPACE = "sakuramedia_plugins"
@@ -64,7 +69,11 @@ def _import_plugin_package(plugin_dir: Path, plugin_id: str):
     module = importlib.util.module_from_spec(spec)
     # 先注册再 exec，保证插件内部的相对导入（from .settings import ...）可解析。
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        _clear_plugin_modules(plugin_id)
+        raise
     return module
 
 
@@ -153,6 +162,13 @@ def _load_plugin_dir(
         raise PluginLoadError(
             plugin_id, "resolve", f"manifest.plugin_id={manifest.plugin_id} 与启用项不一致"
         )
+    dependency_error = dependency_failure_message(
+        root_dir=plugin_dir.parent,
+        manifest=manifest,
+    )
+    if dependency_error is not None:
+        raise PluginLoadError(plugin_id, "dependencies", dependency_error)
+    enable_dependency_site_packages(plugin_dir.parent)
 
     try:
         module = _import_plugin_package(plugin_dir, plugin_id)
@@ -275,13 +291,25 @@ def load_enabled_plugins(
             loaded.append(registration)
             PLUGIN_LOAD_ERRORS.pop(plugin_id, None)
         except PluginLoadError as exc:
+            _clear_plugin_modules(plugin_id)
             PLUGIN_LOAD_ERRORS[plugin_id] = {
                 "stage": exc.stage,
                 "message": str(exc),
             }
         except Exception as exc:
+            _clear_plugin_modules(plugin_id)
             PLUGIN_LOAD_ERRORS[plugin_id] = {
                 "stage": "load",
                 "message": str(exc),
             }
-    return tuple(loaded)
+    rejected_provider_plugins = refresh_media_provider_registry(loaded)
+    for rejected_plugin_id in rejected_provider_plugins:
+        PLUGIN_LOAD_ERRORS[rejected_plugin_id] = {
+            "stage": "provider_registry",
+            "message": "media.provider provider_key 与已加载插件重复",
+        }
+    return tuple(
+        registration
+        for registration in loaded
+        if registration.plugin_id not in rejected_provider_plugins
+    )

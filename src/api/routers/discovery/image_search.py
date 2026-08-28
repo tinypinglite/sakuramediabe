@@ -71,6 +71,26 @@ def get_image_search_results(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@router.post("/text-sessions", response_model=ImageSearchSessionPageResource)
+def create_text_image_search_session(
+    text: Annotated[str, Form(min_length=1)],
+    page_size: Annotated[int | None, Form()] = None,
+    movie_ids: Annotated[str | None, Form()] = None,
+    exclude_movie_ids: Annotated[str | None, Form()] = None,
+    score_threshold: Annotated[float | None, Form()] = None,
+):
+    try:
+        return get_image_search_service().create_text_session_and_first_page(
+            text=text,
+            page_size=page_size,
+            movie_ids=parse_csv_positive_ints(movie_ids, "movie_ids", error_code="invalid_image_search_filter"),
+            exclude_movie_ids=parse_csv_positive_ints(exclude_movie_ids, "exclude_movie_ids", error_code="invalid_image_search_filter"),
+            score_threshold=score_threshold,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.post("/plot-sessions", response_model=MoviePlotImageSearchSessionPageResource)
 async def create_plot_image_search_session(
     file: Annotated[UploadFile, File(...)],
@@ -114,5 +134,25 @@ def get_plot_image_search_results(
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/plot-text-sessions", response_model=MoviePlotImageSearchSessionPageResource)
+def create_plot_text_search_session(
+    text: Annotated[str, Form(min_length=1)],
+    page_size: Annotated[int | None, Form()] = None,
+    movie_ids: Annotated[str | None, Form()] = None,
+    exclude_movie_ids: Annotated[str | None, Form()] = None,
+    score_threshold: Annotated[float | None, Form()] = None,
+):
+    try:
+        return get_movie_plot_image_search_service().create_text_session_and_first_page(
+            text=text,
+            page_size=page_size,
+            movie_ids=parse_csv_positive_ints(movie_ids, "movie_ids", error_code="invalid_image_search_filter"),
+            exclude_movie_ids=parse_csv_positive_ints(exclude_movie_ids, "exclude_movie_ids", error_code="invalid_image_search_filter"),
+            score_threshold=score_threshold,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

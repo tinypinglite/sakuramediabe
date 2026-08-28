@@ -64,6 +64,12 @@
 - [releases/2026-06-13-non-jav-videos-and-clips.md](./releases/2026-06-13-non-jav-videos-and-clips.md): 非 JAV 视频管理与视频片段收藏接口总览
 - [releases/2026-05-07-actor-year-movie-count.md](./releases/2026-05-07-actor-year-movie-count.md): 女优影片年份数量返回
 
+### Design proposals
+
+- [provider-plugin-protocol.md](./provider-plugin-protocol.md): 存储、下载与可选缩略图的 Provider 插件协议设计草案
+- [provider-file-hash-protocol-draft.md](./provider-file-hash-protocol-draft.md): Provider 媒体文件 Hash 采样约定
+- [provider-plugin-progress.md](./provider-plugin-progress.md): Provider 插件化阶段推进记录、变更统计、验证结果与未完成项
+
 ### Deployment
 
 - [deployment/docker.md](./deployment/docker.md): Docker 部署教程

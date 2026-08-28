@@ -1,4 +1,4 @@
-"""TaskRun-only 的统一媒体导入边界。"""
+"""TaskRun-only boundary for provider-owned media imports."""
 
 from __future__ import annotations
 
@@ -6,22 +6,21 @@ from loguru import logger
 from peewee import IntegrityError
 
 from src.api.exception.errors import ApiError
-from src.common.fs_browse import assert_within_allowed_roots, normalize_abs_path
 from src.common.media_import_status import (
     IMPORT_STATUS_COMPLETED,
     IMPORT_STATUS_FAILED,
     IMPORT_STATUS_RUNNING,
+    IMPORT_STATUS_SKIPPED,
 )
-from src.config.config import settings
-from src.model import DownloadTask, MediaLibrary
+from src.model import BackgroundTaskRun, DownloadTask, MediaLibrary
 from src.model.base import get_database
-from src.model.enums import MediaLibraryBackend
-from src.schema.transfers.media_import import (
-    ImportAcceptedResponse,
-    ImportRequest,
-    ImportResult,
+from src.plugins.provider_protocol import (
+    MEDIA_PROVIDER_REGISTRY,
+    ProviderOperationError,
 )
+from src.schema.transfers.media_import import ImportAcceptedResponse, ImportRequest
 from src.service.system import ActivityService
+from src.service.transfers.downloads.common import download_provider, library_handle_for
 from src.service.transfers.shared.import_notifications import create_new_media_reminder
 from src.service.transfers.shared.write_mutex import library_import_mutex_key
 
@@ -37,19 +36,16 @@ class ImportTaskService:
         trigger_type: str = "manual",
         download_task_id: int | None = None,
         task_name: str | None = None,
-    ) -> ImportAcceptedResponse:
+    ):
         request, library = cls._validated_request(request)
-        source = request.source_path or request.source_cid or request.source_fid or ""
-        mutex_key = cls._mutex_key(request.backend, library)
+        mutex_key = library_import_mutex_key(library=library)
         params = request.model_dump()
         params["download_task_id"] = download_task_id
-        download_task = None
         try:
-            # 在同一事务中创建队列行和关联下载记录，提交前 worker 不可见半成品。
             with get_database().atomic():
                 task_run = ActivityService.create_task_run(
                     task_key=cls.TASK_KEY,
-                    task_name=task_name or cls._task_name(request, source),
+                    task_name=task_name or cls._task_name(request),
                     trigger_type=trigger_type,
                     mutex_key=mutex_key,
                     params=params,
@@ -66,15 +62,14 @@ class ImportTaskService:
             raise ApiError(
                 409,
                 "import_task_conflict",
-                "同一导入互斥域已有任务",
+                "同一媒体库已有导入任务",
                 {"blocking_task_run_id": blocking.id if blocking else None},
             ) from exc
         except Exception as exc:
             if download_task_id is not None:
-                download_task = DownloadTask.get_or_none(DownloadTask.id == download_task_id)
-            if download_task is not None:
-                download_task.import_status = IMPORT_STATUS_FAILED
-                download_task.save(only=[DownloadTask.import_status])
+                DownloadTask.update(import_status=IMPORT_STATUS_FAILED).where(
+                    DownloadTask.id == download_task_id
+                ).execute()
             raise ApiError(
                 502,
                 "import_task_create_failed",
@@ -91,18 +86,46 @@ class ImportTaskService:
     def execute(cls, reporter, params: dict) -> dict:
         request = ImportRequest.model_validate(params)
         download_task_id = params.get("download_task_id")
+        task_run_id = getattr(reporter, "task_run_id", None)
+        if not isinstance(task_run_id, int):
+            raise TypeError("import_task_run_id_missing")
         try:
-            result = cls._execute_request(
-                request,
+            from src.service.transfers.imports.import_service import MediaImportService
+
+            result = MediaImportService().import_from_source(
+                request.source_ref,
+                request.library_id,
+                media_kind=request.media_kind,
+                source_disposition=request.source_disposition,
+                collection_id=request.collection_id,
                 progress_callback=reporter.progress_callback,
-                managed_download_source=download_task_id is not None,
+                stage_receipt_callback=lambda operation_key, receipt: cls._persist_stage_receipt(
+                    task_run_id,
+                    operation_key,
+                    receipt,
+                ),
+                stage_receipt_commit_callback=lambda operation_key: cls._commit_stage_receipt(
+                    task_run_id,
+                    operation_key,
+                ),
+                stage_receipt_clear_callback=lambda operation_key: cls._clear_stage_receipt(
+                    task_run_id,
+                    operation_key,
+                ),
+                operation_namespace=f"task:{task_run_id}",
             )
         except Exception:
             cls._set_download_status(download_task_id, IMPORT_STATUS_FAILED)
             raise
-
-        status = IMPORT_STATUS_FAILED if result.failed_count else IMPORT_STATUS_COMPLETED
+        if result.failed_count:
+            status = IMPORT_STATUS_FAILED
+        elif result.imported_count:
+            status = IMPORT_STATUS_COMPLETED
+        else:
+            status = IMPORT_STATUS_SKIPPED
         cls._set_download_status(download_task_id, status)
+        if status == IMPORT_STATUS_COMPLETED:
+            cls._delete_remote_download_task(download_task_id)
         if download_task_id is not None and result.new_playable_movies:
             try:
                 create_new_media_reminder(
@@ -121,84 +144,18 @@ class ImportTaskService:
         return summary
 
     @staticmethod
-    def _execute_request(
-        request: ImportRequest,
-        *,
-        progress_callback,
-        managed_download_source: bool,
-    ) -> ImportResult:
-        if request.media_kind == "jav" and request.backend == "local":
-            from src.service.transfers.imports.import_service import MediaImportService
-
-            return MediaImportService().import_from_source(
-                request.source_path or "",
-                request.library_id,
-                progress_callback=progress_callback,
-                transfer_mode=request.transfer_mode or "auto",
-            )
-        if request.media_kind == "jav":
-            from src.service.transfers.cloud115.importer.service import (
-                Cloud115ImportService,
-            )
-
-            return Cloud115ImportService().import_from_cloud115(
-                request.library_id,
-                request.source_cid or "",
-                progress_callback=progress_callback,
-                managed_download_source=managed_download_source,
-            )
-        if request.backend == "local":
-            from src.service.videos.video_import_service import VideoImportService
-
-            return VideoImportService().import_from_source(
-                request.source_path or "",
-                request.library_id,
-                transfer_mode=request.transfer_mode or "auto",
-                collection_id=request.collection_id,
-                progress_callback=progress_callback,
-            )
-        from src.service.videos.cloud115_video_import_service import (
-            Cloud115VideoImportService,
-        )
-
-        return Cloud115VideoImportService().import_from_cloud115(
-            request.library_id,
-            source_cid=request.source_cid,
-            source_fid=request.source_fid,
-            collection_id=request.collection_id,
-            progress_callback=progress_callback,
-        )
-
-    @staticmethod
     def _validated_request(request: ImportRequest) -> tuple[ImportRequest, MediaLibrary]:
         library = MediaLibrary.get_or_none(MediaLibrary.id == request.library_id)
         if library is None:
             raise ApiError(404, "media_library_not_found", "媒体库不存在")
-        expected = MediaLibraryBackend(request.backend).value
-        if library.backend != expected:
-            raise ApiError(422, "media_library_backend_mismatch", "媒体库后端与导入来源不匹配")
-        if request.source_path is not None:
-            source = normalize_abs_path(request.source_path)
-            assert_within_allowed_roots(source, settings.media_import.browse_roots)
-            request.source_path = str(source)
-        if request.backend == "cloud115":
-            request.transfer_mode = "cleanup-source"
+        if library.provider_key == "":
+            raise ApiError(422, "invalid_media_library_provider", "媒体库缺少 provider_key")
         return request, library
 
-    @classmethod
-    def _mutex_key(
-        cls,
-        backend: str,
-        library: MediaLibrary,
-    ) -> str:
-        """本地导入与 115 全局写入锁的统一入口。"""
-        return library_import_mutex_key(backend=backend, library=library)
-
     @staticmethod
-    def _task_name(request: ImportRequest, source: str) -> str:
+    def _task_name(request: ImportRequest) -> str:
         kind = "JAV" if request.media_kind == "jav" else "视频"
-        backend = "115" if request.backend == "cloud115" else "本地"
-        return f"{backend}{kind}导入 {source[-80:]}"
+        return f"{kind}媒体库导入"
 
     @staticmethod
     def _set_download_status(download_task_id: int | None, status: str) -> None:
@@ -208,20 +165,185 @@ class ImportTaskService:
             DownloadTask.id == int(download_task_id)
         ).execute()
 
+    @staticmethod
+    def _delete_remote_download_task(download_task_id: int | None) -> None:
+        """Remove the provider task record after a successful import, preserving files."""
+        if download_task_id is None:
+            return
+        task = DownloadTask.get_or_none(DownloadTask.id == int(download_task_id))
+        if task is None:
+            return
+        try:
+            download_provider(task.client).delete_task(
+                remote_id=task.remote_id,
+                delete_files=False,
+            )
+        except ProviderOperationError as exc:
+            if exc.code == "source_not_found":
+                return
+            logger.warning(
+                "Auto-delete remote download task failed task_id={} provider={} operation={} code={}",
+                task.id,
+                exc.provider_key,
+                exc.operation,
+                exc.code,
+            )
+        except ApiError as exc:
+            logger.warning(
+                "Auto-delete remote download task unavailable task_id={} code={}",
+                task.id,
+                exc.code,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Auto-delete remote download task failed unexpectedly task_id={} error_type={}",
+                task.id,
+                type(exc).__name__,
+            )
+
+    @classmethod
+    def _persist_stage_receipt(
+        cls,
+        task_run_id: int,
+        operation_key: str,
+        receipt: dict,
+    ) -> None:
+        cls._update_stage_receipt(
+            task_run_id,
+            operation_key,
+            receipt=receipt,
+            committed=False,
+        )
+
+    @classmethod
+    def _commit_stage_receipt(cls, task_run_id: int, operation_key: str) -> None:
+        cls._update_stage_receipt(
+            task_run_id,
+            operation_key,
+            receipt=None,
+            committed=True,
+        )
+
+    @classmethod
+    def _clear_stage_receipt(cls, task_run_id: int, operation_key: str) -> None:
+        with get_database().atomic():
+            task_run = (
+                BackgroundTaskRun.select()
+                .where(BackgroundTaskRun.id == task_run_id)
+                .for_update()
+                .first()
+            )
+            if task_run is None:
+                raise RuntimeError("import_task_run_not_found")
+            params = dict(task_run.params or {})
+            staged_receipts = dict(params.get("_staged_receipts") or {})
+            staged_receipts.pop(operation_key, None)
+            if staged_receipts:
+                params["_staged_receipts"] = staged_receipts
+            else:
+                params.pop("_staged_receipts", None)
+            task_run.params = params
+            task_run.save(only=[BackgroundTaskRun.params])
+
+    @staticmethod
+    def _update_stage_receipt(
+        task_run_id: int,
+        operation_key: str,
+        *,
+        receipt: dict | None,
+        committed: bool,
+    ) -> None:
+        """Persist provider receipts in the generic task params JSON.
+
+        The receipt is written before the media transaction starts.  A failed
+        finalize therefore remains recoverable without adding provider fields
+        to a host model.
+        """
+        with get_database().atomic():
+            task_run = (
+                BackgroundTaskRun.select()
+                .where(BackgroundTaskRun.id == task_run_id)
+                .for_update()
+                .first()
+            )
+            if task_run is None:
+                raise RuntimeError("import_task_run_not_found")
+            params = dict(task_run.params or {})
+            staged_receipts = dict(params.get("_staged_receipts") or {})
+            if receipt is None:
+                current = staged_receipts.get(operation_key)
+                if not isinstance(current, dict) or "receipt" not in current:
+                    raise RuntimeError("import_stage_receipt_missing")
+                staged_receipts[operation_key] = {
+                    "receipt": current["receipt"],
+                    "committed": committed,
+                }
+            else:
+                staged_receipts[operation_key] = {
+                    "receipt": receipt,
+                    "committed": committed,
+                }
+            if staged_receipts:
+                params["_staged_receipts"] = staged_receipts
+            else:
+                params.pop("_staged_receipts", None)
+            task_run.params = params
+            task_run.save(only=[BackgroundTaskRun.params])
+
     @classmethod
     def recover_interrupted_downloads(cls) -> int:
-        """TaskRun 已失败时，仅把精确关联的下载任务恢复为可整源重试。"""
-        from src.model import BackgroundTaskRun
-
-        failed_runs = BackgroundTaskRun.select(BackgroundTaskRun.id).where(
+        failed_runs = list(BackgroundTaskRun.select().where(
             (BackgroundTaskRun.task_key == cls.TASK_KEY)
             & (BackgroundTaskRun.state == "failed")
-        )
-        return (
-            DownloadTask.update(import_status="pending")
-            .where(
-                (DownloadTask.import_status == IMPORT_STATUS_RUNNING)
-                & (DownloadTask.import_task_run.in_(failed_runs))
+        ))
+        recoverable_run_ids: list[int] = []
+        for task_run in failed_runs:
+            if cls._recover_staged_receipts(task_run):
+                recoverable_run_ids.append(task_run.id)
+        if not recoverable_run_ids:
+            return 0
+        return DownloadTask.update(import_status="pending").where(
+            (DownloadTask.import_status == IMPORT_STATUS_RUNNING)
+            & DownloadTask.import_task_run.in_(recoverable_run_ids)
+        ).execute()
+
+    @classmethod
+    def _recover_staged_receipts(cls, task_run: BackgroundTaskRun) -> bool:
+        params = dict(task_run.params or {})
+        staged_receipts = dict(params.get("_staged_receipts") or {})
+        if not staged_receipts:
+            return True
+        try:
+            request = ImportRequest.model_validate(params)
+            library = MediaLibrary.get_by_id(request.library_id)
+            storage = MEDIA_PROVIDER_REGISTRY.storage_for(library_handle_for(library))
+        except Exception as exc:
+            logger.warning(
+                "Import receipt recovery unavailable task_run_id={} detail={}",
+                task_run.id,
+                exc,
             )
-            .execute()
-        )
+            return False
+        for operation_key, entry in staged_receipts.items():
+            if not isinstance(entry, dict) or not isinstance(entry.get("receipt"), dict):
+                logger.error(
+                    "Import receipt recovery found invalid entry task_run_id={} operation_key={}",
+                    task_run.id,
+                    operation_key,
+                )
+                return False
+            try:
+                if entry.get("committed"):
+                    storage.finalize_import(receipt=entry["receipt"])
+                else:
+                    storage.abort_import(receipt=entry["receipt"])
+            except Exception as exc:
+                logger.warning(
+                    "Import receipt recovery failed task_run_id={} operation_key={} detail={}",
+                    task_run.id,
+                    operation_key,
+                    exc,
+                )
+                return False
+            cls._clear_stage_receipt(task_run.id, operation_key)
+        return True

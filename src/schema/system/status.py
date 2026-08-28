@@ -2,7 +2,6 @@ from datetime import datetime
 
 from pydantic import Field
 
-from src.lib.cloud115 import Cloud115CookieStatus
 from src.schema.common.base import SchemaModel
 
 
@@ -43,40 +42,12 @@ class StatusResource(SchemaModel):
     thumbnails: StatusThumbnailSummary
 
 
-class StatusCloud115LibraryCookieResource(SchemaModel):
-    library_id: int
-    name: str
-    cookie_status: Cloud115CookieStatus
-
-
-class StatusCloud115CookieSummary(SchemaModel):
-    total: int
-    alive: int
-    expired: int
-    unavailable: int
-
-
-class StatusCloud115CookiesResource(SchemaModel):
-    checked_at: datetime
-    summary: StatusCloud115CookieSummary
-    libraries: list[StatusCloud115LibraryCookieResource]
-
-
-class StatusJoyTagSummary(SchemaModel):
+class StatusEmbeddingServiceSummary(SchemaModel):
     healthy: bool
     endpoint: str | None = None
-    backend: str | None = None
-    execution_provider: str | None = None
-    used_device: str | None = None
-    available_devices: list[str] = Field(default_factory=list)
-    device_full_name: str | None = None
-    prefer_gpu: bool | None = None
-    model_dir: str | None = None
-    model_file: str | None = None
-    model_name: str | None = None
-    vector_size: int | None = None
-    image_size: int | None = None
-    probe_latency_ms: int | None = None
+    space_id: str | None = None
+    dimension: int | None = None
+    modalities: list[str] = Field(default_factory=list)
     error: str | None = None
 
 
@@ -101,9 +72,15 @@ class StatusImageSearchIndexingSummary(SchemaModel):
 class StatusImageSearchResource(SchemaModel):
     healthy: bool
     checked_at: datetime
-    joytag: StatusJoyTagSummary
+    embedding_service: StatusEmbeddingServiceSummary
     image_search_vector_store: StatusImageSearchVectorStoreSummary
     indexing: StatusImageSearchIndexingSummary
+
+
+class ImageSearchResetResource(SchemaModel):
+    sessions_deleted: int
+    thumbnails_reset: int
+    plot_images_reset: int
 
 
 class StatusMetadataProviderTestError(SchemaModel):

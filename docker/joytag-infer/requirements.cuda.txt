@@ -1,3 +1,0 @@
--r requirements.base.txt
-onnxruntime-gpu==1.22.0
-nvidia-ml-py==13.595.45

@@ -12,5 +12,4 @@ TASK_NAME_REGISTRY = {
     "plot_image_search_index": "剧情图搜索索引构建",
     "image_search_optimize": "图像搜索索引优化",
     "library_import": "媒体库导入",
-    "media_rapid_upload": "批量媒体秒传",
 }

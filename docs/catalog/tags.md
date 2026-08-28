@@ -148,7 +148,6 @@ GET /tags/1
 - `year`: 发行年份
 - `status`: 按影片状态过滤（可选，`all | subscribed | unsubscribed | playable`，默认 `all`）
 - `collection_type`: 按合集类型过滤（可选，`all | single`，默认 `all`）
-- `special_tag`: 按特殊标签过滤（可选，`4k | uncensored | vr`）
 - `director_name`: 按导演名称精确过滤（可选；会先 `strip`）
 - `maker_name`: 按厂商名称精确过滤（可选；会先 `strip`）
 - `heat_min` / `heat_max`: 热度范围过滤（可选，闭区间，详见 `GET /movies`）
@@ -203,8 +202,7 @@ GET /tags/1/movies?director_name=嵐山みちる&maker_name=S1%20NO.1%20STYLE&pa
       "heat": 0,
       "is_collection": false,
       "is_subscribed": false,
-      "can_play": false,
-      "is_4k": false
+      "can_play": false
     }
   ],
   "page": 1,

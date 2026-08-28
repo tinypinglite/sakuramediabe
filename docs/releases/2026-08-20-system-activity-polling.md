@@ -19,7 +19,7 @@
 
 JavDB 搜索/导入等操作型 SSE 保持原有行为。下载任务的
 `GET /download-tasks/stream` 同步移除，调用方改为轮询 `GET /download-tasks`；
-qB 进度由 APS 内部采样器写入任务快照字段。
+provider 下载状态由调度器同步任务写入宿主任务投影。
 
 ## 订阅列表响应精简
 

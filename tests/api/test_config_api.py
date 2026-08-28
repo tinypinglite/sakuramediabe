@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import toml
 
-from src.config.config import Settings, settings, update_settings
+from src.config.config import Settings, ensure_runtime_config, settings, update_settings
 from src.service.system.config_service import ConfigService
 
 
@@ -89,16 +89,35 @@ def test_config_updates_merge_from_disk_and_survive_plugin_updates(tmp_path, mon
         Settings.model_config["toml_file"] = original_config_path
 
 
-def test_legacy_download_progress_poll_settings_are_ignored_on_startup():
-    loaded = Settings.model_validate(
-        {
-            "downloads": {
-                "progress_stream_poll_interval_seconds": 0.5,
-                "cloud115_progress_poll_interval_seconds": 8.0,
+def test_ensure_runtime_config_removes_obsolete_media_settings(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    original_config_path = Settings.model_config["toml_file"]
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+    monkeypatch.setattr(settings.auth, "secret_key", "test-secret")
+    monkeypatch.setattr(settings.auth, "file_signature_secret", "test-file-secret")
+    config_path.write_text(
+        toml.dumps(
+            {
+                "media": {
+                    "allowed_min_video_file_size": 1,
+                    "inner_sub_tags": ["中字"],
+                    "blueray_tags": ["4K"],
+                    "uncensored_tags": ["无码"],
+                    "uncensored_prefix": ["FC2"],
+                },
+                "media_import": {"browse_roots": ["/mnt"]},
+                "unrelated": {"value": "keep"},
             }
-        }
+        ),
+        encoding="utf-8",
     )
 
-    assert "progress_stream_poll_interval_seconds" not in loaded.downloads.model_dump()
-    assert "cloud115_progress_poll_interval_seconds" not in loaded.downloads.model_dump()
-    assert loaded.scheduler.download_progress_snapshot_interval_seconds == 20.0
+    try:
+        assert ensure_runtime_config() is True
+        persisted = toml.load(config_path)
+        assert persisted["media"] == {"allowed_min_video_file_size": 1}
+        assert "media_import" not in persisted
+        assert persisted["unrelated"] == {"value": "keep"}
+        assert ensure_runtime_config() is False
+    finally:
+        Settings.model_config["toml_file"] = original_config_path

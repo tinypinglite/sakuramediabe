@@ -7,7 +7,7 @@ from src.api.routers._utils import (
     stream_local_file_response,
 )
 from src.api.routers.deps import db_deps, get_current_user
-from src.common import resolve_media_clip_file_path, verify_clip_signature
+from src.common import verify_clip_signature
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.clips import (
     MediaClipCreateRequest,
@@ -105,7 +105,7 @@ def stream_media_clip(
     require_signed_params(expires, signature)
 
     verify_clip_signature(clip_id, expires, signature)
-    absolute_path = resolve_media_clip_file_path(clip_id)
+    absolute_path = MediaClipService.stream_file_path(clip_id)
     require_existing_file(absolute_path)
 
     return stream_local_file_response(request, absolute_path, "video/mp4")

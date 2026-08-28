@@ -1,13 +1,13 @@
 from .daily_recommendation_service import DailyRecommendationService
+from .embedding_client import (
+    EmbeddingClient,
+    EmbeddingClientError,
+    get_embedding_client,
+)
 from .hot_actress_release_service import HotActressReleaseService
 from .hot_review_service import HotReviewCatalogService, HotReviewSyncService
 from .image_search_index_service import ImageSearchIndexService
 from .image_search_service import ImageSearchService, get_image_search_service
-from .joytag_embedder_client import (
-    JoyTagEmbedderClient,
-    JoyTagEmbeddingResult,
-    get_joytag_embedder_client,
-)
 from .moment_recommendation_service import MomentRecommendationService
 from .movie_plot_image_search_index_service import MoviePlotImageSearchIndexService
 from .movie_plot_image_search_service import get_movie_plot_image_search_service
@@ -23,13 +23,13 @@ from .recommendation_service import MovieRecommendationService
 
 __all__ = [
     "DailyRecommendationService",
+    "EmbeddingClient",
+    "EmbeddingClientError",
     "HotActressReleaseService",
     "HotReviewCatalogService",
     "HotReviewSyncService",
     "ImageSearchIndexService",
     "ImageSearchService",
-    "JoyTagEmbedderClient",
-    "JoyTagEmbeddingResult",
     "MomentRecommendationService",
     "MoviePlotImageSearchIndexService",
     "MovieRecommendationService",
@@ -38,8 +38,8 @@ __all__ = [
     "RankingSyncService",
     "ThumbnailVectorRecord",
     "ThumbnailVectorSearchHit",
+    "get_embedding_client",
     "get_image_search_service",
-    "get_joytag_embedder_client",
     "get_movie_plot_image_search_service",
     "get_qdrant_plot_image_store",
     "get_qdrant_thumbnail_store",

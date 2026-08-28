@@ -1,2 +1,0 @@
--r requirements.base.txt
-onnxruntime==1.22.0

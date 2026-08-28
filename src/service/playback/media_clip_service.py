@@ -1,22 +1,16 @@
-"""片段 service：在媒体资源上按缩略图区间用 ffmpeg 流复制同步切出独立片段文件。
+"""片段 service：在媒体资源上按缩略图区间生成独立片段文件。
 
 阅读入口建议从 ``create_clip``、``build_clip_resource``、``load_cover_map`` 开始。
 片段是独立资产，与来源 Media 解耦：来源被删除后片段记录与文件仍保留。
 """
 
-import asyncio
-import subprocess
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from shutil import move
+from tempfile import TemporaryDirectory
 
 from loguru import logger
 from peewee import IntegrityError
-
-try:
-    import av
-except ImportError:  # pragma: no cover - runtime dependency check
-    av = None
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_clip_url, media_clip_root_path
@@ -29,7 +23,6 @@ from src.common.service_helpers import (
     validate_page,
 )
 from src.config.config import settings
-from src.lib.cloud115 import Cloud115Error
 from src.model import (
     ClipCollection,
     ClipCollectionItem,
@@ -38,7 +31,11 @@ from src.model import (
     MediaClip,
     MediaThumbnail,
 )
-from src.model.enums import MediaLibraryBackend
+from src.plugins.provider_protocol import (
+    MEDIA_PROVIDER_REGISTRY,
+    ProviderOperationError,
+    ProviderUnavailableError,
+)
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.clip_collections import ClipCollectionSummary
 from src.schema.common.pagination import PageResponse
@@ -50,14 +47,10 @@ from src.schema.playback.clips import (
     MediaClipUpdateRequest,
 )
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
+from src.service.playback.provider_helpers import media_handle_for
 
 
 class MediaClipService:
-    CLOUD115_CLIP_USER_AGENT = "Mozilla/5.0 SakuraMedia-Clip/1.0"
-    # 切片 remux 累计字节上限：一次片段截取只需读起止两处附近的少量数据，1GB 足以
-    # 覆盖码率极高的长片段；给上限的目的是兜住 CDN 偶发不遵守 Range 直接吐 200 全量
-    # body 的情况，防止大文件被整体读进内存。
-    CLOUD115_CLIP_FETCH_BUDGET_BYTES = 1024 * 1024 * 1024
     MEDIA_CLIP_SORT_FIELDS = {
         "created_at:desc": [MediaClip.created_at.desc(), MediaClip.id.desc()],
         "created_at:asc": [MediaClip.created_at.asc(), MediaClip.id.asc()],
@@ -83,7 +76,22 @@ class MediaClipService:
 
     @staticmethod
     def _require_clip(clip_id: int) -> MediaClip:
-        return require_by_id(MediaClip, clip_id, "media_clip", error_message="Media clip not found", error_details_key="clip_id")
+        clip = require_by_id(
+            MediaClip,
+            clip_id,
+            "media_clip",
+            error_message="Media clip not found",
+            error_details_key="clip_id",
+        )
+        if not MediaClipService._has_valid_artifact(clip):
+            MediaClipService._discard_invalid_clip(clip)
+            raise ApiError(
+                404,
+                "media_clip_not_found",
+                "Media clip not found",
+                {"clip_id": clip_id},
+            )
+        return clip
 
     # ------------------------------------------------------------------ 资源构建
 
@@ -145,160 +153,73 @@ class MediaClipService:
         return f"{prefix}/{clip_id}.mp4"
 
     @staticmethod
-    def _run_ffmpeg_clip(
-        source: str,
-        target_path: Path,
-        start: int,
-        end: int,
-    ) -> None:
-        """对本地文件执行 ffmpeg 流复制切片。
-
-        直接用 subprocess 执行而非 ffmpy，以便用 timeout 兜住坏文件/慢挂载导致的进程卡死；
-        超时会 kill 子进程干净回收，避免同步切片无限占住请求线程。
-        """
-        command = ["ffmpeg", "-ss", str(start), "-to", str(end)]
-        command.extend([
-            "-i", source,
-            "-c", "copy", "-avoid_negative_ts", "make_zero", "-y", str(target_path),
-        ])
+    def _workspace_file(workspace: Path, relative_path: str) -> Path:
+        normalized = (relative_path or "").strip().replace("\\", "/")
+        if not normalized or normalized.startswith("/"):
+            raise RuntimeError("clip_artifact_path_invalid")
+        parts = normalized.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            raise RuntimeError("clip_artifact_path_invalid")
+        candidate = (workspace / Path(*parts)).resolve()
         try:
-            subprocess.run(
-                command,
-                capture_output=True,
-                timeout=settings.media.media_clip_ffmpeg_timeout_seconds,
-                check=True,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("clip_cut_timeout") from exc
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError("clip_cut_failed") from exc
-        if not target_path.exists() or target_path.stat().st_size <= 0:
-            raise RuntimeError("clip_output_empty")
+            candidate.relative_to(workspace.resolve())
+        except ValueError as exc:
+            raise RuntimeError("clip_artifact_path_invalid") from exc
+        return candidate
+
+    @staticmethod
+    def _clip_file_path(clip: MediaClip) -> Path | None:
+        normalized = (clip.file_path or "").strip().replace("\\", "/")
+        if not normalized or normalized.startswith("/"):
+            return None
+        parts = normalized.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            return None
+        root = media_clip_root_path()
+        candidate = (root / Path(*parts)).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            return None
+        return candidate
 
     @classmethod
-    def _cut_cloud115_clip_file(
-        cls,
-        media: Media,
-        target_path: Path,
-        start: int,
-        end: int,
-    ) -> None:
-        """现取绑定 UA 的 115 直链，通过受控串行 RangeReader 做无转码 remux。"""
-        from src.lib.cloud115 import Cloud115RangeReader
-        from src.service.cloud115 import cloud115_client_for
+    def stream_file_path(cls, clip_id: int) -> Path:
+        clip = cls._require_clip(clip_id)
+        return cls._clip_file_path(clip)
 
-        locator = media.backend_locator or {}
-        pickcode = locator.get("pickcode")
-        if not pickcode:
-            raise ApiError(
-                422,
-                "cloud115_locator_missing",
-                "云媒体缺少可用的 pickcode",
-                {"media_id": media.id},
-            )
-
-        async def _resolve_direct_url():
-            async with cloud115_client_for(media.library) as client:
-                return await client.get_download_url(pickcode, cls.CLOUD115_CLIP_USER_AGENT)
-
-        direct = asyncio.run(_resolve_direct_url())
-        file_size = direct.file_size or media.file_size_bytes
-        if not file_size:
-            raise ApiError(
-                422,
-                "cloud115_file_size_missing",
-                "云媒体缺少可用的文件大小",
-                {"media_id": media.id},
-            )
-        reader = Cloud115RangeReader(
-            direct.url,
-            user_agent=direct.user_agent,
-            file_size=file_size,
-            max_fetched_bytes=cls.CLOUD115_CLIP_FETCH_BUDGET_BYTES,
-        )
+    @classmethod
+    def _has_valid_artifact(cls, clip: MediaClip) -> bool:
+        if int(clip.file_size_bytes or 0) <= 0 or int(clip.duration_seconds or 0) <= 0:
+            return False
+        path = cls._clip_file_path(clip)
+        if path is None:
+            return False
         try:
-            cls._remux_cloud115_clip(reader, target_path, start, end)
-        finally:
-            reader.close()
+            return path.is_file() and path.stat().st_size == int(clip.file_size_bytes)
+        except OSError:
+            return False
 
-    @staticmethod
-    def _remux_cloud115_clip(
-        reader: Any,
-        target_path: Path,
-        start: int,
-        end: int,
-    ) -> None:
-        """从同步可 seek 的受控 reader 截取音视频包，时间戳归零后写入 MP4。"""
-        if av is None:
-            raise RuntimeError("pyav_not_installed")
-
-        input_container = av.open(reader, mode="r")
-        try:
-            video_streams = list(input_container.streams.video)
-            if not video_streams:
-                raise RuntimeError("clip_video_stream_missing")
-            # 只保留主视频轨；额外 video stream 常见于封面图，不应进入片段。
-            selected_streams = [video_streams[0], *input_container.streams.audio]
-
-            # 先定位 start 之前最近的视频关键帧；这与本地 ffmpeg -ss ... -c copy 的
-            # 关键帧边界语义一致。RangeReader 始终只有一个在途请求。
-            input_container.seek(start * av.time_base, backward=True, any_frame=False)
-            origin_seconds: float | None = None
-            for packet in input_container.demux(video_streams[0]):
-                if packet.dts is None or packet.time_base is None:
-                    continue
-                origin_seconds = float(packet.dts * packet.time_base)
-                break
-            if origin_seconds is None:
-                raise RuntimeError("clip_seek_failed")
-
-            input_container.seek(
-                max(0, int(origin_seconds * av.time_base)),
-                backward=True,
-                any_frame=False,
+    @classmethod
+    def _discard_invalid_clip(cls, clip: MediaClip) -> None:
+        target_path = cls._clip_file_path(clip)
+        if target_path is None:
+            target_path = media_clip_root_path() / cls._clip_relative_path(
+                clip.movie_number,
+                clip.id,
             )
-            with av.open(
-                str(target_path),
-                mode="w",
-                format="mp4",
-                options={"movflags": "+faststart"},
-            ) as output_container:
-                stream_map = {
-                    stream: output_container.add_stream_from_template(stream)
-                    for stream in selected_streams
-                }
-                muxed_packets = 0
-                for packet in input_container.demux(*selected_streams):
-                    input_stream = packet.stream
-                    if packet.dts is None or packet.time_base is None:
-                        continue
-                    packet_seconds = float(packet.dts * packet.time_base)
-                    if packet_seconds + 1e-9 < origin_seconds:
-                        continue
-                    if packet_seconds >= end:
-                        break
+        clip.delete_instance()
+        cls._unlink_clip_file(target_path)
 
-                    timestamp_shift = round(origin_seconds / float(packet.time_base))
-                    if packet.pts is not None:
-                        packet.pts -= timestamp_shift
-                    packet.dts -= timestamp_shift
-                    packet.stream = stream_map[input_stream]
-                    output_container.mux(packet)
-                    muxed_packets += 1
-                if muxed_packets == 0:
-                    raise RuntimeError("clip_packet_range_empty")
-
-        finally:
-            input_container.close()
-        if not target_path.exists() or target_path.stat().st_size <= 0:
-            raise RuntimeError("clip_output_empty")
-
-    @staticmethod
-    def _is_cloud115_media(media: Media) -> bool:
-        return (
-            media.library_id is not None
-            and media.library.backend == MediaLibraryBackend.CLOUD115.value
-        )
+    @classmethod
+    def valid_clips(cls, clips: Sequence[MediaClip]) -> list[MediaClip]:
+        valid: list[MediaClip] = []
+        for clip in clips:
+            if cls._has_valid_artifact(clip):
+                valid.append(clip)
+            else:
+                cls._discard_invalid_clip(clip)
+        return valid
 
     @classmethod
     def create_clip(
@@ -335,18 +256,10 @@ class MediaClipService:
             MediaClip.end_offset_seconds == end,
         )
         if existing is not None:
-            return cls.build_clip_resource(existing, cls._resolve_single_cover(existing)), False
+            if cls._has_valid_artifact(existing):
+                return cls.build_clip_resource(existing, cls._resolve_single_cover(existing)), False
+            cls._discard_invalid_clip(existing)
 
-        is_cloud115 = cls._is_cloud115_media(media)
-        source_path: Path | None = None
-        if not is_cloud115:
-            if not media.path:
-                raise ApiError(404, "file_not_found", "媒体文件不存在", {"media_id": media.id})
-            source_path = Path(media.path).expanduser().resolve()
-            if not source_path.exists() or not source_path.is_file():
-                raise ApiError(404, "file_not_found", "媒体文件不存在", {"media_id": media.id})
-
-        # 解耦后非 JAV 媒体 movie 为空，读外键原始列（None-safe）；下游 _clip_relative_path 已兜 None。
         movie_number = media.movie_number
         # 先落库拿 id 作为文件名，天然避免跨媒体的文件名冲突。
         try:
@@ -369,19 +282,54 @@ class MediaClipService:
                 MediaClip.end_offset_seconds == end,
             )
             if existing is not None:
-                return cls.build_clip_resource(existing, cls._resolve_single_cover(existing)), False
+                if cls._has_valid_artifact(existing):
+                    return cls.build_clip_resource(existing, cls._resolve_single_cover(existing)), False
+                cls._discard_invalid_clip(existing)
             raise
         relative_path = cls._clip_relative_path(movie_number, clip.id)
         target_path = media_clip_root_path() / relative_path
         try:
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            if is_cloud115:
-                cls._cut_cloud115_clip_file(media, target_path, start, end)
-            else:
-                cls._run_ffmpeg_clip(str(source_path), target_path, start, end)
-            probe = MediaMetadataProbeService.probe_file(target_path)
+            with TemporaryDirectory(prefix=f"media-clip-{media.id}-") as workspace_name:
+                workspace = Path(workspace_name)
+                try:
+                    media_handle = media_handle_for(media)
+                    storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
+                    artifact = storage.create_clip(
+                        media=media_handle,
+                        start_offset_seconds=start,
+                        end_offset_seconds=end,
+                        workspace=workspace,
+                    )
+                except ProviderUnavailableError as exc:
+                    raise ApiError(
+                        503,
+                        "provider_not_installed",
+                        "媒体提供方未安装",
+                    ) from exc
+                except ProviderOperationError as exc:
+                    status_code = {
+                        "source_not_found": 404,
+                        "authentication_failed": 401,
+                        "unavailable": 503,
+                        "invalid_config": 422,
+                        "unsupported": 422,
+                    }[exc.code]
+                    raise ApiError(
+                        status_code,
+                        f"provider_{exc.code}",
+                        exc.safe_message,
+                    ) from exc
+                source_path = cls._workspace_file(workspace, artifact.relative_path)
+                if source_path.suffix.lower() != ".mp4" or not source_path.is_file():
+                    raise RuntimeError("clip_output_invalid")
+                file_size = source_path.stat().st_size
+                if file_size <= 0:
+                    raise RuntimeError("clip_output_empty")
+                probe = MediaMetadataProbeService.probe_file(source_path)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                move(str(source_path), str(target_path))
             clip.file_path = relative_path
-            clip.file_size_bytes = target_path.stat().st_size
+            clip.file_size_bytes = file_size
             clip.duration_seconds = probe.duration_seconds or (end - start)
             clip.save()
         except Exception as exc:
@@ -391,10 +339,6 @@ class MediaClipService:
             logger.warning("Media clip generation failed media_id={} detail={}", media.id, exc)
             if isinstance(exc, ApiError):
                 raise
-            if isinstance(exc, Cloud115Error):
-                from src.service.cloud115 import map_cloud115_error
-
-                raise map_cloud115_error(exc) from exc
             raise ApiError(
                 500,
                 "media_clip_generation_failed",
@@ -416,11 +360,11 @@ class MediaClipService:
     @classmethod
     def list_clips(cls, media_id: int) -> list[MediaClipResource]:
         cls._require_media(media_id)
-        clips = list(
+        clips = cls.valid_clips(list(
             MediaClip.select()
             .where(MediaClip.media == media_id)
             .order_by(MediaClip.created_at.desc(), MediaClip.id.desc())
-        )
+        ))
         cover_map = cls.load_cover_map(clips)
         return [
             cls.build_clip_resource(
@@ -445,13 +389,13 @@ class MediaClipService:
         normalized_movie_number = (movie_number or "").strip()
         if normalized_movie_number:
             query = query.where(MediaClip.movie_number == normalized_movie_number)
-        total = query.count()
-        clips = list(
+        clips = cls.valid_clips(list(
             query
             .order_by(*order_by)
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
+        ))
+        total = len(clips)
+        start = (page - 1) * page_size
+        clips = clips[start : start + page_size]
         cover_map = cls.load_cover_map(clips)
         items = [
             cls.build_clip_resource(
@@ -539,8 +483,19 @@ class MediaClipService:
 
     @classmethod
     def delete_clip(cls, clip_id: int) -> None:
-        clip = cls._require_clip(clip_id)
-        target_path = media_clip_root_path() / clip.file_path if clip.file_path else None
+        clip = require_by_id(
+            MediaClip,
+            clip_id,
+            "media_clip",
+            error_message="Media clip not found",
+            error_details_key="clip_id",
+        )
+        target_path = cls._clip_file_path(clip)
+        if target_path is None:
+            target_path = media_clip_root_path() / cls._clip_relative_path(
+                clip.movie_number,
+                clip.id,
+            )
         # 单条删除本身原子，依赖 DB 外键 CASCADE 自动清 ClipCollectionItem，无需再包事务。
         clip.delete_instance()
         if target_path is not None:

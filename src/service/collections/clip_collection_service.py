@@ -10,7 +10,7 @@ from peewee import IntegrityError, fn
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
-from src.common.service_helpers import count_by_owner, require_by_id, validate_page
+from src.common.service_helpers import require_by_id, validate_page
 from src.model import ClipCollection, ClipCollectionItem, MediaClip
 from src.model.base import get_database
 from src.schema.collections.clips import (
@@ -24,7 +24,6 @@ from src.service.playback.media_clip_service import MediaClipService
 
 
 class ClipCollectionService:
-    @staticmethod
     @staticmethod
     def _normalize_name(name: str) -> str:
         normalized = name.strip()
@@ -65,20 +64,33 @@ class ClipCollectionService:
     def _require_clip(clip_id: int) -> MediaClip:
         return require_by_id(MediaClip, clip_id, "media_clip", error_message="Media clip not found", error_details_key="clip_id")
 
-    @staticmethod
-    def _collection_counts(collection_ids: list[int]) -> dict[int, int]:
-        return count_by_owner(ClipCollectionItem, ClipCollectionItem.collection, collection_ids)
+    @classmethod
+    def _valid_collection_items(cls, collection_ids: list[int]) -> list[ClipCollectionItem]:
+        if not collection_ids:
+            return []
+        items = list(
+            ClipCollectionItem.select(ClipCollectionItem, MediaClip)
+            .join(MediaClip)
+            .where(ClipCollectionItem.collection.in_(collection_ids))
+        )
+        valid_clip_ids = {
+            clip.id for clip in MediaClipService.valid_clips([item.clip for item in items])
+        }
+        return [item for item in items if item.clip_id in valid_clip_ids]
+
+    @classmethod
+    def _collection_counts(cls, collection_ids: list[int]) -> dict[int, int]:
+        counts: dict[int, int] = {}
+        for item in cls._valid_collection_items(collection_ids):
+            counts[item.collection_id] = counts.get(item.collection_id, 0) + 1
+        return counts
 
     @classmethod
     def _collection_cover(cls, collection_id: int):
         """合集封面取按 position 排在最前的片段的封面。"""
-        first_item = (
-            ClipCollectionItem.select(ClipCollectionItem, MediaClip)
-            .join(MediaClip)
-            .where(ClipCollectionItem.collection == collection_id)
-            .order_by(ClipCollectionItem.position.asc(), ClipCollectionItem.id.asc())
-            .first()
-        )
+        items = cls._valid_collection_items([collection_id])
+        items.sort(key=lambda item: (item.position, item.id))
+        first_item = items[0] if items else None
         if first_item is None:
             return None
         return MediaClipService.load_cover_map([first_item.clip]).get(
@@ -158,15 +170,11 @@ class ClipCollectionService:
     ) -> PageResponse[ClipCollectionClipItemResource]:
         cls._require_collection(collection_id)
         validate_page(page, page_size, error_code="invalid_clip_collection_filter")
-        total = ClipCollectionItem.select().where(ClipCollectionItem.collection == collection_id).count()
-        items = list(
-            ClipCollectionItem.select(ClipCollectionItem, MediaClip)
-            .join(MediaClip)
-            .where(ClipCollectionItem.collection == collection_id)
-            .order_by(ClipCollectionItem.position.asc(), ClipCollectionItem.id.asc())
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        )
+        items = cls._valid_collection_items([collection_id])
+        items.sort(key=lambda item: (item.position, item.id))
+        total = len(items)
+        start = (page - 1) * page_size
+        items = items[start : start + page_size]
         clips = [item.clip for item in items]
         cover_map = MediaClipService.load_cover_map(clips)
         resources = [

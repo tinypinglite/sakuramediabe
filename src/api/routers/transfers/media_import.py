@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, status
 
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.transfers.media_import import (
-    FilesystemListResponse,
     ImportAcceptedResponse,
+    ImportBrowseRequest,
+    ImportBrowseResponse,
     ImportRequest,
 )
-from src.service.transfers.imports.browse_service import FilesystemBrowseService
+from src.service.transfers.imports.provider_browse_service import ProviderBrowseService
 from src.service.transfers.shared.import_task_service import ImportTaskService
 
 router = APIRouter(
@@ -15,9 +16,9 @@ router = APIRouter(
 )
 
 
-@router.get("/filesystem/entries", response_model=FilesystemListResponse)
-def list_filesystem_entries(path: str | None = Query(default=None)):
-    return FilesystemBrowseService.list_entries(path)
+@router.post("/import-sources/browse", response_model=ImportBrowseResponse)
+def browse_import_sources(payload: ImportBrowseRequest):
+    return ProviderBrowseService.browse(payload)
 
 
 @router.post(

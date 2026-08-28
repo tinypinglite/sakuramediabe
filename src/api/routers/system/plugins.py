@@ -1,7 +1,7 @@
 """插件管理 API：zip 上传安装、启停、移除与状态查询。
 
-插件在 api/aps 的 import 阶段加载，所有写操作都需要重启两个进程生效；
-``pending_restart`` 就是这两个进程名。安装 = 上传 zip 并发布目录，
+插件在 api/aps 的 import 阶段加载。声明 dependencies 的插件需要完整容器启动，
+在加载前同步依赖；其他插件仍只需重启 api 与 aps。安装 = 上传 zip 并发布目录，
 目标已存在时替换代码并保留 data/。
 """
 
@@ -25,6 +25,10 @@ from src.schema.system.plugins import (
     PluginSettingsResource,
     PluginSettingsUpdateResource,
     PluginSummaryResource,
+)
+from src.service.system.plugin_removal_service import (
+    PluginInUseError,
+    PluginRemovalService,
 )
 
 router = APIRouter(
@@ -124,7 +128,7 @@ def install_plugin(
     return PluginInstallResponse(
         plugin_id=result["plugin_id"],
         version=result["version"],
-        pending_restart=["api", "aps"],
+        pending_restart=manager.pending_restart_for(result["plugin_id"]),
     )
 
 
@@ -154,7 +158,9 @@ def remove_plugin(plugin_id: str):
     if detail is None:
         raise ApiError(404, "plugin_not_found", f"未知插件 plugin_id={plugin_id}")
     try:
-        manager.remove(plugin_id)
+        PluginRemovalService.remove(plugin_id)
+    except PluginInUseError as exc:
+        raise ApiError(409, "plugin_in_use", str(exc), exc.details) from exc
     except ValueError as exc:
         raise ApiError(404, "plugin_not_found", str(exc)) from exc
     return PluginInstallResponse(

@@ -1,21 +1,23 @@
 # SakuraMedia 插件系统开发指南
 
 > 本文面向插件开发者，描述当前版本的稳定契约
-> （当前插件 Host API 为 3；旧版本插件不再兼容加载）。
+> （当前插件 Host API 为 4；旧版本插件不再兼容加载）。
 
 ## 1. 插件是什么
 
 插件就是**插件根目录下的一个子目录**：目录名是 `plugin_id`，目录内必须有
 `manifest.json` 与 `__init__.py`。把目录放进 `plugins.root_dir`（默认
 `/data/plugins`）、在 `plugins.enabled` 里写上 `plugin_id`、重启 api 与 aps，
-宿主就会在 import 阶段加载它。插件可以以目录形式直接拷贝/挂载，也可以
+宿主就会在 import 阶段加载它。若 manifest 声明了 `dependencies`，则必须重启
+完整服务容器，宿主会先同步依赖再加载插件。插件可以以目录形式直接拷贝/挂载，也可以
 打包成 zip 通过 `plugins install` CLI 或 `/system/plugins` API 安装。
 
 插件通过包根目录的 `register(context)` 向宿主声明自己，注册对象有两个通道：
 **后台任务**（`jobs`，宿主平台能力）和
-**扩展点声明**（`extensions`，业务领域扩展）。当前扩展点目录只登记了
-排行榜来源（`discovery.ranking_source`）；机制本身是通用的——核心只做
-结构校验，不解释任何领域的载荷，新增领域不需要改核心契约与加载器。
+**扩展点声明**（`extensions`，业务领域扩展）。当前扩展点目录登记了
+排行榜来源（`discovery.ranking_source`）和媒体 provider（`media.provider`）；
+机制本身是通用的——核心只做结构校验，不解释任何领域的载荷，新增领域不需要
+改核心契约与加载器。
 
 加载流程：
 
@@ -36,6 +38,7 @@
 | 手动任务插件 | `manual_only` + `params_schema` + `handler`，无 cron、只能手动触发（通常配合参数模型） | 手动指定番号补抓单部影片元数据或字幕；按插件自定义参数处理 `data_dir` 里的任务清单 |
 | 混合任务插件 | `default_cron` + `params_schema` + `handler` | 定时全量批量抓取，手动指定单个番号重试/补抓 |
 | 排行榜来源插件 | 声明 `discovery.ranking_source` 扩展点 + 注册同步任务，宿主负责注册、编排与写库（见 6.6） | 提供 JavDB 等站点的排行榜来源；未安装时 `/ranking-sources` 返回空列表 |
+| 媒体 provider 插件 | 声明 `media.provider` 扩展点，提供媒体库存储操作，下载能力可选（见 6.7） | 提供媒体库浏览、导入、播放、缩略图与剪辑；未安装时对应 provider 不可用 |
 
 注意：表格里的"抓榜单/抓字幕"都是**插件自己访问外部站点抓取**，宿主只提供
 写侧能力（影片元数据入库、字幕落盘登记、排行榜来源注册与同步编排），
@@ -57,8 +60,8 @@
   整榜写 `RankingItem` 与对外 API（见 6.6）；
 - **后台任务全链路**：任务进统一任务中心，天然获得任务级互斥、可轮询进度、
   运行记录、通知、崩溃恢复与 `business_recovery` 钩子；
-- **网络与数据处理**：插件可以使用宿主 venv 已安装的依赖（httpx 等）与标准库
-  访问外部站点；
+- **网络与数据处理**：插件可以使用宿主 venv 已安装的依赖、标准库，以及 manifest
+  声明并在完整容器启动时同步的第三方依赖；
 - **持久化运行数据**：每个插件拥有独立的 `data/` 目录，重新安装不覆盖；
 - **只读私有配置**：插件可以读取部署者在 `plugins.settings.<plugin_id>` 下配置的内容。
 
@@ -72,7 +75,6 @@
 - 查询主库任意业务状态（例如"哪些影片缺字幕/缺封面"），插件只能基于公开快照字段
   自己计算；
 - 直接访问数据库；
-- 安装第三方依赖（插件只能使用宿主 venv 已装依赖 + 标准库）；
 - 注册前端页面或 UI 组件。
 
 这些边界是**设计约束**：插件只应通过 `PluginContext` 与公开类型触碰宿主能力。
@@ -97,8 +99,9 @@
   "plugin_id": "subtitle_fetch",
   "display_name": "字幕抓取",
   "version": "1.0.0",
-  "host_api_version": 3,
+  "host_api_version": 4,
   "requires_python": ">=3.10",
+  "dependencies": ["beautifulsoup4>=4.12,<5"],
   "author": "example",
   "homepage": "https://example.com/subtitle_fetch"
 }
@@ -189,8 +192,9 @@ uv run python -m src.start.commands plugins clear-field-owners \
 | `plugin_id` | 是 | `^[a-z][a-z0-9_]*$`，与目录名、`plugins.enabled` 项一致 |
 | `display_name` | 是 | 展示名 |
 | `version` | 是 | 插件版本（PEP 440） |
-| `host_api_version` | 是 | 必须等于当前 Host API 版本 `3`；旧版本插件拒绝加载 |
+| `host_api_version` | 是 | 必须等于当前 Host API 版本 `4`；旧版本插件拒绝加载 |
 | `requires_python` | 否 | 与宿主 Python 解释器（3.10）校验 |
+| `dependencies` | 否 | PEP 508 依赖声明。省略等同于空列表，保持旧插件行为；非空时在完整容器启动前同步 |
 | `author` / `homepage` | 否 | 展示信息 |
 
 未知字段会被严格拒绝（`extra="forbid"`），不要随意添加自定义字段。
@@ -200,10 +204,10 @@ uv run python -m src.start.commands plugins clear-field-owners \
 - zip ≤ 100MB，解压后 ≤ 500MB，文件数 ≤ 5000；
 - 拒绝绝对路径、`..` 越界路径与符号链接成员；
 - 可选传入 zip sha256，宿主会校验完整性；`requires_python` 不满足也会拒绝；
-- 发布前宿主会**试加载**（真实 import + register + 契约校验），
-  坏插件在安装期就被拒绝，不会留到下次启动才报错；
+- 未声明 `dependencies` 的 zip 会在发布前**试加载**（真实 import + register +
+  契约校验）；声明依赖的 zip 只做介质和 manifest 校验，真实加载延后到完整容器启动；
 - zip 根必须是插件目录内容（`manifest.json` 与 `__init__.py` 在 zip 根），
-  没有文件哈希清单或依赖声明。
+  没有文件哈希清单。
 
 ## 5. 插件契约
 
@@ -223,9 +227,9 @@ def register(context: PluginContext) -> PluginRegistration:
 | `plugin_id` | 必须与 manifest / 目录名一致 |
 | `display_name` | 展示名 |
 | `version` | 必须与 manifest 完全一致 |
-| `host_api_version` | 必须等于当前版本 `3`，且必须与 `register()` 返回值一致 |
+| `host_api_version` | 必须等于当前版本 `4`，且必须与 `register()` 返回值一致 |
 | `jobs` | `JobDefinition` 元组，允许为空 |
-| `extensions` | `PluginExtension` 元组，允许为空；业务领域扩展声明，当前登记的扩展点见 6.6 |
+| `extensions` | `PluginExtension` 元组，允许为空；业务领域扩展声明，当前登记的扩展点见 6.6、6.7 |
 
 `register(context)` 在 api/aps 启动 import 阶段执行，**只应该做声明，不要做耗时操作**
 （网络请求、重型初始化请放进任务执行体）。
@@ -359,7 +363,7 @@ PluginExtension(
 | `build_javdb_provider(username=None, password=None)` | 构造 JavDB 元数据 provider；账号仅需登录的榜单（TOP250）需要，由插件从自身设置传入 |
 | `build_catalog_import_service()` | 构造目录入库服务 |
 | `import_movie_by_number(movie_number, *, force_subscribed=False)` | 通过 JavDB 获取详情并复用宿主能力入库；**已存在影片跳过不更新**（纯新建语义），返回不可变 `MovieSnapshot`（v2 契约，不再返回可写 ORM 对象） |
-| `movies` | 影片快照、全库分页遍历与受保护字段写入出口（v2 契约），见 6.8 节 |
+| `movies` | 影片快照、全库分页遍历与受保护字段写入出口（v2 契约），见 6.9 节 |
 | `list_existing_movie_numbers() -> set[str]` | 主库全部影片番号（大写），用于 O(1) 存在性判断 |
 | `import_subtitle(movie_number, content, filename, language=None)` | 写入一段字幕字节内容，返回 `SubtitleImportResult`。只支持 `.srt/.ass/.ssa/.vtt`；去重粒度为**同一部影片内**的内容 sha256；`filename` 只取扩展名；影片不存在返回 `movie_not_found`，不抛异常 |
 | `sync_ranking_sources(progress_callback=None)` | 同步当前插件声明的全部排行榜来源，返回统计 dict |
@@ -392,7 +396,7 @@ from src.plugins.types import (
 - `JavdbMovieDetail / JavdbMovieActor / JavdbMovieTag`：JavDB 元数据模型；
 - `SubtitleImportResult / SubtitleImportStatus`：字幕写入结果
   （`imported / duplicate / movie_not_found / invalid_format`）；
-- `MovieSnapshot / MOVIE_SNAPSHOT_FIELDS`：影片不可变快照（v2 契约），见 6.8 节；
+- `MovieSnapshot / MOVIE_SNAPSHOT_FIELDS`：影片不可变快照（v2 契约），见 6.9 节；
 - `ImageDownloadError`：入库时图片下载失败异常。
 
 ### 6.4 任务 reporter
@@ -420,7 +424,7 @@ def handler(reporter, params):
 ### 6.6 排行榜来源扩展点（discovery.ranking_source）
 
 排行榜**不是默认功能**：宿主不内置任何来源，来源全部由排行榜插件提供。
-插件在 `register(context)` 里通过 `extensions` 声明来源。这是当前唯一登记的扩展点：
+插件在 `register(context)` 里通过 `extensions` 声明来源，具体声明如下：
 
 ```python
 from src.plugins import (
@@ -485,7 +489,20 @@ def register(context: PluginContext) -> PluginRegistration:
 宿主的 `ranking_sync` 内置任务已移除，未安装排行榜插件时
 `GET /ranking-sources` 返回空列表。
 
-### 6.7 扩展点不是必须的：机制边界
+### 6.7 媒体 provider 扩展点（media.provider）
+
+媒体 provider 是宿主媒体库的唯一外部 I/O 入口。插件声明一个
+`PluginExtension(key="media.provider", data=bundle)`，bundle 必须提供唯一的
+`provider_key`、`prepare_library()` 和 `build_storage()`；下载组件可选。宿主只按
+`provider_key` 分派，`provider_config`、`storage_ref` 和 `source_ref` 始终是不透明数据。
+StorageProvider 必须实现浏览、导入、文件 hash、播放、一次性缩略图生成和单媒体剪辑；详细
+字段与错误码见 [Provider 协议 V2](../provider-plugin-protocol-contract-v1.md)，hash 采样规则见
+[文件 Hash 约定](../provider-file-hash-protocol-draft.md)。
+
+provider key、排行榜来源或任务任一注册冲突都会隔离整个插件，其媒体 provider
+不会进入最终 provider catalog。
+
+### 6.8 扩展点不是必须的：机制边界
 
 扩展点只给"宿主有消费方"的领域用。判据是：**宿主是否需要注册、枚举、编排、
 合并插件的声明**。需要才登记扩展点；不需要就只用 `jobs` + `context`。
@@ -497,9 +514,9 @@ def register(context: PluginContext) -> PluginRegistration:
   和同步管线，必须把插件的 `source_key` / boards 收编进自己的注册表，
   跨插件冲突由宿主裁决。
 
-### 6.8 影片快照与受保护字段（领域 v2 契约）
+### 6.9 影片快照与受保护字段（领域 v2 契约）
 
-插件 Host API 当前为 3；影片快照能力沿用领域 v2 语义：
+插件 Host API 当前为 6；影片快照能力沿用领域 v2 语义：
 `import_movie_by_number` 返回不可变 `MovieSnapshot` 而非可写 ORM 对象。
 旧 Host API 插件必须先升级任务契约和声明版本。
 读取与导入只返回不可变 `MovieSnapshot`，插件拿不到任何可写 ORM
@@ -570,15 +587,33 @@ javdb_password = "secret"
 - 整个 `plugins` 节对通用配置 API（`GET/PATCH /config`）隐藏，
   安装/启停请用 `plugins` CLI，私有配置读写请用 `/system/plugins` 管理 API
   （前端「系统设置 → 插件」页即封装该 API），也可以直接编辑 `config.toml`；
-- 配置与启停都在启动期生效，修改后需要重启 api 与 aps。
+- 配置与启停都在启动期生效；无依赖插件重启 api 与 aps 即可，声明依赖的插件启用后
+  必须完整重启服务容器。
 
 本地开发可以把 `root_dir` 指到 `./storage/plugins`，避免直接操作生产目录。
 
 ## 8. 依赖
 
-插件**只能使用宿主 venv 已安装的包与标准库**（httpx、certifi、pydantic 等都在），
-宿主不提供任何依赖安装能力。插件作者在发布前应确认依赖在宿主环境中可用；
-如果将来有插件需要冷门包，再考虑增加最小依赖安装机制。
+插件可在 manifest 的 `dependencies` 中声明 PEP 508 依赖。例如：
+
+```json
+{
+  "dependencies": ["beautifulsoup4>=4.12,<5", "lxml>=5,<6"]
+}
+```
+
+安装插件不会立刻执行 pip。下一次**完整服务容器启动**时，宿主会在启动 api 与 aps
+之前为所有已启用且声明依赖的插件执行同步。包会安装到
+`<plugins_root>/.runtime/site-packages`，并在导入插件前加入 Python 路径；宿主原有
+依赖优先，不会被该目录覆盖。已满足的声明不会重复安装；若声明版本与实际生效版本
+冲突，插件会被标记为依赖加载失败。
+
+某个插件的依赖安装失败时，服务仍会启动，但该插件会显示为 `load_status=error`，
+加载阶段为 `dependencies`。依赖目录由宿主共享，删除插件不会自动卸载包；下一次容器
+启动会按当前已启用插件重新同步失败状态。
+
+未声明 `dependencies` 的旧插件等同于空依赖列表：不执行任何依赖安装，仍使用原有
+安装期试加载与 api/aps 重启流程。
 
 ## 9. 安装与管理
 
@@ -591,6 +626,7 @@ javdb_password = "secret"
     manifest.json
     data/          # 宿主托管的运行数据（重装保留）
   .staging/        # 安装暂存区（zip 解压/上传临时文件，宿主自用）
+  .runtime/        # 声明依赖的安装目录与失败状态，宿主自用
 ```
 
 ### 9.2 CLI
@@ -599,12 +635,13 @@ javdb_password = "secret"
 |---|---|
 | `plugins list` | 列出已安装插件与启停/加载状态 |
 | `plugins install <目录或zip> [--sha256 ...] [--no-enable]` | 安装插件目录或 zip；已存在时替换代码并保留 `data/` |
-| `plugins remove <id>` | 删除插件目录（含 `data/`，请先自行备份） |
+| `plugins remove <id>` | 删除插件代码并保留 `data/`；被媒体库使用的 provider 不可删除 |
 | `plugins enable <id>` / `plugins disable <id>` | 启停（写入 `plugins.enabled`） |
 | `plugins check <目录>` | 校验插件目录（import + register + 契约），供插件作者使用 |
 
 安装方式等价于：把目录放到 `root_dir` 下、把 `plugin_id` 写进
-`plugins.enabled`、重启 api 与 aps。`plugins install` / API 安装只是
+`plugins.enabled`、再重启使其加载。无依赖插件重启 api 与 aps 即可；声明
+`dependencies` 的插件必须重启完整服务容器，`plugins install` / API 安装只是
 这两步的便捷封装。
 
 ### 9.3 HTTP API（`/system/plugins`，需要登录鉴权）
@@ -615,20 +652,22 @@ javdb_password = "secret"
 | `GET` | `/system/plugins/{id}` | 插件详情 |
 | `POST` | `/system/plugins` | multipart 上传 zip（`file` + 可选 `sha256` + `enable`），已存在时替换并保留 `data/` |
 | `PATCH` | `/system/plugins/{id}?enabled=true` | 启停 |
-| `DELETE` | `/system/plugins/{id}` | 删除插件目录（含 `data/`） |
+| `DELETE` | `/system/plugins/{id}` | 删除插件代码并保留 `data/`；被媒体库使用的 provider 返回 `409` |
 | `GET` | `/system/plugins/{id}/settings` | 读取插件私有配置（`plugins.settings.<id>`） |
 | `PUT` | `/system/plugins/{id}/settings` | 整体替换插件私有配置（JSON），不支持 null 值 |
 
-安装/启停/删除/配置修改响应都会带 `pending_restart: ["api", "aps"]`。
+安装响应的 `pending_restart` 会反映该插件：未声明依赖时是 `["api", "aps"]`，
+声明 `dependencies` 时是 `["container"]`。
 
 ### 9.4 生命周期要点
 
 - **安装/升级**：替换目录即可；`data/` 会被保留。没有版本回滚，
   升级前请自行备份目录；
 - **停用**：`plugins disable` 只从 `enabled` 移除，目录仍在根目录；
-- **删除**：`plugins remove` 直接删除整个目录（含运行数据）；
-- **重启**：插件在 import 期加载，所有安装/启停/删除操作后
-  必须重启 **api 与 aps** 两个进程。
+- **删除**：`plugins remove` 删除插件代码，保留 `data/` 以便后续重新安装同一插件；仍被媒体库引用的 media provider 不可删除；
+- **重启**：插件在 import 期加载。未声明依赖的插件安装/启停/删除后必须重启
+  **api 与 aps**；声明依赖的插件安装或启用后必须重启**完整服务容器**，以便在
+  supervisor 启动两个进程前同步依赖。
 
 ## 10. 安全模型与边界
 
@@ -653,18 +692,18 @@ enabled = ["subtitle_fetch"]
 ```
 
 把插件目录放到 `storage/plugins/<plugin_id>/` 后启动服务即可加载；
-改代码后重启 api/aps。
+未声明依赖时改代码后重启 api/aps。声明依赖时请通过完整容器启动路径测试依赖同步。
 
 ### 11.2 常见失败排查
 
 | 症状 | 原因与处理 |
 |---|---|
-| zip/API 安装被拒 | 介质校验或试加载失败：看错误 stage（zip 校验、manifest、requires_python、import、register、契约等） |
+| zip/API 安装被拒 | 介质校验、manifest，或未声明依赖插件的试加载失败：看错误 stage |
 | 启动后任务不在 `GET /system/jobs` | 插件未启用、目录缺 manifest/`__init__.py`、register 报错或任务 key 冲突；`plugins list` 看 `load_status` |
 | `plugins check` 报错 | register 抛异常或返回的契约不合法；按 stage 提示修复 |
 | `409 task_conflict` | 同一任务已在运行；等它结束或处理完成后重试 |
 | 定时任务被跳过 | 同一 task_key 正在运行，按 coalesce 丢弃本次触发 |
-| 插件 import 报错 | 使用了宿主没有的第三方包；改成宿主 venv 已有依赖或标准库 |
+| 插件 `dependencies` 失败 | 完整重启容器后的 `plugins list` / 管理 API 会显示 `dependencies` 阶段错误；修正声明或网络/包源后再重启 |
 
 ### 11.3 仓库内参考实现与测试
 
@@ -684,7 +723,7 @@ enabled = ["subtitle_fetch"]
 **插件一定要注册任务吗？**
 
 不强制：`jobs=()` 是合法声明。零任务插件可以只声明扩展点
-（当前唯一扩展点是 `discovery.ranking_source`），或完全不声明
+（例如 `discovery.ranking_source` 或 `media.provider`），或完全不声明
 （register 仅产生副作用，不建议作为主要插件形态）。
 
 **插件的 `settings` 能修改吗？**

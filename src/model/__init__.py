@@ -17,17 +17,11 @@ from .catalog import (
     Tag,
 )
 from .collections import (
-    FOUR_K_PLAYLIST_DESCRIPTION,
-    FOUR_K_PLAYLIST_NAME,
-    PLAYLIST_KIND_4K,
     PLAYLIST_KIND_CUSTOM,
     PLAYLIST_KIND_RECENTLY_PLAYED,
-    PLAYLIST_KIND_VR,
     RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
     RECENTLY_PLAYED_PLAYLIST_NAME,
     SYSTEM_PLAYLIST_KINDS,
-    VR_PLAYLIST_DESCRIPTION,
-    VR_PLAYLIST_NAME,
     ClipCollection,
     ClipCollectionItem,
     Playlist,
@@ -60,8 +54,6 @@ from .transfers import (
     DownloadTask,
     Indexer,
     IndexerDownloadClient,
-    MediaRapidUploadBatch,
-    MediaRapidUploadItem,
 )
 from .videos import (
     VideoCollection,
@@ -70,17 +62,11 @@ from .videos import (
 )
 
 __all__ = [
-    "FOUR_K_PLAYLIST_DESCRIPTION",
-    "FOUR_K_PLAYLIST_NAME",
-    "PLAYLIST_KIND_4K",
     "PLAYLIST_KIND_CUSTOM",
     "PLAYLIST_KIND_RECENTLY_PLAYED",
-    "PLAYLIST_KIND_VR",
     "RECENTLY_PLAYED_PLAYLIST_DESCRIPTION",
     "RECENTLY_PLAYED_PLAYLIST_NAME",
     "SYSTEM_PLAYLIST_KINDS",
-    "VR_PLAYLIST_DESCRIPTION",
-    "VR_PLAYLIST_NAME",
     "Actor",
     "BackgroundTaskRun",
     "BaseModel",
@@ -99,8 +85,6 @@ __all__ = [
     "MediaLibrary",
     "MediaPoint",
     "MediaProgress",
-    "MediaRapidUploadBatch",
-    "MediaRapidUploadItem",
     "MediaThumbnail",
     "MomentRecommendation",
     "Movie",

@@ -11,7 +11,6 @@ docs/others
 test_media_source_dir
 .pytest_cache
 .testmondata*
-lib/joytag
 logs
 docker-data
 compose.yaml

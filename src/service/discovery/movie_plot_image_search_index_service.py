@@ -8,7 +8,7 @@ from src.common.service_helpers import emit_progress
 from src.config.config import settings
 from src.model import Image, Movie, MoviePlotImage
 
-from .joytag_embedder_client import JoyTagEmbeddingItemError, get_joytag_embedder_client
+from .embedding_client import get_embedding_client
 from .qdrant_plot_image_store import (
     PlotImageVectorRecord,
     QdrantPlotImageStore,
@@ -21,31 +21,22 @@ class MoviePlotImageSearchIndexService:
         self, store: QdrantPlotImageStore | None = None, embedder=None
     ) -> None:
         self.store = store or get_qdrant_plot_image_store()
-        self.embedder = embedder or get_joytag_embedder_client()
+        self.embedder = embedder or get_embedding_client()
         self._store_ready = False
 
     def ensure_store_ready(self) -> None:
         if self._store_ready:
             return
-        vector_size = int(
-            getattr(self.embedder.get_runtime_status(), "vector_size", 0) or 0
-        )
+        vector_size = int(self.embedder.describe().dimension)
         if vector_size <= 0:
-            raise RuntimeError("JoyTag embedder vector_size is invalid")
+            raise RuntimeError("embedding service dimension is invalid")
         self.store.ensure_table(vector_size)
         self.store.ensure_scalar_indices()
         self._store_ready = True
 
     def index_pending_plot_images(self, progress_callback=None) -> dict[str, int]:
-        pending_ids = [
-            item.id
-            for item in MoviePlotImage.select(MoviePlotImage.id)
-            .where(
-                MoviePlotImage.joytag_index_status
-                == MoviePlotImage.JOYTAG_INDEX_STATUS_PENDING
-            )
-            .order_by(MoviePlotImage.id)
-        ]
+        max_records = max(1, int(settings.image_search.index_max_records_per_run))
+        pending_ids = self._pending_plot_image_ids(max_records)
         stats = {
             "pending_plot_images": len(pending_ids),
             "successful_plot_images": 0,
@@ -73,6 +64,19 @@ class MoviePlotImageSearchIndexService:
             summary_patch=stats,
         )
         return stats
+
+    @staticmethod
+    def _pending_plot_image_ids(limit: int) -> list[int]:
+        query = (
+            MoviePlotImage.select(MoviePlotImage.id)
+            .where(
+                MoviePlotImage.image_search_index_status
+                == MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_PENDING
+            )
+            .order_by(MoviePlotImage.id)
+            .limit(limit)
+        )
+        return [item.id for item in query]
 
     def _index_batch(
         self, plot_image_ids: Sequence[int], stats: dict[str, int]
@@ -107,19 +111,16 @@ class MoviePlotImageSearchIndexService:
                 )
                 failed_ids.append(link.id)
         if valid_links:
-            results = self.embedder.infer_image_batch(payloads)
-            if len(results) != len(valid_links):
-                raise RuntimeError("JoyTag inference batch result count mismatch")
+            vectors = self.embedder.embed_images(payloads)
+            if len(vectors) != len(valid_links):
+                raise RuntimeError("embedding service returned invalid batch size")
             records: list[PlotImageVectorRecord] = []
-            for link, result in zip(valid_links, results):
-                if isinstance(result, JoyTagEmbeddingItemError):
-                    failed_ids.append(link.id)
-                    continue
+            for link, vector in zip(valid_links, vectors):
                 records.append(
                     PlotImageVectorRecord(
                         plot_image_id=link.id,
                         movie_id=link.movie_id,
-                        vector=[float(item) for item in result.vector],
+                        vector=[float(item) for item in vector],
                     )
                 )
             if records:
@@ -135,16 +136,16 @@ class MoviePlotImageSearchIndexService:
                 else:
                     successful_ids = [item.plot_image_id for item in records]
                     self._set_status(
-                        successful_ids, MoviePlotImage.JOYTAG_INDEX_STATUS_SUCCESS
+                        successful_ids, MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
                     )
                     stats["successful_plot_images"] += len(successful_ids)
         if failed_ids:
-            self._set_status(failed_ids, MoviePlotImage.JOYTAG_INDEX_STATUS_FAILED)
+            self._set_status(failed_ids, MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_FAILED)
             stats["failed_plot_images"] += len(failed_ids)
 
     @staticmethod
     def _set_status(plot_image_ids: Sequence[int], status: int) -> None:
         if plot_image_ids:
-            MoviePlotImage.update(joytag_index_status=status).where(
+            MoviePlotImage.update(image_search_index_status=status).where(
                 MoviePlotImage.id.in_([int(item) for item in set(plot_image_ids)])
             ).execute()

@@ -46,7 +46,6 @@
       "is_collection": false,
       "is_subscribed": false,
       "can_play": false,
-      "is_4k": false,
       "recommendation_score": 3.4128,
       "hot_actress": {
         "id": 12,

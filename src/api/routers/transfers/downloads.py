@@ -1,4 +1,3 @@
-
 from fastapi import APIRouter, Depends, Query, Response, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
@@ -10,16 +9,12 @@ from src.schema.transfers.downloads import (
     DownloadCandidateResource,
     DownloadCandidatesQuery,
     DownloadClientCreateRequest,
-    DownloadClientProbeStorageTestRequest,
-    DownloadClientProbeTestRequest,
+    DownloadClientDiagnosticResource,
     DownloadClientResource,
-    DownloadClientStorageTestResponse,
-    DownloadClientTestResponse,
+    DownloadClientTestRequest,
     DownloadClientUpdateRequest,
     DownloadRequestCreateRequest,
     DownloadRequestCreateResponse,
-    DownloadTaskActionResponse,
-    DownloadTaskFilesResponse,
     DownloadTaskResource,
     DownloadTasksQuery,
 )
@@ -28,10 +23,7 @@ from src.service.transfers.downloads.request_service import DownloadRequestServi
 from src.service.transfers.downloads.search_service import DownloadSearchService
 from src.service.transfers.downloads.task_service import DownloadTaskService
 
-router = APIRouter(
-    tags=["downloads"],
-    dependencies=[Depends(db_deps)],
-)
+router = APIRouter(tags=["downloads"], dependencies=[Depends(db_deps)])
 
 
 @router.get("/download-clients", response_model=list[DownloadClientResource])
@@ -51,25 +43,15 @@ def create_download_client(
     return DownloadClientService.create_client(payload)
 
 
-# 注意:probe/* 静态路径必须声明在 {client_id} 参数化路径之前,
-# 否则 FastAPI 会先尝试用 "probe" 匹配 client_id: int 并返回 422。
-@router.post("/download-clients/probe/test", response_model=DownloadClientTestResponse)
-def probe_test_download_client(
-    payload: DownloadClientProbeTestRequest,
-    current_user=Depends(get_current_user),
-):
-    return DownloadClientService.probe_test(payload)
-
-
 @router.post(
-    "/download-clients/probe/storage-test",
-    response_model=DownloadClientStorageTestResponse,
+    "/download-clients/test",
+    response_model=DownloadClientDiagnosticResource,
 )
-def probe_test_download_client_storage(
-    payload: DownloadClientProbeStorageTestRequest,
+def test_download_client(
+    payload: DownloadClientTestRequest,
     current_user=Depends(get_current_user),
 ):
-    return DownloadClientService.probe_storage_test(payload)
+    return DownloadClientService.test_client(payload)
 
 
 @router.patch("/download-clients/{client_id}", response_model=DownloadClientResource)
@@ -85,16 +67,6 @@ def update_download_client(
 def delete_download_client(client_id: int, current_user=Depends(get_current_user)):
     DownloadClientService.delete_client(client_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
-@router.get("/download-clients/{client_id}/test", response_model=DownloadClientTestResponse)
-def test_download_client(client_id: int, current_user=Depends(get_current_user)):
-    return DownloadClientService.test_client(client_id)
-
-
-@router.post("/download-clients/{client_id}/storage-test", response_model=DownloadClientStorageTestResponse)
-def test_download_client_storage(client_id: int, current_user=Depends(get_current_user)):
-    return DownloadClientService.test_storage(client_id)
 
 
 @router.get("/download-candidates", response_model=list[DownloadCandidateResource])
@@ -121,9 +93,7 @@ def create_download_request(
 @router.get("/download-tasks", response_model=PageResponse[DownloadTaskResource])
 def list_download_tasks(
     query: DownloadTasksQuery = Depends(),
-    # 显式 Query 声明：FastAPI 0.110 下模型依赖里的 list 字段会被当作 body 参数，
-    # query 里的 download_state 会被静默忽略；必须单独声明才能走 query 多值解析。
-    download_state: list[str] | None = Query(default=None),
+    state: list[str] | None = Query(default=None),
     current_user=Depends(get_current_user),
 ):
     return DownloadTaskService.list_tasks(
@@ -131,33 +101,9 @@ def list_download_tasks(
         page_size=query.page_size,
         client_id=query.client_id,
         movie_number=query.movie_number,
-        download_state=download_state,
+        state=state,
         sort=query.sort,
     )
-
-
-@router.get(
-    "/download-tasks/{task_id}/files",
-    response_model=DownloadTaskFilesResponse,
-)
-def list_download_task_files(task_id: int, current_user=Depends(get_current_user)):
-    return DownloadTaskService.list_task_files(task_id)
-
-
-@router.post(
-    "/download-tasks/{task_id}/pause",
-    response_model=DownloadTaskActionResponse,
-)
-def pause_download_task(task_id: int, current_user=Depends(get_current_user)):
-    return DownloadTaskService.pause_task(task_id)
-
-
-@router.post(
-    "/download-tasks/{task_id}/resume",
-    response_model=DownloadTaskActionResponse,
-)
-def resume_download_task(task_id: int, current_user=Depends(get_current_user)):
-    return DownloadTaskService.resume_task(task_id)
 
 
 @router.delete("/download-tasks/{task_id}", status_code=status.HTTP_204_NO_CONTENT)

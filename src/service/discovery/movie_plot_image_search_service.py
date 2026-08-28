@@ -18,10 +18,7 @@ from src.schema.discovery.image_search import (
     MoviePlotImageSearchSessionPageResource,
 )
 
-from .joytag_embedder_client import (
-    JoyTagInferenceClientError,
-    get_joytag_embedder_client,
-)
+from .embedding_client import EmbeddingClientError, get_embedding_client
 from .qdrant_plot_image_store import (
     PlotImageVectorSearchHit,
     QdrantPlotImageStore,
@@ -36,7 +33,7 @@ class MoviePlotImageSearchService:
         self, store: QdrantPlotImageStore | None = None, embedder=None
     ) -> None:
         self.store = store or get_qdrant_plot_image_store()
-        self.embedder = embedder or get_joytag_embedder_client()
+        self.embedder = embedder or get_embedding_client()
 
     @staticmethod
     def _normalize_ids(ids: Sequence[int] | None) -> list[int] | None:
@@ -96,8 +93,8 @@ class MoviePlotImageSearchService:
         if score_threshold is not None and not 0 <= float(score_threshold) <= 1:
             raise ValueError("score_threshold must be between 0 and 1")
         try:
-            inference = self.embedder.infer_image_bytes(image_bytes)
-        except JoyTagInferenceClientError as exc:
+            vector = self.embedder.embed_images([image_bytes])[0]
+        except EmbeddingClientError as exc:
             raise ApiError(exc.status_code, exc.error_code, exc.message) from exc
         self._purge_expired_sessions()
         now = utc_now_for_db()
@@ -105,7 +102,7 @@ class MoviePlotImageSearchService:
             session_id=uuid.uuid4().hex,
             status="ready",
             page_size=self._page_size(page_size),
-            query_vector=[float(item) for item in inference.vector],
+            query_vector=[float(item) for item in vector],
             movie_ids=self._normalize_ids(movie_ids),
             exclude_movie_ids=self._normalize_ids(exclude_movie_ids),
             score_threshold=float(score_threshold)
@@ -113,6 +110,36 @@ class MoviePlotImageSearchService:
             else None,
             expires_at=now
             + timedelta(seconds=settings.image_search.session_ttl_seconds),
+            created_at=now,
+            updated_at=now,
+        )
+        return self._search_page(session, 0)
+
+    def create_text_session_and_first_page(
+        self,
+        text: str,
+        page_size: int | None = None,
+        movie_ids: Sequence[int] | None = None,
+        exclude_movie_ids: Sequence[int] | None = None,
+        score_threshold: float | None = None,
+    ) -> MoviePlotImageSearchSessionPageResource:
+        if score_threshold is not None and not 0 <= float(score_threshold) <= 1:
+            raise ValueError("score_threshold must be between 0 and 1")
+        try:
+            vector = self.embedder.embed_texts([text])[0]
+        except EmbeddingClientError as exc:
+            raise ApiError(exc.status_code, exc.error_code, exc.message) from exc
+        self._purge_expired_sessions()
+        now = utc_now_for_db()
+        session = ImageSearchSession.create(
+            session_id=uuid.uuid4().hex,
+            status="ready",
+            page_size=self._page_size(page_size),
+            query_vector=[float(item) for item in vector],
+            movie_ids=self._normalize_ids(movie_ids),
+            exclude_movie_ids=self._normalize_ids(exclude_movie_ids),
+            score_threshold=float(score_threshold) if score_threshold is not None else None,
+            expires_at=now + timedelta(seconds=settings.image_search.session_ttl_seconds),
             created_at=now,
             updated_at=now,
         )

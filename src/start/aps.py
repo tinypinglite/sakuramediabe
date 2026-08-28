@@ -7,7 +7,6 @@ from typing import Any
 from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 from loguru import logger
 
 from src.common.database import ensure_database_ready
@@ -31,11 +30,7 @@ from src.service.system.task_queue_service import (
     TaskQueueConflictError,
     TaskQueueService,
 )
-from src.service.transfers.downloads.progress_sync_service import (
-    DownloadProgressSyncService,
-)
 
-DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID = "_internal_download_progress_snapshot"
 BOOTSTRAP_RETRY_GRACE_SECONDS = 1
 BOOTSTRAP_ERROR_RETRY_SECONDS = 5
 
@@ -329,12 +324,6 @@ def _bootstrap_movie_similarity_index(scheduler: BlockingScheduler) -> None:
         logger.exception("Skip bootstrap movie similarity index due to unexpected error")
 
 
-def _sync_download_progress_snapshots() -> None:
-    """宿主内部轻量采样：直接写数据库，不创建 TaskRun 或暴露任务 key。"""
-    ensure_database_ready()
-    DownloadProgressSyncService().sync_all_clients()
-
-
 def build_scheduler() -> BlockingScheduler:
     timezone = get_runtime_timezone()
     scheduler = BlockingScheduler(
@@ -355,17 +344,6 @@ def build_scheduler() -> BlockingScheduler:
             id=job_def.task_key,
             replace_existing=True,
         )
-    scheduler.add_job(
-        _sync_download_progress_snapshots,
-        trigger=IntervalTrigger(
-            seconds=settings.scheduler.download_progress_snapshot_interval_seconds,
-            timezone=timezone,
-        ),
-        id=DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID,
-        replace_existing=True,
-        coalesce=True,
-        max_instances=1,
-    )
     return scheduler
 
 

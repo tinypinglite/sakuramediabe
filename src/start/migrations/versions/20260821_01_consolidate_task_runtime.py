@@ -85,8 +85,7 @@ def migrate(database) -> None:
           ADD COLUMN thumbnail_next_retry_at TIMESTAMP NULL,
           ADD COLUMN thumbnail_last_error_code VARCHAR(64) NULL,
           ADD COLUMN thumbnail_last_error TEXT NULL,
-          ADD COLUMN thumbnail_terminal_at TIMESTAMP NULL,
-          ADD COLUMN thumbnail_source_fingerprint VARCHAR(255) NULL
+          ADD COLUMN thumbnail_terminal_at TIMESTAMP NULL
         """
     )
     database.execute_sql(
@@ -110,7 +109,6 @@ def migrate(database) -> None:
         """
         UPDATE media AS m
         SET thumbnail_generation_state = 'succeeded',
-            thumbnail_source_fingerprint = m.content_fingerprint,
             thumbnail_attempt_count = 0,
             thumbnail_deferred_count = 0,
             thumbnail_next_retry_at = NULL,
@@ -143,8 +141,7 @@ def migrate(database) -> None:
             thumbnail_terminal_at = CASE
                 WHEN s.state IN ('failed_terminal', 'exhausted') THEN s.last_error_at
                 ELSE NULL
-            END,
-            thumbnail_source_fingerprint = m.content_fingerprint
+            END
         FROM resource_task_state AS s
         WHERE s.task_key = 'media_thumbnail_generation'
           AND s.resource_type = 'media'

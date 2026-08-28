@@ -11,7 +11,6 @@ from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     emit_progress,
-    parse_special_tags_text,
     with_movie_card_relations,
 )
 from src.metadata.factory import build_javdb_provider
@@ -262,22 +261,17 @@ class RankingCatalogService:
             movie.id: movie
             for movie in movie_query.where(Movie.id.in_(movie_ids))
         }
-        # 对齐 recommendation_service 权威版：一次性取 media 的 special_tags，
-        # 同时算出可播放与 4K 番号集合，避免 is_4k 恒为 false。
         playable_movie_numbers: set[str] = set()
-        is_4k_movie_numbers: set[str] = set()
         media_rows = (
-            Media.select(Media.movie, Media.special_tags)
+            Media.select(Media.movie)
             .where(
                 Media.valid == True,
                 Media.movie.in_(movie_numbers),
             )
             .tuples()
         )
-        for movie_number, special_tags in media_rows:
+        for (movie_number,) in media_rows:
             playable_movie_numbers.add(movie_number)
-            if "4K" in parse_special_tags_text(special_tags):
-                is_4k_movie_numbers.add(movie_number)
 
         items: list[RankedMovieListItemResource] = []
         for ranking_row in ranking_rows:
@@ -286,7 +280,6 @@ class RankingCatalogService:
                 continue
             movie_item = MovieListItemResource.from_attributes_model(movie)
             movie_item.can_play = movie.movie_number in playable_movie_numbers
-            movie_item.is_4k = movie.movie_number in is_4k_movie_numbers
             items.append(
                 RankedMovieListItemResource.model_validate(
                     {

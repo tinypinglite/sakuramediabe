@@ -1,8 +1,8 @@
 """插件管理编排：目录/zip 安装、移除、启停与状态查询。
 
 插件就是插件根目录下的一个子目录（含 manifest.json + __init__.py）：
-安装 = 拷贝目录或解压 zip；移除 = 删除目录；启停 = 写配置 enabled 列表。
-没有依赖托管、回滚与回收站——升级前请自行备份目录。
+安装 = 拷贝目录或解压 zip；移除 = 删除代码并保留 data/；启停 = 写配置 enabled 列表。
+没有回滚与回收站——升级前请自行备份目录。
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from src.config.config import Settings, settings, update_settings
+from src.plugins.dependencies import dependency_failure_message
 from src.plugins.installer import PluginInstaller, PluginInstallError
 from src.plugins.loader import PLUGIN_LOAD_ERRORS, PluginLoadError, check_plugin_dir
 from src.plugins.manifest import (
@@ -68,6 +69,16 @@ class PluginManager:
             if manifest is None and manifest_error is None:
                 continue
             plugin_id = plugin_dir.name if manifest is None else manifest.plugin_id
+            dependency_error = (
+                dependency_failure_message(root_dir=self.root_dir, manifest=manifest)
+                if manifest is not None and plugin_id in enabled_ids
+                else None
+            )
+            load_error = (
+                manifest_error
+                or PLUGIN_LOAD_ERRORS.get(plugin_id, {}).get("message")
+                or dependency_error
+            )
             plugins.append(
                 {
                     "plugin_id": plugin_id,
@@ -79,16 +90,8 @@ class PluginManager:
                         manifest.host_api_version if manifest is not None else 0
                     ),
                     "enabled": plugin_id in enabled_ids,
-                    "load_status": (
-                        "error"
-                        if manifest_error is not None
-                        or plugin_id in PLUGIN_LOAD_ERRORS
-                        else "ok"
-                    ),
-                    "load_error": (
-                        manifest_error
-                        or PLUGIN_LOAD_ERRORS.get(plugin_id, {}).get("message")
-                    ),
+                    "load_status": "error" if load_error is not None else "ok",
+                    "load_error": load_error,
                 }
             )
         return plugins
@@ -100,6 +103,16 @@ class PluginManager:
             return None
         if manifest is None:
             plugin_id = plugin_dir.name
+        dependency_error = (
+            dependency_failure_message(root_dir=self.root_dir, manifest=manifest)
+            if manifest is not None and plugin_id in set(self._enabled_ids())
+            else None
+        )
+        load_error = (
+            manifest_error
+            or PLUGIN_LOAD_ERRORS.get(plugin_id, {}).get("message")
+            or dependency_error
+        )
         return {
             "plugin_id": plugin_id,
             "display_name": manifest.display_name if manifest else plugin_id,
@@ -110,16 +123,8 @@ class PluginManager:
             "homepage": manifest.homepage if manifest else None,
             "manifest": manifest.model_dump() if manifest else {},
             "enabled": plugin_id in set(self._enabled_ids()),
-            "load_status": (
-                "error"
-                if manifest_error is not None
-                or plugin_id in PLUGIN_LOAD_ERRORS
-                else "ok"
-            ),
-            "load_error": (
-                manifest_error
-                or PLUGIN_LOAD_ERRORS.get(plugin_id, {}).get("message")
-            ),
+            "load_status": "error" if load_error is not None else "ok",
+            "load_error": load_error,
             "data_dir": str(plugin_dir / "data"),
         }
 
@@ -149,11 +154,13 @@ class PluginManager:
             zip_path, sha256=sha256
         )
         try:
-            # 发布前试加载：坏插件在安装期就被拒绝，而不是留到下次启动才报错。
-            check_plugin_dir(
-                plugin_dir=staging,
-                plugin_settings=settings.plugins,
-            )
+            # 声明依赖的插件要在完整容器启动时先同步依赖，不能在这里 import。
+            # 未声明依赖的既有插件继续保持安装期试加载的行为。
+            if not manifest.dependencies:
+                check_plugin_dir(
+                    plugin_dir=staging,
+                    plugin_settings=settings.plugins,
+                )
         except PluginLoadError as exc:
             shutil.rmtree(staging, ignore_errors=True)
             raise PluginInstallError(manifest.plugin_id, exc.stage, str(exc)) from exc
@@ -161,6 +168,13 @@ class PluginManager:
             shutil.rmtree(staging, ignore_errors=True)
             raise
         return self._publish_staging(staging, manifest, enable=enable)
+
+    def pending_restart_for(self, plugin_id: str) -> list[str]:
+        """返回使当前插件变更生效所需的最小重启目标。"""
+        manifest, _ = self._load_manifest(self._plugin_dir(plugin_id))
+        if manifest is not None and manifest.dependencies:
+            return ["container"]
+        return ["api", "aps"]
 
     def _staging_dir(self, plugin_id: str) -> Path:
         return self.root_dir / ".staging" / plugin_id
@@ -193,12 +207,22 @@ class PluginManager:
         return {"plugin_id": plugin_id, "version": manifest.version}
 
     def remove(self, plugin_id: str) -> None:
-        """删除插件目录（含 data/）；如需保留数据请先自行备份。"""
+        """删除插件代码并保留宿主托管的 ``data/``。"""
         target = self._plugin_dir(plugin_id)
-        if not target.is_dir():
+        if not (target / MANIFEST_FILENAME).is_file():
             raise ValueError(f"插件未安装: {plugin_id}")
         self._set_enabled(plugin_id, False)
-        shutil.rmtree(target, ignore_errors=True)
+        data_dir = target / "data"
+        if not data_dir.is_dir():
+            shutil.rmtree(target, ignore_errors=True)
+            return
+        for entry in target.iterdir():
+            if entry == data_dir:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> None:
         if not (self._plugin_dir(plugin_id) / MANIFEST_FILENAME).is_file():

@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import time
 from pathlib import Path, PurePosixPath
+from typing import Literal
 from urllib.parse import quote
 
 from src.api.exception.errors import ApiError
@@ -9,7 +10,7 @@ from src.common.subtitle_paths import ensure_movie_subtitle_path
 from src.config.config import settings
 
 IMAGE_FILE_ROUTE_PREFIX = "/files/images"
-MEDIA_STREAM_ROUTE_PREFIX = "/media"
+MEDIA_PLAY_ROUTE_PREFIX = "/media"
 MEDIA_CLIP_STREAM_ROUTE_PREFIX = "/media-clips"
 SUBTITLE_FILE_ROUTE_PREFIX = "/files/subtitles"
 FILE_SIGNATURE_EXPIRE_SECONDS = 12 * 60 * 60
@@ -106,8 +107,23 @@ def resolve_image_file_path(relative_path: str) -> Path:
     return absolute_path
 
 
-def _build_media_signature(media_id: int, expires: int) -> str:
-    signature_payload = f"media:{media_id}:{expires}"
+def _normalize_resource_path(resource_path: str) -> str:
+    """Validate the opaque provider path without interpreting provider semantics."""
+    normalized_input = resource_path or ""
+    if not normalized_input:
+        return ""
+    if "\\" in normalized_input or "\x00" in normalized_input:
+        raise ApiError(403, "file_path_invalid", "文件路径非法")
+    if normalized_input.startswith("/"):
+        raise ApiError(403, "file_path_invalid", "文件路径非法")
+    raw_parts = normalized_input.split("/")
+    if any(part in ("", ".", "..") for part in raw_parts):
+        raise ApiError(403, "file_path_invalid", "文件路径非法")
+    return PurePosixPath(*raw_parts).as_posix()
+
+
+def _build_media_signature(media_id: int, resource_path: str, expires: int) -> str:
+    signature_payload = f"media:{media_id}:{resource_path}:{expires}"
     return hmac.new(
         settings.auth.file_signature_secret.encode("utf-8"),
         signature_payload.encode("utf-8"),
@@ -115,55 +131,38 @@ def _build_media_signature(media_id: int, expires: int) -> str:
     ).hexdigest()
 
 
-def build_signed_media_url(media_id: int) -> str:
-    # 媒体播放签名与图片、字幕共用固定有效期与窗口对齐策略。
+def build_signed_media_url(
+    media_id: int,
+    resource_path: str = "",
+    *,
+    delivery: Literal["proxy", "redirect"] = "proxy",
+) -> str:
+    """Build the provider playback gateway URL for one media resource."""
+    if delivery not in {"proxy", "redirect"}:
+        raise ValueError(f"unsupported playback delivery: {delivery!r}")
+    normalized_path = _normalize_resource_path(resource_path)
     expires = build_signature_expires()
-    signature = _build_media_signature(media_id, expires)
-    return f"{MEDIA_STREAM_ROUTE_PREFIX}/{media_id}/stream?expires={expires}&signature={signature}"
+    signature = _build_media_signature(media_id, normalized_path, expires)
+    path = f"{MEDIA_PLAY_ROUTE_PREFIX}/{media_id}/play/"
+    if normalized_path:
+        path += quote(normalized_path, safe="/")
+    return f"{path}?expires={expires}&signature={signature}&delivery={delivery}"
 
 
-def build_signed_merged_media_url(media_ids: list[int]) -> str:
-    """多分段虚拟合并播放的签名 URL。
-
-    签名复用 ``media_ids[0]`` 的媒体签名（与 ``/{media_id}/stream`` 同机制），
-    合并被限制在同一部影片内，实际可读集合不超过该影片各分段本身。
-    """
-    if not media_ids:
-        raise ValueError("media_ids must not be empty")
-    expires = build_signature_expires()
-    signature = _build_media_signature(media_ids[0], expires)
-    ids = ",".join(str(i) for i in media_ids)
-    return (
-        f"{MEDIA_STREAM_ROUTE_PREFIX}/merged-stream"
-        f"?media_ids={ids}&expires={expires}&signature={signature}"
-    )
-
-
-def build_signed_cloud115_merged_hls_url(media_ids: list[int]) -> str:
-    """115 HLS 全量代理的合播/单播 m3u8 签名 URL。
-
-    签名复用 ``media_ids[0]`` 的媒体签名（与本地合并同机制），供外部播放器经
-    ``/media/merged-stream.m3u8`` 消费合播 HLS（单播可由前端把 ``/stream`` 路径
-    换成 ``/stream.m3u8`` 复用同一签名，无需本函数）。
-    """
-    if not media_ids:
-        raise ValueError("media_ids must not be empty")
-    expires = build_signature_expires()
-    signature = _build_media_signature(media_ids[0], expires)
-    ids = ",".join(str(i) for i in media_ids)
-    return (
-        f"{MEDIA_STREAM_ROUTE_PREFIX}/merged-stream.m3u8"
-        f"?media_ids={ids}&expires={expires}&signature={signature}"
-    )
-
-
-def verify_media_signature(media_id: int, expires: int, signature: str) -> None:
+def verify_media_signature(
+    media_id: int,
+    resource_path: str,
+    expires: int,
+    signature: str,
+) -> str:
+    normalized_path = _normalize_resource_path(resource_path)
     if expires <= _now_timestamp():
         raise ApiError(403, "file_signature_expired", "文件签名已过期")
 
-    expected_signature = _build_media_signature(media_id, expires)
+    expected_signature = _build_media_signature(media_id, normalized_path, expires)
     if not hmac.compare_digest(expected_signature, signature):
         raise ApiError(403, "file_signature_invalid", "文件签名无效")
+    return normalized_path
 
 
 def _build_clip_signature(clip_id: int, expires: int) -> str:
@@ -189,24 +188,6 @@ def verify_clip_signature(clip_id: int, expires: int, signature: str) -> None:
     expected_signature = _build_clip_signature(clip_id, expires)
     if not hmac.compare_digest(expected_signature, signature):
         raise ApiError(403, "file_signature_invalid", "文件签名无效")
-
-
-def resolve_media_clip_file_path(clip_id: int) -> Path:
-    from src.model import MediaClip
-
-    clip = MediaClip.get_or_none(MediaClip.id == clip_id)
-    if clip is None:
-        raise ApiError(404, "media_clip_not_found", "片段不存在")
-
-    normalized_path = _normalize_relative_path(clip.file_path)
-    clip_root_path = media_clip_root_path()
-    absolute_path = (clip_root_path / normalized_path).resolve()
-    # 防御性校验：解析结果必须仍在片段根目录内，避免越权读取。
-    try:
-        absolute_path.relative_to(clip_root_path)
-    except ValueError as exc:
-        raise ApiError(403, "file_path_invalid", "文件路径非法") from exc
-    return absolute_path
 
 
 def _build_subtitle_signature(subtitle_id: int, expires: int) -> str:

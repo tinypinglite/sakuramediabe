@@ -434,7 +434,6 @@ class DailyRecommendationService:
                 continue
             base_resource = MovieListItemResource.from_attributes_model(movie)
             base_resource.can_play = bool(getattr(movie, "can_play", False))
-            base_resource.is_4k = bool(getattr(movie, "is_4k", False))
             items.append(
                 DailyRecommendationMovieResource.model_validate(
                     {

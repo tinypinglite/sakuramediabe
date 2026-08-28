@@ -82,20 +82,35 @@ run_database_migrations() {
     su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands migrate" "${APP_USER}"
 }
 
+run_v053_upgrade() {
+    echo "Checking for a v0.5.3 database upgrade..."
+    # 只在精确 v0.5.3 库上安装内置官方 provider 并执行单向转换；新库和已升级库均为空操作。
+    su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands upgrade-v053" "${APP_USER}"
+}
+
 bootstrap_default_data() {
     echo "Bootstrapping default account and system playlists..."
     # 默认数据初始化保持幂等，首装补齐账号/系统播放列表，老库重复执行会自动跳过。
     su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands initdb" "${APP_USER}"
 }
 
+sync_plugin_dependencies() {
+    echo "Syncing plugin dependencies..."
+    # 必须在 supervisor 启动 api/aps 前串行执行：两者都会在 import 期加载插件。
+    # 单个插件失败由命令落盘并由加载器隔离，命令本身保持成功以便服务继续启动。
+    su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands plugins sync-dependencies" "${APP_USER}"
+}
+
 if [ "${1:-}" = "start" ]; then
     ensure_app_identity
     bootstrap_data_dirs
     wait_for_database
+    run_v053_upgrade
     run_database_migrations
     bootstrap_default_data
+    sync_plugin_dependencies
 
-    # 主服务只负责 API 和任务编排，不再处理 JoyTag 推理设备映射。
+    # 主服务只负责 API 和任务编排，不处理嵌入推理设备映射。
     id "${APP_USER}" || true
 
     echo "Starting supervisor..."

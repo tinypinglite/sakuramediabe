@@ -308,25 +308,6 @@ def find_movie_by_number(value: str):
     return None
 
 
-def media_special_tag_match_expression(media_tag: str):
-    """按空格分隔标签做精确匹配，避免把普通子串误判成命中。"""
-    from src.model import Media
-
-    return (
-        (Media.special_tags == media_tag)
-        | Media.special_tags.startswith(f"{media_tag} ")
-        | Media.special_tags.endswith(f" {media_tag}")
-        | Media.special_tags.contains(f" {media_tag} ")
-    )
-
-
-def parse_special_tags_text(value: str | None) -> list[str]:
-    """将空格分隔的标签文本解析为列表。"""
-    if value is None:
-        return []
-    return [part.strip() for part in value.split() if part.strip()]
-
-
 def with_movie_card_relations(query):
     """给影片卡片查询追加封面、竖封面和系列关联。"""
     from peewee import JOIN

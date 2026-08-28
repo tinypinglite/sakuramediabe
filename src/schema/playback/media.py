@@ -15,17 +15,6 @@ class MediaPointKind(str, Enum):
     ALL = "all"
 
 
-class MediaRapidUploadFilterStatus(str, Enum):
-    # media 列表接口按上次秒传状态筛选的枚举。前四个对应 MediaListItemResource
-    # 里 last_rapid_upload_status 的四个"有状态"值；none 显式筛"未秒传或最近一次
-    # 已成功切云端"的 media，用来让前端"未参与秒传"的分类也能独立命中。
-    NOT_HIT = "not_hit"
-    FAILED = "failed"
-    CLEANUP_FAILED = "cleanup_failed"
-    IN_PROGRESS = "in_progress"
-    NONE = "none"
-
-
 class MediaThumbnailGenerationState(str, Enum):
     # 由 Media 持久化：成功产物仍在 MediaThumbnail，状态用于列表筛选与运维处置。
     PENDING = "pending"
@@ -88,7 +77,7 @@ class MediaThumbnailResource(SchemaModel):
     media_id: int
     offset_seconds: int
     image: ImageResource
-    # 尺寸来自实际落盘 WebP；同一媒体的一组缩略图共享同一 HLS 清晰度或本地视频流尺寸。
+    # 尺寸来自缩略图产物；同一媒体的一组缩略图共享同一视频流尺寸。
     width: int | None = None
     height: int | None = None
 
@@ -101,7 +90,7 @@ class InvalidMediaResource(SchemaModel):
     movie_title: str | None = None
     cover_image: ImageResource | None = None
     thin_cover_image: ImageResource | None = None
-    path: str
+    file_name: str
     library_id: int | None
     library_name: str | None
     file_size_bytes: int
@@ -119,70 +108,14 @@ class MediaListItemResource(SchemaModel):
     thin_cover_image: ImageResource | None = None
     library_id: int | None = None
     library_name: str | None = None
-    path: str
+    file_name: str
     file_size_bytes: int
     duration_seconds: int
     resolution: str | None = None
-    special_tags: str
     valid: bool
     thumbnail_generation_state: MediaThumbnailGenerationState
     thumbnail_last_error_code: str | None = None
     # 仅 JAV 媒体有意义，非 JAV 视频恒为 None。
     heat: int | None = None
-    # 上一次 115 秒传结果的紧凑投影，用来在列表上提示"是否值得再点秒传"。
-    # not_hit=115 无相同 sha1（重试无用）；failed=其它可重试失败；cleanup_failed=
-    # 云端已成功但本地残留；in_progress=当前批次仍在跑；null=从未秒传或最近一次已成功。
-    last_rapid_upload_status: (
-        Literal["not_hit", "failed", "cleanup_failed", "in_progress"] | None
-    ) = None
     created_at: datetime
     updated_at: datetime
-
-
-class MediaValidityCheckResponse(SchemaModel):
-    id: int
-    path: str
-    file_exists: bool
-    valid_before: bool
-    valid_after: bool
-    updated: bool
-    invalidated: bool
-    revived: bool
-    checked_at: datetime
-
-
-class MediaPlayUrlSource(str, Enum):
-    # 播放源类型：本地库 / 115 网盘。
-    LOCAL = "local"
-    CLOUD115 = "cloud115"
-
-
-class MediaPlayUrlMode(str, Enum):
-    # 播放模式：单个媒体播放 / 多分段合并播放。
-    SINGLE = "single"
-    MERGED = "merged"
-
-
-class MediaPlayUrlKind(str, Enum):
-    # 解析结果的播放形态，前端据此区分是否可播及占位情况。
-    MERGED_LOCAL = "merged_local"
-    SINGLE_LOCAL = "single_local"
-    SINGLE_CLOUD115 = "single_cloud115"
-    # 115 多资源合并播放：返回后端 HLS 全量代理的合播 m3u8 地址。
-    CLOUD115_MERGED = "cloud115_merged"
-    # 历史占位（未实现 115 合并时返回），保留用于兼容既有调用方/测试。
-    CLOUD115_MERGED_PENDING = "cloud115_merged_pending"
-    NONE = "none"
-
-
-class MediaPlayUrlSegmentResource(SchemaModel):
-    media_id: int
-    duration_seconds: int = 0
-
-
-class MediaPlayUrlResource(SchemaModel):
-    # 相对路径的签名播放地址（合并/单个）；占位或无媒体时为 null。
-    play_url: str | None = None
-    kind: MediaPlayUrlKind
-    segment_count: int = 0
-    segments: list[MediaPlayUrlSegmentResource] = Field(default_factory=list)

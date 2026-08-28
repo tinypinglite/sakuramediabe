@@ -36,7 +36,6 @@ from src.service.catalog.movie_subscription_search_state_service import (
 )
 from src.service.transfers.shared.common import (
     active_download_task_exists_expression,
-    download_task_dead_expression,
     unfinished_import_download_task_exists_expression,
 )
 
@@ -215,7 +214,7 @@ class MovieSubscriptionService:
         movie_numbers = [movie.movie_number for movie in ordered_movies]
         # media_exists_expression 用的是精确相等，这里的计数必须同样精确匹配才和状态判定一致。
         media_counts = count_by_owner(Media, Media.movie, movie_numbers)
-        dead_task_counts = cls._count_dead_download_tasks(movie_numbers)
+        failed_task_counts = cls._count_failed_download_tasks(movie_numbers)
         attempt_limit = MovieSubscriptionSearchStateService.stale_attempt_limit()
         items: list[MovieSubscriptionListItemResource] = []
         for movie in ordered_movies:
@@ -233,7 +232,7 @@ class MovieSubscriptionService:
                     attempt_limit=attempt_limit,
                     last_searched_at=movie.subscription_search_last_attempted_at,
                     last_error=movie.subscription_search_last_error,
-                    dead_download_task_count=dead_task_counts.get(
+                    dead_download_task_count=failed_task_counts.get(
                         movie.movie_number, 0
                     ),
                     media_count=media_counts.get(movie.movie_number, 0),
@@ -242,17 +241,13 @@ class MovieSubscriptionService:
         return items
 
     @classmethod
-    def _count_dead_download_tasks(cls, movie_numbers: list[str]) -> dict[str, int]:
-        """按番号统计已判死的下载任务数——"这片试过几个种子都死了"。
-
-        入参来自本页 Movie 行的规范番号，download_task.movie_number 由提交链路拷贝同一列，
-        两侧直接裸列精确比较即可；套 UPPER(TRIM()) 只会废掉该列索引。
-        """
+    def _count_failed_download_tasks(cls, movie_numbers: list[str]) -> dict[str, int]:
+        """统计下载提供方明确失败的历史任务。"""
         counts_by_key = count_by_owner(
             DownloadTask,
             DownloadTask.movie,
             movie_numbers,
-            download_task_dead_expression(),
+            DownloadTask.state == "failed",
         )
         return {number: counts_by_key.get(number, 0) for number in movie_numbers}
 

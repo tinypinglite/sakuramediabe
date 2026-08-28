@@ -3,16 +3,13 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 
-from src.config.config import settings
 from src.scheduler.logging import _TASK_LEVELS, _TASK_SINKS, get_task_logger
 from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.service.system import TaskRunConflictError
 from src.start.aps import (
-    DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID,
     _bootstrap_gfriends_filetree_refresh,
     _bootstrap_movie_similarity_index,
     _schedule_bootstrap_job,
-    _sync_download_progress_snapshots,
     build_scheduler,
     enqueue_scheduled_job,
     run_job,
@@ -54,10 +51,6 @@ def test_aps_command_invokes_scheduler_entrypoint(monkeypatch):
         "sync-movie-interactions",
         "sync-hot-reviews",
         "generate-media-thumbnails",
-        "scan-media-files",
-        "cleanup-download-small-files",
-        "cleanup-qb-stalled-tasks",
-        "sync-cloud115-offline-tasks",
         "cleanup-activity-records",
         "index-image-search-thumbnails",
         "optimize-image-search-index",
@@ -227,8 +220,6 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_heat_cron", "15 0 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_sync_cron", "*/15 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_auto_import_cron", "*/10 * * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.download_small_file_cleanup_cron", "*/5 * * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.media_file_scan_cron", "0 */6 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_interaction_sync_cron", "0 5 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_thumbnail_cron", "*/5 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.image_search_index_cron", "*/10 * * * *")
@@ -257,8 +248,6 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert str(scheduler.get_job("movie_heat_update").trigger) == "cron[month='*', day='*', day_of_week='*', hour='0', minute='15']"
     assert str(scheduler.get_job("download_task_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/15']"
     assert str(scheduler.get_job("download_task_auto_import").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"
-    assert str(scheduler.get_job("download_small_file_cleanup").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/5']"
-    assert str(scheduler.get_job("media_file_scan").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*/6', minute='0']"
     assert str(scheduler.get_job("media_thumbnail_generation").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/5']"
     assert str(scheduler.get_job("image_search_index").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"
     assert (
@@ -760,12 +749,6 @@ def test_schedule_bootstrap_job_rejects_non_bootstrap_task_key():
         )
 
 
-def test_subtitle_task_run_has_no_domain_recovery_handler():
-    from src.start.recovery import BUSINESS_RECOVERY_HANDLERS
-
-    assert "subtitle_directory_import" not in BUSINESS_RECOVERY_HANDLERS
-
-
 # ---------------------------------------------------------------------------
 # run_job 只入队测试
 # ---------------------------------------------------------------------------
@@ -859,47 +842,9 @@ def test_build_scheduler_wires_cron_jobs_to_enqueue_only():
     scheduler = build_scheduler()
     jobs = scheduler.get_jobs()
 
-    assert {job.id for job in jobs} == {
-        *(job_def.task_key for job_def in JOB_REGISTRY),
-        DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID,
-    }
+    assert {job.id for job in jobs} == {job_def.task_key for job_def in JOB_REGISTRY}
     # cron 触发一律指向入队函数，绝不在 APS 线程直接执行 handler。
-    cron_jobs = [job for job in jobs if job.id != DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID]
-    assert all(job.func is enqueue_scheduled_job for job in cron_jobs)
-
-
-def test_build_scheduler_wires_internal_download_progress_sampler_without_task_key():
-    from src.scheduler.queue_tasks import QUEUE_TASK_REGISTRY
-
-    scheduler = build_scheduler()
-    job = scheduler.get_job(DOWNLOAD_PROGRESS_SNAPSHOT_JOB_ID)
-
-    assert job is not None
-    assert job.func is _sync_download_progress_snapshots
-    assert job.coalesce is True
-    assert job.max_instances == 1
-    assert job.id not in JOB_REGISTRY_BY_KEY
-    assert job.id not in QUEUE_TASK_REGISTRY
-    assert job.trigger.interval.total_seconds() == pytest.approx(
-        settings.scheduler.download_progress_snapshot_interval_seconds
-    )
-
-
-def test_internal_download_progress_sampler_writes_directly_without_task_run(monkeypatch):
-    events = []
-
-    class FakeProgressSyncService:
-        def sync_all_clients(self):
-            events.append("sync")
-
-    monkeypatch.setattr("src.start.aps.ensure_database_ready", lambda: events.append("db"))
-    monkeypatch.setattr(
-        "src.start.aps.DownloadProgressSyncService",
-        FakeProgressSyncService,
-    )
-    _sync_download_progress_snapshots()
-
-    assert events == ["db", "sync"]
+    assert all(job.func is enqueue_scheduled_job for job in jobs)
 
 
 def test_submit_manual_job_enqueues_pending_run_without_inline_execution(test_db):
@@ -999,49 +944,6 @@ def test_task_worker_fails_run_with_unregistered_task_key(test_db):
     assert stored.mutex_key is None
 
 
-def test_task_worker_rapid_failure_suppresses_generic_notification(
-    test_db, monkeypatch
-):
-    from src.model import BackgroundTaskRun, SystemNotification
-    from src.scheduler.contracts import JobDefinition
-    from src.scheduler.queue_tasks import (
-        LANE_RAPID_UPLOAD,
-        QUEUE_TASK_REGISTRY,
-    )
-    from src.scheduler.worker import TaskWorker
-    from src.service.system.task_queue_service import TaskQueueService
-
-    def fail_rapid_upload(_reporter, _params):
-        raise RuntimeError("rapid failed")
-
-    monkeypatch.setitem(
-        QUEUE_TASK_REGISTRY,
-        "media_rapid_upload",
-        JobDefinition(
-            task_key="media_rapid_upload",
-            log_name="media-rapid-upload",
-            cli_name="media-rapid-upload",
-            cli_help="rapid upload",
-            manual_only=True,
-            handler=fail_rapid_upload,
-            lane=LANE_RAPID_UPLOAD,
-            notify_result=False,
-        ),
-    )
-    queued = TaskQueueService.enqueue(
-        task_key="media_rapid_upload",
-        trigger_type="manual",
-        params={"rapid_upload_batch_id": 7},
-    )
-
-    TaskWorker()._execute(TaskQueueService.claim_next())
-
-    stored = BackgroundTaskRun.get_by_id(queued.id)
-    assert stored.state == "failed"
-    assert stored.error_message == "rapid failed"
-    assert SystemNotification.select().count() == 0
-
-
 # ---------------------------------------------------------------------------
 # 任务架构 Wave 3：并发道与队列专属任务分发
 # ---------------------------------------------------------------------------
@@ -1055,7 +957,11 @@ def test_default_lane_never_claims_import_lane_tasks(test_db):
     queued = ActivityService.create_task_run(
         task_key="library_import",
         trigger_type="manual",
-        params={"media_kind": "jav", "backend": "local"},
+        params={
+            "media_kind": "jav",
+            "library_id": 1,
+            "source_ref": {"source": "test"},
+        },
     )
 
     # default 道排除专属道任务；import 道能领到。
@@ -1091,12 +997,22 @@ def test_task_worker_dispatches_queue_task_handler_with_params(test_db, monkeypa
     queued = ActivityService.create_task_run(
         task_key="library_import",
         trigger_type="manual",
-        params={"media_kind": "jav", "backend": "local"},
+        params={
+            "media_kind": "jav",
+            "library_id": 1,
+            "source_ref": {"source": "test"},
+        },
     )
     claimed = TaskQueueService.claim_next()
     TaskWorker()._execute(claimed)
 
-    assert calls == [{"media_kind": "jav", "backend": "local"}]
+    assert calls == [
+        {
+            "media_kind": "jav",
+            "library_id": 1,
+            "source_ref": {"source": "test"},
+        }
+    ]
     assert BackgroundTaskRun.get_by_id(queued.id).state == "completed"
 
 

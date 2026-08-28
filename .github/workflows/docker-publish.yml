@@ -72,6 +72,27 @@ jobs:
             exit 1
           fi
 
+      - name: Checkout pinned local provider
+        uses: actions/checkout@v4
+        with:
+          repository: tinypinglite/sakuramedia_local_provider
+          ref: d8b303ea3efd7b9f7ca83e6b89a018d78d16f886
+          path: .bundled-provider-sources/local
+
+      - name: Checkout pinned 115 provider
+        uses: actions/checkout@v4
+        with:
+          repository: tinypinglite/sakuramedia_115_provider
+          ref: aeff803a57e13deb9a8a5e975137b0e8268d4a97
+          path: .bundled-provider-sources/cloud115
+
+      - name: Package migration-only provider bundles
+        run: |
+          python3 docker/backend/package_bundled_providers.py \
+            --local .bundled-provider-sources/local \
+            --cloud115 .bundled-provider-sources/cloud115 \
+            --output docker/backend/bundled-plugins
+
       # arm64 侧通过 QEMU 模拟构建;依赖全部是预编译 wheel,无源码编译,模拟开销可接受。
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

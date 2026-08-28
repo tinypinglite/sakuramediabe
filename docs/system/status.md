@@ -1,248 +1,56 @@
-# Status
+# 系统状态
 
-## 资源说明
+所有端点需要 Bearer Token。
 
-状态资源用于返回首页仪表盘需要的全局统计、图像检索链路健康信息和外部元数据站点联通测试结果。
+## 总览
 
-所有时间字段都由后端按当前运行环境时区转换后返回，格式为不带时区后缀的本地时间字符串。
+```http
+GET /status
+```
 
-## 资源模型
+返回后端版本、女优统计、影片统计、媒体文件统计、媒体库数量和缩略图统计：
 
 ```json
 {
-  "backend_version": "v1.2.3",
-  "actors": {
-    "female_total": 12,
-    "female_subscribed": 8
-  },
-  "movies": {
-    "total": 120,
-    "subscribed": 35,
-    "playable": 88
-  },
-  "media_files": {
-    "total": 156,
-    "total_size_bytes": 9876543210
-  },
-  "media_libraries": {
-    "total": 3
-  },
+  "backend_version": "dev-local",
+  "actors": {"female_total": 0, "female_subscribed": 0},
+  "movies": {"total": 0, "subscribed": 0, "playable": 0},
+  "media_files": {"total": 0, "total_size_bytes": 0},
+  "media_libraries": {"total": 0},
   "thumbnails": {
-    "pending_media": 24,
-    "retry_wait_media": 3,
-    "terminal_failed_media": 2,
-    "total": 132
+    "pending_media": 0,
+    "retry_wait_media": 0,
+    "terminal_failed_media": 0,
+    "total": 0
   }
 }
 ```
 
-## 端点列表总览
+`backend_version` 由 `SAKURAMEDIA_BACKEND_VERSION` 提供，未设置时为 `dev-local`。
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `GET` | `/status` | 获取系统汇总统计 |
-| `GET` | `/status/media-libraries/cloud115` | 实时探测所有 115 媒体库的 cookies 状态 |
-| `GET` | `/status/image-search` | 获取 JoyTag/Qdrant 运行状态与索引计数 |
-| `GET` | `/status/metadata-providers/{provider}/test` | 测试内置 Provider 提供的 JavDB 外部站点实际可用性 |
+## 图像检索状态
 
-## `GET /status`
-
-需要 Bearer Token。
-
-成功响应：
-
-- `200 OK`: 返回统计资源对象
-
-字段口径：
-
-- `backend_version`: 后端发布版本号（由镜像构建时注入的 `SAKURAMEDIA_BACKEND_VERSION` 提供；本地默认 `dev-local`）
-- `actors.female_total`: `Actor.gender == 1` 的总数
-- `actors.female_subscribed`: `Actor.gender == 1` 且 `Actor.is_subscribed == true` 的总数
-- `movies.total`: `Movie` 总数
-- `movies.subscribed`: `Movie.is_subscribed == true` 的总数
-- `movies.playable`: `Media.valid == true` 的媒体所关联的去重影片数量
-- `media_files.total`: `Media` 总行数
-- `media_files.total_size_bytes`: 所有 `Media.file_size_bytes` 的求和（空库为 `0`）
-- `media_libraries.total`: `MediaLibrary` 总数
-- `thumbnails.pending_media`: 当前可执行的缩略图媒体数（`pending`、源版本变化、丢失成功产物，或已到期的 `retry_wait`）
-- `thumbnails.retry_wait_media`: 尚未到 `thumbnail_next_retry_at` 的媒体级延后数
-- `thumbnails.terminal_failed_media`: 已达到上限或命中确定性错误的媒体数；不会被定时任务自动重试
-- `thumbnails.total`: 已生成的缩略图文件总数（`MediaThumbnail` 总行数）
-
-## `GET /status/media-libraries/cloud115`
-
-需要 Bearer Token。
-
-实时并发探测所有 `backend=cloud115` 的媒体库，并返回逐库状态和汇总。单个库探测失败不会中断整个响应；接口不会返回 cookies 或其它认证凭据，也不会创建登录失效通知。
-
-成功响应：
-
-- `200 OK`：始终返回本轮检测结果
-
-示例响应：
-
-```json
-{
-  "checked_at": "2026-07-14T10:00:00",
-  "summary": {
-    "total": 3,
-    "alive": 1,
-    "expired": 1,
-    "unavailable": 1
-  },
-  "libraries": [
-    {
-      "library_id": 1,
-      "name": "115 主库",
-      "cookie_status": "alive"
-    },
-    {
-      "library_id": 2,
-      "name": "115 备用库",
-      "cookie_status": "expired"
-    }
-  ]
-}
+```http
+GET /status/image-search
 ```
 
-状态含义：
+返回嵌入服务、向量库和缩略图索引的健康状态、检查时间及当前错误。响应不会
+包含凭据。
 
-- `alive`：115 明确确认登录态有效
-- `expired`：115 明确拒绝 cookies，需要重新扫码登录
-- `unavailable`：超时、限流、5xx、非法响应或其它瞬时异常，不能据此判断 cookies 已失效
+嵌入服务会返回 `space_id`、`dimension` 与支持的模态。更换模型或向量空间后，调用：
 
-探测过程中 115 响应若刷新了 `Set-Cookie`，会沿用媒体库客户端的安全快照回写机制；通知仍只由定时保活任务负责。
-
-## `GET /status/image-search`
-
-需要 Bearer Token。
-
-成功响应：
-
-- `200 OK`: 始终返回检测结果；子系统异常通过 `healthy=false` 与 `error` 字段表达
-
-示例响应：
-
-```json
-{
-  "healthy": true,
-  "checked_at": "2026-03-16T07:30:00",
-  "joytag": {
-    "healthy": true,
-    "endpoint": "http://joytag-infer:8001",
-    "backend": "openvino",
-    "execution_provider": "OpenVINOExecutionProvider",
-    "used_device": "Intel UHD Graphics 630",
-    "available_devices": ["OpenVINOExecutionProvider", "CPUExecutionProvider"],
-    "device_full_name": null,
-    "model_file": "/data/lib/joytag/model_vit_768.onnx",
-    "model_name": "joytag-onnxruntime",
-    "vector_size": 768,
-    "image_size": 448,
-    "probe_latency_ms": 42,
-    "error": null
-  },
-  "image_search_vector_store": {
-    "healthy": true,
-    "url": "http://qdrant:6333",
-    "collection_name": "media_thumbnail_vectors",
-    "exists": true,
-    "points_count": 15320,
-    "vector_size": 768,
-    "vector_dtype": "float16",
-    "collection_status": "green",
-    "error": null
-  },
-  "indexing": {
-    "pending_thumbnails": 23,
-    "failed_thumbnails": 2,
-    "success_thumbnails": 15295
-  }
-}
+```http
+POST /image-search/reset
 ```
 
-字段口径：
+该操作会删除缩略图和剧情图的两个向量集合、失效所有搜索会话、把两类图片重新标为待索引，
+并分别入队两个索引任务。它是破坏性操作，不能撤销。
 
-- `healthy`: `joytag.healthy && image_search_vector_store.healthy`
-- `checked_at`: 本次检测时间
-- `joytag.endpoint`: 当前主服务访问的远端推理服务地址
-- `joytag.backend`: 推理服务当前使用的部署后端，例如 `cpu`、`openvino`、`cuda`
-- `joytag.execution_provider`: ONNX Runtime 实际启用的 Execution Provider
-- `joytag.used_device`: 面向用户展示的实际执行设备，CPU 返回 `cpu`，OpenVINO / CUDA GPU 优先返回具体设备名称，例如 `Intel UHD Graphics 630`、`NVIDIA GeForce RTX 3060`；名称探测失败时回退为 `gpu` 或 `cuda`
-- `joytag.available_devices`: 推理服务当前可见的 Provider 列表
-- `joytag.device_full_name`: 可选设备全名；GPU 名称探测失败时可能为空，不影响服务健康
-- `joytag.probe_latency_ms`: 本次真实推理探测耗时（毫秒）
-- `joytag.error`: JoyTag 初始化或推理失败时的错误信息
-- `image_search_vector_store.exists`: Qdrant collection 是否存在；`false` 不视为异常
-- `image_search_vector_store.points_count`: 当前 collection point 数；仅在 `exists=true` 时有值
-- `image_search_vector_store.collection_status`: Qdrant collection 状态；仅在 `exists=true` 时有值
-- `image_search_vector_store.error`: Qdrant 诊断失败时的错误信息
-- `indexing.pending_thumbnails`: `MediaThumbnail.joytag_index_status == PENDING` 数量
-- `indexing.failed_thumbnails`: `MediaThumbnail.joytag_index_status == FAILED` 数量
-- `indexing.success_thumbnails`: `MediaThumbnail.joytag_index_status == SUCCESS` 数量
+## 元数据 provider 测试
 
-## `GET /status/metadata-providers/{provider}/test`
-
-需要 Bearer Token。
-
-`provider` 仅支持：
-
-- `javdb`
-
-该接口用于联调和排障，会真实发起外部网络请求，不会写数据库、不会创建任务记录。当前固定使用测试番号 `SSNI-888`，不接收请求参数。
-
-成功响应：
-
-- `200 OK`: 始终返回检测结果；外部站点异常通过 `healthy=false` 与 `error` 字段表达
-- `422 invalid_metadata_provider`: `provider` 不是 `javdb`
-
-JavDB 示例响应：
-
-```json
-{
-  "healthy": true,
-  "checked_at": "2026-04-26T14:30:00",
-  "provider": "javdb",
-  "movie_number": "SSNI-888",
-  "elapsed_ms": 842,
-  "error": null,
-  "javdb_id": "abc123",
-  "title": "SSNI-888",
-  "actors_count": 2,
-  "tags_count": 12
-}
+```http
+GET /status/metadata-providers/javdb/test
 ```
 
-失败示例响应：
-
-```json
-{
-  "healthy": false,
-  "checked_at": "2026-04-26T14:30:00",
-  "provider": "javdb",
-  "movie_number": "SSNI-888",
-  "elapsed_ms": 10015,
-  "error": {
-    "type": "metadata_request_error",
-    "message": "metadata request failed: GET https://...",
-    "method": "GET",
-    "url": "https://...",
-    "resource": null,
-    "lookup_value": null
-  },
-  "javdb_id": null,
-  "title": null,
-  "actors_count": null,
-  "tags_count": null
-}
-```
-
-字段口径：
-
-- `healthy`: 是否成功按固定番号拉取并解析到目标数据
-- `checked_at`: 本次检测时间
-- `provider`: 当前测试的外部站点，值为 `javdb`
-- `movie_number`: 固定测试番号，当前为 `SSNI-888`
-- `elapsed_ms`: 本次检测耗时（毫秒）
-- `error.type`: `metadata_request_error`、`metadata_not_found` 或 `unexpected_error`
-- `javdb.*`: JavDB 成功时返回的详情摘要；站点请求由内置 Provider 提供，代理跟随容器环境变量分流
+使用固定番号执行一次真实 JavDB 查询，返回耗时、结果摘要或结构化错误。未知 provider
+返回 `422 invalid_metadata_provider`。

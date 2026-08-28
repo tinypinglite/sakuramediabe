@@ -3,6 +3,7 @@ from __future__ import annotations
 from src.config.config import settings
 from src.plugins.contracts import PluginRegistration
 from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
+from src.plugins.provider_protocol import refresh_media_provider_registry
 from src.scheduler.contracts import JobDefinition
 from src.scheduler.queue_tasks import (
     QUEUE_TASK_REGISTRY,
@@ -26,23 +27,10 @@ from src.service.discovery import (
     MoviePlotImageSearchIndexService,
     MovieRecommendationService,
 )
-from src.service.playback import (
-    Cloud115KeepaliveService,
-    MediaFileScanService,
-    MediaThumbnailService,
-)
+from src.service.playback import MediaThumbnailService
 from src.service.system import ActivityCleanupService
-from src.service.transfers.cloud115.offline.sync_service import (
-    Cloud115OfflineSyncService,
-)
 from src.service.transfers.downloads.auto_subscribed.auto_download_service import (
     SubscribedMovieAutoDownloadService,
-)
-from src.service.transfers.downloads.small_file_cleanup_service import (
-    DownloadSmallFileCleanupService,
-)
-from src.service.transfers.downloads.stalled_cleanup_service import (
-    QBStalledCleanupService,
 )
 from src.service.transfers.downloads.sync_service import DownloadSyncService
 
@@ -121,40 +109,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次已完成下载自动导入",
         cron_setting="download_task_auto_import_cron",
         handler=lambda _reporter, _params: DownloadSyncService().enqueue_auto_imports(),
-    ),
-    JobDefinition(
-        task_key="cloud115_offline_sync",
-        log_name="cloud115-offline-sync",
-        cli_name="sync-cloud115-offline-tasks",
-        cli_help="执行一次 cloud115 离线任务对账（进度回写 / 完成导入 / 超时放弃）",
-        cron_setting="cloud115_offline_sync_cron",
-        handler=lambda _reporter, _params: Cloud115OfflineSyncService().run(),
-    ),
-    JobDefinition(
-        task_key="download_small_file_cleanup",
-        log_name="download-small-file-cleanup",
-        cli_name="cleanup-download-small-files",
-        cli_help="执行一次下载中种子的小文件清理",
-        cron_setting="download_small_file_cleanup_cron",
-        handler=lambda _reporter, _params: DownloadSmallFileCleanupService().cleanup_small_files(),
-    ),
-    JobDefinition(
-        task_key="qb_stalled_cleanup",
-        log_name="qb-stalled-cleanup",
-        cli_name="cleanup-qb-stalled-tasks",
-        cli_help="清理 qB 中长期停滞/龟速的下载任务（删种+删文件+拉黑）",
-        cron_setting="qbittorrent_stalled_cleanup_cron",
-        handler=lambda _reporter, _params: QBStalledCleanupService().cleanup_stalled_tasks(),
-    ),
-    JobDefinition(
-        task_key="media_file_scan",
-        log_name="media-file-scan",
-        cli_name="scan-media-files",
-        cli_help="执行一次媒体文件巡检",
-        cron_setting="media_file_scan_cron",
-        handler=lambda reporter, _params: MediaFileScanService().scan_media_files(
-            progress_callback=reporter.progress_callback,
-        ),
     ),
     JobDefinition(
         task_key="media_thumbnail_generation",
@@ -239,14 +193,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次活动中心记录清理（任务运行 / 已读通知）",
         cron_setting="activity_cleanup_cron",
         handler=lambda _reporter, _params: ActivityCleanupService().cleanup(),
-    ),
-    JobDefinition(
-        task_key="cloud115_cookies_keepalive",
-        log_name="cloud115-cookies-keepalive",
-        cli_name="keepalive-cloud115-cookies",
-        cli_help="执行一次 cloud115 库 cookies 探活与快照回写",
-        cron_setting="cloud115_keepalive_cron",
-        handler=lambda _reporter, _params: Cloud115KeepaliveService().run(),
     ),
 ]
 
@@ -333,4 +279,13 @@ JOB_REGISTRY: list[JobDefinition] = _build_job_registry(
     BUILTIN_JOB_REGISTRY,
     _ACTIVE_PLUGINS,
 )
+# 任务注册阶段也可能隔离插件；最终 provider registry 只能保留完整通过
+# 所有宿主注册表的插件，避免被拒插件仍出现在媒体库 provider catalog。
+_ACTIVE_PLUGINS = tuple(
+    plugin
+    for plugin in _ACTIVE_PLUGINS
+    if PLUGIN_LOAD_ERRORS.get(plugin.plugin_id, {}).get("stage")
+    != "registry_conflict"
+)
+refresh_media_provider_registry(_ACTIVE_PLUGINS)
 JOB_REGISTRY_BY_KEY: dict[str, JobDefinition] = {job.task_key: job for job in JOB_REGISTRY}

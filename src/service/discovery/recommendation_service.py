@@ -14,7 +14,6 @@ from src.api.exception.errors import ApiError
 from src.common.service_helpers import (
     emit_progress,
     find_movie_by_number,
-    parse_special_tags_text,
     with_movie_card_relations,
 )
 from src.model import Media, Movie, MovieActor, MovieTag
@@ -307,23 +306,19 @@ class MovieRecommendationService:
             return
 
         playable_movie_numbers: set[str] = set()
-        is_4k_movie_numbers: set[str] = set()
         media_rows = (
-            Media.select(Media.movie, Media.special_tags)
+            Media.select(Media.movie)
             .where(
                 Media.valid == True,
                 Media.movie.in_(movie_numbers),
             )
             .tuples()
         )
-        for movie_number, special_tags in media_rows:
+        for (movie_number,) in media_rows:
             playable_movie_numbers.add(movie_number)
-            if "4K" in parse_special_tags_text(special_tags):
-                is_4k_movie_numbers.add(movie_number)
 
         for movie in movies:
             movie.can_play = movie.movie_number in playable_movie_numbers
-            movie.is_4k = movie.movie_number in is_4k_movie_numbers
 
     def list_similar(
         self,

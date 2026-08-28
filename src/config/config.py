@@ -83,49 +83,6 @@ class Auth(BaseModel):
 
 
 class Media(BaseModel):
-    inner_sub_tags: set[str] = Field(
-        default_factory=lambda: {"中字", "中文", "字幕组", "-UC", "-C"}
-    )
-    blueray_tags: set[str] = Field(default_factory=lambda: {"蓝光", "4K", "4k"})
-    uncensored_tags: set[str] = Field(
-        default_factory=lambda: {
-            "流出",
-            "uncensored",
-            "無码",
-            "無修正",
-            "UC",
-            "无码",
-            "破解",
-            "UNCENSORED",
-            "-UC",
-            "-U",
-        }
-    )
-    uncensored_prefix: set[str] = Field(
-        default_factory=lambda: {
-            "PT-",
-            "S2M",
-            "BT",
-            "LAF",
-            "SMD",
-            "SMBD",
-            "SM3D2DBD",
-            "SKY-",
-            "SKYHD",
-            "CWP",
-            "CWDV",
-            "CWBD",
-            "CW3D2DBD",
-            "MKD",
-            "MKBD",
-            "MXBD",
-            "MK3D2DBD",
-            "MCB3DBD",
-            "MCBD",
-            "RHJ",
-            "MMDV",
-        }
-    )
     allowed_min_video_file_size: int = 268435456 # 256MB
     import_image_root_path: str = "/data/cache/assets"
     max_thumbnail_process_count: int = Field(
@@ -199,33 +156,20 @@ class Scheduler(BaseModel):
     log_dir: str = "/data/logs"
     actor_subscription_sync_cron: str = "0 2 * * *"
     subscribed_movie_auto_download_cron: str = "30 2 * * *"
-    download_task_sync_cron: str = "*/5 * * * *"
-    # 宿主内部 qB 进度快照采样周期；不进入任务注册表，也不创建 TaskRun。
-    download_progress_snapshot_interval_seconds: float = Field(default=20.0, ge=1.0, le=60.0)
-    download_task_auto_import_cron: str = "*/10 * * * *"
-    download_small_file_cleanup_cron: str = "*/5 * * * *"
-    # qB 停滞/慢速任务清理：每天凌晨 1 点跑（早于订阅自动下载 02:30，删完当天就能换种重下）。
-    qbittorrent_stalled_cleanup_cron: str = "0 1 * * *"
-    # cloud115 离线任务对账：远端进度回写 + 完成触发导入 + 超时放弃。cron 最小粒度即 1 分钟；
-    # 没有活跃任务时对账是零请求空转，不会打扰 115。
-    cloud115_offline_sync_cron: str = "* * * * *"
+    download_task_sync_cron: str = "* * * * *"
+    download_task_auto_import_cron: str = "* * * * *"
     movie_heat_cron: str = "15 0 * * *"
     movie_interaction_sync_cron: str = "0 5 * * *"
     hot_review_sync_cron: str = "20 1 * * *"
-    # 全量巡检会 stat 媒体库里每个文件，放到每天凌晨集中一次，避免高频唤醒媒体盘。
-    media_file_scan_cron: str = "0 4 * * *"
     # 空跑只查 DB 不读盘，30 分钟一次足够；有新导入时缩略图会在同一活跃窗口内跟上。
     media_thumbnail_cron: str = "*/30 * * * *"
-    image_search_index_cron: str = "0 0 * * *"
-    plot_image_search_index_cron: str = "30 0 * * *"
+    image_search_index_cron: str = "2-59/5 * * * *"
+    plot_image_search_index_cron: str = "4-59/5 * * * *"
     image_search_optimize_cron: str = "0 3 * * *"
     movie_similarity_recompute_cron: str = "30 3 * * *"
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
     activity_cleanup_cron: str = "30 5 * * *"
-    # cloud115 cookies 保活：acw_tc（阿里云 WAF token）30 分钟过期，每 20 分钟探活一次
-    # 并把 SDK merge 到的最新快照回写库配置；长效凭据失效时发通知引导重新扫码。
-    cloud115_keepalive_cron: str = "*/20 * * * *"
     # GFriends Filetree 缓存刷新：默认每周一 04:00，对齐 disk cache 默认 7 天 TTL。
     gfriends_filetree_refresh_cron: str = "0 4 * * 1"
     # 活动中心保留期：每个 task_key 只保留最近 N 条运行记录，已读通知保留最近 N 天。
@@ -258,46 +202,9 @@ class Scheduler(BaseModel):
 
 
 class Downloads(BaseModel):
-    # 下载中种子内小于该大小（MB）的文件视为可清理小文件，会被设为不下载并物理删除。
-    small_file_cleanup_threshold_mb: int = 256
-    # 下载入口 kind 的全局偏好顺序：索引器绑定多个下载器时按此顺序挑选，列表外的 kind 排最后。
-    # 只影响挑选顺序，不做白名单；选中的下载器执行失败时直接报错，不自动换下一个。
-    preferred_client_kinds: list[str] = Field(default_factory=lambda: ["qbittorrent", "cloud115"])
-    # cloud115 离线任务超过该时长仍未完成即本地放弃：不清理 115 侧任务、停止轮询并通知用户。
-    cloud115_offline_abandon_hours: int = Field(default=24, ge=1)
-    # 批量秒传对 115 webapi 的全局请求限速：相邻请求最小间隔（秒）。webapi 前置阿里云 WAF
-    # 约 1-2 r/s 阈值，默认 1.0（=1 r/s，对标 AList 115 驱动 limit_rate）。0 关闭限速。
-    cloud115_rapid_upload_min_interval_seconds: float = Field(default=1.0, ge=0.0, le=10.0)
-    # 批量链路（导入 / 秒传 / 巡检）的累计请求节奏：每打满 N 个 webapi 请求就长休一次。
-    # 匀速的 min_interval 管得住瞬时速率，管不住"一个任务累计打几百个请求"——实测连续
-    # 200 余次 GET /files（1 r/s）即触发 WAF 405。只对 webapi.115.com 计数，取直链/离线/
-    # 探活不在风控域。0 = 关闭批次休息。交互路径（播放、GUI 浏览）永不启用，避免用户干等。
-    cloud115_batch_rest_every_requests: int = Field(default=30, ge=0)
-    cloud115_batch_rest_min_seconds: float = Field(default=10.0, ge=0.0, le=300.0)
-    cloud115_batch_rest_max_seconds: float = Field(default=30.0, ge=0.0, le=300.0)
-    # qBittorrent 任务停在 stalledDL（下载中无源），且 qB 报告的 last_activity（最后一次收发
-    # chunk 的时刻）已早于该时长，即判定为死种（对账时落成 download_state=stalled_dead）：
-    # 释放该影片重新参与订阅资源查询，并把这个 info_hash 加入该影片的选种黑名单。
-    # 比 115 的 cloud115_offline_abandon_hours 宽松得多——115 是云端拉取，24h 拉不到基本就是没有；
-    # 本地 BT 依赖 peer 在线，老片常态是只有一两个 seeder 且不挂机，卡几天后复活很正常。
-    qbittorrent_stalled_abandon_days: int = Field(default=7, ge=1)
-    # qB 停滞/慢速任务自动清理：处于活跃下载态（stalled/downloading，由对账维护
-    # download_started_at 计时，排队时长不计）且未完成、超过该时长仍未下完的种子，
-    # 直接删种并连带删除已下载文件，本地行落 stalled_dead 拉黑（同 info_hash 不再自动提交，
-    # 影片换其他候选重下）。queuedDL（排队）/ pausedDL / stoppedDL 永不自动清理。
-    # 这是破坏性动作（删文件不可恢复）：判定完全依赖系统侧维护的开始时刻，首次部署首轮
-    # 只写入不删除；存量行 download_started_at 为空时先让对账起算。enabled=False 关闭该清理。
-    qbittorrent_stalled_cleanup_enabled: bool = Field(default=True)
-    qbittorrent_stalled_cleanup_hours: int = Field(default=24, ge=1)
     # 新片持续查询，老片连续未找到达到上限后进入 exhausted，等待用户显式重开。
     subscription_search_fresh_days: int = Field(default=90, ge=1)
     subscription_search_stale_attempt_limit: int = Field(default=3, ge=1)
-
-
-class MediaImport(BaseModel):
-    # 可视化导入只允许浏览/导入这些白名单根目录（含其子树），其余路径一律 403。
-    # 采用白名单而非黑名单，避免暴露应用配置、数据库、家目录等敏感路径。
-    browse_roots: list[str] = Field(default_factory=lambda: ["/mnt"])
 
 
 class Logging(BaseModel):
@@ -305,7 +212,7 @@ class Logging(BaseModel):
 
 
 class ImageSearch(BaseModel):
-    inference_base_url: str = "http://joytag-infer:8001"
+    inference_base_url: str = "http://siglip2-embed:8080"
     # CPU 后端逐张推理，一批 16 张会串行跑满 16 次；30s 不足以覆盖，中途超时会让整批作废。
     inference_timeout_seconds: float = 120.0
     inference_connect_timeout_seconds: float = 3.0
@@ -315,6 +222,7 @@ class ImageSearch(BaseModel):
     default_page_size: int = 20
     max_page_size: int = 100
     search_scan_batch_size: int = 100
+    index_max_records_per_run: int = Field(default=100000, ge=1)
     index_upsert_batch_size: int = 100
     optimize_every_records: int = 5000
     optimize_every_seconds: int = 1800
@@ -359,7 +267,6 @@ class Settings(BaseSettings):
     plugins: Plugins = Field(default_factory=Plugins)
     scheduler: Scheduler = Field(default_factory=Scheduler)
     downloads: Downloads = Field(default_factory=Downloads)
-    media_import: MediaImport = Field(default_factory=MediaImport)
     logging: Logging = Field(default_factory=Logging)
     image_search: ImageSearch = Field(default_factory=ImageSearch)
     qdrant: Qdrant = Field(default_factory=Qdrant)
@@ -429,15 +336,13 @@ def refresh_runtime_settings(new_settings: Settings) -> None:
             get_qdrant_plot_image_store,
             get_qdrant_thumbnail_store,
         )
-        from src.service.discovery.joytag_embedder_client import (
-            get_joytag_embedder_client,
-        )
+        from src.service.discovery.embedding_client import get_embedding_client
 
         get_image_search_service.cache_clear()
         get_movie_plot_image_search_service.cache_clear()
         get_qdrant_plot_image_store.cache_clear()
         get_qdrant_thumbnail_store.cache_clear()
-        get_joytag_embedder_client.cache_clear()
+        get_embedding_client.cache_clear()
     except Exception:
         pass
 
@@ -516,7 +421,7 @@ def ensure_runtime_config() -> bool:
     - 始终先确保鉴权密钥就绪（secret_key 空/占位/旧硬编码、file_signature_secret 为空时生成随机值），
       并写回内存全局 settings。
     - 目标 config.toml 缺失或为空时，写入一份含全部配置项默认值（含已生成密钥）的完整文件。
-    - 目标 config.toml 已有内容时，仅以“只补 [auth] 两键”的方式 surgical 持久化密钥，保留其余配置。
+    - 目标 config.toml 已有内容时，补齐缺失的 [auth] 密钥，并删除已废弃的媒体配置。
     仅当确有写盘时返回 True，幂等。
     """
     secret_updates = _ensure_auth_secrets()
@@ -541,12 +446,41 @@ def ensure_runtime_config() -> bool:
         logger.info("Bootstrapped full default config with generated secrets at {}", settings_path)
         return True
 
-    # 文件已有内容：仅在密钥有变更时 surgical 落盘，避免 model_dump 丢弃模型外字段。
-    if not secret_updates:
-        return False
+    # 文件已有内容：只改动必要字段，避免 model_dump 丢弃模型外字段。
     existing_config: dict[str, Any] = toml.load(settings_path)
-    existing_config.setdefault("auth", {}).update(secret_updates)
+    removed_legacy_sections: list[str] = []
+    if "media_import" in existing_config:
+        existing_config.pop("media_import")
+        removed_legacy_sections.append("media_import")
+
+    media_config = existing_config.get("media")
+    removed_media_keys: list[str] = []
+    if isinstance(media_config, dict):
+        for key in (
+            "inner_sub_tags",
+            "blueray_tags",
+            "uncensored_tags",
+            "uncensored_prefix",
+        ):
+            if key in media_config:
+                media_config.pop(key)
+                removed_media_keys.append(key)
+
+    if not secret_updates and not removed_media_keys and not removed_legacy_sections:
+        return False
+
+    if secret_updates:
+        existing_config.setdefault("auth", {}).update(secret_updates)
     with open(settings_path, "w", encoding="utf-8") as file:
         file.write(toml.dumps(existing_config))
-    logger.info("Persisted generated auth secrets: {}", ", ".join(sorted(secret_updates)))
+    if secret_updates:
+        logger.info("Persisted generated auth secrets: {}", ", ".join(sorted(secret_updates)))
+    if removed_media_keys:
+        logger.info(
+            "Removed obsolete media settings: {}", ", ".join(sorted(removed_media_keys))
+        )
+    if removed_legacy_sections:
+        logger.info(
+            "Removed obsolete config sections: {}", ", ".join(sorted(removed_legacy_sections))
+        )
     return True

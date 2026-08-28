@@ -1,29 +1,21 @@
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, computed_field
 
-# 把下载任务的 import_status 原始码转换成中文展示文案，取值集中在 media_import_status 模块。
 from src.common.media_import_status import describe_import_status
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
 
 if TYPE_CHECKING:
-    # 仅在类型检查时引入 Movie，避免 schema 层反向依赖 model 层。
     from src.model import Movie
 
 
 class DownloadClientResource(SchemaModel):
     id: int
     name: str
-    # 下载入口种类：qbittorrent / cloud115。qb 专属连接字段对 cloud115 kind 为 None。
-    kind: str
-    base_url: str | None = None
-    username: str | None = None
-    client_save_path: str | None = None
-    local_root_path: str | None = None
-    media_library_id: int
-    has_password: bool
+    library_id: int
+    provider_config: dict[str, Any]
     created_at: datetime
     updated_at: datetime
 
@@ -33,13 +25,8 @@ class DownloadClientResource(SchemaModel):
             {
                 "id": client.id,
                 "name": client.name,
-                "kind": client.kind,
-                "base_url": client.base_url,
-                "username": client.username,
-                "client_save_path": client.client_save_path,
-                "local_root_path": client.local_root_path,
-                "media_library_id": client.media_library_id,
-                "has_password": bool((client.password or "").strip()),
+                "library_id": client.library_id,
+                "provider_config": client.provider_config or {},
                 "created_at": client.created_at,
                 "updated_at": client.updated_at,
             }
@@ -52,108 +39,35 @@ class DownloadClientResource(SchemaModel):
 
 class DownloadClientCreateRequest(SchemaModel):
     name: str
-    # qbittorrent（默认）需提供全部 qb 连接字段；cloud115 只需 name + media_library_id
-    #（凭据在 cloud115 媒体库的 backend_config 里，不在下载器上）。
-    kind: str = "qbittorrent"
-    base_url: str | None = None
-    username: str | None = None
-    password: str | None = None
-    client_save_path: str | None = None
-    local_root_path: str | None = None
-    media_library_id: int
+    library_id: int = Field(gt=0)
+    provider_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class DownloadClientUpdateRequest(SchemaModel):
-    # kind 不可更新：入口种类决定了字段语义，改种类应删除重建。
     name: str | None = None
-    base_url: str | None = None
-    username: str | None = None
-    password: str | None = None
-    client_save_path: str | None = None
-    local_root_path: str | None = None
-    media_library_id: int | None = None
+    library_id: int | None = Field(default=None, gt=0)
+    provider_config: dict[str, Any] | None = None
 
 
-class DownloadClientTestError(SchemaModel):
-    type: str
+class DownloadClientTestRequest(SchemaModel):
+    library_id: int = Field(gt=0)
+    provider_config: dict[str, Any] = Field(default_factory=dict)
+    client_id: int | None = Field(default=None, gt=0)
+
+
+class DownloadClientDiagnosticCheckResource(SchemaModel):
+    key: str
+    status: Literal["ok", "warning", "failed", "skipped"]
+    code: str
     message: str
+    details: dict[str, Any] | None = None
 
 
-class DownloadClientTestResponse(SchemaModel):
-    healthy: bool
+class DownloadClientDiagnosticResource(SchemaModel):
+    status: Literal["ok", "warning", "failed"]
+    checks: list[DownloadClientDiagnosticCheckResource]
     checked_at: datetime
-    client_id: int
-    client_name: str
-    # cloud115 kind 没有 base_url / 版本概念，相关字段为 None。
-    base_url: str | None = None
     elapsed_ms: int
-    version: str | None = None
-    web_api_version: str | None = None
-    error: DownloadClientTestError | None = None
-
-
-class DownloadClientStorageTestError(SchemaModel):
-    type: str
-    message: str
-
-
-class DownloadClientStorageDirectoryMappingResult(SchemaModel):
-    status: str
-    client_save_path: str
-    local_root_path: str
-    probe_remote_dir: str
-    probe_local_dir: str
-    sentinel_visible_to_qb: bool
-    error: DownloadClientStorageTestError | None = None
-
-
-class DownloadClientStorageHardlinkResult(SchemaModel):
-    status: str
-    supported: bool
-    source_path: str
-    target_path: str
-    error: DownloadClientStorageTestError | None = None
-
-
-class DownloadClientStorageTestResponse(SchemaModel):
-    healthy: bool
-    checked_at: datetime
-    client_id: int
-    client_name: str
-    elapsed_ms: int
-    warnings: list[str] = []
-    directory_mapping: DownloadClientStorageDirectoryMappingResult
-    hardlink: DownloadClientStorageHardlinkResult
-
-
-class DownloadClientProbeTestRequest(SchemaModel):
-    """连通性预检 payload。
-
-    - `password` 可为空/缺省;此时必须提供 `client_id`,后端从 DB 合并原密码
-      (对齐"编辑时密码留空=不改"约定)。
-    - `client_id` 仅用于取原密码;probe 端点不会落库。
-    """
-
-    base_url: str
-    username: str
-    password: str | None = None
-    client_id: int | None = None
-
-
-class DownloadClientProbeStorageTestRequest(SchemaModel):
-    """目录映射 + 硬链接预检 payload。
-
-    - `password` 处理规则同 `DownloadClientProbeTestRequest`。
-    - `media_library_id` 决定硬链接目标根路径 (probe 端点不会落库)。
-    """
-
-    base_url: str
-    username: str
-    password: str | None = None
-    client_save_path: str
-    local_root_path: str
-    media_library_id: int
-    client_id: int | None = None
 
 
 class DownloadCandidateClientResource(SchemaModel):
@@ -161,30 +75,19 @@ class DownloadCandidateClientResource(SchemaModel):
 
     id: int
     name: str
-    kind: str
 
 
 class DownloadCandidateResource(SchemaModel):
-    source: str
+    source_uri: str
     indexer_name: str
     indexer_kind: str
-    # 按全局 kind 偏好预解析出的下载器；提交时用户可用 client_id 显式覆盖。
     resolved_client_id: int
     resolved_client_name: str
-    resolved_client_kind: str
-    # 当前索引器绑定的全部下载器；前端以 resolved_client_id 为默认选项。
     download_clients: list[DownloadCandidateClientResource]
     movie_number: str
     title: str
     size_bytes: int
     seeders: int
-    magnet_url: str = ""
-    torrent_url: str = ""
-    # 种子身份，已规范化为 40 位小写 hex（``canonicalize_btih``）。取自 torznab 的 infohash
-    # 属性，拿不到时从磁力链解析；两者都没有则为空串——**空串不代表"没有这个种子"，只代表
-    # 本次没能廉价地确定它的身份**，选种黑名单据此跳过该候选，不要拿空串去做相等比较。
-    info_hash: str = ""
-    tags: list[str] = []
 
 
 class DownloadCandidatesQuery(SchemaModel):
@@ -193,22 +96,15 @@ class DownloadCandidatesQuery(SchemaModel):
 
 
 class DownloadCandidateCreatePayload(SchemaModel):
-    source: str
+    source_uri: str
     indexer_name: str
-    indexer_kind: str
     title: str
     size_bytes: int
     seeders: int
-    magnet_url: str = ""
-    torrent_url: str = ""
-    # 选种阶段已知的种子身份（torznab infohash / 磁力链）。为空时提交链路会在内容闸门
-    # 解析 .torrent 后补全，不要求调用方一定给。
-    info_hash: str = ""
-    tags: list[str] = []
 
 
 class DownloadRequestCreateRequest(SchemaModel):
-    client_id: int | None = None
+    client_id: int | None = Field(default=None, gt=0)
     movie_number: str
     candidate: DownloadCandidateCreatePayload
 
@@ -218,22 +114,10 @@ class DownloadTaskResource(SchemaModel):
     client_id: int
     movie_number: str | None = None
     name: str
-    info_hash: str
-    save_path: str
+    remote_id: str
+    state: str
     progress: float
-    download_state: str
     import_status: str
-    # 下载器采样快照；未完成首轮采样的存量任务保持默认值 / None。
-    raw_state: str = ""
-    download_speed_bytes: int = 0
-    uploaded_speed_bytes: int = 0
-    downloaded_bytes: int = 0
-    total_size_bytes: int = 0
-    eta_seconds: int | None = None
-    progress_synced_at: datetime | None = None
-    # 内联影片元数据：让前端下载卡片可以直接展示中文标题与封面缩略图，
-    # 避免每张卡片再打一次 GET /movies/search/local 二次查。仅当 movie_number 命中本地
-    # 影片库时才会有值；未入库的番号（比如 predownload）保持 None，前端做 placeholder 处理。
     movie_title: str | None = None
     movie_cover: ImageResource | None = None
     created_at: datetime
@@ -242,7 +126,6 @@ class DownloadTaskResource(SchemaModel):
     @computed_field
     @property
     def import_status_label(self) -> str:
-        # 下载任务导入阶段状态的中文说明。
         return describe_import_status(self.import_status)
 
     @classmethod
@@ -252,26 +135,16 @@ class DownloadTaskResource(SchemaModel):
             "client_id": task.client_id,
             "movie_number": task.movie,
             "name": task.name,
-            "info_hash": task.info_hash,
-            "save_path": task.save_path,
+            "remote_id": task.remote_id,
+            "state": task.state,
             "progress": task.progress,
-            "download_state": task.download_state,
             "import_status": task.import_status,
-            "raw_state": task.raw_state,
-            "download_speed_bytes": task.download_speed_bytes,
-            "uploaded_speed_bytes": task.uploaded_speed_bytes,
-            "downloaded_bytes": task.downloaded_bytes,
-            "total_size_bytes": task.total_size_bytes,
-            "eta_seconds": task.eta_seconds,
-            "progress_synced_at": task.progress_synced_at,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
         }
         if movie is not None:
-            # 标题为空串时保持 None（前端会 fallback 到 task.name）。
             title = (movie.title or "").strip()
             data["movie_title"] = title or None
-            # cover_image 是可空 FK；有值才组装 ImageResource，让签名逻辑走 field_validator。
             if movie.cover_image is not None:
                 data["movie_cover"] = ImageResource.from_attributes_model(movie.cover_image)
         return cls.model_validate(data)
@@ -283,8 +156,6 @@ class DownloadTaskResource(SchemaModel):
         *,
         movies_by_number: "dict[str, Movie] | None" = None,
     ) -> list["DownloadTaskResource"]:
-        # movies_by_number 由调用方在 service 层批量查出（按 movie_number 索引），
-        # 单次列表只做一趟 JOIN，避免 N+1。未传时退化为原有行为，兼容单任务/事件路径。
         index = movies_by_number or {}
         return [cls.from_model(task, movie=index.get(task.movie)) for task in tasks]
 
@@ -295,12 +166,6 @@ class DownloadTasksQuery(SchemaModel):
     client_id: int | None = Field(default=None, gt=0)
     movie_number: str | None = None
     sort: str | None = None
-
-
-class DownloadTaskActionResponse(SchemaModel):
-    task_id: int
-    action: str
-    status: str = "ok"
 
 
 class DownloadRequestCreateResponse(SchemaModel):
@@ -314,7 +179,6 @@ class DownloadClientSyncResponse(SchemaModel):
     created_count: int
     updated_count: int
     unchanged_count: int
-    # 本次同步中因 qB 侧已删除、本地也无 in-flight 导入而清理掉的幽灵任务数。
     removed_count: int = 0
 
 
@@ -322,20 +186,3 @@ class DownloadTaskImportResponse(SchemaModel):
     task_id: int
     task_run_id: int
     status: str
-
-
-class DownloadTaskFileResource(SchemaModel):
-    """下载任务里的单个文件（qB / 115 统一归一化后的结构）。"""
-
-    name: str
-    size: int
-    # 115 侧目录条目用 is_dir 区分；qB 的文件列表恒为文件。
-    is_dir: bool = False
-    # 115 相对任务目录的路径（qB 直接给种子内路径，与 name 相同，置 None 少带冗余）。
-    path: str | None = None
-
-
-class DownloadTaskFilesResponse(SchemaModel):
-    task_id: int
-    client_kind: str
-    files: list[DownloadTaskFileResource] = []

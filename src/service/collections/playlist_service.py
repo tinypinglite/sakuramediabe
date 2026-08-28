@@ -6,7 +6,7 @@
 
 from datetime import datetime
 
-from peewee import Case, Ordering, fn
+from peewee import Case, fn
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
@@ -20,20 +20,15 @@ from src.common.service_helpers import (
     with_movie_card_relations,
 )
 from src.model import (
-    FOUR_K_PLAYLIST_NAME,
-    PLAYLIST_KIND_4K,
     PLAYLIST_KIND_RECENTLY_PLAYED,
-    PLAYLIST_KIND_VR,
     RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
     RECENTLY_PLAYED_PLAYLIST_NAME,
     SYSTEM_PLAYLIST_KINDS,
-    VR_PLAYLIST_NAME,
     Media,
     Movie,
     Playlist,
     PlaylistMovie,
 )
-from src.schema.catalog.movies import MovieSpecialTagFilter
 from src.schema.collections.playlists import (
     PlaylistCreateRequest,
     PlaylistMovieListItemResource,
@@ -44,17 +39,9 @@ from src.schema.collections.playlists import (
 from src.schema.common.pagination import PageResponse
 from src.schema.common.playlists import PlaylistSummaryResource
 
-# 虚拟系统列表 kind -> 对应特殊标签过滤，成员关系按 Media.special_tags 实时派生。
-_VIRTUAL_KIND_TO_SPECIAL_TAG = {
-    PLAYLIST_KIND_VR: MovieSpecialTagFilter.VR,
-    PLAYLIST_KIND_4K: MovieSpecialTagFilter.FOUR_K,
-}
-
-# 系统列表内部展示次序：最近播放、VR、4K 在前，自定义列表在后。
+# 系统列表内部展示次序：最近播放在前，自定义列表在后。
 _SYSTEM_KIND_ORDER = (
     (PLAYLIST_KIND_RECENTLY_PLAYED, 0),
-    (PLAYLIST_KIND_VR, 1),
-    (PLAYLIST_KIND_4K, 2),
 )
 
 # 允许空值、排序时统一垫后的字段（added_at/bitrate 走子查询无媒体场景由 COALESCE 兜底，不参与垫后）。
@@ -75,8 +62,7 @@ class PlaylistService:
     """聚合播放列表查询、名称校验和最近播放维护逻辑。"""
 
     SYSTEM_KINDS = set(SYSTEM_PLAYLIST_KINDS)
-    RESERVED_NAMES = {RECENTLY_PLAYED_PLAYLIST_NAME, VR_PLAYLIST_NAME, FOUR_K_PLAYLIST_NAME}
-    VIRTUAL_KINDS = set(_VIRTUAL_KIND_TO_SPECIAL_TAG)
+    RESERVED_NAMES = {RECENTLY_PLAYED_PLAYLIST_NAME}
 
     @staticmethod
     def _playlist_system_order():
@@ -284,63 +270,6 @@ class PlaylistService:
         )
 
     @classmethod
-    def _virtual_playlist_count(cls, kind: str) -> int:
-        """虚拟列表的影片数实时统计，与影片列表 special_tag 过滤口径一致。"""
-        # 延迟导入避免与 movie_service 顶层 import PlaylistService 形成循环依赖。
-        from src.service.catalog.movie_service import MovieService
-
-        special_tag = _VIRTUAL_KIND_TO_SPECIAL_TAG[kind]
-        return MovieService._filtered_movies(special_tag=special_tag).count()
-
-    @classmethod
-    def _list_virtual_playlist_movies(
-        cls,
-        playlist: Playlist,
-        page: int,
-        page_size: int,
-        *,
-        sort: str | None = None,
-        resolution: str | None = None,
-    ) -> PageResponse[PlaylistMovieListItemResource]:
-        """虚拟系统列表(VR/4K)按特殊标签实时派生成员，支持排序与分辨率筛选。
-
-        默认按最近媒体入库时间倒序，与 materialized 列表共享同一套排序/筛选语义。
-        """
-        from src.service.catalog.movie_service import MovieService
-
-        special_tag = _VIRTUAL_KIND_TO_SPECIAL_TAG[playlist.kind]
-        start = max(page - 1, 0) * page_size
-        base = MovieService._filtered_movies(special_tag=special_tag)
-        total_query = base
-        if resolution is not None:
-            total_query = total_query.where(cls._resolution_exists_expression(resolution))
-        total = total_query.count()
-        can_play_expression = cls._playable_exists_expression().alias("can_play")
-        is_4k_expression = MovieService._special_tag_exists_expression("4K").alias("is_4k")
-        latest_media_created_at = cls._latest_media_created_at_subquery()
-        query, _thin_cover_alias = with_movie_card_relations(
-            base.select(
-                Movie,
-                can_play_expression,
-                is_4k_expression,
-                latest_media_created_at.alias("playlist_item_updated_at"),
-            )
-        )
-        if resolution is not None:
-            query = query.where(cls._resolution_exists_expression(resolution))
-        order_by = cls._build_playlist_sort(sort)
-        if order_by is None:
-            order_by = [Ordering(latest_media_created_at, "DESC"), Movie.id.desc()]
-        movies = list(query.order_by(*order_by).offset(start).limit(page_size))
-        items = [PlaylistMovieListItemResource.from_attributes_model(movie) for movie in movies]
-        return PageResponse[PlaylistMovieListItemResource](
-            items=items,
-            page=page,
-            page_size=page_size,
-            total=total,
-        )
-
-    @classmethod
     def list_playlists(cls, include_system: bool = True) -> list[PlaylistResource]:
         """列出播放列表，并补上每个列表的影片数量。"""
         query = Playlist.select().order_by(
@@ -351,18 +280,12 @@ class PlaylistService:
         if not include_system:
             query = query.where(Playlist.kind.not_in(cls.SYSTEM_KINDS))
         playlists = list(query)
-        # 仅对真实落库成员的列表统计 PlaylistMovie；虚拟列表的数量另行实时派生。
-        materialized_ids = [
-            playlist.id for playlist in playlists if playlist.kind not in cls.VIRTUAL_KINDS
-        ]
-        counts = cls._playlist_counts(materialized_ids)
+        counts = cls._playlist_counts([playlist.id for playlist in playlists])
         resources: list[PlaylistResource] = []
         for playlist in playlists:
-            if playlist.kind in cls.VIRTUAL_KINDS:
-                movie_count = cls._virtual_playlist_count(playlist.kind)
-            else:
-                movie_count = counts.get(playlist.id, 0)
-            resources.append(PlaylistResource.from_playlist(playlist, movie_count=movie_count))
+            resources.append(
+                PlaylistResource.from_playlist(playlist, movie_count=counts.get(playlist.id, 0))
+            )
         return resources
 
     @classmethod
@@ -380,13 +303,8 @@ class PlaylistService:
     @classmethod
     def get_playlist(cls, playlist_id: int) -> PlaylistResource:
         playlist = cls._require_playlist(playlist_id)
-        # 虚拟系统列表（VR/4K）成员不落库，走 special_tag 实时派生；其余按 PlaylistMovie 统计。
-        if playlist.kind in cls.VIRTUAL_KINDS:
-            movie_count = cls._virtual_playlist_count(playlist.kind)
-        else:
-            counts = cls._playlist_counts([playlist.id])
-            movie_count = counts.get(playlist.id, 0)
-        return PlaylistResource.from_playlist(playlist, movie_count=movie_count)
+        counts = cls._playlist_counts([playlist.id])
+        return PlaylistResource.from_playlist(playlist, movie_count=counts.get(playlist.id, 0))
 
     @classmethod
     def update_playlist(cls, playlist_id: int, payload: PlaylistUpdateRequest) -> PlaylistResource:
@@ -435,11 +353,6 @@ class PlaylistService:
         不传 ``sort`` 时真实列表按最近触达时间倒序（与旧行为一致）。
         """
         playlist = cls._require_playlist(playlist_id)
-        # VR/4K 等虚拟列表的成员不落库，按特殊标签实时派生。
-        if playlist.kind in cls.VIRTUAL_KINDS:
-            return cls._list_virtual_playlist_movies(
-                playlist, page, page_size, sort=sort, resolution=resolution
-            )
         # 先校验分辨率档位，避免非法值到查询层才炸出未预期错误。
         cls._resolution_interval(resolution)
         start = max(page - 1, 0) * page_size
@@ -491,22 +404,14 @@ class PlaylistService:
     def list_playlist_resolutions(cls, playlist_id: int) -> list[PlaylistResolutionOption]:
         """聚合播放列表内影片覆盖的分辨率档位（去重、按档位从高到低），供前端渲染筛选项。
 
-        每部影片按其最高分辨率媒体归入唯一档位（8K/4K 互斥），与筛选语义一致；
-        真实列表按 PlaylistMovie 归属，虚拟列表按特殊标签派生。
+        每部影片按其最高分辨率媒体归入唯一档位（8K/4K 互斥），与筛选语义一致。
         """
         playlist = cls._require_playlist(playlist_id)
-        if playlist.kind in cls.VIRTUAL_KINDS:
-            from src.service.catalog.movie_service import MovieService
-
-            base = MovieService._filtered_movies(
-                special_tag=_VIRTUAL_KIND_TO_SPECIAL_TAG[playlist.kind]
-            )
-        else:
-            base = (
-                Movie.select()
-                .join(PlaylistMovie, on=(PlaylistMovie.movie == Movie.id))
-                .where(PlaylistMovie.playlist == playlist)
-            )
+        base = (
+            Movie.select()
+            .join(PlaylistMovie, on=(PlaylistMovie.movie == Movie.id))
+            .where(PlaylistMovie.playlist == playlist)
+        )
         max_height = fn.MAX(cls._resolution_height_expression())
         # SQL 层只按影片聚合最高 height，分桶落在 Python，避免聚合函数进 GROUP BY。
         query = (

@@ -2,7 +2,6 @@ import hashlib
 import hmac
 import os
 import re
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -11,11 +10,6 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import bcrypt
 import pytest
 from fastapi.testclient import TestClient
-
-JOYTAG_INFER_APP_PATH = Path(__file__).resolve().parents[1] / "docker/joytag-infer/app"
-if JOYTAG_INFER_APP_PATH.exists():
-    # 推理服务已从主 src 抽离，测试时显式加入独立服务源码路径。
-    sys.path.insert(0, str(JOYTAG_INFER_APP_PATH))
 
 from src.common import runtime_time
 from src.common.file_signatures import (
@@ -41,8 +35,6 @@ from src.model import (
     MediaLibrary,
     MediaPoint,
     MediaProgress,
-    MediaRapidUploadBatch,
-    MediaRapidUploadItem,
     MediaThumbnail,
     MomentRecommendation,
     Movie,
@@ -110,8 +102,6 @@ TEST_MODELS = [
     Indexer,
     IndexerDownloadClient,
     DownloadTask,
-    MediaRapidUploadBatch,
-    MediaRapidUploadItem,
 ]
 
 
@@ -387,14 +377,22 @@ def build_signed_subtitle_url():
 
 @pytest.fixture()
 def build_signed_media_url():
-    def _build(media_id: int, expires: int = TEST_FILE_SIGNATURE_EXPIRES) -> str:
-        signature_payload = f"media:{media_id}:{expires}"
+    def _build(
+        media_id: int,
+        resource_path: str = "",
+        expires: int = TEST_FILE_SIGNATURE_EXPIRES,
+        delivery: str = "proxy",
+    ) -> str:
+        signature_payload = f"media:{media_id}:{resource_path}:{expires}"
         signature = hmac.new(
             TEST_FILE_SIGNATURE_SECRET.encode("utf-8"),
             signature_payload.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
-        return f"/media/{media_id}/stream?expires={expires}&signature={signature}"
+        path = f"/media/{media_id}/play/"
+        if resource_path:
+            path += quote(resource_path, safe="/")
+        return f"{path}?expires={expires}&signature={signature}&delivery={delivery}"
 
     return _build
 

@@ -5,10 +5,9 @@ from src.schema.common.base import SchemaModel
 
 
 class IndexerBoundClientResource(SchemaModel):
-    # 索引器绑定的单个下载器概要：kind 供前端展示入口种类（qbittorrent / cloud115）。
+    # 索引器绑定的单个下载器概要。
     id: int
     name: str
-    kind: str
 
 
 class IndexerItemResource(SchemaModel):
@@ -33,7 +32,7 @@ class IndexerItemUpdatePayload(SchemaModel):
     kind: str
     # 可选鉴权 key：空串/空白会归一为 None（不携带 apikey）。
     api_key: str | None = None
-    # 至少绑定一个下载器；重复 id 会被拒绝；PT 索引器不能绑定 cloud115。
+    # 至少绑定一个下载器；重复 id 会被拒绝。
     download_client_ids: list[int]
 
 

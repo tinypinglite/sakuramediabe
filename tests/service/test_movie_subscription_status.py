@@ -31,12 +31,11 @@ from src.service.catalog import MovieSubscriptionService
 
 @pytest.fixture()
 def client(test_db):
-    # DownloadClient.media_library 是 NOT NULL，必须先建库再建下载器。
-    library = MediaLibrary.create(name="local", backend="local")
+    library = MediaLibrary.create(name="library", provider_key="test", provider_config={})
     return DownloadClient.create(
-        name="qb",
-        kind="qbittorrent",
-        media_library=library,
+        name="client",
+        library=library,
+        provider_config={},
     )
 
 
@@ -51,17 +50,19 @@ def _subscribe(movie_number: str) -> Movie:
 
 
 def _task(
-    client, movie_number: str, *, download_state: str, import_status: str, seq: int = 0
+    client, movie_number: str, *, state: str, import_status: str, seq: int = 0
 ):
-    # (client, info_hash) 有唯一约束，同一部片挂多条任务时必须给不同的 seq。
+    # (client, remote_id) 有唯一约束，同一部片挂多条任务时必须给不同的 seq。
     return DownloadTask.create(
         client=client,
         movie=movie_number,
         name=f"{movie_number}.mkv",
-        info_hash=f"hash-{movie_number}-{seq}",
-        save_path="/downloads",
+        remote_id=f"remote-{movie_number}-{seq}",
         progress=1.0,
-        download_state=download_state,
+        state=state,
+        completed_source_ref=(
+            {"source": movie_number} if state == "completed" else None
+        ),
         import_status=import_status,
     )
 
@@ -88,7 +89,7 @@ def test_finished_import_without_media_is_import_failed(client, import_status):
     _task(
         client,
         "ABP-001",
-        download_state="completed",
+        state="completed",
         import_status=import_status,
     )
 
@@ -96,12 +97,10 @@ def test_finished_import_without_media_is_import_failed(client, import_status):
 
 
 @pytest.mark.parametrize(
-    "download_state,import_status",
+    "state,import_status",
     [
         ("downloading", IMPORT_STATUS_PENDING),
         ("queued", IMPORT_STATUS_PENDING),
-        ("stalled", IMPORT_STATUS_PENDING),
-        ("paused", IMPORT_STATUS_PENDING),
         # 下完了正等自动导入：秒级过渡态，仍归下载中——用户对它的动作和真下载中一样。
         ("completed", IMPORT_STATUS_PENDING),
         # 导入作业正在跑：同样还在路上。
@@ -109,13 +108,13 @@ def test_finished_import_without_media_is_import_failed(client, import_status):
     ],
 )
 def test_active_tasks_with_unfinished_import_stay_downloading(
-    client, download_state, import_status
+    client, state, import_status
 ):
     _subscribe("ABP-002")
     _task(
         client,
         "ABP-002",
-        download_state=download_state,
+        state=state,
         import_status=import_status,
     )
 
@@ -128,14 +127,14 @@ def test_one_unfinished_task_keeps_movie_downloading(client):
     _task(
         client,
         "MIX-001",
-        download_state="completed",
+        state="completed",
         import_status=IMPORT_STATUS_FAILED,
         seq=0,
     )
     _task(
         client,
         "MIX-001",
-        download_state="downloading",
+        state="downloading",
         import_status=IMPORT_STATUS_PENDING,
         seq=1,
     )
@@ -149,15 +148,15 @@ def test_media_wins_over_import_failed(client):
     _task(
         client,
         "ABP-003",
-        download_state="completed",
+        state="completed",
         import_status=IMPORT_STATUS_FAILED,
     )
-    Media.create(movie="ABP-003", path="/library/ABP-003.mkv")
+    Media.create(movie="ABP-003", library=client.library, file_name="ABP-003.mkv")
 
     assert _status_of("ABP-003") == MovieSubscriptionStatus.IMPORTED.value
 
 
-@pytest.mark.parametrize("dead_state", ["failed", "abandoned", "stalled_dead"])
+@pytest.mark.parametrize("dead_state", ["failed"])
 def test_dead_tasks_never_count_as_import_failed(client, dead_state):
     """判死的任务不算活跃，即便它的 import_status 也是 failed——否则死种会把影片
     永久钉在 import_failed，再也不去找别的种子。"""
@@ -165,7 +164,7 @@ def test_dead_tasks_never_count_as_import_failed(client, dead_state):
     _task(
         client,
         "ABP-004",
-        download_state=dead_state,
+        state=dead_state,
         import_status=IMPORT_STATUS_FAILED,
     )
 
@@ -178,24 +177,24 @@ def test_status_counts_sum_equals_total(client):
     _task(
         client,
         "ABP-101",
-        download_state="completed",
+        state="completed",
         import_status=IMPORT_STATUS_FAILED,
     )
     _subscribe("ABP-102")
     _task(
         client,
         "ABP-102",
-        download_state="downloading",
+        state="downloading",
         import_status=IMPORT_STATUS_PENDING,
     )
     _subscribe("ABP-103")
     _task(
         client,
         "ABP-103",
-        download_state="seeding",
+        state="completed",
         import_status=IMPORT_STATUS_COMPLETED,
     )
-    Media.create(movie="ABP-103", path="/library/ABP-103.mkv")
+    Media.create(movie="ABP-103", library=client.library, file_name="ABP-103.mkv")
     _subscribe("ABP-104")  # 从未查过 -> pending
 
     counts = MovieSubscriptionService.count_by_status()
@@ -219,14 +218,14 @@ def test_status_counts_sum_equals_total(client):
 def test_import_failed_and_downloading_partition_the_active_set(client):
     """细分不改变归属集合：两个新桶的并集恰好是原来"有活跃下载任务"的那批。"""
     expected_active = set()
-    for index, (download_state, import_status) in enumerate(
+    for index, (state, import_status) in enumerate(
         [
             ("completed", IMPORT_STATUS_FAILED),
             ("downloading", IMPORT_STATUS_PENDING),
             ("completed", IMPORT_STATUS_PENDING),
-            ("paused", IMPORT_STATUS_FAILED),
+            ("queued", IMPORT_STATUS_FAILED),
             # 导入跑完零产出：归 import_failed，但仍必须留在活跃集合内，不能漂去"缺资源"。
-            ("seeding", IMPORT_STATUS_COMPLETED),
+            ("completed", IMPORT_STATUS_COMPLETED),
         ]
     ):
         number = f"ACT-{index:03d}"
@@ -234,17 +233,17 @@ def test_import_failed_and_downloading_partition_the_active_set(client):
         _task(
             client,
             number,
-            download_state=download_state,
+            state=state,
             import_status=import_status,
         )
         expected_active.add(number)
 
-    # 判死的与压根没任务的都不该进这两个桶。
+    # 失败任务与压根没任务的都不该进这两个桶。
     _subscribe("DEAD-001")
     _task(
         client,
         "DEAD-001",
-        download_state="stalled_dead",
+        state="failed",
         import_status=IMPORT_STATUS_FAILED,
     )
     _subscribe("NONE-001")
@@ -268,14 +267,14 @@ def test_status_filter_selects_only_import_failed(client):
     _task(
         client,
         "FIL-001",
-        download_state="completed",
+        state="completed",
         import_status=IMPORT_STATUS_FAILED,
     )
     _subscribe("FIL-002")
     _task(
         client,
         "FIL-002",
-        download_state="downloading",
+        state="downloading",
         import_status=IMPORT_STATUS_PENDING,
     )
 

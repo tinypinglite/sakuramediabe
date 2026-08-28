@@ -6,7 +6,7 @@ from src.config.config import settings
 
 # 影片资产在图片根下的一级目录名，与 videos/、actors/ 平级。
 MOVIE_ASSETS_SUBDIR = "movies"
-# 番号目录内部的保留子目录名：缩略图按 media/<内容指纹>/thumbnails 归档，字幕平铺在 subtitles/。
+# 番号目录内部的保留子目录名：缩略图按 media/<media_id>/thumbnails 归档，字幕平铺在 subtitles/。
 MOVIE_MEDIA_SUBDIR = "media"
 MOVIE_SUBTITLES_SUBDIR = "subtitles"
 
@@ -57,7 +57,7 @@ def movie_asset_dir(movie_number: str) -> Path:
 def movie_subtitle_dir(movie_number: str) -> Path:
     """影片字幕统一存放目录 ``<图片根>/movies/<shard>/<番号>/subtitles``。
 
-    本地媒体与 115 云盘媒体的字幕都落这里；媒体库内不再存放 .srt。
+    provider 媒体与宿主字幕资产的字幕都落这里；媒体库内不再存放 .srt。
     """
     return movie_asset_dir(movie_number) / MOVIE_SUBTITLES_SUBDIR
 

@@ -8,11 +8,7 @@ from src.common import resolve_image_file_path
 from src.common.service_helpers import emit_progress
 from src.config.config import settings
 from src.model import Image, Media, MediaThumbnail, Movie
-from src.service.discovery.joytag_embedder_client import (
-    JoyTagEmbeddingItemError,
-    JoyTagEmbeddingResult,
-    get_joytag_embedder_client,
-)
+from src.service.discovery.embedding_client import get_embedding_client
 from src.service.discovery.qdrant_thumbnail_store import (
     QdrantThumbnailStore,
     ThumbnailVectorRecord,
@@ -27,23 +23,23 @@ class ImageSearchIndexService:
         embedder=None,
     ) -> None:
         self.store = store or get_qdrant_thumbnail_store()
-        self.embedder = embedder or get_joytag_embedder_client()
+        self.embedder = embedder or get_embedding_client()
         self._store_ready = False
 
     def ensure_store_ready(self) -> None:
         if self._store_ready:
             return
-        runtime = self.embedder.get_runtime_status()
-        vector_size = int(getattr(runtime, "vector_size", 0) or 0)
+        vector_size = int(self.embedder.describe().dimension)
         if vector_size <= 0:
-            raise RuntimeError("JoyTag embedder vector_size is invalid")
+            raise RuntimeError("embedding service dimension is invalid")
         self.store.ensure_table(vector_size)
         # Qdrant 过滤依赖 payload index，建表后立即确保索引存在。
         self.store.ensure_scalar_indices()
         self._store_ready = True
 
     def index_pending_thumbnails(self, progress_callback=None) -> dict[str, int]:
-        pending_ids = self._pending_thumbnail_ids()
+        max_records = max(1, int(settings.image_search.index_max_records_per_run))
+        pending_ids = self._pending_thumbnail_ids(max_records)
         stats = {
             "pending_thumbnails": len(pending_ids),
             "successful_thumbnails": 0,
@@ -51,7 +47,7 @@ class ImageSearchIndexService:
         }
         started_at = time.time()
         if not pending_ids:
-            logger.info("No pending JoyTag thumbnails for indexing")
+            logger.info("No pending image search thumbnails for indexing")
             return stats
         emit_progress(
             progress_callback,
@@ -65,8 +61,9 @@ class ImageSearchIndexService:
         optimize_every_seconds = max(1, int(settings.image_search.optimize_every_seconds))
         optimize_on_job_end = bool(settings.image_search.optimize_on_job_end)
         logger.info(
-            "Starting JoyTag thumbnail indexing pending_thumbnails={} embedder={} store={} upsert_batch_size={} optimize_every_records={} optimize_every_seconds={} optimize_on_job_end={}",
+            "Starting image search thumbnail indexing pending_thumbnails={} max_records_per_run={} embedder={} store={} upsert_batch_size={} optimize_every_records={} optimize_every_seconds={} optimize_on_job_end={}",
             len(pending_ids),
+            max_records,
             getattr(self.embedder, "model_name", self.embedder.__class__.__name__),
             self.store.__class__.__name__,
             upsert_batch_size,
@@ -92,7 +89,7 @@ class ImageSearchIndexService:
                     summary_patch=stats,
                 )
                 logger.info(
-                    "Indexing JoyTag thumbnail batch start={} size={} total={}",
+                    "Indexing image search thumbnail batch start={} size={} total={}",
                     current + 1,
                     len(batch_ids),
                     total,
@@ -102,7 +99,7 @@ class ImageSearchIndexService:
                     failed_ids = [item[0] for item in batch_failures]
                     self._update_thumbnail_statuses(
                         failed_ids,
-                        MediaThumbnail.JOYTAG_INDEX_STATUS_FAILED,
+                        MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_FAILED,
                     )
                     stats["failed_thumbnails"] += len(failed_ids)
                 pending_records.extend(batch_records)
@@ -153,7 +150,7 @@ class ImageSearchIndexService:
         )
         elapsed_ms = int((time.time() - started_at) * 1000)
         logger.info(
-            "Finished JoyTag thumbnail indexing pending_thumbnails={} successful_thumbnails={} failed_thumbnails={} elapsed_ms={}",
+            "Finished image search thumbnail indexing pending_thumbnails={} successful_thumbnails={} failed_thumbnails={} elapsed_ms={}",
             stats["pending_thumbnails"],
             stats["successful_thumbnails"],
             stats["failed_thumbnails"],
@@ -162,16 +159,17 @@ class ImageSearchIndexService:
         return stats
 
     @staticmethod
-    def _pending_thumbnail_ids() -> list[int]:
+    def _pending_thumbnail_ids(limit: int) -> list[int]:
         # 图像检索仅覆盖 JAV 影片；只挑选归属 movie 的缩略图，避免非 JAV 缩略图长期滞留待索引。
         query = (
             MediaThumbnail.select(MediaThumbnail.id)
             .join(Media)
             .where(
-                MediaThumbnail.joytag_index_status == MediaThumbnail.JOYTAG_INDEX_STATUS_PENDING,
+                MediaThumbnail.image_search_index_status == MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_PENDING,
                 Media.movie.is_null(False),
             )
             .order_by(MediaThumbnail.id.asc())
+            .limit(limit)
         )
         return [item.id for item in query]
 
@@ -201,14 +199,14 @@ class ImageSearchIndexService:
         for thumbnail_id in thumbnail_ids:
             thumbnail = thumbnails_by_id.get(thumbnail_id)
             if thumbnail is None:
-                logger.warning("JoyTag thumbnail not found thumbnail_id={}", thumbnail_id)
+                logger.warning("image search thumbnail not found thumbnail_id={}", thumbnail_id)
                 failures.append((thumbnail_id, "thumbnail_not_found"))
                 continue
             try:
                 image_payloads.append(self._read_thumbnail_bytes(thumbnail))
             except Exception as exc:
                 logger.warning(
-                    "JoyTag thumbnail read failed thumbnail_id={} media_id={} movie_id={} detail={}",
+                    "image search thumbnail read failed thumbnail_id={} media_id={} movie_id={} detail={}",
                     thumbnail.id,
                     thumbnail.media_id,
                     thumbnail.media.movie.id,
@@ -219,45 +217,33 @@ class ImageSearchIndexService:
             valid_thumbnails.append(thumbnail)
         if not valid_thumbnails:
             return [], failures
-        # 远端整批失败（JoyTagInferenceClientError）时异常向上层传播中止任务，未处理缩略图保持 PENDING。
-        inference_results = self.embedder.infer_image_batch(image_payloads)
-        if len(inference_results) != len(valid_thumbnails):
-            raise RuntimeError("JoyTag inference batch result count mismatch")
+        vectors = self.embedder.embed_images(image_payloads)
+        if len(vectors) != len(valid_thumbnails):
+            raise RuntimeError("embedding service returned invalid batch size")
         records: list[tuple[int, ThumbnailVectorRecord]] = []
-        for thumbnail, result in zip(valid_thumbnails, inference_results):
-            if isinstance(result, JoyTagEmbeddingItemError):
-                logger.warning(
-                    "JoyTag thumbnail inference failed thumbnail_id={} media_id={} movie_id={} error_code={} detail={}",
-                    thumbnail.id,
-                    thumbnail.media_id,
-                    thumbnail.media.movie.id,
-                    result.error_code,
-                    result.error_message,
-                )
-                failures.append((thumbnail.id, result.error_message))
-                continue
-            records.append((thumbnail.id, self._build_vector_record(thumbnail, result)))
+        for thumbnail, vector in zip(valid_thumbnails, vectors):
+            records.append((thumbnail.id, self._build_vector_record(thumbnail, vector)))
         return records, failures
 
     @staticmethod
     def _build_vector_record(
         thumbnail: MediaThumbnail,
-        inference: JoyTagEmbeddingResult,
+        vector: Sequence[float],
     ) -> ThumbnailVectorRecord:
         logger.info(
-            "Loaded JoyTag thumbnail vector thumbnail_id={} media_id={} movie_id={} offset_seconds={} vector_size={}",
+            "Loaded image search thumbnail vector thumbnail_id={} media_id={} movie_id={} offset_seconds={} vector_size={}",
             thumbnail.id,
             thumbnail.media_id,
             thumbnail.media.movie.id,
             thumbnail.offset,
-            len(inference.vector),
+            len(vector),
         )
         return ThumbnailVectorRecord(
             thumbnail_id=thumbnail.id,
             media_id=thumbnail.media_id,
             movie_id=thumbnail.media.movie.id,
             offset_seconds=thumbnail.offset,
-            vector=[float(item) for item in inference.vector],
+            vector=[float(item) for item in vector],
         )
 
     @staticmethod
@@ -267,13 +253,13 @@ class ImageSearchIndexService:
             return 0
         try:
             return int(
-                MediaThumbnail.update(joytag_index_status=status)
+                MediaThumbnail.update(image_search_index_status=status)
                 .where(MediaThumbnail.id.in_(normalized_ids))
                 .execute()
             )
         except Exception as exc:
             logger.warning(
-                "Update JoyTag thumbnail status failed thumbnail_count={} status={} detail={}",
+                "Update image search thumbnail status failed thumbnail_count={} status={} detail={}",
                 len(normalized_ids),
                 status,
                 exc,
@@ -294,7 +280,7 @@ class ImageSearchIndexService:
             self.store.upsert_records(records)
         except Exception as exc:
             logger.warning(
-                "JoyTag batch vector upsert failed batch_size={} first_thumbnail_id={} last_thumbnail_id={} detail={}",
+                "image search batch vector upsert failed batch_size={} first_thumbnail_id={} last_thumbnail_id={} detail={}",
                 len(records),
                 thumbnail_ids[0],
                 thumbnail_ids[-1],
@@ -302,21 +288,21 @@ class ImageSearchIndexService:
             )
             self._update_thumbnail_statuses(
                 thumbnail_ids,
-                MediaThumbnail.JOYTAG_INDEX_STATUS_FAILED,
+                MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_FAILED,
             )
             stats["failed_thumbnails"] += len(records)
             return 0
 
         updated_rows = self._update_thumbnail_statuses(
             thumbnail_ids,
-            MediaThumbnail.JOYTAG_INDEX_STATUS_SUCCESS,
+            MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_SUCCESS,
         )
         successful_count = min(updated_rows, len(records))
         failed_count = len(records) - successful_count
         stats["successful_thumbnails"] += successful_count
         stats["failed_thumbnails"] += failed_count
         logger.info(
-            "Indexed JoyTag thumbnail batch batch_size={} successful={} failed={} first_thumbnail_id={} last_thumbnail_id={}",
+            "Indexed image search thumbnail batch batch_size={} successful={} failed={} first_thumbnail_id={} last_thumbnail_id={}",
             len(records),
             successful_count,
             failed_count,
@@ -335,7 +321,7 @@ class ImageSearchIndexService:
             result = self.optimize_index()
         except Exception as exc:
             logger.warning(
-                "JoyTag segment optimize failed reason={} successful_since_last_optimize={} detail={}",
+                "image search segment optimize failed reason={} successful_since_last_optimize={} detail={}",
                 reason,
                 successful_since_last_optimize,
                 exc,
@@ -343,7 +329,7 @@ class ImageSearchIndexService:
             return
         result_summary = " ".join(f"{key}={value}" for key, value in result.items())
         logger.info(
-            "JoyTag segment optimize finished reason={} successful_since_last_optimize={} {}",
+            "image search segment optimize finished reason={} successful_since_last_optimize={} {}",
             reason,
             successful_since_last_optimize,
             result_summary,
@@ -353,18 +339,17 @@ class ImageSearchIndexService:
         started_at = time.time()
         thumbnail = self._thumbnail_query().where(MediaThumbnail.id == thumbnail_id).get_or_none()
         if thumbnail is None:
-            logger.warning("JoyTag thumbnail not found thumbnail_id={}", thumbnail_id)
+            logger.warning("image search thumbnail not found thumbnail_id={}", thumbnail_id)
             return False
         try:
             image_bytes = self._read_thumbnail_bytes(thumbnail)
-            inference = self.embedder.infer_image_bytes(image_bytes)
-            record = self._build_vector_record(thumbnail, inference)
+            record = self._build_vector_record(thumbnail, self.embedder.embed_images([image_bytes])[0])
             self.store.upsert_records([record])
-            thumbnail.joytag_index_status = MediaThumbnail.JOYTAG_INDEX_STATUS_SUCCESS
-            thumbnail.save(only=[MediaThumbnail.joytag_index_status])
+            thumbnail.image_search_index_status = MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
+            thumbnail.save(only=[MediaThumbnail.image_search_index_status])
             elapsed_ms = int((time.time() - started_at) * 1000)
             logger.info(
-                "Indexed JoyTag thumbnail thumbnail_id={} media_id={} movie_id={} vector_size={} elapsed_ms={}",
+                "Indexed image search thumbnail thumbnail_id={} media_id={} movie_id={} vector_size={} elapsed_ms={}",
                 thumbnail.id,
                 thumbnail.media_id,
                 thumbnail.media.movie.id,
@@ -374,14 +359,14 @@ class ImageSearchIndexService:
             return True
         except Exception as exc:
             logger.warning(
-                "JoyTag thumbnail indexing failed thumbnail_id={} media_id={} movie_id={} detail={}",
+                "image search thumbnail indexing failed thumbnail_id={} media_id={} movie_id={} detail={}",
                 thumbnail.id,
                 thumbnail.media_id,
                 thumbnail.media.movie.id,
                 exc,
             )
-            thumbnail.joytag_index_status = MediaThumbnail.JOYTAG_INDEX_STATUS_FAILED
-            thumbnail.save(only=[MediaThumbnail.joytag_index_status])
+            thumbnail.image_search_index_status = MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_FAILED
+            thumbnail.save(only=[MediaThumbnail.image_search_index_status])
             return False
 
     @staticmethod
@@ -394,13 +379,13 @@ class ImageSearchIndexService:
 
     def optimize_index(self) -> dict[str, object]:
         started_at = time.time()
-        logger.info("Starting JoyTag index optimization")
+        logger.info("Starting image search index optimization")
         self.ensure_store_ready()
         result = self.store.optimize()
         elapsed_ms = int((time.time() - started_at) * 1000)
         result_summary = " ".join(f"{key}={value}" for key, value in result.items())
         logger.info(
-            "Finished JoyTag index optimization {} elapsed_ms={}",
+            "Finished image search index optimization {} elapsed_ms={}",
             result_summary,
             elapsed_ms,
         )

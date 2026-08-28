@@ -13,9 +13,6 @@ from src.common.movie_numbers import (
     normalize_movie_number,
     parse_movie_number_from_text,
 )
-from src.service.transfers.imports.source_scanner import (
-    parse_movie_number_from_scan_path,
-)
 
 
 class TestParseMovieNumberFromText:
@@ -42,19 +39,6 @@ class TestParseMovieNumberFromText:
         assert parse_movie_number_from_text("random words") == ""
         assert parse_movie_number_from_text("") == ""
         assert parse_movie_number_from_text(None) == ""
-
-
-class TestParseMovieNumberFromScanPath:
-    def test_number_in_parent_directory(self):
-        # 截断到最后两级：番号在父目录名、文件名是 movie.mp4 的常见布局必须命中。
-        assert parse_movie_number_from_scan_path("/vol/media/ABC-123/movie.mp4") == "ABC-123"
-
-    def test_upper_directories_do_not_leak(self):
-        # 上层目录的数字串不进入扫描范围，不会被误判成番号。
-        assert parse_movie_number_from_scan_path("/downloads/temp1234/sub/movie.mp4") == ""
-
-    def test_plain_filename(self):
-        assert parse_movie_number_from_scan_path("122124_001.mp4") == "122124_001"
 
 
 class TestNormalizeMovieNumber:

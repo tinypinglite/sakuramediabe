@@ -1,10 +1,8 @@
 import pytest
 
-from src.lib.cloud115 import Cloud115CookieStatus
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import Actor, Media, MediaLibrary, Movie
-from src.service.discovery.joytag_embedder_client import JoyTagInferenceUnavailableError
-from src.service.playback.cloud115_backend_service import Cloud115KeepaliveService
+from src.service.discovery.embedding_client import EmbeddingClientError
 from src.service.system.status_service import StatusService
 
 
@@ -30,7 +28,6 @@ def _create_movie(movie_number: str, javdb_id: str, **kwargs):
     "path",
     [
         "/status",
-        "/status/media-libraries/cloud115",
         "/status/image-search",
         "/status/metadata-providers/javdb/test",
     ],
@@ -76,91 +73,6 @@ def test_status_endpoint_returns_zero_summary_when_library_is_empty(client, acco
     }
 
 
-def test_cloud115_cookies_status_endpoint_returns_empty_summary(client, account_user):
-    token = _login(client, username=account_user.username)
-
-    response = client.get(
-        "/status/media-libraries/cloud115",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["summary"] == {
-        "total": 0,
-        "alive": 0,
-        "expired": 0,
-        "unavailable": 0,
-    }
-    assert body["libraries"] == []
-    assert body["checked_at"]
-
-
-def test_cloud115_cookies_status_endpoint_returns_all_libraries_and_isolates_failures(
-    client,
-    account_user,
-    monkeypatch,
-):
-    MediaLibrary.create(
-        name="local",
-        backend="local",
-        backend_config={"root_path": "/library/local"},
-    )
-    for index, name in enumerate(("alive-lib", "expired-lib", "down-lib"), start=1):
-        MediaLibrary.create(
-            name=name,
-            backend="cloud115",
-            backend_account_key=f"cloud115:{index}",
-            backend_config={
-                "cookies": f"UID={index}_A1_1700000000; CID=secret; SEID=secret",
-                "root_cid": f"root-{index}",
-                "app": "alipaymini",
-            },
-        )
-
-    async def fake_probe(_cls, library):
-        if library.name == "alive-lib":
-            return Cloud115CookieStatus.ALIVE
-        if library.name == "expired-lib":
-            return Cloud115CookieStatus.EXPIRED
-        raise RuntimeError("temporary upstream failure")
-
-    monkeypatch.setattr(
-        Cloud115KeepaliveService,
-        "probe_library_cookies_status",
-        classmethod(fake_probe),
-    )
-    token = _login(client, username=account_user.username)
-
-    response = client.get(
-        "/status/media-libraries/cloud115",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["summary"] == {
-        "total": 3,
-        "alive": 1,
-        "expired": 1,
-        "unavailable": 1,
-    }
-    assert [
-        (item["name"], item["cookie_status"])
-        for item in body["libraries"]
-    ] == [
-        ("alive-lib", "alive"),
-        ("expired-lib", "expired"),
-        ("down-lib", "unavailable"),
-    ]
-    assert all(
-        set(item) == {"library_id", "name", "cookie_status"}
-        for item in body["libraries"]
-    )
-    assert "cookies" not in response.text.lower()
-    assert "secret" not in response.text
-
-
 def test_status_endpoint_returns_aggregated_summary(client, account_user, monkeypatch):
     monkeypatch.setenv(StatusService.BACKEND_VERSION_ENV_KEY, "v9.9.9")
     token = _login(client, username=account_user.username)
@@ -174,39 +86,37 @@ def test_status_endpoint_returns_aggregated_summary(client, account_user, monkey
     movie_b = _create_movie("ABC-002", "MovieA2", is_subscribed=False)
     movie_c = _create_movie("ABC-003", "MovieA3", is_subscribed=True)
 
-    library_main = MediaLibrary.create(name="Main", backend="local", backend_config={"root_path": "/library/main"})
-    library_archive = MediaLibrary.create(name="Archive", backend="local", backend_config={"root_path": "/library/archive"})
+    library_main = MediaLibrary.create(name="Main", provider_key="test", provider_config={})
+    library_archive = MediaLibrary.create(
+        name="Archive", provider_key="test", provider_config={}
+    )
 
     Media.create(
         movie=movie_a,
-        path="/library/main/abc-001-main.mp4",
+        file_name="abc-001-main.mp4",
         library=library_main,
         valid=True,
-        content_fingerprint="fingerprint-a-main",
         file_size_bytes=100,
     )
-    # 未完成指纹计算的媒体还不能生成缩略图，不计入 pending_media。
     Media.create(
         movie=movie_a,
-        path="/library/main/abc-001-backup.mp4",
+        file_name="abc-001-backup.mp4",
         library=library_main,
         valid=True,
         file_size_bytes=200,
     )
     Media.create(
         movie=movie_b,
-        path="/library/main/abc-002.mp4",
+        file_name="abc-002.mp4",
         library=library_main,
         valid=False,
-        content_fingerprint="fingerprint-b",
         file_size_bytes=300,
     )
     Media.create(
         movie=movie_c,
-        path="/library/archive/abc-003.mp4",
+        file_name="abc-003.mp4",
         library=library_archive,
         valid=True,
-        content_fingerprint="fingerprint-c",
         file_size_bytes=400,
     )
 
@@ -232,8 +142,8 @@ def test_status_endpoint_returns_aggregated_summary(client, account_user, monkey
             "total": 2,
         },
         "thumbnails": {
-            # 仅两条有效且已有指纹、尚无 MediaThumbnail 的媒体可直接处理。
-            "pending_media": 2,
+            # 三条有效且尚无 MediaThumbnail 的媒体可直接处理。
+            "pending_media": 3,
             "retry_wait_media": 0,
             "terminal_failed_media": 0,
             "total": 0,
@@ -245,19 +155,11 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
     token = _login(client, username=account_user.username)
 
     class _FakeClient:
-        def get_runtime_status(self):
+        def describe(self):
             class _Runtime:
-                endpoint = "http://joytag-infer:8001"
-                backend = "cpu"
-                execution_provider = "CPUExecutionProvider"
-                device = "cpu"
-                device_full_name = None
-                model_path = "/data/lib/joytag/model_vit_768.onnx"
-                model_name = "joytag-onnxruntime"
-                vector_size = 768
-                image_size = 448
-                available_providers = ["CPUExecutionProvider"]
-                probe_latency_ms = 12
+                space_id = "siglip2-base"
+                dimension = 768
+                modalities = {"image", "text"}
 
             return _Runtime()
 
@@ -279,7 +181,7 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
             }
 
     monkeypatch.setattr(
-        "src.service.system.status_service.get_joytag_embedder_client",
+        "src.service.system.status_service.get_embedding_client",
         lambda: _FakeClient(),
     )
     monkeypatch.setattr(
@@ -292,15 +194,15 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
     assert response.status_code == 200
     payload = response.json()
     assert payload["healthy"] is True
-    assert payload["joytag"]["healthy"] is True
-    assert payload["joytag"]["used_device"] == "cpu"
-    assert payload["joytag"]["backend"] == "cpu"
-    assert payload["joytag"]["error"] is None
+    assert payload["embedding_service"]["healthy"] is True
+    assert payload["embedding_service"]["space_id"] == "siglip2-base"
+    assert payload["embedding_service"]["dimension"] == 768
+    assert payload["embedding_service"]["error"] is None
     assert payload["image_search_vector_store"]["healthy"] is True
     assert payload["image_search_vector_store"]["exists"] is True
 
 
-def test_image_search_status_endpoint_returns_failure_payload_when_joytag_probe_fails(
+def test_image_search_status_endpoint_returns_failure_payload_when_embedding_probe_fails(
     client,
     account_user,
     monkeypatch,
@@ -308,8 +210,8 @@ def test_image_search_status_endpoint_returns_failure_payload_when_joytag_probe_
     token = _login(client, username=account_user.username)
 
     class _FakeClient:
-        def get_runtime_status(self):
-            raise JoyTagInferenceUnavailableError("probe failed")
+        def describe(self):
+            raise EmbeddingClientError(503, "image_search_inference_unavailable", "probe failed")
 
     class _FakeStore:
         url = "http://qdrant:6333"
@@ -329,7 +231,7 @@ def test_image_search_status_endpoint_returns_failure_payload_when_joytag_probe_
             }
 
     monkeypatch.setattr(
-        "src.service.system.status_service.get_joytag_embedder_client",
+        "src.service.system.status_service.get_embedding_client",
         lambda: _FakeClient(),
     )
     monkeypatch.setattr(
@@ -342,8 +244,8 @@ def test_image_search_status_endpoint_returns_failure_payload_when_joytag_probe_
     assert response.status_code == 200
     payload = response.json()
     assert payload["healthy"] is False
-    assert payload["joytag"]["healthy"] is False
-    assert payload["joytag"]["error"] == "probe failed"
+    assert payload["embedding_service"]["healthy"] is False
+    assert payload["embedding_service"]["error"] == "probe failed"
 
 
 def test_metadata_provider_test_endpoint_returns_javdb_success_payload(

@@ -38,7 +38,7 @@ def parse_movie_number_from_text(value: str) -> str:
 
     输出是查找键/检索词，不是规范值：正则可能截断超长前缀、吃掉边缘字符，规范形态只来自
     provider（JavDB）。扫描范围由调用方决定——传整条路径还是只传文件名，是调用方的领域知识
-    （见 media_source_scanner.parse_movie_number_from_scan_path 的截断策略）。
+    （导入 provider 返回的文件名与相对 ref 使用同一截断策略）。
     """
     text = remove_disturb(value or "")
     for pattern, joiner in MOVIE_NUMBER_PATTERNS:
@@ -86,7 +86,7 @@ def movie_number_lookup_values(value: str) -> list[str]:
 def subtitle_matches_movie_number(subtitle_name: str, movie_number: str) -> bool:
     """字幕文件名解析出的番号与影片番号一致才算配对（纯番号匹配，无同名兜底）。
 
-    本地 sidecar 与 115 云盘导入共用同一判定：从字幕文件名解析番号，解析不出直接判否；
+    不同来源导入共用同一判定：从字幕文件名解析番号，解析不出直接判否；
     解析出的番号与影片番号经 normalize_movie_number 归一后相等才视为同一部影片的字幕。
     """
     parsed = parse_movie_number_from_text(subtitle_name)

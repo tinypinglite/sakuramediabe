@@ -1,6 +1,6 @@
 from datetime import date, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
@@ -30,19 +30,6 @@ class TagMatchMode(str, Enum):
 class MovieCollectionMarkType(str, Enum):
     COLLECTION = "collection"
     SINGLE = "single"
-
-
-class MovieSpecialTagFilter(str, Enum):
-    FOUR_K = "4k"
-    UNCENSORED = "uncensored"
-    VR = "vr"
-
-    def to_media_tag(self) -> str:
-        if self == MovieSpecialTagFilter.FOUR_K:
-            return "4K"
-        if self == MovieSpecialTagFilter.UNCENSORED:
-            return "无码"
-        return "VR"
 
 
 class MovieNumberSource(str, Enum):
@@ -80,7 +67,6 @@ class MovieListItemResource(SchemaModel):
     is_subscribed: bool
     is_blacklisted: bool = False
     can_play: bool = False
-    is_4k: bool = False
 
     @field_validator("release_date", mode="before")
     @classmethod
@@ -134,15 +120,14 @@ class MovieMediaPointResource(SchemaModel):
 class MovieMediaResource(SchemaModel):
     media_id: int = Field(validation_alias="id")
     library_id: int | None = None
-    # 媒体所属库的 backend（local / cloud115），前端据此决定外部播放器是否走 HLS 代理。
-    library_backend: str | None = None
+    provider_key: str | None = None
     play_url: str
-    storage_mode: str | None = None
+    playback_deliveries: list[Literal["proxy", "redirect"]]
+    file_name: str = ""
     resolution: str | None = None
     file_size_bytes: int = 0
     duration_seconds: int = 0
     video_info: dict[str, Any] | None = None
-    special_tags: str = "普通"
     valid: bool = True
     progress: MovieMediaProgressResource | None = None
     points: list[MovieMediaPointResource] = Field(default_factory=list)

@@ -11,7 +11,6 @@ from src.schema.catalog.movies import (
     MovieCollectionType,
     MovieListItemResource,
     MovieListStatus,
-    MovieSpecialTagFilter,
     TagListItemResource,
 )
 from src.schema.common.pagination import PageResponse
@@ -81,7 +80,6 @@ class TagService:
         year: int | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
-        special_tag: MovieSpecialTagFilter | None = None,
         sort: str | None = None,
         director_name: str | None = None,
         maker_name: str | None = None,
@@ -96,7 +94,6 @@ class TagService:
             year=year,
             status=status,
             collection_type=collection_type,
-            special_tag=special_tag,
             sort=sort,
             director_name=director_name,
             maker_name=maker_name,

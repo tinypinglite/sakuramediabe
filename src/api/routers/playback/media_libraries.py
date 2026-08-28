@@ -1,9 +1,9 @@
-
 from fastapi import APIRouter, Depends, Response, status
 
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.playback.media_libraries import (
     MediaLibraryCreateRequest,
+    MediaLibraryProviderResource,
     MediaLibraryResource,
     MediaLibraryUpdateRequest,
 )
@@ -19,6 +19,11 @@ router = APIRouter(
 @router.get("", response_model=list[MediaLibraryResource])
 def list_media_libraries(current_user=Depends(get_current_user)):
     return MediaLibraryService.list_libraries()
+
+
+@router.get("/providers", response_model=list[MediaLibraryProviderResource])
+def list_media_library_providers(current_user=Depends(get_current_user)):
+    return MediaLibraryService.list_provider_catalog()
 
 
 @router.post("", response_model=MediaLibraryResource, status_code=status.HTTP_201_CREATED)

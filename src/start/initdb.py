@@ -3,15 +3,9 @@ from loguru import logger
 
 from src.config import settings
 from src.model import (
-    FOUR_K_PLAYLIST_DESCRIPTION,
-    FOUR_K_PLAYLIST_NAME,
-    PLAYLIST_KIND_4K,
     PLAYLIST_KIND_RECENTLY_PLAYED,
-    PLAYLIST_KIND_VR,
     RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
     RECENTLY_PLAYED_PLAYLIST_NAME,
-    VR_PLAYLIST_DESCRIPTION,
-    VR_PLAYLIST_NAME,
     Actor,
     BackgroundTaskRun,
     ClipCollection,
@@ -29,8 +23,6 @@ from src.model import (
     MediaLibrary,
     MediaPoint,
     MediaProgress,
-    MediaRapidUploadBatch,
-    MediaRapidUploadItem,
     MediaThumbnail,
     MomentRecommendation,
     Movie,
@@ -95,8 +87,6 @@ def create_tables():
             Indexer,
             IndexerDownloadClient,
             DownloadTask,
-            MediaRapidUploadBatch,
-            MediaRapidUploadItem,
         ],
         safe=True,
     )
@@ -121,16 +111,14 @@ def init_user() -> bool:
     return True
 
 
-# 系统播放列表预置清单：最近播放为物化维护，VR/4K 为按 special_tags 实时派生的虚拟列表。
+# 系统播放列表预置清单：最近播放成员物化存储，由播放进度上报维护。
 SYSTEM_PLAYLIST_SPECS = (
     (PLAYLIST_KIND_RECENTLY_PLAYED, RECENTLY_PLAYED_PLAYLIST_NAME, RECENTLY_PLAYED_PLAYLIST_DESCRIPTION),
-    (PLAYLIST_KIND_VR, VR_PLAYLIST_NAME, VR_PLAYLIST_DESCRIPTION),
-    (PLAYLIST_KIND_4K, FOUR_K_PLAYLIST_NAME, FOUR_K_PLAYLIST_DESCRIPTION),
 )
 
 
 def init_system_playlists() -> bool:
-    """逐个幂等预置系统播放列表；老库升级时会自动补建缺失的 VR/4K。"""
+    """逐个幂等预置系统播放列表。"""
     created_any = False
     for kind, name, description in SYSTEM_PLAYLIST_SPECS:
         if Playlist.get_or_none(Playlist.kind == kind) is not None:

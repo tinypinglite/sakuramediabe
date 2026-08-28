@@ -1,10 +1,6 @@
 from types import SimpleNamespace
 
 from src.model import Image, Movie, MoviePlotImage
-from src.service.discovery.joytag_embedder_client import (
-    JoyTagEmbeddingItemError,
-    JoyTagEmbeddingResult,
-)
 from src.service.discovery.movie_plot_image_search_index_service import (
     MoviePlotImageSearchIndexService,
 )
@@ -28,8 +24,11 @@ class _SearchStore:
 
 
 class _SearchEmbedder:
-    def infer_image_bytes(self, _image_bytes):
-        return SimpleNamespace(vector=[0.1, 0.2])
+    def embed_images(self, _images):
+        return [[0.1, 0.2]]
+
+    def embed_texts(self, _texts):
+        return [[0.1, 0.2]]
 
 
 def test_plot_image_search_returns_dedicated_result_and_paginates(test_db):
@@ -65,7 +64,7 @@ def test_plot_image_search_returns_dedicated_result_and_paginates(test_db):
     assert second_page.next_cursor is None
 
 
-def test_plot_image_index_marks_success_and_item_failure(
+def test_plot_image_index_marks_success(
     test_db, monkeypatch, tmp_path
 ):
     movie = Movie.create(movie_number="PLOT-005", javdb_id="plot-5", title="movie")
@@ -92,16 +91,11 @@ def test_plot_image_index_marks_success_and_item_failure(
             self.records.extend(records)
 
     class _Embedder:
-        def get_runtime_status(self):
-            return SimpleNamespace(vector_size=2)
+        def describe(self):
+            return SimpleNamespace(dimension=2)
 
-        def infer_image_batch(self, _payloads):
-            return [
-                JoyTagEmbeddingResult(vector=[0.2, 0.3]),
-                JoyTagEmbeddingItemError(
-                    index=1, error_code="invalid_image", error_message="bad"
-                ),
-            ]
+        def embed_images(self, payloads):
+            return [[0.2, 0.3] for _ in payloads]
 
     store = _Store()
     stats = MoviePlotImageSearchIndexService(
@@ -110,15 +104,15 @@ def test_plot_image_index_marks_success_and_item_failure(
 
     assert stats == {
         "pending_plot_images": 2,
-        "successful_plot_images": 1,
-        "failed_plot_images": 1,
+        "successful_plot_images": 2,
+        "failed_plot_images": 0,
     }
-    assert [record.plot_image_id for record in store.records] == [success.id]
+    assert [record.plot_image_id for record in store.records] == [success.id, failed.id]
     assert (
-        MoviePlotImage.get_by_id(success.id).joytag_index_status
-        == MoviePlotImage.JOYTAG_INDEX_STATUS_SUCCESS
+        MoviePlotImage.get_by_id(success.id).image_search_index_status
+        == MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
     )
     assert (
-        MoviePlotImage.get_by_id(failed.id).joytag_index_status
-        == MoviePlotImage.JOYTAG_INDEX_STATUS_FAILED
+        MoviePlotImage.get_by_id(failed.id).image_search_index_status
+        == MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
     )

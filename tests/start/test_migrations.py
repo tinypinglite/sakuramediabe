@@ -12,16 +12,19 @@ from src.model import (
     Media,
     MediaLibrary,
     Movie,
+    Playlist,
+    PlaylistMovie,
     SchemaMigration,
     SystemNotification,
 )
 from src.start.commands import main
+from src.start.legacy_v053_upgrade import LEGACY_V053_UPGRADE_MIGRATION_NAME
 from src.start.migrations.runner import (
     ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
+    MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
     MOVIE_BLACKLIST_MIGRATION_NAME,
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
-    MOVIE_PLOT_IMAGE_SEARCH_MIGRATION_NAME,
     SUPPORTED_BASE_MIGRATION_NAME,
     MigrationExecution,
     MigrationRunSummary,
@@ -89,20 +92,19 @@ def test_current_migrations_are_discoverable_in_order():
         MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
         ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
         MOVIE_BLACKLIST_MIGRATION_NAME,
-        MOVIE_PLOT_IMAGE_SEARCH_MIGRATION_NAME,
+        LEGACY_V053_UPGRADE_MIGRATION_NAME,
+        MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
     ]
 
 
-def test_run_pending_migrations_accepts_v0421_base(clean_db):
+def test_run_pending_migrations_rejects_v0421_base(clean_db):
     clean_db.create_tables([SchemaMigration])
     SchemaMigration.create(name=SUPPORTED_BASE_MIGRATION_NAME)
 
-    summary = run_pending_migrations(clean_db)
+    with pytest.raises(ValueError, match="unsupported_migration_source"):
+        run_pending_migrations(clean_db)
 
-    assert summary.executed == [
-        MigrationExecution(name=CONSOLIDATED_MIGRATION_NAME, applied=True)
-    ]
-    assert CONSOLIDATED_MIGRATION_NAME in _schema_migration_names(clean_db)
+    assert CONSOLIDATED_MIGRATION_NAME not in _schema_migration_names(clean_db)
 
 
 def test_run_pending_migrations_rejects_unsupported_legacy_schema(clean_db):
@@ -138,14 +140,16 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=MOVIE_COLLECTION_OWNER_MIGRATION_NAME, applied=True),
         MigrationExecution(name=ACTOR_GENDER_BACKFILL_MIGRATION_NAME, applied=True),
         MigrationExecution(name=MOVIE_BLACKLIST_MIGRATION_NAME, applied=True),
-        MigrationExecution(name=MOVIE_PLOT_IMAGE_SEARCH_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=LEGACY_V053_UPGRADE_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
         MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
         ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
         MOVIE_BLACKLIST_MIGRATION_NAME,
-        MOVIE_PLOT_IMAGE_SEARCH_MIGRATION_NAME,
+        LEGACY_V053_UPGRADE_MIGRATION_NAME,
+        MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
     ]
 
 
@@ -166,12 +170,10 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
     clean_db.execute_sql(
         "ALTER TABLE background_task_run ADD COLUMN owner_pid INTEGER NULL"
     )
-    _drop_columns(clean_db, "movie_plot_image", ("joytag_index_status",))
-
     library = MediaLibrary.create(
         name="migration-library",
-        backend="local",
-        backend_config={"root_path": "/library"},
+        provider_key="test",
+        provider_config={},
     )
     movie = Movie.create(movie_number="ABP-001", javdb_id="movie-1", title="title")
     clean_db.execute_sql(
@@ -181,17 +183,20 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
     media = Media.create(
         movie=movie,
         library=library,
-        path="/library/ABP-001.mp4",
-        content_fingerprint="media-fingerprint",
+        file_name="ABP-001.mp4",
     )
-    client = DownloadClient.create(name="migration-client", media_library=library)
+    client = DownloadClient.create(
+        name="migration-client",
+        library=library,
+        provider_config={},
+    )
     download_task = DownloadTask.create(
         client=client,
         movie="ABP-001",
         name="ABP-001",
-        info_hash="migration-hash",
-        save_path="/downloads/ABP-001",
-        download_state="completed",
+        remote_id="migration-hash",
+        state="completed",
+        completed_source_ref={"source": "ABP-001"},
         import_status="running",
     )
     SystemNotification.create(
@@ -215,16 +220,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
     _drop_columns(
         clean_db,
         "download_task",
-        (
-            "raw_state",
-            "download_speed_bytes",
-            "uploaded_speed_bytes",
-            "downloaded_bytes",
-            "total_size_bytes",
-            "eta_seconds",
-            "progress_synced_at",
-            "import_task_run_id",
-        ),
+        ("import_task_run_id",),
     )
     _drop_columns(
         clean_db,
@@ -253,7 +249,6 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
             "thumbnail_last_error_code",
             "thumbnail_last_error",
             "thumbnail_terminal_at",
-            "thumbnail_source_fingerprint",
         ),
     )
     _create_legacy_task_tables(clean_db)
@@ -296,22 +291,25 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         (movie.id,),
     )
 
+    consolidated = _load_migration_module(
+        Path(
+            "src/start/migrations/versions/"
+            "20260821_01_consolidate_task_runtime.py"
+        )
+    )
+    with clean_db.atomic():
+        consolidated.migrate(clean_db)
+        SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
     assert summary.applied_count == 5
-    assert "joytag_index_status" in _column_names(clean_db, "movie_plot_image")
-    assert any(
-        index.name == "movieplotimage_joytag_index_status"
-        for index in clean_db.get_indexes("movie_plot_image")
-    )
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
     media_state = clean_db.execute_sql(
         """
         SELECT thumbnail_generation_state, thumbnail_attempt_count,
-               thumbnail_next_retry_at, thumbnail_last_error_code,
-               thumbnail_source_fingerprint
+               thumbnail_next_retry_at, thumbnail_last_error_code
         FROM media WHERE id = %s
         """,
         (media.id,),
@@ -321,7 +319,6 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         2,
         datetime(2026, 8, 21, 1, 2, 3),
         "decoder_error",
-        "media-fingerprint",
     )
     subscription_state = clean_db.execute_sql(
         """
@@ -368,6 +365,43 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         "SELECT field_owners FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == {"is_collection": "host:manual"}
     assert "is_blacklisted" in _column_names(clean_db, "movie")
+
+
+def test_remove_media_special_tags_migration_drops_data_and_virtual_playlists(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    clean_db.execute_sql(
+        "ALTER TABLE media ADD COLUMN special_tags VARCHAR(255) NOT NULL DEFAULT '普通'"
+    )
+    movie = Movie.create(movie_number="TAG-001", javdb_id="tag-movie", title="tag movie")
+    recently_played = Playlist.create(kind="recently_played", name="最近播放")
+    custom_playlist = Playlist.create(kind="custom", name="自定义列表")
+    virtual_playlist = Playlist.create(kind="vr", name="VR")
+    Playlist.create(kind="4k", name="4K")
+    PlaylistMovie.create(playlist=recently_played, movie=movie)
+    PlaylistMovie.create(playlist=custom_playlist, movie=movie)
+    PlaylistMovie.create(playlist=virtual_playlist, movie=movie)
+
+    migration = _load_migration_module(
+        Path(
+            "src/start/migrations/versions/"
+            "20260826_01_remove_media_special_tags.py"
+        )
+    )
+    migration.migrate(clean_db)
+
+    assert "special_tags" not in _column_names(clean_db, "media")
+    assert [playlist.kind for playlist in Playlist.select().order_by(Playlist.id)] == [
+        recently_played.kind,
+        custom_playlist.kind,
+    ]
+    assert {
+        (item.playlist.kind, item.movie_id)
+        for item in PlaylistMovie.select().order_by(PlaylistMovie.playlist, PlaylistMovie.movie)
+    } == {
+        (recently_played.kind, movie.id),
+        (custom_playlist.kind, movie.id),
+    }
 
 
 def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(clean_db):

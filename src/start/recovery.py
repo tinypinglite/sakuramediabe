@@ -4,14 +4,12 @@ from collections.abc import Callable
 
 from loguru import logger
 
-from src.service.transfers.rapid_upload.facade import MediaRapidUploadService
 from src.service.transfers.shared.import_task_service import ImportTaskService
 
 # 注册表: task_key -> 业务层回收 callable。
 # 启动恢复在任务层 (BackgroundTaskRun) 回收之后，按 task_key 查表联动清理业务状态。
 BUSINESS_RECOVERY_HANDLERS: dict[str, Callable[[], object]] = {
     "library_import": ImportTaskService.recover_interrupted_downloads,
-    "media_rapid_upload": lambda: MediaRapidUploadService.recover_interrupted_batches(),
 }
 
 def recover_business_states(task_keys: set[str]) -> None:

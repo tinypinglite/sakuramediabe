@@ -8,6 +8,7 @@ import json
 import zipfile
 
 from src.config.config import settings
+from src.plugins import HOST_API_VERSION
 
 
 def _login(client, username="account", password="password123"):
@@ -18,13 +19,18 @@ def _login(client, username="account", password="password123"):
     return response.json()["access_token"]
 
 
-def _zip_bytes(plugin_id: str = "api_plugin", version: str = "1.0.0") -> bytes:
+def _zip_bytes(
+    plugin_id: str = "api_plugin",
+    version: str = "1.0.0",
+    dependencies: list[str] | None = None,
+) -> bytes:
     manifest = json.dumps(
         {
             "plugin_id": plugin_id,
             "display_name": "API 演示",
             "version": version,
-            "host_api_version": 3,
+            "host_api_version": HOST_API_VERSION,
+            **({"dependencies": dependencies} if dependencies is not None else {}),
         },
         ensure_ascii=False,
     )
@@ -127,6 +133,41 @@ def test_install_plugin_rejects_invalid_zip(
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "plugin_install_failed"
+
+
+def test_install_plugin_with_dependencies_requires_container_restart(
+    client,
+    account_user,
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "plugins"
+    monkeypatch.setattr("src.plugins.manager._plugin_root", lambda: root)
+    monkeypatch.setattr(
+        "src.plugins.manager.update_settings",
+        lambda new_settings: setattr(
+            settings.plugins, "enabled", list(new_settings.plugins.enabled)
+        ),
+    )
+    token = _login(client, username=account_user.username)
+
+    response = client.post(
+        "/system/plugins",
+        headers={"Authorization": f"Bearer {token}"},
+        files={
+            "file": (
+                "dependency-plugin.zip",
+                _zip_bytes(
+                    plugin_id="dependency_plugin",
+                    dependencies=["missing-package>=1"],
+                ),
+                "application/zip",
+            )
+        },
+    )
+
+    assert response.status_code == 201, response.text
+    assert response.json()["pending_restart"] == ["container"]
 
 
 def test_plugin_settings_endpoints(

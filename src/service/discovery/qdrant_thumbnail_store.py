@@ -31,7 +31,8 @@ class ThumbnailVectorSearchHit(BaseModel):
 
 
 class QdrantThumbnailStore:
-    COLLECTION_NAME = "media_thumbnail_vectors"
+    # v0.5.3 的同名集合保存 JoyTag 向量；换名可避免把旧向量误当成 SigLIP2 数据复用。
+    COLLECTION_NAME = "media_thumbnail_vectors_siglip2_v1"
     PAYLOAD_INDEX_FIELDS = ("movie_id", "media_id")
     CLIENT_TIMEOUT_SECONDS = 30
     HNSW_M = 16
@@ -326,6 +327,10 @@ class QdrantThumbnailStore:
             ),
             wait=True,
         )
+
+    def clear(self) -> None:
+        if self._collection_exists():
+            self._get_client().delete_collection(collection_name=self.collection_name)
 
     @staticmethod
     def _build_filter(

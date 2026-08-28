@@ -1,0 +1,15 @@
+{
+  "plugins": [
+    {
+      "filename": "sakuramedia_local_provider.zip",
+      "plugin_id": "sakuramedia_local_provider",
+      "sha256": "202e11816bde2d231e3fbb2441f091f4958652c17232f322e0b0df966f4b9074"
+    },
+    {
+      "filename": "sakuramedia_115_provider.zip",
+      "plugin_id": "sakuramedia_115_provider",
+      "sha256": "fbc5b7a6ecbb456fbfc0495cda4d4681f02002f4d6f93e25de297074a76d895f"
+    }
+  ],
+  "version": 1
+}

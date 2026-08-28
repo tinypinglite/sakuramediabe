@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.scheduler.contracts import JobDefinition
 
-HOST_API_VERSION = 3
+HOST_API_VERSION = 4
 MIN_SUPPORTED_HOST_API_VERSION = HOST_API_VERSION
 
 

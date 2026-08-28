@@ -4,9 +4,7 @@ import pytest
 from peewee import IntegrityError, ProgrammingError
 
 from src.model import (
-    PLAYLIST_KIND_4K,
     PLAYLIST_KIND_RECENTLY_PLAYED,
-    PLAYLIST_KIND_VR,
     Actor,
     BackgroundTaskRun,
     DailyRecommendationItem,
@@ -16,8 +14,6 @@ from src.model import (
     IndexerDownloadClient,
     Media,
     MediaLibrary,
-    MediaRapidUploadBatch,
-    MediaRapidUploadItem,
     MediaThumbnail,
     MomentRecommendation,
     Movie,
@@ -117,18 +113,6 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
     assert Subtitle.table_exists()
     assert "is_blacklisted" in _column_names(clean_db, "movie")
     assert not clean_db.table_exists("subtitle_import_job")
-    assert MediaRapidUploadBatch.table_exists()
-    assert MediaRapidUploadItem.table_exists()
-    # 秒传 item 需带 failure_reason 列，用来区分 not_hit / 其它可重试失败。
-    rapid_upload_item_columns = _column_names(clean_db, "media_rapid_upload_item")
-    assert "failure_reason" in rapid_upload_item_columns
-    assert _column_is_nullable(clean_db, "media_rapid_upload_item", "failure_reason") is True
-    # media_id 单列索引：list_media 批量查最新秒传状态的 DISTINCT ON 依赖它。
-    rapid_upload_item_indexed_columns = {
-        tuple(index.columns)
-        for index in clean_db.get_indexes("media_rapid_upload_item")
-    }
-    assert ("media_id",) in rapid_upload_item_indexed_columns
 
 
 def test_create_tables_creates_videos_domain_tables_and_decoupled_media(clean_db, monkeypatch):
@@ -149,6 +133,8 @@ def test_create_tables_creates_videos_domain_tables_and_decoupled_media(clean_db
     media_columns = _column_names(database, "media")
     assert "video_item_id" in media_columns
     assert _column_is_nullable(database, "media", "movie_number") is True
+    assert {"library_id", "storage_ref", "file_name"} <= media_columns
+    assert not {"path", "backend_locator", "storage_mode"} & media_columns
 
 
 def test_create_tables_creates_daily_recommendation_unique_constraints(clean_db, monkeypatch):
@@ -193,8 +179,23 @@ def test_create_tables_creates_moment_recommendation_unique_constraints(clean_db
 
     first_movie = Movie.create(movie_number="ABP-101", javdb_id="moment-1", title="Moment 1")
     second_movie = Movie.create(movie_number="ABP-102", javdb_id="moment-2", title="Moment 2")
-    first_media = Media.create(movie=first_movie, path="/library/moment-1.mp4")
-    second_media = Media.create(movie=second_movie, path="/library/moment-2.mp4")
+    library = MediaLibrary.create(
+        name="moment-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    first_media = Media.create(
+        movie=first_movie,
+        library=library,
+        storage_ref={"id": "moment-1"},
+        file_name="moment-1.mp4",
+    )
+    second_media = Media.create(
+        movie=second_movie,
+        library=library,
+        storage_ref={"id": "moment-2"},
+        file_name="moment-2.mp4",
+    )
     first_image = Image.create(origin="a.webp", small="a.webp", medium="a.webp", large="a.webp")
     second_image = Image.create(origin="b.webp", small="b.webp", medium="b.webp", large="b.webp")
     first_thumbnail = MediaThumbnail.create(media=first_media, image=first_image, offset=120)
@@ -277,6 +278,9 @@ def test_create_tables_creates_current_schema_columns(clean_db, monkeypatch):
     }
     assert movie_column_defaults["field_owners"] == "'{}'::jsonb"
     assert movie_column_defaults["mutation_revision"] == "0"
+    library_columns = _column_names(database, "media_library")
+    assert {"provider_key", "provider_config", "account_key"} <= library_columns
+    assert not {"backend", "backend_config", "backend_account_key"} & library_columns
 
 
 def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(clean_db, monkeypatch):
@@ -377,7 +381,7 @@ def test_init_user_creates_single_account_once(clean_db, monkeypatch):
     assert User.select().count() == 1
 
 
-def test_init_system_playlists_creates_all_system_playlists_once(clean_db, monkeypatch):
+def test_init_system_playlists_creates_recently_played_once(clean_db, monkeypatch):
     create_tables()
 
     created = init_system_playlists()
@@ -387,14 +391,12 @@ def test_init_system_playlists_creates_all_system_playlists_once(clean_db, monke
 
     assert created is True
     assert repeated is False
-    assert kinds == {PLAYLIST_KIND_RECENTLY_PLAYED, PLAYLIST_KIND_VR, PLAYLIST_KIND_4K}
+    assert kinds == {PLAYLIST_KIND_RECENTLY_PLAYED}
     assert Playlist.get(Playlist.kind == PLAYLIST_KIND_RECENTLY_PLAYED).name == "最近播放"
-    assert Playlist.get(Playlist.kind == PLAYLIST_KIND_VR).name == "VR"
-    assert Playlist.get(Playlist.kind == PLAYLIST_KIND_4K).name == "4K"
-    assert Playlist.select().count() == 3
+    assert Playlist.select().count() == 1
 
 
-def test_init_system_playlists_backfills_missing_kinds_on_upgrade(clean_db, monkeypatch):
+def test_init_system_playlists_does_not_restore_removed_kinds(clean_db, monkeypatch):
     create_tables()
     # 显式构造"老库仅有最近播放"的初始状态，不依赖建表后表为空。
     Playlist.delete().execute()
@@ -403,9 +405,9 @@ def test_init_system_playlists_backfills_missing_kinds_on_upgrade(clean_db, monk
     created = init_system_playlists()
 
     kinds = {playlist.kind for playlist in Playlist.select()}
-    assert created is True
-    assert kinds == {PLAYLIST_KIND_RECENTLY_PLAYED, PLAYLIST_KIND_VR, PLAYLIST_KIND_4K}
-    assert Playlist.select().count() == 3
+    assert created is False
+    assert kinds == {PLAYLIST_KIND_RECENTLY_PLAYED}
+    assert Playlist.select().count() == 1
 
 
 def test_initdb_does_not_run_pending_migrations(monkeypatch):
@@ -430,17 +432,25 @@ def test_create_tables_creates_download_domain_multi_bind_schema(clean_db, monke
     if database.is_closed():
         database.connect()
 
-    # 中间表建出且 download_client 带 kind、download_task 带 target_ref。
+    # 中间表建出且宿主只保留 provider-neutral download fields。
     assert IndexerDownloadClient.table_exists()
     client_columns = {column.name for column in database.get_columns("download_client")}
-    assert "kind" in client_columns
+    assert {"library_id", "provider_config"} <= client_columns
+    assert not {
+        "kind",
+        "base_url",
+        "username",
+        "password",
+        "client_save_path",
+        "local_root_path",
+        "media_library_id",
+    } & client_columns
     task_columns = {column.name for column in database.get_columns("download_task")}
-    assert "target_ref" in task_columns
-    # qB 停滞/慢速清理按 download_started_at 计时（排队时间不计），新库直接建出该列。
-    assert "download_started_at" in task_columns
-    assert _column_is_nullable(database, "download_task", "download_started_at") is True
-    # qB 进度由 APS 内部采样器落库，新库直接具备完整快照列。
-    assert {
+    assert {"remote_id", "state", "progress", "completed_source_ref"} <= task_columns
+    assert not {
+        "info_hash",
+        "save_path",
+        "download_state",
         "raw_state",
         "download_speed_bytes",
         "uploaded_speed_bytes",
@@ -448,53 +458,29 @@ def test_create_tables_creates_download_domain_multi_bind_schema(clean_db, monke
         "total_size_bytes",
         "eta_seconds",
         "progress_synced_at",
-    } <= task_columns
-    assert _column_is_nullable(database, "download_task", "eta_seconds") is True
-    assert _column_is_nullable(database, "download_task", "progress_synced_at") is True
-    library = MediaLibrary.create(name="snapshot-defaults", backend="local")
+        "download_started_at",
+    } & task_columns
+    library = MediaLibrary.create(
+        name="snapshot-defaults",
+        provider_key="demo",
+        provider_config={},
+    )
     download_client = DownloadClient.create(
         name="snapshot-defaults-qb",
-        kind="qbittorrent",
-        media_library=library,
+        library=library,
+        provider_config={},
     )
     database.execute_sql(
         "INSERT INTO download_task"
-        " (created_at, updated_at, client_id, name, info_hash, save_path, progress,"
-        "  download_state, import_status)"
-        " VALUES (now(), now(), %s, 'ABP-001', 'initdb-snapshot', '/downloads/ABP-001',"
-        "  0, 'queued', 'pending')",
+        " (created_at, updated_at, client_id, remote_id, name, progress, state, import_status)"
+        " VALUES (now(), now(), %s, 'initdb-snapshot', 'ABP-001', 0, 'queued', 'pending')",
         (download_client.id,),
     )
     snapshot_defaults = database.execute_sql(
-        "SELECT raw_state, download_speed_bytes, uploaded_speed_bytes,"
-        " downloaded_bytes, total_size_bytes"
-        " FROM download_task WHERE info_hash = 'initdb-snapshot'"
+        "SELECT completed_source_ref FROM download_task WHERE remote_id = 'initdb-snapshot'"
     ).fetchone()
-    assert snapshot_defaults == ("", 0, 0, 0, 0)
+    assert snapshot_defaults == (None,)
     # 每个索引器独立可选的 Torznab 鉴权 key，新库直接建出可空列。
     indexer_columns = {column.name for column in database.get_columns("indexer")}
     assert "api_key" in indexer_columns
     assert _column_is_nullable(database, "indexer", "api_key") is True
-    cloud115_indexes = {
-        index.name: index
-        for index in database.get_indexes("download_client")
-        if index.unique
-    }
-    assert "download_client_cloud115_library_unique" in cloud115_indexes
-
-
-def test_create_tables_cloud115_client_index_is_partial(clean_db, monkeypatch):
-    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
-    create_tables()
-    local_library = MediaLibrary.create(
-        name="local-downloads", backend="local", backend_config={"root_path": "/library"}
-    )
-    cloud_library = MediaLibrary.create(
-        name="cloud-downloads", backend="cloud115", backend_config={"cookies": "x"}
-    )
-
-    DownloadClient.create(name="qb-a", kind="qbittorrent", media_library=local_library)
-    DownloadClient.create(name="qb-b", kind="qbittorrent", media_library=local_library)
-    DownloadClient.create(name="cloud-a", kind="cloud115", media_library=cloud_library)
-    with pytest.raises(IntegrityError):
-        DownloadClient.create(name="cloud-b", kind="cloud115", media_library=cloud_library)

@@ -9,7 +9,6 @@ from .movie_subtitle_service import MovieSubtitleService
 from .movie_task_service import MovieTaskService
 from .movie_thin_cover_backfill_service import MovieThinCoverBackfillService
 from .subscribed_actor_movie_sync_service import SubscribedActorMovieSyncService
-from .subtitle_import_service import SubtitleImportService
 from .tag_service import TagService
 
 __all__ = [
@@ -25,6 +24,5 @@ __all__ = [
     "MovieTaskService",
     "MovieThinCoverBackfillService",
     "SubscribedActorMovieSyncService",
-    "SubtitleImportService",
     "TagService",
 ]

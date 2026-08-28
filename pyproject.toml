@@ -12,9 +12,7 @@ dependencies = [
     "python-jose>=3.3.0,<4.0.0",
     "peewee>=3.16.2,<4.0.0",
     "tqdm>=4.65.0,<5.0.0",
-    "qbittorrent-api>=2026.5.0",
     "xmltodict>=0.13.0,<0.14.0",
-    "libtorrent>=2.0.9,<3.0.0",
     "python-multipart>=0.0.6,<0.0.7",
     # 插件 zip 安装时校验 manifest.requires_python，统一走 PEP 440 解析。
     "packaging>=23.0,<27",
@@ -32,6 +30,11 @@ dependencies = [
     "tomli>=2.0.1,<3.0.0; python_version < '3.11'",
     "psycopg2-binary>=2.9.10,<3.0.0",
     "httpx>=0.28.1,<0.29.0",
+    "qbittorrent-api>=2026.8.1",
+    # libtorrent 2.1.x has no wheel for the macOS 12 Intel development image;
+    # 2.0.9 exposes the same torrent_info/info_hash API used by the plugin.
+    "libtorrent==2.0.9; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "libtorrent>=2.1.1,<3.0.0; sys_platform != 'darwin' or platform_machine == 'arm64'",
     "qdrant-client>=1.12,<1.13",
     "numpy>=1.26,<3",
     "pycurl>=7.47,<8",
@@ -74,23 +77,17 @@ ignore = [
     "RUF012",  # Peewee Meta / provider 类属性使用可变容器是既有模式，不逐个标 ClassVar
     "DTZ",     # 全项目统一使用 naive datetime 与数据库交互
     "PLE1205", # 项目日志用 loguru（{} 占位符），该规则按 stdlib logging 的 % 风格误判
-    "ASYNC230", # cloud115 CLI 调试工具在 async 中同步 open，属有意为之
+    "ASYNC230", # provider CLI 调试工具在 async 中同步 open，属有意为之
     "ASYNC240", # async 接口中的 pathlib 轻量元数据操作可接受，不引入 anyio.Path
 ]
 
 [tool.uv]
 # 轮子可用性约束，全部按平台加 marker，避免为了照顾某台开发机把生产解析一起降下去。
 #
-# libtorrent：2.0.12+ 不再发 macOS 13 Intel 轮子，故全局钉在 <2.0.12（与 main 锁一致）；
-#   而 2.0.11 的 macOS Intel 轮子要求 macOS >= 13，macOS 12 Intel 机器上无解，再单独降到 2.0.9
-#   （最后一个发 macosx_10_9_x86_64 轮子的版本）。这条不能做成全局降版：2.0.9 没有 macOS arm64
-#   轮子，全局降会让 Apple Silicon 开发机退化成源码编译。
 # av：15.x 的 macOS 轮子要求 macOS >= 13，14.2.0 是最后一个发 macosx_12_0 轮子的版本；
 #   14.3 / 14.4 干脆没发 cp310 轮子（会退化成源码编译 ffmpeg），所以上界取 <14.3 而不是 <15。
 #   同样只降 macOS 12 Intel 这一个环境，linux / arm64 保持 15.x。
 constraint-dependencies = [
-    "libtorrent<2.0.12",
-    "libtorrent<2.0.10; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "av<14.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 environments = [

@@ -77,8 +77,7 @@ Authorization: Bearer <token>
         "heat": 10,
         "is_collection": false,
         "is_subscribed": false,
-        "can_play": true,
-        "is_4k": false
+        "can_play": true
       }
     }
   ],
@@ -99,7 +98,7 @@ uv run python -m src.start.commands aps generate-moment-recommendations
 
 生成规则：
 
-- 主召回使用用户收藏的 `MediaPoint` 缩略图做 JoyTag 向量检索
+- 主召回使用用户收藏的 `MediaPoint` 缩略图做图像向量检索
 - 视觉召回不足或不可用时，批量查询 Qdrant 影片元数据相似度索引，并按相近播放比例补足
 - 影片相似度索引不可用时只跳过该信号，视觉召回与热门候选仍会继续生成
 - 没有可用收藏时刻时，从高热度可播放影片中选取精选缩略图补足

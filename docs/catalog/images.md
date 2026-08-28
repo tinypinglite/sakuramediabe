@@ -61,7 +61,7 @@
 - 影片封面：`movies/{shard}/{movie_number}/cover.jpg`
 - 影片竖封面：`movies/{shard}/{movie_number}/thin-cover.jpg`
 - 影片剧照：`movies/{shard}/{movie_number}/plot-{index}.jpg`
-- 媒体缩略图：`movies/{shard}/{movie_number}/media/{content_fingerprint}/thumbnails/{offset}.webp`
+- 媒体缩略图：`movies/{shard}/{movie_number}/media/{media_id}/thumbnails/{offset}.webp`
 - 影片字幕：`movies/{shard}/{movie_number}/subtitles/{movie_number}-{N}.srt`（N 递增分配）
 
 分片计算集中在 `src/common/media_paths.py` 的 `movie_asset_shard()` / `movie_asset_relative_dir()`，
@@ -85,7 +85,7 @@ storage/import-images/
         plot-0.jpg
         plot-1.jpg
         media/
-          <content_fingerprint>/
+          <media_id>/
             thumbnails/
               10.webp
         subtitles/

@@ -20,7 +20,7 @@ class PlotImageVectorSearchHit(BaseModel):
 
 
 class QdrantPlotImageStore(QdrantThumbnailStore):
-    COLLECTION_NAME = "movie_plot_image_vectors"
+    COLLECTION_NAME = "movie_plot_image_vectors_siglip2_v1"
     PAYLOAD_INDEX_FIELDS = ("movie_id",)
 
     def upsert_records(self, records: Sequence[PlotImageVectorRecord]) -> None:
