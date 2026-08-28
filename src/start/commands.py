@@ -10,7 +10,11 @@ from loguru import logger
 
 import src.common.logging as app_logging
 from src.common.logging import configure_logging
-from src.config.config import settings
+from src.config.config import (
+    DEFAULT_SIGLIP2_INFERENCE_URL,
+    LEGACY_JOYTAG_INFERENCE_URL,
+    settings,
+)
 from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import init_database
@@ -223,6 +227,15 @@ def upgrade_v053(dry_run: bool):
     if state == "unsupported":
         raise click.ClickException(
             "unsupported_schema: only the exact v0.5.3 schema can use this bridge"
+        )
+    if (
+        state == "legacy_v053"
+        and settings.image_search.inference_base_url
+        not in {LEGACY_JOYTAG_INFERENCE_URL, DEFAULT_SIGLIP2_INFERENCE_URL}
+    ):
+        logger.warning(
+            "v0.5.3 upgrade preserved a custom [image_search].inference_base_url; "
+            "configure it to a compatible SigLIP2 embedding service after startup"
         )
     if state == "legacy_v053":
         try:

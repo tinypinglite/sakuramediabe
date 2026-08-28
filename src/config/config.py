@@ -32,6 +32,9 @@ from pydantic_settings import (
 
 from src.plugins.manifest import PLUGIN_ID_PATTERN
 
+LEGACY_JOYTAG_INFERENCE_URL = "http://joytag-infer:8001"
+DEFAULT_SIGLIP2_INFERENCE_URL = "http://siglip2-embed:8080"
+
 
 # 校验分档：
 # - 无 context（默认，覆盖启动期 Settings() 从 toml 加载）：仅 warn 保留原值，避免存量非法配置让进程启动即崩。
@@ -212,7 +215,7 @@ class Logging(BaseModel):
 
 
 class ImageSearch(BaseModel):
-    inference_base_url: str = "http://siglip2-embed:8080"
+    inference_base_url: str = DEFAULT_SIGLIP2_INFERENCE_URL
     # CPU 后端逐张推理，一批 16 张会串行跑满 16 次；30s 不足以覆盖，中途超时会让整批作废。
     inference_timeout_seconds: float = 120.0
     inference_connect_timeout_seconds: float = 3.0
@@ -466,7 +469,21 @@ def ensure_runtime_config() -> bool:
                 media_config.pop(key)
                 removed_media_keys.append(key)
 
-    if not secret_updates and not removed_media_keys and not removed_legacy_sections:
+    image_search_config = existing_config.get("image_search")
+    migrated_joytag_endpoint = False
+    if (
+        isinstance(image_search_config, dict)
+        and image_search_config.get("inference_base_url") == LEGACY_JOYTAG_INFERENCE_URL
+    ):
+        image_search_config["inference_base_url"] = DEFAULT_SIGLIP2_INFERENCE_URL
+        migrated_joytag_endpoint = True
+
+    if (
+        not secret_updates
+        and not removed_media_keys
+        and not removed_legacy_sections
+        and not migrated_joytag_endpoint
+    ):
         return False
 
     if secret_updates:
@@ -482,5 +499,9 @@ def ensure_runtime_config() -> bool:
     if removed_legacy_sections:
         logger.info(
             "Removed obsolete config sections: {}", ", ".join(sorted(removed_legacy_sections))
+        )
+    if migrated_joytag_endpoint:
+        logger.info(
+            "Migrated [image_search].inference_base_url from the JoyTag default to SigLIP2"
         )
     return True

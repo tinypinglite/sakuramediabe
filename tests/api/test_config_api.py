@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import toml
 
-from src.config.config import Settings, ensure_runtime_config, settings, update_settings
+from src.config.config import (
+    DEFAULT_SIGLIP2_INFERENCE_URL,
+    LEGACY_JOYTAG_INFERENCE_URL,
+    Settings,
+    ensure_runtime_config,
+    settings,
+    update_settings,
+)
 from src.service.system.config_service import ConfigService
 
 
@@ -119,5 +126,51 @@ def test_ensure_runtime_config_removes_obsolete_media_settings(tmp_path, monkeyp
         assert "media_import" not in persisted
         assert persisted["unrelated"] == {"value": "keep"}
         assert ensure_runtime_config() is False
+    finally:
+        Settings.model_config["toml_file"] = original_config_path
+
+
+def test_ensure_runtime_config_migrates_the_default_joytag_endpoint(
+    tmp_path, monkeypatch
+):
+    config_path = tmp_path / "config.toml"
+    original_config_path = Settings.model_config["toml_file"]
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+    monkeypatch.setattr(settings.auth, "secret_key", "test-secret")
+    monkeypatch.setattr(settings.auth, "file_signature_secret", "test-file-secret")
+    config_path.write_text(
+        toml.dumps(
+            {
+                "image_search": {"inference_base_url": LEGACY_JOYTAG_INFERENCE_URL},
+                "unrelated": {"value": "keep"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        assert ensure_runtime_config() is True
+        persisted = toml.load(config_path)
+        assert persisted["image_search"]["inference_base_url"] == DEFAULT_SIGLIP2_INFERENCE_URL
+        assert persisted["unrelated"] == {"value": "keep"}
+    finally:
+        Settings.model_config["toml_file"] = original_config_path
+
+
+def test_ensure_runtime_config_preserves_custom_image_search_endpoint(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.toml"
+    original_config_path = Settings.model_config["toml_file"]
+    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
+    monkeypatch.setattr(settings.auth, "secret_key", "test-secret")
+    monkeypatch.setattr(settings.auth, "file_signature_secret", "test-file-secret")
+    custom_url = "https://embedding.example.test/v1"
+    config_path.write_text(
+        toml.dumps({"image_search": {"inference_base_url": custom_url}}),
+        encoding="utf-8",
+    )
+
+    try:
+        assert ensure_runtime_config() is False
+        assert toml.load(config_path)["image_search"]["inference_base_url"] == custom_url
     finally:
         Settings.model_config["toml_file"] = original_config_path
