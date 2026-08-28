@@ -22,16 +22,50 @@ from src.model import (
 )
 from src.plugins.provider_protocol import ProviderOperationError
 from src.start.legacy_v053_upgrade import (
+    LEGACY_V053_QDRANT_COLLECTIONS,
     LEGACY_V053_UPGRADE_MIGRATION_NAME,
     LegacyV053UpgradeError,
     _scan_cloud115_media_refs,
     classify_database_schema,
+    cleanup_legacy_v053_qdrant_collections,
     upgrade_v053_database,
 )
 from src.start.migrations.runner import run_pending_migrations
 from tests.conftest import TEST_MODELS
 
 PLOT_IMAGE_MIGRATION_NAME = "20260823_04_add_movie_plot_image_search"
+
+
+def test_cleanup_legacy_v053_qdrant_collections_removes_only_legacy_collections(
+    monkeypatch,
+):
+    calls: list[tuple[str, str]] = []
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        def collection_exists(self, collection_name):
+            calls.append(("exists", collection_name))
+            return collection_name == "media_thumbnail_vectors"
+
+        def delete_collection(self, *, collection_name):
+            calls.append(("delete", collection_name))
+
+    monkeypatch.setattr("qdrant_client.QdrantClient", Client)
+
+    assert cleanup_legacy_v053_qdrant_collections() == (
+        "media_thumbnail_vectors",
+    )
+    assert calls == [
+        ("exists", "media_thumbnail_vectors"),
+        ("delete", "media_thumbnail_vectors"),
+        ("exists", "movie_plot_image_vectors"),
+    ]
+    assert LEGACY_V053_QDRANT_COLLECTIONS == (
+        "media_thumbnail_vectors",
+        "movie_plot_image_vectors",
+    )
 
 
 def test_cloud115_scan_uses_public_media_refs(

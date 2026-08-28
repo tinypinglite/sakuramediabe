@@ -212,6 +212,7 @@ def upgrade_v053(dry_run: bool):
     from src.start.legacy_v053_upgrade import (
         LegacyV053UpgradeError,
         classify_database_schema,
+        cleanup_legacy_v053_qdrant_collections,
         upgrade_v053_database,
     )
 
@@ -272,6 +273,8 @@ def upgrade_v053(dry_run: bool):
         summary = upgrade_v053_database(database, dry_run=dry_run)
     except LegacyV053UpgradeError as exc:
         raise click.ClickException(str(exc)) from exc
+    if summary.upgraded:
+        cleanup_legacy_v053_qdrant_collections()
     click.echo(
         "upgrade-v053 finished: "
         f"dry_run={str(dry_run).lower()} "

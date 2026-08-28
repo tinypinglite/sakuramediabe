@@ -19,6 +19,10 @@ from src.plugins.provider_protocol import (
 
 LEGACY_V053_LAST_MIGRATION_NAME = "20260823_04_add_movie_plot_image_search"
 LEGACY_V053_UPGRADE_MIGRATION_NAME = "20260825_01_upgrade_v053_provider_storage"
+LEGACY_V053_QDRANT_COLLECTIONS = (
+    "media_thumbnail_vectors",
+    "movie_plot_image_vectors",
+)
 
 
 class LegacyV053UpgradeError(RuntimeError):
@@ -93,6 +97,36 @@ def classify_database_schema(database: Database) -> str:
     ):
         return "legacy_v053"
     return "unsupported"
+
+
+def cleanup_legacy_v053_qdrant_collections() -> tuple[str, ...]:
+    """Best-effort removal of the two vector collections replaced after v0.5.3."""
+    try:
+        from qdrant_client import QdrantClient
+
+        from src.config.config import settings
+
+        client = QdrantClient(
+            url=settings.qdrant.url.rstrip("/"),
+            api_key=settings.qdrant.api_key or None,
+            timeout=30,
+        )
+        deleted = []
+        for collection_name in LEGACY_V053_QDRANT_COLLECTIONS:
+            if client.collection_exists(collection_name):
+                client.delete_collection(collection_name=collection_name)
+                deleted.append(collection_name)
+    except Exception as exc:
+        logger.warning(
+            "v0.5.3 upgrade legacy Qdrant cleanup skipped detail={}", exc
+        )
+        return ()
+
+    logger.info(
+        "v0.5.3 upgrade legacy Qdrant cleanup completed deleted_collections={}",
+        deleted,
+    )
+    return tuple(deleted)
 
 
 def _json_object(value: object, *, label: str) -> dict[str, Any]:
@@ -739,9 +773,11 @@ def upgrade_v053_database(
 
 
 __all__ = [
+    "LEGACY_V053_QDRANT_COLLECTIONS",
     "LEGACY_V053_UPGRADE_MIGRATION_NAME",
     "LegacyV053UpgradeError",
     "LegacyV053UpgradeSummary",
     "classify_database_schema",
+    "cleanup_legacy_v053_qdrant_collections",
     "upgrade_v053_database",
 ]

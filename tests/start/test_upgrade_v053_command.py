@@ -70,6 +70,10 @@ def test_upgrade_v053_command_installs_and_loads_both_providers_before_bridge(
     monkeypatch.setattr(
         "src.start.legacy_v053_upgrade.upgrade_v053_database", upgrade
     )
+    monkeypatch.setattr(
+        "src.start.legacy_v053_upgrade.cleanup_legacy_v053_qdrant_collections",
+        lambda: events.append("cleanup-qdrant"),
+    )
 
     result = CliRunner().invoke(main, ["upgrade-v053"])
 
@@ -80,6 +84,7 @@ def test_upgrade_v053_command_installs_and_loads_both_providers_before_bridge(
         "require:local",
         "require:cloud115",
         "upgrade",
+        "cleanup-qdrant",
     ]
 
 
