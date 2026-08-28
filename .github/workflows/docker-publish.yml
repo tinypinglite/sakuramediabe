@@ -83,7 +83,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: tinypinglite/sakuramedia_115_provider
-          ref: aeff803a57e13deb9a8a5e975137b0e8268d4a97
+          ref: 55068d781beeb1863ff72f3ef0521f691ea95046
           path: .bundled-provider-sources/cloud115
 
       - name: Package migration-only provider bundles
