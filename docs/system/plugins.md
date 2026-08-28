@@ -196,6 +196,7 @@ uv run python -m src.start.commands plugins clear-field-owners \
 | `requires_python` | 否 | 与宿主 Python 解释器（3.10）校验 |
 | `dependencies` | 否 | PEP 508 依赖声明。省略等同于空列表，保持旧插件行为；非空时在完整容器启动前同步 |
 | `author` / `homepage` | 否 | 展示信息 |
+| `release_api_url` | 否 | GitHub Release API 的 `releases/latest` 地址；桌面端据此检查更新、展示 Release 说明并下载 zip |
 
 未知字段会被严格拒绝（`extra="forbid"`），不要随意添加自定义字段。
 
@@ -651,6 +652,7 @@ javdb_password = "secret"
 | `GET` | `/system/plugins` | 插件列表 |
 | `GET` | `/system/plugins/{id}` | 插件详情 |
 | `POST` | `/system/plugins` | multipart 上传 zip（`file` + 可选 `sha256` + `enable`），已存在时替换并保留 `data/` |
+| `POST` | `/system/plugins/{id}/upgrade` | multipart 上传 Release zip（`file` + 可选 `sha256`）；仅接受已安装同一插件的更高版本，保留 `data/` 与启停状态 |
 | `PATCH` | `/system/plugins/{id}?enabled=true` | 启停 |
 | `DELETE` | `/system/plugins/{id}` | 删除插件代码并保留 `data/`；被媒体库使用的 provider 返回 `409` |
 | `GET` | `/system/plugins/{id}/settings` | 读取插件私有配置（`plugins.settings.<id>`） |

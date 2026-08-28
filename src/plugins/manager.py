@@ -11,7 +11,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from packaging.version import InvalidVersion, Version
+
 from src.config.config import Settings, settings, update_settings
+from src.plugins.contracts import HOST_API_VERSION
 from src.plugins.dependencies import dependency_failure_message
 from src.plugins.installer import PluginInstaller, PluginInstallError
 from src.plugins.loader import PLUGIN_LOAD_ERRORS, PluginLoadError, check_plugin_dir
@@ -92,6 +95,9 @@ class PluginManager:
                     "enabled": plugin_id in enabled_ids,
                     "load_status": "error" if load_error is not None else "ok",
                     "load_error": load_error,
+                    "release_api_url": (
+                        manifest.release_api_url if manifest is not None else None
+                    ),
                 }
             )
         return plugins
@@ -121,6 +127,7 @@ class PluginManager:
             "requires_python": manifest.requires_python if manifest else None,
             "author": manifest.author if manifest else None,
             "homepage": manifest.homepage if manifest else None,
+            "release_api_url": manifest.release_api_url if manifest else None,
             "manifest": manifest.model_dump() if manifest else {},
             "enabled": plugin_id in set(self._enabled_ids()),
             "load_status": "error" if load_error is not None else "ok",
@@ -168,6 +175,65 @@ class PluginManager:
             shutil.rmtree(staging, ignore_errors=True)
             raise
         return self._publish_staging(staging, manifest, enable=enable)
+
+    def upgrade_zip(
+        self,
+        plugin_id: str,
+        zip_path: Path,
+        *,
+        sha256: str | None = None,
+    ) -> dict[str, str]:
+        """以更高版本的同一插件替换现有代码，并保留原有启停状态。"""
+        current_manifest, current_error = self._load_manifest(
+            self._plugin_dir(plugin_id)
+        )
+        if current_manifest is None:
+            if current_error is not None:
+                raise ValueError(f"已安装插件 manifest 无效: {current_error}")
+            raise ValueError(f"插件未安装: {plugin_id}")
+
+        manifest, staging = PluginInstaller(self.root_dir).unpack(
+            zip_path, sha256=sha256
+        )
+        try:
+            if manifest.plugin_id != plugin_id:
+                raise ValueError(
+                    f"升级包 plugin_id 不匹配: 期望 {plugin_id}，实际 {manifest.plugin_id}"
+                )
+            if manifest.host_api_version != HOST_API_VERSION:
+                raise ValueError(
+                    "升级包 Host API 版本不兼容: "
+                    f"plugin={manifest.host_api_version} host={HOST_API_VERSION}"
+                )
+            try:
+                is_newer = Version(manifest.version) > Version(current_manifest.version)
+            except InvalidVersion as exc:
+                raise ValueError(
+                    "升级包或已安装插件的 version 不是有效 PEP 440 版本"
+                ) from exc
+            if not is_newer:
+                raise ValueError(
+                    f"升级包版本必须高于当前版本: 当前 {current_manifest.version}，"
+                    f"升级包 {manifest.version}"
+                )
+            # 声明依赖的插件在下一次完整容器启动前不导入；其余插件维持安装期校验。
+            if not manifest.dependencies:
+                check_plugin_dir(
+                    plugin_dir=staging,
+                    plugin_settings=settings.plugins,
+                )
+        except PluginLoadError as exc:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise PluginInstallError(manifest.plugin_id, exc.stage, str(exc)) from exc
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+        return self._publish_staging(
+            staging,
+            manifest,
+            enable=plugin_id in self._enabled_ids(),
+        )
 
     def pending_restart_for(self, plugin_id: str) -> list[str]:
         """返回使当前插件变更生效所需的最小重启目标。"""

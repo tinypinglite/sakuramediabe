@@ -13,6 +13,7 @@ class PluginSummaryResource(SchemaModel):
     enabled: bool
     load_status: str = "ok"
     load_error: str | None = None
+    release_api_url: str | None = None
 
 
 class PluginDetailResource(PluginSummaryResource):

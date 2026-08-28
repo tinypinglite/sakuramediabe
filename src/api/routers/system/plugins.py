@@ -132,6 +132,34 @@ def install_plugin(
     )
 
 
+@router.post("/{plugin_id}/upgrade", response_model=PluginInstallResponse)
+def upgrade_plugin(
+    plugin_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    sha256: str | None = Form(default=None),
+):
+    """升级已安装插件；发布后由用户自行重启容器使新代码生效。"""
+    _check_upload_size(request)
+    manager = PluginManager()
+    if manager.get_plugin(plugin_id) is None:
+        raise ApiError(404, "plugin_not_found", f"未知插件 plugin_id={plugin_id}")
+    temp_path = _upload_temp_path(manager)
+    try:
+        with temp_path.open("wb") as handle:
+            shutil.copyfileobj(file.file, handle)
+        result = manager.upgrade_zip(plugin_id, temp_path, sha256=sha256)
+    except Exception as exc:
+        raise ApiError(422, "plugin_upgrade_failed", f"插件升级失败: {exc}") from exc
+    finally:
+        temp_path.unlink(missing_ok=True)
+    return PluginInstallResponse(
+        plugin_id=result["plugin_id"],
+        version=result["version"],
+        pending_restart=manager.pending_restart_for(result["plugin_id"]),
+    )
+
+
 @router.patch("/{plugin_id}", response_model=PluginSummaryResource)
 def set_plugin_enabled(plugin_id: str, enabled: bool):
     manager = PluginManager()
@@ -148,6 +176,7 @@ def set_plugin_enabled(plugin_id: str, enabled: bool):
         enabled=detail["enabled"],
         load_status=detail["load_status"],
         load_error=detail["load_error"],
+        release_api_url=detail["release_api_url"],
     )
 
 

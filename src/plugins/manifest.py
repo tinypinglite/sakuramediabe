@@ -27,6 +27,7 @@ class PluginManifest(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     author: str | None = None
     homepage: str | None = None
+    release_api_url: str | None = None
 
     @field_validator("plugin_id")
     @classmethod
@@ -44,7 +45,9 @@ class PluginManifest(BaseModel):
             try:
                 Requirement(value)
             except InvalidRequirement as exc:
-                raise ValueError(f"dependencies 包含无效 PEP 508 声明: {value}") from exc
+                raise ValueError(
+                    f"dependencies 包含无效 PEP 508 声明: {value}"
+                ) from exc
         return values
 
 

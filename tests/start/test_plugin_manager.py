@@ -22,6 +22,7 @@ def _make_plugin_dir(
     *,
     version: str = "1.0.0",
     broken_register: bool = False,
+    release_api_url: str | None = None,
 ) -> Path:
     pkg = tmp_path / plugin_id
     pkg.mkdir(exist_ok=True)
@@ -32,6 +33,11 @@ def _make_plugin_dir(
                 "display_name": "演示",
                 "version": version,
                 "host_api_version": HOST_API_VERSION,
+                **(
+                    {"release_api_url": release_api_url}
+                    if release_api_url is not None
+                    else {}
+                ),
             },
             ensure_ascii=False,
         ),
@@ -76,7 +82,10 @@ def _make_plugin_zip(
 
 def test_manager_list_and_detail_after_install(tmp_path):
     root = tmp_path / "root"
-    source = _make_plugin_dir(tmp_path)
+    source = _make_plugin_dir(
+        tmp_path,
+        release_api_url="https://api.github.com/repos/example/demo/releases/latest",
+    )
     manager = PluginManager(root_dir=root)
     result = manager.install(source, enable=False)
 
@@ -85,11 +94,13 @@ def test_manager_list_and_detail_after_install(tmp_path):
     assert [item["plugin_id"] for item in plugins] == ["demo_plugin"]
     assert plugins[0]["enabled"] is False
     assert plugins[0]["load_status"] == "ok"
+    assert plugins[0]["release_api_url"].endswith("/releases/latest")
 
     detail = manager.get_plugin("demo_plugin")
     assert detail is not None
     assert detail["version"] == "1.0.0"
     assert detail["data_dir"].endswith("data")
+    assert detail["release_api_url"].endswith("/releases/latest")
 
 
 def test_manager_set_enabled_persists_via_config(monkeypatch, tmp_path):
@@ -190,6 +201,40 @@ def test_manager_install_zip_replaces_code_and_preserves_data(tmp_path):
 
     assert manager.get_plugin("demo_plugin")["version"] == "2.0.0"
     assert data_file.read_text() == '{"v": 1}'
+
+
+def test_manager_upgrade_zip_replaces_only_newer_same_plugin_and_preserves_data(
+    tmp_path,
+):
+    root = tmp_path / "root"
+    manager = PluginManager(root_dir=root)
+    manager.install_zip(_make_plugin_zip(tmp_path, version="1.0.0"), enable=False)
+    data_file = root / "demo_plugin" / "data" / "state.json"
+    data_file.parent.mkdir(parents=True, exist_ok=True)
+    data_file.write_text('{"v": 1}', encoding="utf-8")
+
+    result = manager.upgrade_zip(
+        "demo_plugin",
+        _make_plugin_zip(tmp_path, version="1.1.0"),
+    )
+
+    assert result == {"plugin_id": "demo_plugin", "version": "1.1.0"}
+    assert manager.get_plugin("demo_plugin")["enabled"] is False
+    assert data_file.read_text(encoding="utf-8") == '{"v": 1}'
+
+    with pytest.raises(ValueError, match="必须高于当前版本"):
+        manager.upgrade_zip(
+            "demo_plugin",
+            _make_plugin_zip(tmp_path, version="1.1.0"),
+        )
+
+    with pytest.raises(ValueError, match="plugin_id 不匹配"):
+        manager.upgrade_zip(
+            "demo_plugin",
+            _make_plugin_zip(tmp_path, "other_plugin", version="2.0.0"),
+        )
+
+    assert manager.get_plugin("demo_plugin")["version"] == "1.1.0"
 
 
 def test_manager_install_zip_rejects_checksum_mismatch(tmp_path):

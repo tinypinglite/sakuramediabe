@@ -170,6 +170,63 @@ def test_install_plugin_with_dependencies_requires_container_restart(
     assert response.json()["pending_restart"] == ["container"]
 
 
+def test_upgrade_plugin_replaces_higher_version_and_preserves_enabled_state(
+    client,
+    account_user,
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "plugins"
+    monkeypatch.setattr("src.plugins.manager._plugin_root", lambda: root)
+    monkeypatch.setattr(
+        "src.plugins.manager.update_settings",
+        lambda new_settings: setattr(
+            settings.plugins, "enabled", list(new_settings.plugins.enabled)
+        ),
+    )
+    token = _login(client, username=account_user.username)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    response = client.post(
+        "/system/plugins",
+        headers=headers,
+        files={"file": ("demo.zip", _zip_bytes(version="1.0.0"), "application/zip")},
+        data={"enable": "false"},
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/system/plugins/api_plugin/upgrade",
+        headers=headers,
+        files={"file": ("demo-v2.zip", _zip_bytes(version="1.1.0"), "application/zip")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "plugin_id": "api_plugin",
+        "version": "1.1.0",
+        "pending_restart": ["api", "aps"],
+    }
+    assert settings.plugins.enabled == []
+
+    response = client.post(
+        "/system/plugins/api_plugin/upgrade",
+        headers=headers,
+        files={
+            "file": (
+                "other.zip",
+                _zip_bytes(plugin_id="other_plugin", version="2.0.0"),
+                "application/zip",
+            )
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "plugin_upgrade_failed"
+
+    response = client.get("/system/plugins", headers=headers)
+    assert response.json()[0]["version"] == "1.1.0"
+
+
 def test_plugin_settings_endpoints(
     client,
     account_user,
