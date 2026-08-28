@@ -1,6 +1,5 @@
 from .daily_recommendations import DailyRecommendationMovieResource
 from .hot_actress_releases import HotActressReleaseMovieResource, HotActressResource
-from .hot_reviews import HotReviewListItemResource, HotReviewListResource
 from .image_search import (
     ImageSearchResultItemResource,
     ImageSearchSessionPageResource,
@@ -22,8 +21,6 @@ __all__ = [
     "DailyRecommendationMovieResource",
     "HotActressReleaseMovieResource",
     "HotActressResource",
-    "HotReviewListItemResource",
-    "HotReviewListResource",
     "ImageSearchResultItemResource",
     "ImageSearchSessionPageResource",
     "MomentRecommendationItemResource",

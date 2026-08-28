@@ -18,7 +18,6 @@ from src.model import (
     PLAYLIST_KIND_RECENTLY_PLAYED,
     Actor,
     DailyRecommendationItem,
-    HotReviewItem,
     Movie,
     MovieActor,
     Playlist,
@@ -40,18 +39,16 @@ SIMILARITY_PER_SEED_LIMIT = 50
 RANK_DECAY_WINDOW = 100
 
 REGULAR_WEIGHTS = {
-    "similarity": 0.40,
-    "subscribed_actor": 0.15,
-    "subscribed_movie": 0.10,
-    "heat": 0.20,
-    "ranking": 0.10,
-    "hot_review": 0.05,
+    "similarity": 8 / 19,
+    "subscribed_actor": 3 / 19,
+    "subscribed_movie": 2 / 19,
+    "heat": 4 / 19,
+    "ranking": 2 / 19,
 }
 COLD_START_WEIGHTS = {
-    "heat": 0.55,
-    "ranking": 0.25,
-    "hot_review": 0.10,
-    "freshness": 0.10,
+    "heat": 11 / 18,
+    "ranking": 5 / 18,
+    "freshness": 2 / 18,
 }
 
 REASON_TEXTS = {
@@ -60,7 +57,6 @@ REASON_TEXTS = {
     "subscribed_movie": "你已订阅这部影片",
     "popular_movie": "近期热度较高",
     "ranking_trending": "来自近期榜单",
-    "hot_review": "近期热评活跃",
     "new_release": "较新发布或近期入库",
 }
 
@@ -237,18 +233,6 @@ class DailyRecommendationService:
         return dict(scores)
 
     @classmethod
-    def _load_hot_review_scores(cls, candidate_ids: set[int]) -> dict[int, float]:
-        if not candidate_ids:
-            return {}
-        rows = HotReviewItem.select(HotReviewItem.movie, HotReviewItem.rank).where(
-            HotReviewItem.movie.in_(candidate_ids)
-        )
-        scores: dict[int, float] = defaultdict(float)
-        for row in rows:
-            scores[row.movie_id] = max(scores[row.movie_id], cls._rank_decay(int(row.rank or 0)))
-        return dict(scores)
-
-    @classmethod
     def _build_freshness_scores(cls, movies: Sequence[_CandidateMovie]) -> dict[int, float]:
         if not movies:
             return {}
@@ -283,13 +267,12 @@ class DailyRecommendationService:
         similarity_scores = cls._load_similarity_scores(recent_seed_ids, candidate_ids)
         heat_scores = cls._load_heat_scores(movies)
         ranking_scores = cls._load_ranking_scores(candidate_ids)
-        hot_review_scores = cls._load_hot_review_scores(candidate_ids)
         freshness_scores = cls._build_freshness_scores(movies)
 
         has_interest_signal = bool(recent_seed_ids or subscribed_actor_movie_ids or subscribed_movie_ids)
         has_public_signal = any(
             score > 0
-            for score_map in (heat_scores, ranking_scores, hot_review_scores)
+            for score_map in (heat_scores, ranking_scores)
             for score in score_map.values()
         )
         extreme_cold_start = not has_interest_signal and not has_public_signal
@@ -302,7 +285,6 @@ class DailyRecommendationService:
                 "subscribed_movie": 1.0 if movie.id in subscribed_movie_ids else 0.0,
                 "heat": cls._normalize(heat_scores.get(movie.id, 0.0)),
                 "ranking": cls._normalize(ranking_scores.get(movie.id, 0.0)),
-                "hot_review": cls._normalize(hot_review_scores.get(movie.id, 0.0)),
                 "freshness": cls._normalize(freshness_scores.get(movie.id, 0.0)),
             }
             if has_interest_signal:
@@ -323,8 +305,6 @@ class DailyRecommendationService:
                 reason_codes.append("popular_movie")
             if signal_scores["ranking"] > 0:
                 reason_codes.append("ranking_trending")
-            if signal_scores["hot_review"] > 0:
-                reason_codes.append("hot_review")
             if extreme_cold_start or (not has_interest_signal and signal_scores["freshness"] > 0):
                 reason_codes.append("new_release")
 

@@ -27,7 +27,6 @@ from src.api.routers.discovery.daily_recommendations import (
 from src.api.routers.discovery.hot_actress_releases import (
     router as hot_actress_releases_router,
 )
-from src.api.routers.discovery.hot_reviews import router as hot_reviews_router
 from src.api.routers.discovery.image_search import router as image_search_router
 from src.api.routers.discovery.moment_recommendations import (
     router as moment_recommendations_router,
@@ -99,7 +98,6 @@ def create_app() -> FastAPI:
     app.include_router(hot_actress_releases_router)
     app.include_router(image_search_router)
     app.include_router(moment_recommendations_router)
-    app.include_router(hot_reviews_router)
     app.include_router(ranking_sources_router)
     app.include_router(downloads_router)
     app.include_router(media_import_router)

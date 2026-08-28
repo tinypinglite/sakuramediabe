@@ -9,7 +9,6 @@ from src.model import (
     BackgroundTaskRun,
     DailyRecommendationItem,
     DownloadClient,
-    HotReviewItem,
     Image,
     IndexerDownloadClient,
     Media,
@@ -90,7 +89,6 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
     assert MovieSeries.table_exists()
     assert DailyRecommendationItem.table_exists()
     assert RankingItem.table_exists()
-    assert HotReviewItem.table_exists()
     assert Playlist.table_exists()
     assert BackgroundTaskRun.table_exists()
     assert not clean_db.table_exists("resource_task_state")

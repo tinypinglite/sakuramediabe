@@ -21,7 +21,6 @@ from src.service.catalog.movie_subscription_search_state_service import (
 )
 from src.service.discovery import (
     DailyRecommendationService,
-    HotReviewSyncService,
     ImageSearchIndexService,
     MomentRecommendationService,
     MovieRecommendationService,
@@ -84,14 +83,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次影片互动数同步",
         cron_setting="movie_interaction_sync_cron",
         handler=lambda reporter, _params: MovieInteractionSyncService().run(reporter=reporter),
-    ),
-    JobDefinition(
-        task_key="hot_review_sync",
-        log_name="hot-review-sync",
-        cli_name="sync-hot-reviews",
-        cli_help="执行一次 JavDB 热评同步",
-        cron_setting="hot_review_sync_cron",
-        handler=lambda _reporter, _params: HotReviewSyncService().sync_all_hot_reviews(),
     ),
     JobDefinition(
         task_key="download_task_sync",

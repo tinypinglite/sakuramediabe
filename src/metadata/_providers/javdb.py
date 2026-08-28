@@ -37,13 +37,10 @@ class JavdbProvider(MetadataRequestClient):
     SUPPORTED_RANK_PERIODS = {"daily", "weekly", "monthly"}
     # 播放榜筛选：all=热播，high_score=高评分。
     SUPPORTED_PLAYBACK_FILTERS = {"all", "high_score"}
-    SUPPORTED_HOT_REVIEW_PERIODS = {
-        "weekly", "all", "quarterly", "monthly", "yearly"}
     API_PATH_MOVIES_TAGS = "/api/v1/movies/tags"
     API_PATH_SEARCH = "/api/v2/search"
     API_PATH_MOVIE_DETAIL = "/api/v4/movies/{javdb_id}"
     API_PATH_MOVIE_REVIEWS = "/api/v1/movies/{javdb_id}/reviews"
-    API_PATH_HOT_REVIEWS = "/api/v1/reviews/hotly"
     API_PATH_RANKINGS = "/api/v1/rankings"
     API_PATH_RANKINGS_PLAYBACK = "/api/v1/rankings/playback"
     API_PATH_SESSIONS = "/api/v1/sessions"
@@ -103,11 +100,6 @@ class JavdbProvider(MetadataRequestClient):
     API_PARAMS_MOVIE_REVIEWS = {
         "page": 1,
         "limit": 20,
-    }
-    API_PARAMS_HOT_REVIEWS = {
-        "period": "weekly",
-        "page": 1,
-        "limit": 24,
     }
 
     def __init__(
@@ -488,48 +480,6 @@ class JavdbProvider(MetadataRequestClient):
         )
         return resources
 
-    def get_hot_reviews(
-        self,
-        period: str = "weekly",
-        page: int = 1,
-        limit: int = 24,
-    ) -> list[JavdbMovieReviewResource]:
-        if period not in self.SUPPORTED_HOT_REVIEW_PERIODS:
-            raise ValueError(f"unsupported period: {period}")
-        if page < 1:
-            raise ValueError(f"invalid page: {page}")
-        if limit < 1:
-            raise ValueError(f"invalid limit: {limit}")
-
-        logger.debug(
-            "Javdb get_hot_reviews start period={} page={} limit={}",
-            period,
-            page,
-            limit,
-        )
-        payload, url = self._get_hot_reviews_payload(
-            period=period,
-            page=page,
-            limit=limit,
-        )
-        reviews = self._extract_movie_reviews(payload, url=url)
-        resources: list[JavdbMovieReviewResource] = []
-        for review in reviews:
-            if not isinstance(review, dict):
-                logger.warning(
-                    "Javdb hot review entry skipped because type is invalid value_type={}",
-                    type(review).__name__,
-                )
-                continue
-            resources.append(self._build_movie_review(review))
-        logger.debug(
-            "Javdb get_hot_reviews success period={} page={} reviews={}",
-            period,
-            page,
-            len(resources),
-        )
-        return resources
-
     def get_rank_numbers(self, video_type: str, period: str = "daily") -> list[str]:
         if video_type not in self.SUPPORTED_RANK_VIDEO_TYPES:
             raise ValueError(f"unsupported video_type: {video_type}")
@@ -806,42 +756,6 @@ class JavdbProvider(MetadataRequestClient):
             logger.warning(
                 "Javdb reviews request returned unsuccessful payload javdb_id={} detail={}",
                 javdb_id,
-                detail,
-            )
-            raise MetadataRequestError("GET", url, detail)
-        return payload, url
-
-    def _get_hot_reviews_payload(
-        self,
-        *,
-        period: str,
-        page: int,
-        limit: int,
-    ) -> tuple[dict[str, Any], str]:
-        params: dict[str, Any] = {
-            **self.API_PARAMS_HOT_REVIEWS,
-        }
-        params["period"] = period
-        params["page"] = page
-        params["limit"] = limit
-        url = self._build_api_url(
-            path=self.API_PATH_HOT_REVIEWS,
-            query_params=params,
-        )
-        logger.debug(
-            "Javdb fetch hot reviews period={} page={} limit={} url={}",
-            period,
-            page,
-            limit,
-            url,
-        )
-        payload = self.request_json("GET", url)
-        if payload.get("success") != 1:
-            detail = payload.get(
-                "message") or f"unexpected success={payload.get('success')}"
-            logger.warning(
-                "Javdb hot reviews request returned unsuccessful payload period={} detail={}",
-                period,
                 detail,
             )
             raise MetadataRequestError("GET", url, detail)

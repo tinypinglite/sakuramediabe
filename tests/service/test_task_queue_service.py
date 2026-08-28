@@ -80,7 +80,7 @@ def test_enqueue_allowed_again_after_terminal_state_releases_mutex(test_db):
 def test_claim_next_claims_earliest_due_row_and_sets_lease(test_db):
     first = TaskQueueService.enqueue(task_key="movie_heat_update", trigger_type="scheduled")
     # 用不同 task_key 绕过 scheduled coalesce，验证按 id 顺序领取两行。
-    second = TaskQueueService.enqueue(task_key="hot_review_sync", trigger_type="scheduled")
+    second = TaskQueueService.enqueue(task_key="actor_subscription_sync", trigger_type="scheduled")
 
     claimed = TaskQueueService.claim_next(lease_seconds=120)
 
@@ -113,7 +113,7 @@ def test_recover_expired_leases_fails_run_and_releases_mutex(test_db):
         lease_expires_at=utc_now_for_db() - timedelta(seconds=1)
     ).where(BackgroundTaskRun.id == stale.id).execute()
     # running 行仍持有 mutex，必须换 task_key 才能再入队一行为"健康对照"。
-    healthy = TaskQueueService.enqueue(task_key="hot_review_sync", trigger_type="scheduled")
+    healthy = TaskQueueService.enqueue(task_key="actor_subscription_sync", trigger_type="scheduled")
     TaskQueueService.claim_next(lease_seconds=3600)
 
     recovered = TaskQueueService.recover_expired_leases()
@@ -146,7 +146,7 @@ def test_renew_leases_extends_running_rows_only(test_db):
     assert after > before
     # pending 行不续租。
     # running 行仍持有 mutex，用另一个 task_key 造 pending 对照行。
-    queued = TaskQueueService.enqueue(task_key="hot_review_sync", trigger_type="scheduled")
+    queued = TaskQueueService.enqueue(task_key="actor_subscription_sync", trigger_type="scheduled")
     assert TaskQueueService.renew_leases([queued.id]) == 0
 
 

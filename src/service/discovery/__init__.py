@@ -5,7 +5,6 @@ from .embedding_client import (
     get_embedding_client,
 )
 from .hot_actress_release_service import HotActressReleaseService
-from .hot_review_service import HotReviewCatalogService, HotReviewSyncService
 from .image_search_index_service import ImageSearchIndexService
 from .image_search_service import ImageSearchService, get_image_search_service
 from .moment_recommendation_service import MomentRecommendationService
@@ -25,8 +24,6 @@ __all__ = [
     "EmbeddingClient",
     "EmbeddingClientError",
     "HotActressReleaseService",
-    "HotReviewCatalogService",
-    "HotReviewSyncService",
     "ImageSearchIndexService",
     "ImageSearchService",
     "MomentRecommendationService",

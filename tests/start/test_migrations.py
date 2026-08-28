@@ -22,6 +22,7 @@ from src.start.legacy_v053_upgrade import LEGACY_V053_UPGRADE_MIGRATION_NAME
 from src.start.migrations.runner import (
     ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
+    HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
     IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
     IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
     MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
@@ -98,6 +99,7 @@ def test_current_migrations_are_discoverable_in_order():
         MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
         IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
         IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
+        HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
     ]
 
 
@@ -148,6 +150,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME, applied=True),
         MigrationExecution(name=IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME, applied=True),
         MigrationExecution(name=IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -158,6 +161,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
         IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
         IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
+        HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
     ]
 
 
@@ -310,7 +314,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 7
+    assert summary.applied_count == 8
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -410,6 +414,17 @@ def test_remove_media_special_tags_migration_drops_data_and_virtual_playlists(cl
         (recently_played.kind, movie.id),
         (custom_playlist.kind, movie.id),
     }
+
+
+def test_remove_hot_review_item_migration_drops_snapshot_table(clean_db):
+    clean_db.execute_sql("CREATE TABLE hot_review_item (id SERIAL PRIMARY KEY)")
+
+    migration = _load_migration_module(
+        Path("src/start/migrations/versions/20260831_02_remove_hot_review_item.py")
+    )
+    migration.migrate(clean_db)
+
+    assert not clean_db.table_exists("hot_review_item")
 
 
 def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(clean_db):
