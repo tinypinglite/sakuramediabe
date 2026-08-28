@@ -19,12 +19,14 @@ GET /media/invalid
 ## 播放
 
 ```http
-GET /media/{media_id}/play/{resource_path:path}?expires=...&signature=...
+GET /media/{media_id}/play/{resource_path:path}?expires=...&signature=...&delivery=auto|proxy|redirect
 ```
 
 播放 URL 使用统一签名。宿主校验签名并构造 `MediaHandle`，随后把请求交给该媒体所属
 provider 的 `handle_playback`；`resource_path` 及响应内容由 provider 解释。provider 不可
-用、鉴权失败、来源不存在和上游暂不可用分别返回 `provider_*` 错误。
+用、鉴权失败、来源不存在和上游暂不可用分别返回 `provider_*` 错误。`delivery` 默认 `auto`：
+provider 声明支持 `redirect` 时使用 302，否则使用 `proxy`。`auto` 选择 302 后若 provider
+返回不支持或可重试错误，宿主只重试一次代理；302 已发出后的客户端播放失败不在后端可见范围内。
 
 ## 进度、时刻点和缩略图
 

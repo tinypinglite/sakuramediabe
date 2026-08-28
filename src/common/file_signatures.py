@@ -135,10 +135,10 @@ def build_signed_media_url(
     media_id: int,
     resource_path: str = "",
     *,
-    delivery: Literal["proxy", "redirect"] = "proxy",
+    delivery: Literal["auto", "proxy", "redirect"] = "auto",
 ) -> str:
     """Build the provider playback gateway URL for one media resource."""
-    if delivery not in {"proxy", "redirect"}:
+    if delivery not in {"auto", "proxy", "redirect"}:
         raise ValueError(f"unsupported playback delivery: {delivery!r}")
     normalized_path = _normalize_resource_path(resource_path)
     expires = build_signature_expires()

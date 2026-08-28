@@ -309,14 +309,16 @@ class DownloadProvider(Protocol):
 宿主唯一来源媒体路由：
 
 ~~~text
-GET /media/{media_id}/play/{resource_path:path}?delivery=proxy|redirect
+GET /media/{media_id}/play/{resource_path:path}?delivery=auto|proxy|redirect
 ~~~
 
 每次请求由宿主验签、读取 Media、校验 bundle 声明的播放方式后原样返回 `handle_playback` 的 Response。宿主
 不解释 `resource_path` 的 provider 业务语义、Range、content type、302 或 HLS；只接受空串或
 相对安全路径：不得以 `/` 开头，不得含反斜杠、空段、`.`、`..` 或 NUL 字符。宿主按该语法
-验签后原样传给 provider，不做路径拼接或业务解析。`delivery` 默认 `proxy`，不属于签名载荷；
-它仅选择同一媒体授权下的传输方式。HLS 子资源必须通过 `context.url_for` 继承原 delivery。
+验签后原样传给 provider，不做路径拼接或业务解析。`delivery` 默认 `auto`：宿主优先选择 bundle
+声明支持的 `redirect`，否则选择 `proxy`，并且只把解析后的方式传给 provider。自动选择 302 后若
+provider 返回不支持或可重试错误，宿主只回退一次代理。`delivery` 不属于签名载荷；它仅选择同一
+媒体授权下的传输方式。HLS 子资源必须通过 `context.url_for` 继承解析后的 delivery。
 
 初始请求的 `resource_path` 为空。HLS playlist 用 `context.url_for` 生成同一 media 的分片
 URL；每个分片再次走同一网关。一次请求只对应一个 Media。

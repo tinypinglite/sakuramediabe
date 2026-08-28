@@ -383,7 +383,7 @@ def build_signed_media_url():
         media_id: int,
         resource_path: str = "",
         expires: int = TEST_FILE_SIGNATURE_EXPIRES,
-        delivery: str = "proxy",
+        delivery: str = "auto",
     ) -> str:
         signature_payload = f"media:{media_id}:{resource_path}:{expires}"
         signature = hmac.new(

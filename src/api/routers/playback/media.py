@@ -1,3 +1,5 @@
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
@@ -105,7 +107,7 @@ async def play_media(
     resource_path: str,
     expires: int | None = None,
     signature: str | None = None,
-    delivery: PlaybackDelivery = "proxy",
+    delivery: Literal["auto", "proxy", "redirect"] = "auto",
 ):
     require_signed_params(expires, signature)
 
@@ -120,12 +122,18 @@ async def play_media(
     media_handle = media_handle_for(media)
     try:
         bundle = MEDIA_PROVIDER_REGISTRY.require(library_handle.provider_key)
-        if delivery not in bundle.playback_deliveries:
+        if delivery == "auto":
+            effective_delivery: PlaybackDelivery = (
+                "redirect" if "redirect" in bundle.playback_deliveries else "proxy"
+            )
+        elif delivery not in bundle.playback_deliveries:
             raise ApiError(
                 422,
                 "provider_playback_delivery_unsupported",
                 "媒体提供方不支持该播放方式",
             )
+        else:
+            effective_delivery = delivery
         storage = MEDIA_PROVIDER_REGISTRY.storage_for(library_handle)
     except ProviderUnavailableError as exc:
         raise ApiError(
@@ -146,15 +154,35 @@ async def play_media(
             f"provider_{exc.code}",
             exc.safe_message,
         ) from exc
-    context = PlaybackContext(
-        request=request,
-        resource_path=normalized_path,
-        delivery=delivery,
-        url_for=lambda path: build_signed_media_url(media.id, path, delivery=delivery),
-    )
+
+    def context_for(actual_delivery: PlaybackDelivery) -> PlaybackContext:
+        return PlaybackContext(
+            request=request,
+            resource_path=normalized_path,
+            delivery=actual_delivery,
+            url_for=lambda path: build_signed_media_url(
+                media.id, path, delivery=actual_delivery
+            ),
+        )
+
     try:
-        return await storage.handle_playback(media=media_handle, context=context)
+        return await storage.handle_playback(
+            media=media_handle,
+            context=context_for(effective_delivery),
+        )
     except ProviderOperationError as exc:
+        if (
+            delivery == "auto"
+            and effective_delivery == "redirect"
+            and (exc.code == "unsupported" or exc.retryable)
+        ):
+            try:
+                return await storage.handle_playback(
+                    media=media_handle,
+                    context=context_for("proxy"),
+                )
+            except ProviderOperationError as fallback_exc:
+                exc = fallback_exc
         status_code = {
             "source_not_found": 404,
             "authentication_failed": 401,

@@ -23,6 +23,7 @@ from src.model import (
     VideoItem,
     get_database,
 )
+from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
 from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.movies import (
     MovieMediaPointResource,
@@ -311,6 +312,9 @@ class VideoItemService:
             media.points = points_by_media_id.get(media.id, [])
             media.play_url = build_signed_media_url(media.id)
             media.provider_key = media.library.provider_key if media.library_id is not None else None
+            media.playback_deliveries = list(
+                MEDIA_PROVIDER_REGISTRY.require(media.library.provider_key).playback_deliveries
+            )
             resources.append(MovieMediaResource.from_attributes_model(media))
         return resources
 

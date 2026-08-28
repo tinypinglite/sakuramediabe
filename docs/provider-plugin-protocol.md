@@ -71,13 +71,15 @@ media.provider bundle：全部外部 I/O 与 HTTP Response
 播放的唯一来源媒体网关为：
 
 ~~~text
-GET /media/{media_id}/play/{resource_path:path}?delivery=proxy|redirect
+GET /media/{media_id}/play/{resource_path:path}?delivery=auto|proxy|redirect
 ~~~
 
 初始请求、HLS playlist 和 HLS segment 都走此路由；`resource_path` 只由插件解释。`delivery`
-默认 `proxy`，由 bundle 声明支持的方式；它不改变媒体授权，故不进入 URL 签名。宿主只
-接受空串或相对安全路径：不得以 `/` 开头，不得含反斜杠、空段、`.`、`..` 或 NUL 字符，
-不拼接或解析其业务含义。HLS playlist 用网关 URL 生成分片地址。一次请求只对应一个 `Media`。
+默认 `auto`：宿主在 bundle 声明支持 `redirect` 时选择 302，否则选择 `proxy`；插件只接收
+解析后的 `proxy` 或 `redirect`。自动选择 302 后遇到不支持或可重试的 provider 错误时，宿主
+只回退一次代理。它不改变媒体授权，故不进入 URL 签名。宿主只接受空串或相对安全路径：不得以
+`/` 开头，不得含反斜杠、空段、`.`、`..` 或 NUL 字符，不拼接或解析其业务含义。HLS playlist
+用解析后的网关方式生成分片地址。一次请求只对应一个 `Media`。
 
 片段是宿主的独立资产：插件只把 MP4 写入 workspace，宿主验证、探测、移动并记录它；来源
 Media 删除后片段仍按现有业务规则保留。

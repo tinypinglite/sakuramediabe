@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from starlette.responses import PlainTextResponse
 
 from src.model import Media, MediaLibrary, Movie
@@ -15,11 +16,20 @@ def _media(test_name: str):
     return Media.create(movie=movie, library=library, file_name="media.mp4")
 
 
-def test_media_playback_gateway_passes_opaque_path_to_provider(
+@pytest.mark.parametrize(
+    ("playback_deliveries", "expected_delivery"),
+    (
+        (("proxy", "redirect"), "redirect"),
+        (("proxy",), "proxy"),
+    ),
+)
+def test_media_playback_gateway_auto_uses_supported_delivery(
     client,
     test_db,
     build_signed_media_url,
     monkeypatch,
+    playback_deliveries,
+    expected_delivery,
 ):
     media = _media("gateway")
     seen = {}
@@ -35,7 +45,7 @@ def test_media_playback_gateway_passes_opaque_path_to_provider(
     monkeypatch.setattr(
         MEDIA_PROVIDER_REGISTRY,
         "require",
-        lambda _provider_key: SimpleNamespace(playback_deliveries=("proxy", "redirect")),
+        lambda _provider_key: SimpleNamespace(playback_deliveries=playback_deliveries),
     )
     monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _handle: Storage())
     response = client.get(build_signed_media_url(media.id, "hls/segment.ts"))
@@ -45,8 +55,10 @@ def test_media_playback_gateway_passes_opaque_path_to_provider(
     assert seen == {
         "media_id": media.id,
         "resource_path": "hls/segment.ts",
-        "delivery": "proxy",
-        "child_url": build_signed_media_url(media.id, "hls/next.ts"),
+        "delivery": expected_delivery,
+        "child_url": build_signed_media_url(
+            media.id, "hls/next.ts", delivery=expected_delivery
+        ),
     }
 
 
@@ -58,8 +70,11 @@ def test_media_playback_gateway_maps_provider_error(
 ):
     media = _media("gateway-error")
 
+    deliveries = []
+
     class Storage:
         async def handle_playback(self, *, media, context):
+            deliveries.append(context.delivery)
             raise ProviderOperationError(
                 provider_key="demo",
                 operation="playback",
@@ -78,6 +93,53 @@ def test_media_playback_gateway_maps_provider_error(
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "provider_source_not_found"
+    assert deliveries == ["redirect"]
+
+
+@pytest.mark.parametrize(
+    ("code", "retryable"),
+    (("unsupported", False), ("unavailable", True)),
+)
+def test_media_playback_gateway_auto_retries_proxy_after_redirect_failure(
+    client,
+    test_db,
+    build_signed_media_url,
+    monkeypatch,
+    code,
+    retryable,
+):
+    media = _media("gateway-fallback")
+    deliveries = []
+
+    class Storage:
+        async def handle_playback(self, *, media, context):
+            deliveries.append(context.delivery)
+            if context.delivery == "redirect":
+                raise ProviderOperationError(
+                    provider_key="demo",
+                    operation="playback",
+                    code=code,
+                    safe_message="redirect unavailable",
+                    retryable=retryable,
+                )
+            return PlainTextResponse("proxy response")
+
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(
+            playback_deliveries=("proxy", "redirect")
+        ),
+    )
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _handle: Storage()
+    )
+
+    response = client.get(build_signed_media_url(media.id))
+
+    assert response.status_code == 200
+    assert response.text == "proxy response"
+    assert deliveries == ["redirect", "proxy"]
 
 
 def test_media_playback_gateway_rejects_provider_unsupported_delivery(
