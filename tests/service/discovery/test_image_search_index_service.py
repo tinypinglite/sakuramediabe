@@ -3,9 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.common.runtime_time import utc_now_for_db
 from src.model import (
     Image,
     ImageSearchIndexState,
+    ImageSearchSession,
     Media,
     MediaLibrary,
     MediaThumbnail,
@@ -50,6 +52,7 @@ class _Store:
         self.trace = trace
         self.ensure_table_calls = 0
         self.ensure_scalar_indices_calls = 0
+        self.clear_count = 0
         self.batches = []
 
     def ensure_table(self, vector_size: int) -> None:
@@ -58,6 +61,11 @@ class _Store:
 
     def ensure_scalar_indices(self) -> None:
         self.ensure_scalar_indices_calls += 1
+
+    def clear(self) -> None:
+        self.clear_count += 1
+        if self.trace is not None:
+            self.trace.append(f"clear-{self.name}")
 
     def upsert_records(self, records) -> None:
         self.batches.append(list(records))
@@ -186,6 +194,50 @@ def test_index_task_drains_both_queues_in_bounded_round_robin_batches(
         for item in MoviePlotImage.select().where(
             MoviePlotImage.id.in_([item.id for item in plot_images])
         )
+    )
+
+
+def test_reset_task_clears_vectors_then_reindexes_current_space(
+    test_db, monkeypatch, tmp_path
+):
+    thumbnails, plot_images, paths = _prepare_images(
+        tmp_path, thumbnail_count=1, plot_count=1
+    )
+    ImageSearchIndexState.create(id=1, indexed_space_id="siglip2-previous")
+    ImageSearchSession.create(
+        session_id="reset-index-session",
+        query_vector=[0.1],
+        expires_at=utc_now_for_db(),
+    )
+    monkeypatch.setattr(
+        "src.service.discovery.image_search_index_service.resolve_image_file_path",
+        lambda origin: paths[origin],
+    )
+    trace: list[str] = []
+    thumbnail_store = _Store("thumbnail", trace)
+    plot_store = _Store("plot", trace)
+
+    stats = ImageSearchIndexService(
+        store=thumbnail_store,
+        plot_store=plot_store,
+        embedder=_Embedder(),
+    ).index_pending_images(reset=True)
+
+    assert trace == ["clear-thumbnail", "clear-plot", "thumbnail", "plot"]
+    assert thumbnail_store.clear_count == 1
+    assert plot_store.clear_count == 1
+    assert ImageSearchIndexState.get_by_id(1).indexed_space_id == "siglip2-current"
+    assert ImageSearchSession.select().count() == 0
+    assert stats["sessions_deleted"] == 1
+    assert stats["thumbnails_reset"] == 1
+    assert stats["plot_images_reset"] == 1
+    assert (
+        MediaThumbnail.get_by_id(thumbnails[0].id).image_search_index_status
+        == MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
+    )
+    assert (
+        MoviePlotImage.get_by_id(plot_images[0].id).image_search_index_status
+        == MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
     )
 
 

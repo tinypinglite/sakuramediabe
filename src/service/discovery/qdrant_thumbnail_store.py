@@ -35,6 +35,7 @@ class QdrantThumbnailStore:
     COLLECTION_NAME = "media_thumbnail_vectors_siglip2_v1"
     PAYLOAD_INDEX_FIELDS = ("movie_id", "media_id")
     CLIENT_TIMEOUT_SECONDS = 30
+    CLEAR_TIMEOUT_SECONDS = 300
     HNSW_M = 16
     HNSW_EF_CONSTRUCT = 128
     HNSW_EF_SEARCH = 128
@@ -55,24 +56,28 @@ class QdrantThumbnailStore:
         self.collection_name = self.COLLECTION_NAME
         self.api_key = api_key if api_key is not None else settings.qdrant.api_key
         self._client = client
+        self._client_was_injected = client is not None
 
     @staticmethod
     def _ensure_dependency() -> None:
         if QdrantClient is None or models is None:
             raise RuntimeError("qdrant-client is not installed. Please run `uv sync` first.")
 
+    def _create_client(self, timeout_seconds: int):
+        self._ensure_dependency()
+        return QdrantClient(
+            url=self.url,
+            api_key=(self.api_key or None),
+            timeout=timeout_seconds,
+        )
+
     def _get_client(self):
         if self._client is None:
-            self._ensure_dependency()
-            self._client = QdrantClient(
-                url=self.url,
-                api_key=(self.api_key or None),
-                timeout=self.CLIENT_TIMEOUT_SECONDS,
-            )
+            self._client = self._create_client(self.CLIENT_TIMEOUT_SECONDS)
         return self._client
 
-    def _collection_exists(self) -> bool:
-        client = self._get_client()
+    def _collection_exists(self, client: Any | None = None) -> bool:
+        client = client if client is not None else self._get_client()
         collection_exists = getattr(client, "collection_exists", None)
         if callable(collection_exists):
             return bool(collection_exists(self.collection_name))
@@ -319,8 +324,21 @@ class QdrantThumbnailStore:
         )
 
     def clear(self) -> None:
-        if self._collection_exists():
-            self._get_client().delete_collection(collection_name=self.collection_name)
+        if self._client_was_injected:
+            client = self._get_client()
+            if self._collection_exists(client):
+                client.delete_collection(collection_name=self.collection_name)
+            return
+
+        client = self._create_client(self.CLEAR_TIMEOUT_SECONDS)
+        try:
+            if self._collection_exists(client):
+                client.delete_collection(
+                    collection_name=self.collection_name,
+                    timeout=self.CLEAR_TIMEOUT_SECONDS,
+                )
+        finally:
+            client.close()
 
     @staticmethod
     def _build_filter(

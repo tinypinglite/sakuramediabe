@@ -6,7 +6,14 @@ from loguru import logger
 from src.common import resolve_image_file_path
 from src.common.service_helpers import emit_progress
 from src.config.config import settings
-from src.model import Image, Media, MediaThumbnail, Movie, MoviePlotImage
+from src.model import (
+    Image,
+    ImageSearchSession,
+    Media,
+    MediaThumbnail,
+    Movie,
+    MoviePlotImage,
+)
 from src.model.base import get_database
 from src.service.discovery.embedding_client import (
     EmbeddingClientError,
@@ -49,7 +56,9 @@ class ImageSearchIndexService:
             store.ensure_scalar_indices()
         self._stores_ready = True
 
-    def index_pending_images(self, progress_callback=None) -> dict[str, int]:
+    def index_pending_images(
+        self, progress_callback=None, *, reset: bool = False
+    ) -> dict[str, int]:
         stats = {
             "processed_thumbnails": 0,
             "successful_thumbnails": 0,
@@ -62,6 +71,11 @@ class ImageSearchIndexService:
         work_batch_size = max(1, int(settings.image_search.index_upsert_batch_size))
         inference_batch_size = max(1, int(settings.image_search.inference_batch_size))
         next_progress_at = 1000
+        reset_stats: dict[str, int] = {}
+
+        if reset:
+            emit_progress(progress_callback, text="正在清空图像搜索索引")
+            reset_stats = self._reset_for_rebuild()
 
         while True:
             thumbnails = self._pending_thumbnails(work_batch_size)
@@ -98,11 +112,12 @@ class ImageSearchIndexService:
                     next_progress_at += 1000
 
         processed = stats["processed_thumbnails"] + stats["processed_plot_images"]
+        summary = {**reset_stats, **stats}
         emit_progress(
             progress_callback,
             current=processed,
             text="图像搜索索引任务完成",
-            summary_patch=stats,
+            summary_patch=summary,
         )
         logger.info(
             "Finished image search indexing processed_thumbnails={} successful_thumbnails={} "
@@ -116,12 +131,37 @@ class ImageSearchIndexService:
             stats["failed_plot_images"],
             int((time.monotonic() - started_at) * 1000),
         )
-        return stats
+        return summary
 
     def _prepare_index_space(self):
         space = self.embedder.describe()
         ImageSearchIndexSpaceService.prepare_for_indexing(space.space_id)
         return space
+
+    def _reset_for_rebuild(self) -> dict[str, int]:
+        space = self.embedder.describe()
+        self.store.clear()
+        self.plot_store.clear()
+        self._stores_ready = False
+        with get_database().atomic():
+            sessions_deleted = ImageSearchSession.delete().execute()
+            thumbnails_reset = (
+                MediaThumbnail.update(
+                    image_search_index_status=MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_PENDING
+                )
+                .from_(Media)
+                .where(MediaThumbnail.media == Media.id, Media.movie.is_null(False))
+                .execute()
+            )
+            plot_images_reset = MoviePlotImage.update(
+                image_search_index_status=MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_PENDING
+            ).execute()
+            ImageSearchIndexSpaceService.set_indexed_space(space.space_id)
+        return {
+            "sessions_deleted": int(sessions_deleted),
+            "thumbnails_reset": int(thumbnails_reset),
+            "plot_images_reset": int(plot_images_reset),
+        }
 
     @staticmethod
     def _pending_thumbnails(limit: int) -> list[MediaThumbnail]:

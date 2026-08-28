@@ -125,8 +125,9 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_name="index-image-search",
         cli_help="持续构建缩略图和剧情图的搜索向量索引，直到待处理队列为空",
         cron_setting="image_search_index_cron",
-        handler=lambda reporter, _params: ImageSearchIndexService().index_pending_images(
+        handler=lambda reporter, params: ImageSearchIndexService().index_pending_images(
             progress_callback=reporter.progress_callback,
+            reset=params.get("reset") is True,
         ),
     ),
     JobDefinition(

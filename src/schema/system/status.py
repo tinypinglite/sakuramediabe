@@ -86,9 +86,7 @@ class StatusImageSearchResource(SchemaModel):
 
 
 class ImageSearchResetResource(SchemaModel):
-    sessions_deleted: int
-    thumbnails_reset: int
-    plot_images_reset: int
+    task_run_id: int
 
 
 class StatusMetadataProviderTestError(SchemaModel):

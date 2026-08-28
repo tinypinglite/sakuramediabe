@@ -1,7 +1,7 @@
 import pytest
 
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
-from src.model import Actor, Media, MediaLibrary, Movie
+from src.model import Actor, BackgroundTaskRun, Media, MediaLibrary, Movie
 from src.service.discovery.embedding_client import EmbeddingClientError
 from src.service.system.status_service import StatusService
 
@@ -252,6 +252,20 @@ def test_image_search_status_endpoint_returns_failure_payload_when_embedding_pro
     assert payload["embedding_service"]["healthy"] is False
     assert payload["embedding_service"]["error"] == "probe failed"
     assert payload["index_space"]["state"] == "unavailable"
+
+
+def test_image_search_reset_endpoint_queues_background_rebuild(client, account_user):
+    token = _login(client, username=account_user.username)
+
+    response = client.post(
+        "/image-search/reset",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 202
+    task_run = BackgroundTaskRun.get_by_id(response.json()["task_run_id"])
+    assert task_run.task_key == "image_search_index"
+    assert task_run.params == {"reset": True}
 
 
 def test_metadata_provider_test_endpoint_returns_javdb_success_payload(

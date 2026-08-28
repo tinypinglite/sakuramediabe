@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 from src.api.exception.errors import ApiError
@@ -17,14 +15,6 @@ from src.model import (
 )
 from src.service.discovery.image_search_reset_service import ImageSearchResetService
 from src.service.system.task_queue_service import TaskQueueService
-
-
-class _Store:
-    def __init__(self):
-        self.clear_count = 0
-
-    def clear(self):
-        self.clear_count += 1
 
 
 def _prepare_image_search_data():
@@ -58,60 +48,31 @@ def _prepare_image_search_data():
     return thumbnail, plot_image
 
 
-def _configure_reset_dependencies(monkeypatch):
-    thumbnail_store = _Store()
-    plot_store = _Store()
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_reset_service.get_embedding_client",
-        lambda: SimpleNamespace(
-            describe=lambda: SimpleNamespace(space_id="siglip2-new", dimension=2)
-        ),
-    )
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_reset_service.get_qdrant_thumbnail_store",
-        lambda: thumbnail_store,
-    )
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_reset_service.get_qdrant_plot_image_store",
-        lambda: plot_store,
-    )
-    return thumbnail_store, plot_store
-
-
-def test_reset_clears_vectors_resets_statuses_and_queues_combined_index(test_db, monkeypatch):
+def test_reset_queues_async_rebuild_without_sync_mutations(test_db):
     thumbnail, plot_image = _prepare_image_search_data()
-    thumbnail_store, plot_store = _configure_reset_dependencies(monkeypatch)
 
     result = ImageSearchResetService.reset()
 
-    assert result == {
-        "sessions_deleted": 1,
-        "thumbnails_reset": 1,
-        "plot_images_reset": 1,
-    }
-    assert thumbnail_store.clear_count == 1
-    assert plot_store.clear_count == 1
-    assert ImageSearchSession.select().count() == 0
+    assert ImageSearchSession.select().count() == 1
     assert (
         MediaThumbnail.get_by_id(thumbnail.id).image_search_index_status
-        == MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_PENDING
+        == MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
     )
     assert (
         MoviePlotImage.get_by_id(plot_image.id).image_search_index_status
-        == MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_PENDING
+        == MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
     )
-    assert (
-        BackgroundTaskRun.select()
-        .where(BackgroundTaskRun.mutex_key == "aps:image_search_index")
-        .exists()
+    task_run = BackgroundTaskRun.get(
+        BackgroundTaskRun.mutex_key == "aps:image_search_index"
     )
+    assert result == {"task_run_id": task_run.id}
+    assert task_run.params == {"reset": True}
     assert BackgroundTaskRun.select().count() == 1
-    assert ImageSearchIndexState.get_by_id(1).indexed_space_id == "siglip2-new"
+    assert ImageSearchIndexState.select().count() == 0
 
 
-def test_reset_rejects_active_indexing_without_changing_data(test_db, monkeypatch):
+def test_reset_rejects_active_indexing_without_changing_data(test_db):
     thumbnail, plot_image = _prepare_image_search_data()
-    thumbnail_store, plot_store = _configure_reset_dependencies(monkeypatch)
     TaskQueueService.enqueue(task_key="image_search_index", trigger_type="manual")
 
     with pytest.raises(ApiError) as exc_info:
@@ -119,8 +80,6 @@ def test_reset_rejects_active_indexing_without_changing_data(test_db, monkeypatc
 
     assert exc_info.value.status_code == 409
     assert exc_info.value.code == "image_search_reset_conflict"
-    assert thumbnail_store.clear_count == 0
-    assert plot_store.clear_count == 0
     assert ImageSearchSession.select().count() == 1
     assert (
         MediaThumbnail.get_by_id(thumbnail.id).image_search_index_status

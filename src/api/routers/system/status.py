@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
@@ -27,7 +27,11 @@ def get_image_search_status():
     return StatusService.get_image_search_status()
 
 
-@router.post("/image-search/reset", response_model=ImageSearchResetResource)
+@router.post(
+    "/image-search/reset",
+    response_model=ImageSearchResetResource,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 def reset_image_search():
     return ImageSearchResetService.reset()
 
