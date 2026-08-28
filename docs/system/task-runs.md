@@ -27,6 +27,10 @@
 
 接口返回 `PageResponse<TaskRunResource>`，用于筛选、分页和加载历史记录。
 
+## `GET /system/task-runs/active`
+
+需要 Bearer Token。接口返回全部 `pending`、`running` 任务，作为当前活动任务的权威快照，不受历史记录分页限制。任务中心在页面可见时使用此接口同步进度。
+
 ## `GET /system/activity/bootstrap`
 
 活动中心首屏使用此接口一次取得：
@@ -35,7 +39,7 @@
 - 当前活动任务
 - 最近任务运行分页
 
-首屏之后按页面可见性轮询 `GET /system/task-runs` 与 `GET /system/notifications`。任务进度以当前 `background_task_run` 行为准。
+首屏之后按页面可见性轮询 `GET /system/task-runs/active`、`GET /system/task-runs` 与 `GET /system/notifications`。任务进度以当前 `background_task_run` 行为准。
 
 ## 手动执行
 

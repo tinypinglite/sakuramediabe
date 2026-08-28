@@ -156,6 +156,7 @@ def test_create_app_registers_image_search_routes():
     assert "/system/activity/bootstrap" in paths
     assert "/system/notifications" in paths
     assert "/system/task-runs" in paths
+    assert "/system/task-runs/active" in paths
     assert "/system/events/stream" not in paths
     assert "/status/metadata-providers/{provider}/test" in paths
     assert "/import-sources/browse" in paths
@@ -235,7 +236,6 @@ def test_create_app_does_not_register_removed_api_endpoints():
         ("/actors/search/local", "GET"),
         ("/image-search/sessions/{session_id}", "GET"),
         ("/system/notifications/unread-count", "GET"),
-        ("/system/task-runs/active", "GET"),
         ("/actors/{actor_id}/movies", "GET"),
         ("/system/notifications/{notification_id}/archive", "PATCH"),
         ("/system/resource-task-states/{task_key}/{resource_id}/reset", "POST"),

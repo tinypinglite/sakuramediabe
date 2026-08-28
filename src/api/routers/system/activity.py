@@ -65,6 +65,11 @@ def mark_all_notifications_read():
     return ActivityService.mark_all_notifications_read()
 
 
+@router.get("/system/task-runs/active", response_model=list[TaskRunResource])
+def list_active_task_runs():
+    return ActivityService.list_active_task_runs()
+
+
 @router.get("/system/task-runs", response_model=PageResponse[TaskRunResource])
 def list_task_runs(
     page: int = Query(default=1),
