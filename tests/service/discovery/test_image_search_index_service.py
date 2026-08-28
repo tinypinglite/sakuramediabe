@@ -3,9 +3,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.model import Image, Media, MediaLibrary, MediaThumbnail, Movie, MoviePlotImage
+from src.model import (
+    Image,
+    ImageSearchIndexState,
+    Media,
+    MediaLibrary,
+    MediaThumbnail,
+    Movie,
+    MoviePlotImage,
+)
 from src.service.discovery.embedding_client import EmbeddingClientError
 from src.service.discovery.image_search_index_service import ImageSearchIndexService
+from src.service.discovery.image_search_index_space_service import (
+    ImageSearchIndexRebuildRequiredError,
+)
 
 
 class _PendingQuery:
@@ -60,7 +71,7 @@ class _Embedder:
 
     @staticmethod
     def describe():
-        return SimpleNamespace(dimension=2)
+        return SimpleNamespace(space_id="siglip2-current", dimension=2)
 
     def embed_images(self, payloads):
         self.batch_sizes.append(len(payloads))
@@ -237,6 +248,31 @@ def test_qdrant_failure_leaves_batch_pending(test_db, monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="qdrant unavailable"):
         service.index_pending_images()
 
+    assert (
+        MediaThumbnail.get_by_id(thumbnails[0].id).image_search_index_status
+        == MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_PENDING
+    )
+
+
+def test_index_task_blocks_mismatched_space_before_writing(
+    test_db, monkeypatch, tmp_path
+):
+    thumbnails, _, paths = _prepare_images(tmp_path, thumbnail_count=1, plot_count=0)
+    ImageSearchIndexState.create(id=1, indexed_space_id="siglip2-previous")
+    monkeypatch.setattr(
+        "src.service.discovery.image_search_index_service.resolve_image_file_path",
+        lambda origin: paths[origin],
+    )
+    thumbnail_store = _Store("thumbnail")
+
+    with pytest.raises(ImageSearchIndexRebuildRequiredError):
+        ImageSearchIndexService(
+            store=thumbnail_store,
+            plot_store=_Store("plot"),
+            embedder=_Embedder(),
+        ).index_pending_images()
+
+    assert thumbnail_store.batches == []
     assert (
         MediaThumbnail.get_by_id(thumbnails[0].id).image_search_index_status
         == MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_PENDING

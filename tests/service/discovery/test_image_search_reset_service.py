@@ -7,6 +7,7 @@ from src.common.runtime_time import utc_now_for_db
 from src.model import (
     BackgroundTaskRun,
     Image,
+    ImageSearchIndexState,
     ImageSearchSession,
     Media,
     MediaLibrary,
@@ -62,7 +63,9 @@ def _configure_reset_dependencies(monkeypatch):
     plot_store = _Store()
     monkeypatch.setattr(
         "src.service.discovery.image_search_reset_service.get_embedding_client",
-        lambda: SimpleNamespace(describe=lambda: SimpleNamespace(dimension=2)),
+        lambda: SimpleNamespace(
+            describe=lambda: SimpleNamespace(space_id="siglip2-new", dimension=2)
+        ),
     )
     monkeypatch.setattr(
         "src.service.discovery.image_search_reset_service.get_qdrant_thumbnail_store",
@@ -103,6 +106,7 @@ def test_reset_clears_vectors_resets_statuses_and_queues_combined_index(test_db,
         .exists()
     )
     assert BackgroundTaskRun.select().count() == 1
+    assert ImageSearchIndexState.get_by_id(1).indexed_space_id == "siglip2-new"
 
 
 def test_reset_rejects_active_indexing_without_changing_data(test_db, monkeypatch):
@@ -126,3 +130,4 @@ def test_reset_rejects_active_indexing_without_changing_data(test_db, monkeypatc
         MoviePlotImage.get_by_id(plot_image.id).image_search_index_status
         == MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
     )
+    assert ImageSearchIndexState.select().count() == 0

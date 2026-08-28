@@ -200,6 +200,11 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
     assert payload["embedding_service"]["error"] is None
     assert payload["image_search_vector_store"]["healthy"] is True
     assert payload["image_search_vector_store"]["exists"] is True
+    assert payload["index_space"] == {
+        "state": "uninitialized",
+        "indexed_space_id": None,
+        "current_space_id": "siglip2-base",
+    }
 
 
 def test_image_search_status_endpoint_returns_failure_payload_when_embedding_probe_fails(
@@ -246,6 +251,7 @@ def test_image_search_status_endpoint_returns_failure_payload_when_embedding_pro
     assert payload["healthy"] is False
     assert payload["embedding_service"]["healthy"] is False
     assert payload["embedding_service"]["error"] == "probe failed"
+    assert payload["index_space"]["state"] == "unavailable"
 
 
 def test_metadata_provider_test_endpoint_returns_javdb_success_payload(

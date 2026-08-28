@@ -12,6 +12,7 @@ from src.schema.system.status import (
     StatusActorSummary,
     StatusEmbeddingServiceSummary,
     StatusImageSearchIndexingSummary,
+    StatusImageSearchIndexSpaceSummary,
     StatusImageSearchResource,
     StatusImageSearchVectorStoreSummary,
     StatusMediaFileSummary,
@@ -25,6 +26,9 @@ from src.schema.system.status import (
 from src.service.discovery.embedding_client import (
     EmbeddingClientError,
     get_embedding_client,
+)
+from src.service.discovery.image_search_index_space_service import (
+    ImageSearchIndexSpaceService,
 )
 from src.service.discovery.qdrant_thumbnail_store import (
     QdrantThumbnailStore,
@@ -107,12 +111,20 @@ class StatusService:
         embedding_service = cls._probe_embedding_service()
         image_search_vector_store = cls._probe_image_search_vector_store()
         indexing = cls._indexing_status()
+        index_space = ImageSearchIndexSpaceService.get_status(
+            embedding_service.space_id if embedding_service.healthy else None
+        )
         return StatusImageSearchResource(
             healthy=bool(embedding_service.healthy and image_search_vector_store.healthy),
             checked_at=utc_now_for_db(),
             embedding_service=embedding_service,
             image_search_vector_store=image_search_vector_store,
             indexing=indexing,
+            index_space=StatusImageSearchIndexSpaceSummary(
+                state=index_space.state,
+                indexed_space_id=index_space.indexed_space_id,
+                current_space_id=index_space.current_space_id,
+            ),
         )
 
     @classmethod

@@ -19,6 +19,11 @@ from src.schema.discovery.image_search import (
 )
 
 from .embedding_client import EmbeddingClientError, get_embedding_client
+from .image_search_index_space_service import (
+    IMAGE_SEARCH_INDEX_REBUILD_REQUIRED_ERROR_CODE,
+    ImageSearchIndexRebuildRequiredError,
+    ImageSearchIndexSpaceService,
+)
 from .qdrant_plot_image_store import (
     PlotImageVectorSearchHit,
     QdrantPlotImageStore,
@@ -80,6 +85,21 @@ class MoviePlotImageSearchService:
             ImageSearchSession.expires_at <= utc_now_for_db()
         ).execute()
 
+    def _ensure_searchable_index(self) -> None:
+        try:
+            space = self.embedder.describe()
+        except EmbeddingClientError as exc:
+            raise ApiError(exc.status_code, exc.error_code, exc.message) from exc
+        try:
+            ImageSearchIndexSpaceService.ensure_search_ready(space.space_id)
+        except ImageSearchIndexRebuildRequiredError as exc:
+            raise ApiError(
+                409,
+                IMAGE_SEARCH_INDEX_REBUILD_REQUIRED_ERROR_CODE,
+                "Image search index must be rebuilt for the current embedding space",
+                exc.details,
+            ) from exc
+
     def create_session_and_first_page(
         self,
         image_bytes: bytes,
@@ -92,6 +112,7 @@ class MoviePlotImageSearchService:
             raise ValueError("image file is empty")
         if score_threshold is not None and not 0 <= float(score_threshold) <= 1:
             raise ValueError("score_threshold must be between 0 and 1")
+        self._ensure_searchable_index()
         try:
             vector = self.embedder.embed_images([image_bytes])[0]
         except EmbeddingClientError as exc:
@@ -125,6 +146,7 @@ class MoviePlotImageSearchService:
     ) -> MoviePlotImageSearchSessionPageResource:
         if score_threshold is not None and not 0 <= float(score_threshold) <= 1:
             raise ValueError("score_threshold must be between 0 and 1")
+        self._ensure_searchable_index()
         try:
             vector = self.embedder.embed_texts([text])[0]
         except EmbeddingClientError as exc:
@@ -148,6 +170,7 @@ class MoviePlotImageSearchService:
     def list_results(
         self, session_id: str, cursor: str | None = None
     ) -> MoviePlotImageSearchSessionPageResource:
+        self._ensure_searchable_index()
         self._purge_expired_sessions()
         session = ImageSearchSession.get_or_none(
             ImageSearchSession.session_id == session_id

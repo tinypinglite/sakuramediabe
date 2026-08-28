@@ -17,3 +17,13 @@ class ImageSearchSession(TimestampedMixin, BaseModel):
 
     class Meta:
         table_name = "image_search_session"
+
+
+class ImageSearchIndexState(BaseModel):
+    """两套图搜索向量集合共享的嵌入空间身份。"""
+
+    id = peewee.IntegerField(primary_key=True, default=1)
+    indexed_space_id = peewee.CharField(max_length=255)
+
+    class Meta:
+        table_name = "image_search_index_state"

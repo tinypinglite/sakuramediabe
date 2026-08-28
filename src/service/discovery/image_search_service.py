@@ -21,6 +21,11 @@ from src.service.discovery.embedding_client import (
     EmbeddingClientError,
     get_embedding_client,
 )
+from src.service.discovery.image_search_index_space_service import (
+    IMAGE_SEARCH_INDEX_REBUILD_REQUIRED_ERROR_CODE,
+    ImageSearchIndexRebuildRequiredError,
+    ImageSearchIndexSpaceService,
+)
 from src.service.discovery.qdrant_thumbnail_store import (
     QdrantThumbnailStore,
     ThumbnailVectorSearchHit,
@@ -91,6 +96,21 @@ class ImageSearchService:
             raise LookupError("image search session not found or expired")
         return session
 
+    def _ensure_searchable_index(self) -> None:
+        try:
+            space = self.embedder.describe()
+        except EmbeddingClientError as exc:
+            raise ApiError(exc.status_code, exc.error_code, exc.message) from exc
+        try:
+            ImageSearchIndexSpaceService.ensure_search_ready(space.space_id)
+        except ImageSearchIndexRebuildRequiredError as exc:
+            raise ApiError(
+                409,
+                IMAGE_SEARCH_INDEX_REBUILD_REQUIRED_ERROR_CODE,
+                "Image search index must be rebuilt for the current embedding space",
+                exc.details,
+            ) from exc
+
     def create_session_and_first_page(
         self,
         image_bytes: bytes,
@@ -107,6 +127,7 @@ class ImageSearchService:
         if score_threshold is not None and not 0 <= float(score_threshold) <= 1:
             raise ValueError("score_threshold must be between 0 and 1")
 
+        self._ensure_searchable_index()
         self._purge_expired_sessions()
         try:
             vector = self.embedder.embed_images([image_bytes])[0]
@@ -139,6 +160,7 @@ class ImageSearchService:
     ) -> ImageSearchSessionPageResource:
         if score_threshold is not None and not 0 <= float(score_threshold) <= 1:
             raise ValueError("score_threshold must be between 0 and 1")
+        self._ensure_searchable_index()
         try:
             vector = self.embedder.embed_texts([text])[0]
         except EmbeddingClientError as exc:
@@ -163,6 +185,7 @@ class ImageSearchService:
         session_id: str,
         cursor: str | None = None,
     ) -> ImageSearchSessionPageResource:
+        self._ensure_searchable_index()
         session = self._get_session_model(session_id)
         offset = 0 if cursor is None else self._decode_cursor(cursor)
         return self._search_page(session, offset=offset)

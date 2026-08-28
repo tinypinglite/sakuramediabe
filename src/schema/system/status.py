@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import Field
 
@@ -69,12 +70,19 @@ class StatusImageSearchIndexingSummary(SchemaModel):
     success_thumbnails: int
 
 
+class StatusImageSearchIndexSpaceSummary(SchemaModel):
+    state: Literal["ready", "rebuild_required", "uninitialized", "unavailable"]
+    indexed_space_id: str | None = None
+    current_space_id: str | None = None
+
+
 class StatusImageSearchResource(SchemaModel):
     healthy: bool
     checked_at: datetime
     embedding_service: StatusEmbeddingServiceSummary
     image_search_vector_store: StatusImageSearchVectorStoreSummary
     indexing: StatusImageSearchIndexingSummary
+    index_space: StatusImageSearchIndexSpaceSummary
 
 
 class ImageSearchResetResource(SchemaModel):

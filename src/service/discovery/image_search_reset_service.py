@@ -5,6 +5,9 @@ from src.service.discovery.embedding_client import (
     EmbeddingClientError,
     get_embedding_client,
 )
+from src.service.discovery.image_search_index_space_service import (
+    ImageSearchIndexSpaceService,
+)
 from src.service.discovery.qdrant_plot_image_store import get_qdrant_plot_image_store
 from src.service.discovery.qdrant_thumbnail_store import get_qdrant_thumbnail_store
 from src.service.system.task_queue_service import (
@@ -18,7 +21,7 @@ class ImageSearchResetService:
     def reset(cls) -> dict[str, int]:
         # 先确认新配置的嵌入服务可用，避免把旧索引清空后才发现地址或认证配置错误。
         try:
-            get_embedding_client().describe()
+            space = get_embedding_client().describe()
         except EmbeddingClientError as exc:
             raise ApiError(exc.status_code, exc.error_code, exc.message) from exc
         try:
@@ -40,6 +43,7 @@ class ImageSearchResetService:
                 plot_images_reset = MoviePlotImage.update(
                     image_search_index_status=MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_PENDING
                 ).execute()
+                ImageSearchIndexSpaceService.set_indexed_space(space.space_id)
         except TaskQueueConflictError as exc:
             raise ApiError(
                 409,

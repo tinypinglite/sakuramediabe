@@ -12,6 +12,9 @@ from src.service.discovery.embedding_client import (
     EmbeddingClientError,
     get_embedding_client,
 )
+from src.service.discovery.image_search_index_space_service import (
+    ImageSearchIndexSpaceService,
+)
 from src.service.discovery.qdrant_plot_image_store import (
     PlotImageVectorRecord,
     QdrantPlotImageStore,
@@ -36,10 +39,9 @@ class ImageSearchIndexService:
         self.embedder = embedder or get_embedding_client()
         self._stores_ready = False
 
-    def ensure_stores_ready(self) -> None:
+    def ensure_stores_ready(self, vector_size: int) -> None:
         if self._stores_ready:
             return
-        vector_size = int(self.embedder.describe().dimension)
         if vector_size <= 0:
             raise RuntimeError("embedding service dimension is invalid")
         for store in (self.store, self.plot_store):
@@ -67,7 +69,8 @@ class ImageSearchIndexService:
             if not thumbnails and not plot_images:
                 break
 
-            self.ensure_stores_ready()
+            space = self._prepare_index_space()
+            self.ensure_stores_ready(int(space.dimension))
             if thumbnails:
                 successful, failed = self._index_thumbnail_batch(
                     thumbnails, inference_batch_size
@@ -114,6 +117,11 @@ class ImageSearchIndexService:
             int((time.monotonic() - started_at) * 1000),
         )
         return stats
+
+    def _prepare_index_space(self):
+        space = self.embedder.describe()
+        ImageSearchIndexSpaceService.prepare_for_indexing(space.space_id)
+        return space
 
     @staticmethod
     def _pending_thumbnails(limit: int) -> list[MediaThumbnail]:

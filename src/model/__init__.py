@@ -30,6 +30,7 @@ from .collections import (
 from .discovery import (
     DailyRecommendationItem,
     HotReviewItem,
+    ImageSearchIndexState,
     ImageSearchSession,
     MomentRecommendation,
     RankingItem,
@@ -77,6 +78,7 @@ __all__ = [
     "DownloadTask",
     "HotReviewItem",
     "Image",
+    "ImageSearchIndexState",
     "ImageSearchSession",
     "Indexer",
     "IndexerDownloadClient",

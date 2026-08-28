@@ -19,6 +19,10 @@ class _SearchStore:
 
 
 class _SearchEmbedder:
+    @staticmethod
+    def describe():
+        return type("Space", (), {"space_id": "siglip2-current"})()
+
     def embed_images(self, _images):
         return [[0.1, 0.2]]
 
