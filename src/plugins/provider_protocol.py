@@ -8,6 +8,7 @@ the host: refs and provider configuration are only stored and passed back.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -313,6 +314,12 @@ class StorageMediaRefScanner(Protocol):
     """Optional capability for enumerating provider-native media refs."""
 
     def scan_media_refs(self, *, source_ref: JsonObject) -> Iterable[JsonObject]: ...
+
+
+class StorageCoverSourceProvider(Protocol):
+    """Optional capability for opening a video source used to generate its cover."""
+
+    def open_cover_source(self, *, media: MediaHandle) -> AbstractContextManager[Any]: ...
 
 
 class DownloadComponent(Protocol):

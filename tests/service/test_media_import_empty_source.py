@@ -1,9 +1,11 @@
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 from src.config.config import settings
 from src.model import MediaLibrary
-from src.plugins.provider_protocol import ImportFile, ImportFileContent
+from src.plugins.provider_protocol import ImportFile, ImportFileContent, StagedMedia
 from src.schema.catalog.subtitles import SubtitleImportResult, SubtitleImportStatus
+from src.service.transfers.imports import import_service
 from src.service.transfers.imports.import_service import MediaImportService
 
 
@@ -68,6 +70,80 @@ def test_provider_import_skips_small_and_non_video_files(monkeypatch):
     assert result.imported_count == 0
     assert result.skipped_count == 2
     assert result.failed_count == 0
+
+
+def test_video_import_generates_cover_after_finalizing(monkeypatch):
+    events: list[str] = []
+    source = ImportFile(
+        source_ref={"id": "video"},
+        name="video.mp4",
+        relative_path="video.mp4",
+        size_bytes=100,
+        is_video=True,
+    )
+    staged = StagedMedia(
+        storage_ref={"id": "stored-video"},
+        receipt={"id": "receipt"},
+        size_bytes=100,
+        duration_seconds=None,
+        video_info=None,
+    )
+    library = SimpleNamespace(
+        id=1,
+        provider_key="test",
+        provider_config={},
+        account_key=None,
+    )
+    video = SimpleNamespace(id=7)
+    media = object()
+    cover_source = object()
+
+    class Storage:
+        def scan_import_source(self, *, source_ref):
+            assert source_ref == {"source": "video"}
+            return (source,)
+
+        def stage_import_file(self, **_kwargs):
+            return staged
+
+        def finalize_import(self, *, receipt):
+            assert receipt == staged.receipt
+            events.append("finalize")
+
+        def open_cover_source(self, *, media):
+            assert media == "media-handle"
+            events.append("open_cover_source")
+            return nullcontext(cover_source)
+
+    def create_media(**kwargs):
+        assert kwargs["video_item"] is video
+        events.append("create_media")
+        return media
+
+    def generate_cover(actual_video, actual_source):
+        assert actual_video is video
+        assert actual_source is cover_source
+        events.append("cover")
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(MediaLibrary, "get_or_none", lambda *_args, **_kwargs: library)
+    monkeypatch.setattr(
+        import_service,
+        "get_database",
+        lambda: SimpleNamespace(atomic=nullcontext),
+    )
+    monkeypatch.setattr(import_service.VideoItem, "create", lambda **_kwargs: video)
+    monkeypatch.setattr(MediaImportService, "_create_media", staticmethod(create_media))
+    monkeypatch.setattr(import_service, "media_handle_for", lambda _value: "media-handle")
+    monkeypatch.setattr(import_service.VideoCoverService, "generate_cover", generate_cover)
+
+    result = MediaImportService(
+        provider=Storage(), catalog_import_service=object()
+    ).import_from_source({"source": "video"}, library.id, media_kind="video")
+
+    assert result.imported_count == 1
+    assert result.created_video_ids == [video.id]
+    assert events == ["create_media", "finalize", "open_cover_source", "cover"]
 
 
 def test_import_sidecar_subtitles_matches_same_directory_and_movie_number(monkeypatch):

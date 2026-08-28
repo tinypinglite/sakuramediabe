@@ -43,6 +43,7 @@ from src.service.catalog.movie_image_service import ImageDownloadError
 from src.service.catalog.subtitle_asset_service import SubtitleAssetService
 from src.service.playback.provider_helpers import media_handle_for
 from src.service.transfers.downloads.common import library_handle_for
+from src.service.videos.video_cover_service import VideoCoverService
 
 ImportProgressCallback = Callable[[dict[str, object]], None]
 StageReceiptCallback = Callable[[str, dict[str, Any]], None]
@@ -228,6 +229,8 @@ class MediaImportService:
         with self.metadata_import_batch(sorted(metadata_numbers)) as metadata_futures:
             for index, source in enumerate(scanned_files, start=1):
                 staged: StagedMedia | None = None
+                video: VideoItem | None = None
+                media: Media | None = None
                 if not source.is_video:
                     if not self._is_srt(source):
                         skipped_count += 1
@@ -286,7 +289,7 @@ class MediaImportService:
                     else:
                         with get_database().atomic():
                             video = VideoItem.create(title=self._title_for(source))
-                            self._create_media(
+                            media = self._create_media(
                                 storage=storage,
                                 movie=None,
                                 video_item=video,
@@ -338,6 +341,12 @@ class MediaImportService:
                         if stage_receipt_clear_callback is not None:
                             stage_receipt_clear_callback(operation_key)
                         imported_count += 1
+                        if video is not None and media is not None:
+                            self._generate_video_cover(
+                                storage=storage,
+                                video=video,
+                                media=media,
+                            )
                         if media_kind == "jav":
                             failed_count += self._import_sidecar_subtitles(
                                 storage=storage,
@@ -405,6 +414,21 @@ class MediaImportService:
             if on_commit is not None:
                 on_commit()
             return media
+
+    @staticmethod
+    def _generate_video_cover(*, storage: Any, video: VideoItem, media: Media) -> None:
+        open_cover_source = getattr(storage, "open_cover_source", None)
+        if not callable(open_cover_source):
+            logger.warning(
+                "Video cover skipped because provider does not support cover source video_id={}",
+                video.id,
+            )
+            return
+        try:
+            with open_cover_source(media=media_handle_for(media)) as source:
+                VideoCoverService.generate_cover(video, source)
+        except Exception as exc:
+            logger.warning("Video cover skipped video_id={} detail={}", video.id, exc)
 
     @staticmethod
     def _title_for(source: ImportFile) -> str:
