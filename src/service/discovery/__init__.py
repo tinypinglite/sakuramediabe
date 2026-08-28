@@ -9,7 +9,6 @@ from .hot_review_service import HotReviewCatalogService, HotReviewSyncService
 from .image_search_index_service import ImageSearchIndexService
 from .image_search_service import ImageSearchService, get_image_search_service
 from .moment_recommendation_service import MomentRecommendationService
-from .movie_plot_image_search_index_service import MoviePlotImageSearchIndexService
 from .movie_plot_image_search_service import get_movie_plot_image_search_service
 from .qdrant_plot_image_store import get_qdrant_plot_image_store
 from .qdrant_thumbnail_store import (
@@ -31,7 +30,6 @@ __all__ = [
     "ImageSearchIndexService",
     "ImageSearchService",
     "MomentRecommendationService",
-    "MoviePlotImageSearchIndexService",
     "MovieRecommendationService",
     "QdrantThumbnailStore",
     "RankingCatalogService",

@@ -22,6 +22,7 @@ from src.start.legacy_v053_upgrade import LEGACY_V053_UPGRADE_MIGRATION_NAME
 from src.start.migrations.runner import (
     ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
+    IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
     MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
     MOVIE_BLACKLIST_MIGRATION_NAME,
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
@@ -94,6 +95,7 @@ def test_current_migrations_are_discoverable_in_order():
         MOVIE_BLACKLIST_MIGRATION_NAME,
         LEGACY_V053_UPGRADE_MIGRATION_NAME,
         MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
+        IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
     ]
 
 
@@ -142,6 +144,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=MOVIE_BLACKLIST_MIGRATION_NAME, applied=True),
         MigrationExecution(name=LEGACY_V053_UPGRADE_MIGRATION_NAME, applied=True),
         MigrationExecution(name=MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -150,6 +153,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MOVIE_BLACKLIST_MIGRATION_NAME,
         LEGACY_V053_UPGRADE_MIGRATION_NAME,
         MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
+        IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
     ]
 
 

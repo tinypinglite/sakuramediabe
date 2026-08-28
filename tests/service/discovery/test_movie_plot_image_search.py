@@ -1,9 +1,4 @@
-from types import SimpleNamespace
-
 from src.model import Image, Movie, MoviePlotImage
-from src.service.discovery.movie_plot_image_search_index_service import (
-    MoviePlotImageSearchIndexService,
-)
 from src.service.discovery.movie_plot_image_search_service import (
     MoviePlotImageSearchService,
 )
@@ -62,57 +57,3 @@ def test_plot_image_search_returns_dedicated_result_and_paginates(test_db):
     assert first_page.next_cursor
     assert [item.plot_image_id for item in second_page.items] == [second.id]
     assert second_page.next_cursor is None
-
-
-def test_plot_image_index_marks_success(
-    test_db, monkeypatch, tmp_path
-):
-    movie = Movie.create(movie_number="PLOT-005", javdb_id="plot-5", title="movie")
-    success = _create_plot_image(movie, "movies/plot-5-success.jpg")
-    failed = _create_plot_image(movie, "movies/plot-5-failed.jpg")
-    image_file = tmp_path / "plot.jpg"
-    image_file.write_bytes(b"image")
-    monkeypatch.setattr(
-        "src.service.discovery.movie_plot_image_search_index_service.resolve_image_file_path",
-        lambda _origin: image_file,
-    )
-
-    class _Store:
-        def __init__(self):
-            self.records = []
-
-        def ensure_table(self, vector_size):
-            assert vector_size == 2
-
-        def ensure_scalar_indices(self):
-            return None
-
-        def upsert_records(self, records):
-            self.records.extend(records)
-
-    class _Embedder:
-        def describe(self):
-            return SimpleNamespace(dimension=2)
-
-        def embed_images(self, payloads):
-            return [[0.2, 0.3] for _ in payloads]
-
-    store = _Store()
-    stats = MoviePlotImageSearchIndexService(
-        store=store, embedder=_Embedder()
-    ).index_pending_plot_images()
-
-    assert stats == {
-        "pending_plot_images": 2,
-        "successful_plot_images": 2,
-        "failed_plot_images": 0,
-    }
-    assert [record.plot_image_id for record in store.records] == [success.id, failed.id]
-    assert (
-        MoviePlotImage.get_by_id(success.id).image_search_index_status
-        == MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
-    )
-    assert (
-        MoviePlotImage.get_by_id(failed.id).image_search_index_status
-        == MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
-    )

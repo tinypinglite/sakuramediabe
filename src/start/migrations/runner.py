@@ -18,6 +18,7 @@ MOVIE_COLLECTION_OWNER_MIGRATION_NAME = "20260823_01_unify_movie_collection_owne
 ACTOR_GENDER_BACKFILL_MIGRATION_NAME = "20260823_02_backfill_actor_gender_from_movie_extra"
 MOVIE_BLACKLIST_MIGRATION_NAME = "20260823_03_add_movie_blacklist"
 MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME = "20260826_01_remove_media_special_tags"
+IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME = "20260830_01_add_image_search_queue_indexes"
 
 
 @dataclass(frozen=True)

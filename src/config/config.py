@@ -166,9 +166,7 @@ class Scheduler(BaseModel):
     hot_review_sync_cron: str = "20 1 * * *"
     # 空跑只查 DB 不读盘，30 分钟一次足够；有新导入时缩略图会在同一活跃窗口内跟上。
     media_thumbnail_cron: str = "*/30 * * * *"
-    image_search_index_cron: str = "2-59/5 * * * *"
-    plot_image_search_index_cron: str = "4-59/5 * * * *"
-    image_search_optimize_cron: str = "0 3 * * *"
+    image_search_index_cron: str = "*/5 * * * *"
     movie_similarity_recompute_cron: str = "30 3 * * *"
     moment_recommendation_generate_cron: str = "0 4 * * *"
     daily_recommendation_generate_cron: str = "0 5 * * *"
@@ -225,11 +223,8 @@ class ImageSearch(BaseModel):
     default_page_size: int = 20
     max_page_size: int = 100
     search_scan_batch_size: int = 100
-    index_max_records_per_run: int = Field(default=100000, ge=1)
-    index_upsert_batch_size: int = 100
-    optimize_every_records: int = 5000
-    optimize_every_seconds: int = 1800
-    optimize_on_job_end: bool = True
+    # 每轮每类图片最多各取这一批，任务会循环到两类队列都为空。
+    index_upsert_batch_size: int = Field(default=100, ge=1)
 
     @field_validator("inference_base_url")
     @classmethod

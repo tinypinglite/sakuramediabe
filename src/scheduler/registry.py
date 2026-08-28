@@ -24,7 +24,6 @@ from src.service.discovery import (
     HotReviewSyncService,
     ImageSearchIndexService,
     MomentRecommendationService,
-    MoviePlotImageSearchIndexService,
     MovieRecommendationService,
 )
 from src.service.playback import MediaThumbnailService
@@ -123,20 +122,10 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
     JobDefinition(
         task_key="image_search_index",
         log_name="image-search-index",
-        cli_name="index-image-search-thumbnails",
-        cli_help="执行一次以图搜图缩略图向量索引",
+        cli_name="index-image-search",
+        cli_help="持续构建缩略图和剧情图的搜索向量索引，直到待处理队列为空",
         cron_setting="image_search_index_cron",
-        handler=lambda reporter, _params: ImageSearchIndexService().index_pending_thumbnails(
-            progress_callback=reporter.progress_callback,
-        ),
-    ),
-    JobDefinition(
-        task_key="plot_image_search_index",
-        log_name="plot-image-search-index",
-        cli_name="index-image-search-plot-images",
-        cli_help="执行一次以图搜图剧情图向量索引",
-        cron_setting="plot_image_search_index_cron",
-        handler=lambda reporter, _params: MoviePlotImageSearchIndexService().index_pending_plot_images(
+        handler=lambda reporter, _params: ImageSearchIndexService().index_pending_images(
             progress_callback=reporter.progress_callback,
         ),
     ),
@@ -169,14 +158,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         handler=lambda reporter, _params: DailyRecommendationService.generate_latest_snapshot(
             progress_callback=reporter.progress_callback,
         ),
-    ),
-    JobDefinition(
-        task_key="image_search_optimize",
-        log_name="image-search-optimize",
-        cli_name="optimize-image-search-index",
-        cli_help="执行一次以图搜图向量索引优化",
-        cron_setting="image_search_optimize_cron",
-        handler=lambda _reporter, _params: ImageSearchIndexService().optimize_index(),
     ),
     JobDefinition(
         task_key="gfriends_filetree_refresh",

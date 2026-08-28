@@ -81,11 +81,14 @@ class MediaThumbnail(TimestampedMixin, BaseModel):
     media = peewee.ForeignKeyField(Media, backref="thumbnails", on_delete="CASCADE")
     image = peewee.ForeignKeyField(Image, backref="media_thumbnails", on_delete="CASCADE")
     offset = peewee.IntegerField(index=True)
-    image_search_index_status = peewee.IntegerField(default=IMAGE_SEARCH_INDEX_STATUS_PENDING, index=True)
+    image_search_index_status = peewee.IntegerField(default=IMAGE_SEARCH_INDEX_STATUS_PENDING)
 
     class Meta:
         table_name = "media_thumbnail"
-        indexes = ((("media", "offset"), True),)
+        indexes = (
+            (("media", "offset"), True),
+            (("image_search_index_status", "id"), False),
+        )
 
 
 class MediaProgress(TimestampedMixin, BaseModel):

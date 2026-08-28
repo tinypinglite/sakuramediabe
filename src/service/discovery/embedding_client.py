@@ -25,21 +25,23 @@ class EmbeddingClient:
     def __init__(self, http_client: httpx.Client | None = None) -> None:
         self.base_url = settings.image_search.inference_base_url.rstrip("/")
         self.api_key = settings.image_search.inference_api_key
-        self._http_client = http_client
-
-    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        client = self._http_client or httpx.Client(
+        self._http_client = http_client or httpx.Client(
             base_url=self.base_url,
             timeout=httpx.Timeout(
                 settings.image_search.inference_timeout_seconds,
                 connect=settings.image_search.inference_connect_timeout_seconds,
             ),
-            headers=headers,
             trust_env=False,
         )
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        headers = dict(kwargs.pop("headers", {}) or {})
+        if self.api_key:
+            headers = {"Authorization": f"Bearer {self.api_key}", **headers}
         try:
-            response = client.request(method, path, **kwargs)
+            response = self._http_client.request(
+                method, path, headers=headers or None, **kwargs
+            )
         except httpx.TimeoutException as exc:
             raise EmbeddingClientError(
                 503, "image_search_inference_unavailable", "Embedding service timed out"
@@ -54,9 +56,6 @@ class EmbeddingClient:
             raise EmbeddingClientError(
                 502, "image_search_inference_failed", "Embedding service request failed"
             ) from exc
-        finally:
-            if self._http_client is None:
-                client.close()
         if response.status_code >= 400:
             raise EmbeddingClientError(
                 response.status_code,

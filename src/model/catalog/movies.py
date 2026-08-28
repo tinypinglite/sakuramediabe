@@ -266,11 +266,14 @@ class MoviePlotImage(BaseModel):
 
     movie = peewee.ForeignKeyField(Movie, backref="plot_image_links", on_delete="CASCADE")
     image = peewee.ForeignKeyField(Image, backref="movie_plot_links", on_delete="CASCADE")
-    image_search_index_status = peewee.IntegerField(default=IMAGE_SEARCH_INDEX_STATUS_PENDING, index=True)
+    image_search_index_status = peewee.IntegerField(default=IMAGE_SEARCH_INDEX_STATUS_PENDING)
 
     class Meta:
         table_name = "movie_plot_image"
-        indexes = ((("movie", "image"), True),)
+        indexes = (
+            (("movie", "image"), True),
+            (("image_search_index_status", "id"), False),
+        )
 
 
 class Subtitle(TimestampedMixin, BaseModel):

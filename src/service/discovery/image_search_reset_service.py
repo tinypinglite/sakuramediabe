@@ -26,9 +26,6 @@ class ImageSearchResetService:
                 TaskQueueService.enqueue(
                     task_key="image_search_index", trigger_type="manual", conflict="raise"
                 )
-                TaskQueueService.enqueue(
-                    task_key="plot_image_search_index", trigger_type="manual", conflict="raise"
-                )
                 get_qdrant_thumbnail_store().clear()
                 get_qdrant_plot_image_store().clear()
                 sessions_deleted = ImageSearchSession.delete().execute()

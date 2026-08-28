@@ -26,7 +26,6 @@ class QdrantPlotImageStore(QdrantThumbnailStore):
     def upsert_records(self, records: Sequence[PlotImageVectorRecord]) -> None:
         if not records:
             return
-        self.ensure_table(len(records[0].vector))
         self._get_client().upsert(
             collection_name=self.collection_name,
             points=[

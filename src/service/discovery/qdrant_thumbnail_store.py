@@ -226,9 +226,6 @@ class QdrantThumbnailStore:
                     continue
                 raise
 
-    def ensure_vector_index(self) -> bool:
-        return False
-
     def inspect_status(self) -> dict[str, Any]:
         status = {
             "healthy": True,
@@ -271,12 +268,6 @@ class QdrantThumbnailStore:
             return None
         return str(getattr(value, "value", value))
 
-    def optimize(self) -> dict[str, Any]:
-        self.ensure_scalar_indices()
-        if not self._collection_exists():
-            return {"optimized": False}
-        return {"optimized": True}
-
     @staticmethod
     def _prepare_vector(vector: Sequence[float]) -> list[float]:
         return [float(item) for item in vector]
@@ -284,7 +275,6 @@ class QdrantThumbnailStore:
     def upsert_records(self, records: Sequence[ThumbnailVectorRecord]) -> None:
         if not records:
             return
-        self.ensure_table(len(records[0].vector))
         points = []
         for item in records:
             points.append(

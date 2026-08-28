@@ -9,7 +9,5 @@ TASK_NAME_REGISTRY = {
     "download_task_auto_import": "已完成下载自动导入",
     "media_thumbnail_generation": "媒体缩略图生成",
     "image_search_index": "图像搜索索引构建",
-    "plot_image_search_index": "剧情图搜索索引构建",
-    "image_search_optimize": "图像搜索索引优化",
     "library_import": "媒体库导入",
 }

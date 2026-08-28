@@ -23,17 +23,19 @@
 1. 导入媒体后生成 `Media`
 2. 定时任务或单次命令 `generate-media-thumbnails` 为媒体生成 `MediaThumbnail`
 3. 新建缩略图默认 `image_search_index_status = PENDING`
-4. 定时任务或单次命令 `index-image-search-thumbnails` 读取待索引缩略图，调用 嵌入服务生成向量，并写入 Qdrant
-5. 定时任务或单次命令 `optimize-image-search-index` 负责压缩数据和建立/维护索引，但不是“可以搜索”的前置条件
+4. 定时任务或单次命令 `index-image-search` 持续读取待索引缩略图和剧情图，调用嵌入服务生成向量，并写入各自的 Qdrant collection
 
 补充说明：
 
 - 如果 Qdrant collection 尚未建立，或还没有任何已索引缩略图，创建搜索会话仍然会成功，但 `items` 会是空数组
 - 删除媒体时，服务会 best-effort 删除对应 `media_id` 的向量记录
-- 当前索引任务只扫描 `image_search_index_status = PENDING` 的缩略图
-- 整批嵌入请求失败会中止当前索引任务，未处理图片保持 `PENDING`；应从嵌入服务日志定位具体原因
+- 索引任务只扫描 `image_search_index_status = PENDING` 的图片；每轮每类最多读取 `index_upsert_batch_size` 条，处理完继续读取，直到两类队列都为空
+- 推理仍按 `inference_batch_size` 分小批发送，因此待索引数量增长到百万级也不会一次性加载 ID、图片或向量
+- `image_search_index` 继续使用普通任务队列和默认 worker lane；同一 task key 的定时触发会在任务运行期间合并，不会并发启动第二个索引任务
+- 文件不存在或单张图片被嵌入服务以 422 拒绝时记为 `FAILED`；嵌入服务、Qdrant 或数据库的瞬时故障会中止任务并保留 `PENDING`，下次安全重试
+- Qdrant point id 使用数据库记录主键，重复 upsert 幂等；即使向量写入后数据库状态回写失败，下次任务也可以安全重放
 
-剧情图搜索使用独立的 `movie_plot_image_vectors` collection 和 `index-image-search-plot-images` 任务，不影响缩略图 collection 或接口。
+剧情图搜索仍使用独立的 `movie_plot_image_vectors_siglip2_v1` collection 和接口，但与缩略图共用同一个普通索引任务。
 
 嵌入服务必须提供 `GET /v1/embedding-space`、`POST /v1/embed/images` 与 `POST /v1/embed/texts`；前者声明稳定的 `space_id`、向量维度和 `image` / `text` 模态。
 
@@ -271,10 +273,11 @@ Authorization: Bearer <token>
 ```toml
 [image_search]
 inference_base_url = "http://siglip2-embed:8080"
-inference_timeout_seconds = 30
+inference_timeout_seconds = 120
 inference_connect_timeout_seconds = 3
 inference_api_key = ""
 inference_batch_size = 16
+index_upsert_batch_size = 100
 session_ttl_seconds = 600
 default_page_size = 20
 max_page_size = 100
@@ -285,9 +288,7 @@ url = "http://qdrant:6333"
 api_key = ""
 
 [scheduler]
-image_search_index_cron = "2-59/5 * * * *"
-plot_image_search_index_cron = "4-59/5 * * * *"
-image_search_optimize_cron = "0 */6 * * *"
+image_search_index_cron = "*/5 * * * *"
 ```
 
 当前实现说明：
@@ -301,7 +302,7 @@ image_search_optimize_cron = "0 */6 * * *"
 - 为控制百万级 768 维向量的常驻内存，Qdrant collection 固定使用 `vectors_on_disk=true`、`hnsw.on_disk=true`、`on_disk_payload=true`
 - Qdrant 默认会维护 `movie_id`、`media_id` 的 payload index，point id 使用 `thumbnail_id`
 - 向量索引使用 Qdrant HNSW，不启用 int8 scalar quantization
-- 新数据写入后即可参与搜索；`optimize` 主要用于确保 payload index 并交由 Qdrant 后台优化器维护数据，不阻塞基础搜索能力
+- collection 和 payload index 在任务首次发现待处理图片时检查一次；后续批量 upsert 不重复执行建表检查，Qdrant 后台优化器自行维护索引
 
 ## 当前实现边界
 

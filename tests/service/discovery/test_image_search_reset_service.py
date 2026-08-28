@@ -75,7 +75,7 @@ def _configure_reset_dependencies(monkeypatch):
     return thumbnail_store, plot_store
 
 
-def test_reset_clears_vectors_resets_statuses_and_queues_both_indexes(test_db, monkeypatch):
+def test_reset_clears_vectors_resets_statuses_and_queues_combined_index(test_db, monkeypatch):
     thumbnail, plot_image = _prepare_image_search_data()
     thumbnail_store, plot_store = _configure_reset_dependencies(monkeypatch)
 
@@ -102,11 +102,7 @@ def test_reset_clears_vectors_resets_statuses_and_queues_both_indexes(test_db, m
         .where(BackgroundTaskRun.mutex_key == "aps:image_search_index")
         .exists()
     )
-    assert (
-        BackgroundTaskRun.select()
-        .where(BackgroundTaskRun.mutex_key == "aps:plot_image_search_index")
-        .exists()
-    )
+    assert BackgroundTaskRun.select().count() == 1
 
 
 def test_reset_rejects_active_indexing_without_changing_data(test_db, monkeypatch):
