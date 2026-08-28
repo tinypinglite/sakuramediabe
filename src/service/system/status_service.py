@@ -7,7 +7,14 @@ from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
-from src.model import Actor, Media, MediaLibrary, MediaThumbnail, Movie
+from src.model import (
+    Actor,
+    BackgroundTaskRun,
+    Media,
+    MediaLibrary,
+    MediaThumbnail,
+    Movie,
+)
 from src.schema.system.status import (
     StatusActorSummary,
     StatusEmbeddingServiceSummary,
@@ -124,6 +131,7 @@ class StatusService:
                 state=index_space.state,
                 indexed_space_id=index_space.indexed_space_id,
                 current_space_id=index_space.current_space_id,
+                is_rebuilding=cls._is_image_search_rebuilding(),
             ),
         )
 
@@ -279,3 +287,15 @@ class StatusService:
             failed_thumbnails=int(failed),
             success_thumbnails=int(success),
         )
+
+    @staticmethod
+    def _is_image_search_rebuilding() -> bool:
+        task_run = (
+            BackgroundTaskRun.select(BackgroundTaskRun.params)
+            .where(
+                BackgroundTaskRun.task_key == "image_search_index",
+                BackgroundTaskRun.state.in_(("pending", "running")),
+            )
+            .first()
+        )
+        return task_run is not None and (task_run.params or {}).get("reset") is True

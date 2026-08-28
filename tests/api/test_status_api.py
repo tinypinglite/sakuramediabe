@@ -204,7 +204,21 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
         "state": "uninitialized",
         "indexed_space_id": None,
         "current_space_id": "siglip2-base",
+        "is_rebuilding": False,
     }
+
+    BackgroundTaskRun.create(
+        task_key="image_search_index",
+        task_name="图搜索索引",
+        trigger_type="manual",
+        state="pending",
+        params={"reset": True},
+    )
+
+    response = client.get("/status/image-search", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    assert response.json()["index_space"]["is_rebuilding"] is True
 
 
 def test_image_search_status_endpoint_returns_failure_payload_when_embedding_probe_fails(

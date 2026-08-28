@@ -74,6 +74,7 @@ class StatusImageSearchIndexSpaceSummary(SchemaModel):
     state: Literal["ready", "rebuild_required", "uninitialized", "unavailable"]
     indexed_space_id: str | None = None
     current_space_id: str | None = None
+    is_rebuilding: bool = False
 
 
 class StatusImageSearchResource(SchemaModel):
