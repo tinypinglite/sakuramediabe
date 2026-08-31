@@ -17,6 +17,7 @@ from src.plugins.provider_protocol import (
 )
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
+    DuplicateMediaGroupResource,
     InvalidMediaResource,
     MediaListItemResource,
     MediaPointCreateRequest,
@@ -67,6 +68,20 @@ def list_invalid_media(
     current_user=Depends(get_current_user),
 ):
     return MediaService.list_invalid_media(page=page, page_size=page_size, search=search)
+
+
+@router.get("/duplicates", response_model=PageResponse[DuplicateMediaGroupResource])
+def list_duplicate_media_groups(
+    kind: Literal["jav", "video"] = Query(...),
+    page: int = 1,
+    page_size: int = 20,
+    current_user=Depends(get_current_user),
+):
+    return MediaService.list_duplicate_media_groups(
+        kind=kind,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/{media_id}/points", response_model=list[MediaPointResource])

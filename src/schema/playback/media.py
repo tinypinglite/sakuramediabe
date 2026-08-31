@@ -119,3 +119,9 @@ class MediaListItemResource(SchemaModel):
     heat: int | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class DuplicateMediaGroupResource(SchemaModel):
+    kind: Literal["jav", "video"]
+    media_count: int
+    media_items: list[MediaListItemResource]

@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import Literal
 
 import peewee
 from loguru import logger
@@ -34,6 +35,7 @@ from src.plugins.provider_protocol import (
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
+    DuplicateMediaGroupResource,
     InvalidMediaResource,
     MediaListItemResource,
     MediaPointCreateRequest,
@@ -199,6 +201,30 @@ class MediaService:
             updated_at=media.updated_at,
         )
 
+    @staticmethod
+    def _media_list_query():
+        # 非 JAV 媒体没有 movie，Movie 改为 LEFT OUTER，并补 VideoItem 兜底标题/封面。
+        base_query = Media.select(Media, Movie, VideoItem).join(
+            Movie,
+            peewee.JOIN.LEFT_OUTER,
+            on=(Media.movie == Movie.movie_number),
+        )
+        base_query, _thin_cover_alias = with_movie_card_relations(base_query)
+        video_cover_alias = Image.alias()
+        return (
+            base_query.select_extend(MediaLibrary, video_cover_alias)
+            .switch(Media)
+            .join(VideoItem, peewee.JOIN.LEFT_OUTER)
+            .join(
+                video_cover_alias,
+                peewee.JOIN.LEFT_OUTER,
+                on=(VideoItem.cover_image == video_cover_alias.id),
+                attr="cover_image",
+            )
+            .switch(Media)
+            .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
+        )
+
     @classmethod
     def list_media(
         cls,
@@ -214,27 +240,7 @@ class MediaService:
         """跨 JAV 与 videos 域分页列出全部媒体，支持归属/库/订阅女优筛选与排序。"""
         validate_page(page, page_size, error_code="invalid_media_filter")
 
-        # 非 JAV 媒体没有 movie，Movie 改为 LEFT OUTER，并补 VideoItem 兜底标题/封面。
-        base_query = Media.select(Media, Movie, VideoItem).join(
-            Movie,
-            peewee.JOIN.LEFT_OUTER,
-            on=(Media.movie == Movie.movie_number),
-        )
-        base_query, _thin_cover_alias = with_movie_card_relations(base_query)
-        video_cover_alias = Image.alias()
-        base_query = (
-            base_query.select_extend(MediaLibrary, video_cover_alias)
-            .switch(Media)
-            .join(VideoItem, peewee.JOIN.LEFT_OUTER)
-            .join(
-                video_cover_alias,
-                peewee.JOIN.LEFT_OUTER,
-                on=(VideoItem.cover_image == video_cover_alias.id),
-                attr="cover_image",
-            )
-            .switch(Media)
-            .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
-        )
+        base_query = cls._media_list_query()
 
         kind_filter = cls._media_point_kind_filter(kind)
         if kind_filter is not None:
@@ -268,6 +274,76 @@ class MediaService:
         items = [cls._to_media_list_item_resource(media) for media in rows]
         return PageResponse[MediaListItemResource](
             items=items,
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    @classmethod
+    def list_duplicate_media_groups(
+        cls,
+        *,
+        kind: Literal["jav", "video"],
+        page: int = 1,
+        page_size: int = 20,
+    ) -> PageResponse[DuplicateMediaGroupResource]:
+        """跨媒体库按文件指纹列出同一类型的重复媒体。"""
+        validate_page(page, page_size, error_code="invalid_media_filter")
+        kind_filter = (
+            Media.movie.is_null(False)
+            if kind == "jav"
+            else Media.video_item.is_null(False)
+        )
+        duplicate_hashes_query = (
+            Media.select(Media.file_hash)
+            .where(
+                kind_filter,
+                Media.file_hash.is_null(False),
+                Media.file_hash != "",
+            )
+            .group_by(Media.file_hash)
+            .having(peewee.fn.COUNT(Media.id) > 1)
+        )
+        total = duplicate_hashes_query.count()
+        page_hashes = [
+            file_hash
+            for (file_hash,) in (
+                duplicate_hashes_query.order_by(
+                    peewee.fn.MAX(Media.updated_at).desc(),
+                    Media.file_hash.asc(),
+                )
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+                .tuples()
+            )
+        ]
+        if not page_hashes:
+            return PageResponse[DuplicateMediaGroupResource](
+                items=[], page=page, page_size=page_size, total=total
+            )
+
+        media_by_hash: dict[str, list[MediaListItemResource]] = {
+            file_hash: [] for file_hash in page_hashes
+        }
+        rows = (
+            cls._media_list_query()
+            .where(kind_filter, Media.file_hash.in_(page_hashes))
+            .order_by(Media.file_hash.asc(), Media.created_at.asc(), Media.id.asc())
+        )
+        for media in rows:
+            media_by_hash[media.file_hash].append(
+                cls._to_media_list_item_resource(media)
+            )
+
+        return PageResponse[DuplicateMediaGroupResource](
+            items=[
+                DuplicateMediaGroupResource(
+                    kind=kind,
+                    media_count=len(media_by_hash[file_hash]),
+                    media_items=media_by_hash[file_hash],
+                )
+                for file_hash in page_hashes
+            ],
             page=page,
             page_size=page_size,
             total=total,
