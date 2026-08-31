@@ -291,6 +291,101 @@ def test_empty_download_snapshot_does_not_remove_ghost_tasks(test_db):
     assert DownloadSyncService._prune_ghost_tasks(client.id, set()) == 0
 
 
+def test_download_sync_only_updates_movie_linked_tasks(test_db):
+    library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    known_task = DownloadTask.create(
+        client=client,
+        movie="ABC-001",
+        remote_id="known",
+        name="old-name",
+        state="queued",
+        progress=0,
+        import_status="pending",
+    )
+    external_task = DownloadTask.create(
+        client=client,
+        remote_id="external",
+        name="old-external-name",
+        state="queued",
+        progress=0,
+        import_status="pending",
+    )
+    remote_tasks = (
+        RemoteDownloadTask(
+            remote_id="known",
+            name="new-name",
+            state="downloading",
+            progress=0.5,
+            completed_source_ref=None,
+        ),
+        RemoteDownloadTask(
+            remote_id="external",
+            name="new-external-name",
+            state="downloading",
+            progress=0.5,
+            completed_source_ref=None,
+        ),
+        RemoteDownloadTask(
+            remote_id="unregistered",
+            name="unregistered",
+            state="queued",
+            progress=0,
+            completed_source_ref=None,
+        ),
+    )
+
+    result = DownloadSyncService(
+        provider_factory=lambda _client: SimpleNamespace(list_tasks=lambda: remote_tasks)
+    ).sync_client(client.id)
+
+    known_task = DownloadTask.get_by_id(known_task.id)
+    assert known_task.name == "new-name"
+    assert known_task.state == "downloading"
+    assert known_task.progress == 0.5
+    external_task = DownloadTask.get_by_id(external_task.id)
+    assert external_task.name == "old-external-name"
+    assert external_task.state == "queued"
+    assert DownloadTask.get_or_none(DownloadTask.remote_id == "unregistered") is None
+    assert result.created_count == 0
+    assert result.updated_count == 1
+    assert result.unchanged_count == 2
+
+
+def test_auto_import_skips_unbound_completed_tasks(test_db, monkeypatch):
+    library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    tracked_task = DownloadTask.create(
+        client=client,
+        movie="ABC-001",
+        remote_id="tracked",
+        name="tracked",
+        state="completed",
+        progress=1,
+        completed_source_ref={"id": "tracked-source"},
+        import_status="pending",
+    )
+    DownloadTask.create(
+        client=client,
+        remote_id="external",
+        name="external",
+        state="completed",
+        progress=1,
+        completed_source_ref={"id": "external-source"},
+        import_status="pending",
+    )
+    triggered_task_ids: list[int] = []
+    monkeypatch.setattr(
+        "src.service.transfers.downloads.sync_service.DownloadTaskService.trigger_import",
+        lambda task_id, **_kwargs: triggered_task_ids.append(task_id),
+    )
+
+    result = DownloadSyncService().enqueue_auto_imports()
+
+    assert triggered_task_ids == [tracked_task.id]
+    assert result["queued_count"] == 1
+
+
 def test_download_sync_skips_clients_without_active_tasks(test_db):
     library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
     idle_client = DownloadClient.create(name="idle", library=library, provider_config={})

@@ -49,25 +49,18 @@ class DownloadSyncService:
                 {"client_id": client_id},
             ) from exc
 
-        created_count = updated_count = unchanged_count = 0
+        updated_count = unchanged_count = 0
         remote_ids: set[str] = set()
         for remote_task in remote_tasks:
             remote_task = validate_remote_download_task(remote_task)
             remote_ids.add(remote_task.remote_id)
-            task, created = DownloadTask.get_or_create(
-                client=client,
-                remote_id=remote_task.remote_id,
-                defaults={
-                    "movie": None,
-                    "name": remote_task.name,
-                    "state": remote_task.state,
-                    "progress": remote_task.progress,
-                    "completed_source_ref": remote_task.completed_source_ref,
-                    "import_status": IMPORT_STATUS_PENDING,
-                },
+            task = DownloadTask.get_or_none(
+                (DownloadTask.client == client)
+                & (DownloadTask.remote_id == remote_task.remote_id)
             )
-            if created:
-                created_count += 1
+            if task is None or task.movie is None:
+                # 只跟踪宿主提交并已登记的任务，不把下载器里的外部任务带入自动导入链路。
+                unchanged_count += 1
                 continue
             changed: list = []
             for field, value in (
@@ -96,7 +89,7 @@ class DownloadSyncService:
         return DownloadClientSyncResponse(
             client_id=client.id,
             scanned_count=len(remote_tasks),
-            created_count=created_count,
+            created_count=0,
             updated_count=updated_count,
             unchanged_count=unchanged_count,
             removed_count=removed_count,
@@ -165,6 +158,7 @@ class DownloadSyncService:
             (DownloadTask.state == "completed")
             & (DownloadTask.completed_source_ref.is_null(False))
             & (DownloadTask.import_status == IMPORT_STATUS_PENDING)
+            & (DownloadTask.movie.is_null(False))
         ):
             try:
                 DownloadTaskService.trigger_import(
