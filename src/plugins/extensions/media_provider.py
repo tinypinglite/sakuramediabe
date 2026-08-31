@@ -63,6 +63,13 @@ def _validate_playback_deliveries(value: object) -> tuple[str, ...]:
     return value
 
 
+def _validate_merged_playback_format(value: object) -> None:
+    if value is None:
+        return
+    if value not in {"mp4", "hls"}:
+        raise ValueError("media provider merged_playback_format 必须是 mp4 或 hls")
+
+
 def validate_media_provider_extension(
     *,
     plugin_id: str,
@@ -89,6 +96,7 @@ def validate_media_provider_extension(
         owner="media provider",
     )
     _validate_playback_deliveries(getattr(bundle, "playback_deliveries", None))
+    _validate_merged_playback_format(getattr(bundle, "merged_playback_format", None))
     _require_methods(
         bundle,
         ("prepare_library", "build_storage"),

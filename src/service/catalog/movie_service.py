@@ -13,6 +13,7 @@ from peewee import JOIN, fn
 from src.api.exception.errors import ApiError
 from src.common import (
     build_signed_media_url,
+    build_signed_merged_media_url,
     parse_movie_number_from_text,
 )
 from src.common.runtime_time import utc_now_for_db
@@ -56,6 +57,8 @@ from src.schema.catalog.movies import (
     MovieMediaPointResource,
     MovieMediaProgressResource,
     MovieMediaResource,
+    MovieMergedPlaybackResource,
+    MovieMergePlaybackCandidateResource,
     MovieNumberParseResponse,
     MovieNumberSource,
     MovieReviewSort,
@@ -394,6 +397,68 @@ class MovieService:
         return resources
 
     @staticmethod
+    def _merge_playback_groups(
+        movie: Movie,
+    ) -> list[tuple[MediaLibrary, list[Media], str]]:
+        media_items = list(
+            Media.select(Media, MediaLibrary)
+            .join(MediaLibrary)
+            .where(Media.movie == movie)
+            .order_by(Media.id)
+        )
+        groups: dict[int, tuple[MediaLibrary, list[Media]]] = {}
+        for media in media_items:
+            library = media.library
+            entry = groups.get(library.id)
+            if entry is None:
+                groups[library.id] = (library, [media])
+            else:
+                entry[1].append(media)
+
+        playable_groups: list[tuple[MediaLibrary, list[Media], str]] = []
+        for library_id in sorted(groups):
+            library, medias = groups[library_id]
+            # 合并播放表示同库的完整分段集合；任一段失效时不能悄悄跳过它。
+            if len(medias) < 2 or any(not media.valid for media in medias):
+                continue
+            bundle = MEDIA_PROVIDER_REGISTRY.require(library.provider_key)
+            playback_format = getattr(bundle, "merged_playback_format", None)
+            if playback_format not in {"mp4", "hls"}:
+                continue
+            playable_groups.append((library, medias, playback_format))
+        return playable_groups
+
+    @classmethod
+    def _merge_playback_candidates(
+        cls, movie: Movie
+    ) -> list[MovieMergePlaybackCandidateResource]:
+        return [
+            MovieMergePlaybackCandidateResource(
+                library_id=library.id,
+                library_name=library.name,
+                provider_key=library.provider_key,
+                segment_count=len(medias),
+            )
+            for library, medias, _playback_format in cls._merge_playback_groups(movie)
+        ]
+
+    @classmethod
+    def get_merged_playback(
+        cls, movie_number: str, library_id: int
+    ) -> MovieMergedPlaybackResource:
+        movie = cls._require_movie(movie_number)
+        for library, medias, playback_format in cls._merge_playback_groups(movie):
+            if library.id != library_id:
+                continue
+            resource_path = "stream.mp4" if playback_format == "mp4" else "index.m3u8"
+            return MovieMergedPlaybackResource(
+                play_url=build_signed_merged_media_url(
+                    (media.id for media in medias), resource_path
+                ),
+            )
+        raise ApiError(422, "merged_playback_unavailable", "该媒体库不支持合并播放")
+
+    @staticmethod
     def get_movie_detail(movie_number: str) -> MovieDetailResource:
         """组装影片详情页所需的所有关联资源。"""
         query, _thin_cover_alias = with_movie_card_relations(
@@ -417,6 +482,7 @@ class MovieService:
         movie.tags = tags
         movie.plot_images = MovieService._plot_images(movie)
         movie.media_items = MovieService._media_items(movie)
+        movie.merge_playback_candidates = MovieService._merge_playback_candidates(movie)
         movie.playlists = PlaylistService.list_movie_playlists(movie)
         movie.can_play = any(media_item.valid for media_item in movie.media_items)
         return MovieDetailResource.from_attributes_model(movie)

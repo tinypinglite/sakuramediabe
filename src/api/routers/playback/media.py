@@ -6,7 +6,12 @@ from fastapi.responses import JSONResponse
 from src.api.exception.errors import ApiError
 from src.api.routers._utils import parse_csv_positive_ints, require_signed_params
 from src.api.routers.deps import db_deps, get_current_user
-from src.common import build_signed_media_url, verify_media_signature
+from src.common import (
+    build_signed_media_url,
+    build_signed_merged_media_url,
+    verify_media_signature,
+    verify_merged_media_signature,
+)
 from src.model import Media
 from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
@@ -84,6 +89,32 @@ def list_duplicate_media_groups(
     )
 
 
+def _parse_merged_media_ids(raw: str | None) -> tuple[int, ...]:
+    media_ids = parse_csv_positive_ints(
+        raw, "media_ids", error_code="invalid_merged_playback"
+    )
+    if media_ids is None or len(media_ids) < 2:
+        raise ApiError(
+            422,
+            "merged_playback_need_at_least_two",
+            "合并播放至少需要 2 个分段",
+        )
+    if len(set(media_ids)) != len(media_ids):
+        raise ApiError(422, "invalid_merged_playback", "合并播放分段不可重复")
+    return tuple(media_ids)
+
+
+def _raise_provider_operation_error(exc: ProviderOperationError) -> None:
+    status_code = {
+        "source_not_found": 404,
+        "authentication_failed": 401,
+        "unavailable": 503,
+        "invalid_config": 422,
+        "unsupported": 422,
+    }[exc.code]
+    raise ApiError(status_code, f"provider_{exc.code}", exc.safe_message) from exc
+
+
 @router.get("/{media_id}/points", response_model=list[MediaPointResource])
 def list_media_points_for_media(
     media_id: int,
@@ -157,18 +188,7 @@ async def play_media(
             "媒体提供方未安装",
         ) from exc
     except ProviderOperationError as exc:
-        status_code = {
-            "source_not_found": 404,
-            "authentication_failed": 401,
-            "unavailable": 503,
-            "invalid_config": 422,
-            "unsupported": 422,
-        }[exc.code]
-        raise ApiError(
-            status_code,
-            f"provider_{exc.code}",
-            exc.safe_message,
-        ) from exc
+        _raise_provider_operation_error(exc)
 
     def context_for(actual_delivery: PlaybackDelivery) -> PlaybackContext:
         return PlaybackContext(
@@ -198,18 +218,67 @@ async def play_media(
                 )
             except ProviderOperationError as fallback_exc:
                 exc = fallback_exc
-        status_code = {
-            "source_not_found": 404,
-            "authentication_failed": 401,
-            "unavailable": 503,
-            "invalid_config": 422,
-            "unsupported": 422,
-        }[exc.code]
-        raise ApiError(
-            status_code,
-            f"provider_{exc.code}",
-            exc.safe_message,
-        ) from exc
+        _raise_provider_operation_error(exc)
+
+
+@router.get("/merged-play/{resource_path:path}")
+async def play_merged_media(
+    request: Request,
+    resource_path: str,
+    media_ids: str | None = Query(default=None),
+    expires: int | None = None,
+    signature: str | None = None,
+):
+    require_signed_params(expires, signature)
+    ordered_ids = _parse_merged_media_ids(media_ids)
+    normalized_path = verify_merged_media_signature(
+        ordered_ids, resource_path, expires, signature
+    )
+    media_by_id = {
+        media.id: media
+        for media in Media.select(Media).where(Media.id.in_(ordered_ids))
+    }
+    if len(media_by_id) != len(ordered_ids):
+        raise ApiError(404, "media_not_found", "部分媒体不存在")
+    medias = tuple(media_by_id[media_id] for media_id in ordered_ids)
+    if any(not media.valid for media in medias):
+        raise ApiError(422, "merged_playback_unavailable", "合并分段存在无效媒体")
+    movie_numbers = {media.movie_number for media in medias}
+    if len(movie_numbers) != 1 or None in movie_numbers:
+        raise ApiError(422, "merged_playback_cross_movie", "合并分段必须属于同一部影片")
+    library_ids = {media.library_id for media in medias}
+    if len(library_ids) != 1 or None in library_ids:
+        raise ApiError(422, "merged_playback_cross_library", "合并分段必须来自同一媒体库")
+    library = medias[0].library
+    if library is None:
+        raise ApiError(404, "media_library_not_found", "媒体库不存在")
+    library_handle = library_handle_for(library)
+    try:
+        bundle = MEDIA_PROVIDER_REGISTRY.require(library_handle.provider_key)
+        if getattr(bundle, "merged_playback_format", None) not in {"mp4", "hls"}:
+            raise ApiError(422, "merged_playback_unavailable", "媒体提供方不支持合并播放")
+        storage = MEDIA_PROVIDER_REGISTRY.storage_for(library_handle)
+    except ProviderUnavailableError as exc:
+        raise ApiError(503, "provider_not_installed", "媒体提供方未安装") from exc
+    except ProviderOperationError as exc:
+        _raise_provider_operation_error(exc)
+
+    handle_merged_playback = getattr(storage, "handle_merged_playback", None)
+    if not callable(handle_merged_playback):
+        raise ApiError(422, "merged_playback_unavailable", "媒体提供方不支持合并播放")
+    context = PlaybackContext(
+        request=request,
+        resource_path=normalized_path,
+        delivery="proxy",
+        url_for=lambda path: build_signed_merged_media_url(ordered_ids, path),
+    )
+    try:
+        return await handle_merged_playback(
+            medias=tuple(media_handle_for(media) for media in medias),
+            context=context,
+        )
+    except ProviderOperationError as exc:
+        _raise_provider_operation_error(exc)
 
 
 @router.put("/{media_id}/progress", response_model=MediaProgressResource)

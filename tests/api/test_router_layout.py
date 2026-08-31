@@ -183,6 +183,7 @@ def test_create_app_registers_provider_media_play_gateway_and_removes_legacy_rou
     paths = {getattr(route, "path", None) for route in app.routes}
 
     assert "/media/{media_id}/play/{resource_path:path}" in paths
+    assert "/media/merged-play/{resource_path:path}" in paths
     assert "/media/play-url" not in paths
     assert "/media/{media_id}/stream" not in paths
     assert "/media/merged-stream" not in paths

@@ -19,6 +19,7 @@ from starlette.responses import Response
 
 JsonObject: TypeAlias = dict[str, Any]
 PlaybackDelivery: TypeAlias = Literal["proxy", "redirect"]
+MergedPlaybackFormat: TypeAlias = Literal["mp4", "hls"]
 MEDIA_PROVIDER_EXTENSION_KEY = "media.provider"
 
 
@@ -308,6 +309,23 @@ class StorageProvider(Protocol):
         end_offset_seconds: int,
         workspace: Path,
     ) -> ClipArtifact: ...
+
+
+class StorageMergedPlaybackProvider(Protocol):
+    """Optional capability for playing ordered media parts as one stream."""
+
+    async def handle_merged_playback(
+        self,
+        *,
+        medias: tuple[MediaHandle, ...],
+        context: PlaybackContext,
+    ) -> Response: ...
+
+
+class MediaProviderMergedPlaybackBundle(Protocol):
+    """Optional bundle declaration paired with ``StorageMergedPlaybackProvider``."""
+
+    merged_playback_format: MergedPlaybackFormat
 
 
 class StorageMediaRefScanner(Protocol):

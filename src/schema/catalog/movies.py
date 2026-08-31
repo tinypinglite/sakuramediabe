@@ -133,6 +133,17 @@ class MovieMediaResource(SchemaModel):
     points: list[MovieMediaPointResource] = Field(default_factory=list)
 
 
+class MovieMergePlaybackCandidateResource(SchemaModel):
+    library_id: int
+    library_name: str
+    provider_key: str
+    segment_count: int
+
+
+class MovieMergedPlaybackResource(SchemaModel):
+    play_url: str
+
+
 class MovieDetailResource(MovieListItemResource):
     actors: list[MovieActorResource]
     tags: list[TagResource]
@@ -141,6 +152,9 @@ class MovieDetailResource(MovieListItemResource):
     director_name: str | None = None
     plot_images: list[ImageResource] = Field(default_factory=list)
     media_items: list[MovieMediaResource] = Field(default_factory=list)
+    merge_playback_candidates: list[MovieMergePlaybackCandidateResource] = Field(
+        default_factory=list
+    )
     playlists: list[PlaylistSummaryResource] = Field(default_factory=list)
 
 

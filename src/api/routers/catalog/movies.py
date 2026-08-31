@@ -19,6 +19,7 @@ from src.schema.catalog.movies import (
     MovieJavdbSearchRequest,
     MovieListItemResource,
     MovieListStatus,
+    MovieMergedPlaybackResource,
     MovieNumberParseRequest,
     MovieNumberParseResponse,
     MovieNumberSource,
@@ -219,6 +220,11 @@ def refresh_movie_metadata(movie_number: str):
 )
 def recompute_movie_heat(movie_number: str):
     return MovieTaskService.recompute_movie_heat(movie_number)
+
+
+@router.get("/{movie_number}/merged-playback", response_model=MovieMergedPlaybackResource)
+def get_merged_playback(movie_number: str, library_id: int = Query(..., ge=1)):
+    return MovieService.get_merged_playback(movie_number, library_id)
 
 
 @router.get("/{movie_number}", response_model=MovieDetailResource)

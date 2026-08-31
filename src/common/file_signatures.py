@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import time
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 from typing import Literal
 from urllib.parse import quote
@@ -11,6 +12,7 @@ from src.config.config import settings
 
 IMAGE_FILE_ROUTE_PREFIX = "/files/images"
 MEDIA_PLAY_ROUTE_PREFIX = "/media"
+MERGED_MEDIA_PLAY_ROUTE_PREFIX = f"{MEDIA_PLAY_ROUTE_PREFIX}/merged-play"
 MEDIA_CLIP_STREAM_ROUTE_PREFIX = "/media-clips"
 SUBTITLE_FILE_ROUTE_PREFIX = "/files/subtitles"
 FILE_SIGNATURE_EXPIRE_SECONDS = 12 * 60 * 60
@@ -160,6 +162,68 @@ def verify_media_signature(
         raise ApiError(403, "file_signature_expired", "文件签名已过期")
 
     expected_signature = _build_media_signature(media_id, normalized_path, expires)
+    if not hmac.compare_digest(expected_signature, signature):
+        raise ApiError(403, "file_signature_invalid", "文件签名无效")
+    return normalized_path
+
+
+def _normalize_merged_media_ids(media_ids: Iterable[int]) -> tuple[int, ...]:
+    normalized = tuple(media_ids)
+    if len(normalized) < 2:
+        raise ValueError("merged playback requires at least two media ids")
+    if any(
+        not isinstance(media_id, int)
+        or isinstance(media_id, bool)
+        or media_id <= 0
+        for media_id in normalized
+    ):
+        raise ValueError("merged playback media ids must be positive integers")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("merged playback media ids must not repeat")
+    return normalized
+
+
+def _build_merged_media_signature(
+    media_ids: tuple[int, ...], resource_path: str, expires: int
+) -> str:
+    signature_payload = (
+        f"merged-media:{','.join(str(media_id) for media_id in media_ids)}:"
+        f"{resource_path}:{expires}"
+    )
+    return hmac.new(
+        settings.auth.file_signature_secret.encode("utf-8"),
+        signature_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def build_signed_merged_media_url(
+    media_ids: Iterable[int], resource_path: str,
+) -> str:
+    """Build a signed proxy URL for one ordered group of media parts."""
+    normalized_ids = _normalize_merged_media_ids(media_ids)
+    normalized_path = _normalize_resource_path(resource_path)
+    expires = build_signature_expires()
+    signature = _build_merged_media_signature(normalized_ids, normalized_path, expires)
+    path = f"{MERGED_MEDIA_PLAY_ROUTE_PREFIX}/"
+    if normalized_path:
+        path += quote(normalized_path, safe="/")
+    media_ids_parameter = ",".join(str(media_id) for media_id in normalized_ids)
+    return f"{path}?media_ids={media_ids_parameter}&expires={expires}&signature={signature}"
+
+
+def verify_merged_media_signature(
+    media_ids: Iterable[int],
+    resource_path: str,
+    expires: int,
+    signature: str,
+) -> str:
+    normalized_ids = _normalize_merged_media_ids(media_ids)
+    normalized_path = _normalize_resource_path(resource_path)
+    if expires <= _now_timestamp():
+        raise ApiError(403, "file_signature_expired", "文件签名已过期")
+
+    expected_signature = _build_merged_media_signature(normalized_ids, normalized_path, expires)
     if not hmac.compare_digest(expected_signature, signature):
         raise ApiError(403, "file_signature_invalid", "文件签名无效")
     return normalized_path

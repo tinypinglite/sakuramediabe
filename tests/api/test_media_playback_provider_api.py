@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 from types import SimpleNamespace
 
 import pytest
@@ -8,12 +10,30 @@ from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
     ProviderOperationError,
 )
+from tests.conftest import TEST_FILE_SIGNATURE_EXPIRES, TEST_FILE_SIGNATURE_SECRET
 
 
 def _media(test_name: str):
     library = MediaLibrary.create(name=f"{test_name}-library", provider_key="demo", provider_config={})
     movie = Movie.create(movie_number=f"{test_name}-001", javdb_id=f"{test_name}-1", title=test_name)
     return Media.create(movie=movie, library=library, file_name="media.mp4")
+
+
+def _merged_url(media_ids: tuple[int, ...], resource_path: str = "stream.mp4") -> str:
+    signature_payload = (
+        f"merged-media:{','.join(str(media_id) for media_id in media_ids)}:"
+        f"{resource_path}:{TEST_FILE_SIGNATURE_EXPIRES}"
+    )
+    signature = hmac.new(
+        TEST_FILE_SIGNATURE_SECRET.encode("utf-8"),
+        signature_payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return (
+        f"/media/merged-play/{resource_path}?media_ids="
+        f"{','.join(str(media_id) for media_id in media_ids)}"
+        f"&expires={TEST_FILE_SIGNATURE_EXPIRES}&signature={signature}"
+    )
 
 
 @pytest.mark.parametrize(
@@ -164,3 +184,63 @@ def test_media_playback_gateway_rejects_provider_unsupported_delivery(
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "provider_playback_delivery_unsupported"
+
+
+def test_merged_media_playback_gateway_uses_ordered_group_and_proxy(
+    client,
+    test_db,
+    monkeypatch,
+):
+    first = _media("merged-gateway")
+    second = Media.create(
+        movie=first.movie,
+        library=first.library,
+        file_name="media-cd2.mp4",
+    )
+    seen = {}
+
+    class Storage:
+        async def handle_merged_playback(self, *, medias, context):
+            seen["media_ids"] = [media.media_id for media in medias]
+            seen["resource_path"] = context.resource_path
+            seen["delivery"] = context.delivery
+            seen["child_url"] = context.url_for("next.ts")
+            return PlainTextResponse("merged provider response")
+
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(
+            playback_deliveries=("proxy",), merged_playback_format="mp4"
+        ),
+    )
+    monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _handle: Storage())
+
+    response = client.get(_merged_url((first.id, second.id)))
+
+    assert response.status_code == 200
+    assert response.text == "merged provider response"
+    assert seen["media_ids"] == [first.id, second.id]
+    assert seen["resource_path"] == "stream.mp4"
+    assert seen["delivery"] == "proxy"
+    assert f"media_ids={first.id},{second.id}" in seen["child_url"]
+
+
+def test_merged_media_playback_gateway_rejects_cross_library_group(
+    client,
+    test_db,
+):
+    first = _media("merged-cross-library")
+    other_library = MediaLibrary.create(
+        name="other-library", provider_key="demo", provider_config={}
+    )
+    second = Media.create(
+        movie=first.movie,
+        library=other_library,
+        file_name="media-cd2.mp4",
+    )
+
+    response = client.get(_merged_url((first.id, second.id)))
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "merged_playback_cross_library"
