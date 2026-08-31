@@ -235,7 +235,7 @@ class MediaImportService:
                     if not self._is_srt(source):
                         skipped_count += 1
                     continue
-                if source.size_bytes < minimum_video_file_size:
+                if media_kind == "jav" and source.size_bytes < minimum_video_file_size:
                     skipped_count += 1
                     continue
                 movie_number = parse_movie_number_from_text(f"{source.name} {source.relative_path}")

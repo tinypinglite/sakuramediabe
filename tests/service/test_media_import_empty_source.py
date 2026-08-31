@@ -72,7 +72,7 @@ def test_provider_import_skips_small_and_non_video_files(monkeypatch):
     assert result.failed_count == 0
 
 
-def test_video_import_generates_cover_after_finalizing(monkeypatch):
+def test_video_import_allows_small_file_and_generates_cover_after_finalizing(monkeypatch):
     events: list[str] = []
     source = ImportFile(
         source_ref={"id": "video"},
@@ -125,7 +125,7 @@ def test_video_import_generates_cover_after_finalizing(monkeypatch):
         assert actual_source is cover_source
         events.append("cover")
 
-    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 1)
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 101)
     monkeypatch.setattr(MediaLibrary, "get_or_none", lambda *_args, **_kwargs: library)
     monkeypatch.setattr(
         import_service,
