@@ -1,3 +1,4 @@
+import time
 from collections.abc import Sequence
 from functools import lru_cache
 from typing import Any
@@ -9,9 +10,11 @@ from src.config.config import settings
 
 try:
     from qdrant_client import QdrantClient, models
+    from qdrant_client.http.exceptions import ResponseHandlingException
 except ImportError:  # pragma: no cover - exercised when dependency is missing at runtime.
     QdrantClient = None
     models = None
+    ResponseHandlingException = ()
 
 
 class ThumbnailVectorRecord(BaseModel):
@@ -36,6 +39,7 @@ class QdrantThumbnailStore:
     PAYLOAD_INDEX_FIELDS = ("movie_id", "media_id")
     CLIENT_TIMEOUT_SECONDS = 30
     CLEAR_TIMEOUT_SECONDS = 300
+    UPSERT_RETRY_DELAYS_SECONDS = (3, 10, 20, 60, 60)
     HNSW_M = 16
     HNSW_EF_CONSTRUCT = 128
     HNSW_EF_SEARCH = 128
@@ -75,6 +79,37 @@ class QdrantThumbnailStore:
         if self._client is None:
             self._client = self._create_client(self.CLIENT_TIMEOUT_SECONDS)
         return self._client
+
+    def _discard_client(self) -> None:
+        if self._client_was_injected:
+            return
+        client, self._client = self._client, None
+        if client is not None:
+            client.close()
+
+    def _upsert_points(self, points: Sequence[Any]) -> None:
+        for retry_index in range(len(self.UPSERT_RETRY_DELAYS_SECONDS) + 1):
+            try:
+                self._get_client().upsert(
+                    collection_name=self.collection_name,
+                    points=points,
+                    wait=True,
+                )
+                return
+            except ResponseHandlingException as exc:
+                self._discard_client()
+                if retry_index == len(self.UPSERT_RETRY_DELAYS_SECONDS):
+                    raise
+                delay_seconds = self.UPSERT_RETRY_DELAYS_SECONDS[retry_index]
+                logger.warning(
+                    "Retrying Qdrant upsert after connection failure collection={} retry={}/{} delay_seconds={} detail={}",
+                    self.collection_name,
+                    retry_index + 1,
+                    len(self.UPSERT_RETRY_DELAYS_SECONDS),
+                    delay_seconds,
+                    exc,
+                )
+                time.sleep(delay_seconds)
 
     def _collection_exists(self, client: Any | None = None) -> bool:
         client = client if client is not None else self._get_client()
@@ -293,7 +328,7 @@ class QdrantThumbnailStore:
                     },
                 )
             )
-        self._get_client().upsert(collection_name=self.collection_name, points=points, wait=True)
+        self._upsert_points(points)
 
     def delete_by_thumbnail_ids(self, thumbnail_ids: Sequence[int]) -> None:
         if not thumbnail_ids or not self._collection_exists():

@@ -26,17 +26,15 @@ class QdrantPlotImageStore(QdrantThumbnailStore):
     def upsert_records(self, records: Sequence[PlotImageVectorRecord]) -> None:
         if not records:
             return
-        self._get_client().upsert(
-            collection_name=self.collection_name,
-            points=[
+        self._upsert_points(
+            [
                 models.PointStruct(
                     id=int(item.plot_image_id),
                     vector=self._prepare_vector(item.vector),
                     payload={"movie_id": int(item.movie_id)},
                 )
                 for item in records
-            ],
-            wait=True,
+            ]
         )
 
     def delete_by_plot_image_ids(self, plot_image_ids: Sequence[int]) -> None:
