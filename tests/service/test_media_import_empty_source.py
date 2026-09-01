@@ -52,6 +52,13 @@ def test_provider_import_skips_small_and_non_video_files(monkeypatch):
                     size_bytes=4096,
                     is_video=False,
                 ),
+                ImportFile(
+                    source_ref={"id": "iso"},
+                    name="SMBD-110.iso",
+                    relative_path="SMBD-110.iso",
+                    size_bytes=4096,
+                    is_video=True,
+                ),
             )
 
         def stage_import_file(self, **_kwargs):
@@ -68,7 +75,7 @@ def test_provider_import_skips_small_and_non_video_files(monkeypatch):
     result = service.import_from_source({"source": "filtered"}, library.id)
 
     assert result.imported_count == 0
-    assert result.skipped_count == 2
+    assert result.skipped_count == 3
     assert result.failed_count == 0
 
 
@@ -79,7 +86,7 @@ def test_video_import_allows_small_file_and_generates_cover_after_finalizing(mon
         name="video.mp4",
         relative_path="video.mp4",
         size_bytes=100,
-        is_video=True,
+        is_video=False,
     )
     staged = StagedMedia(
         storage_ref={"id": "stored-video"},

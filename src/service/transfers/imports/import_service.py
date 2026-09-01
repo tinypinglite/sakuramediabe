@@ -14,6 +14,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from src.api.exception.errors import ApiError
+from src.common.media_formats import is_supported_video_file_name
 from src.common.media_import_status import (
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED,
     FAILURE_REASON_METADATA_FETCH_FAILED,
@@ -218,7 +219,7 @@ class MediaImportService:
             number
             for item in scanned_files
             if media_kind == "jav"
-            and item.is_video
+            and is_supported_video_file_name(item.name)
             and item.size_bytes >= minimum_video_file_size
             and (
                 number := parse_movie_number_from_text(
@@ -231,7 +232,7 @@ class MediaImportService:
                 staged: StagedMedia | None = None
                 video: VideoItem | None = None
                 media: Media | None = None
-                if not source.is_video:
+                if not is_supported_video_file_name(source.name):
                     if not self._is_srt(source):
                         skipped_count += 1
                     continue

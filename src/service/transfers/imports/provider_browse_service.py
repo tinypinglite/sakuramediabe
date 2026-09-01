@@ -1,6 +1,7 @@
 """Opaque provider source browsing."""
 
 from src.api.exception.errors import ApiError
+from src.common.media_formats import is_supported_video_file_name
 from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
     BrowsePage,
@@ -60,7 +61,10 @@ class ProviderBrowseService:
                     entry_type=entry.entry_type,
                     size_bytes=entry.size_bytes,
                     modified_at=entry.modified_at,
-                    is_video=entry.is_video,
+                    is_video=(
+                        entry.entry_type == "file"
+                        and is_supported_video_file_name(entry.name)
+                    ),
                 )
                 for entry in page.entries
             ],
