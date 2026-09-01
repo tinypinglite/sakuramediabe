@@ -340,6 +340,12 @@ class StorageCoverSourceProvider(Protocol):
     def open_cover_source(self, *, media: MediaHandle) -> AbstractContextManager[Any]: ...
 
 
+class StorageDurationProbeProvider(Protocol):
+    """Optional capability for resolving the duration of an existing media file."""
+
+    def probe_duration_seconds(self, *, media: MediaHandle) -> int: ...
+
+
 class DownloadComponent(Protocol):
     config_fields: tuple[ConfigField, ...]
 
@@ -522,6 +528,7 @@ __all__ = [
     "ProviderUnavailableError",
     "RemoteDownloadTask",
     "StagedMedia",
+    "StorageDurationProbeProvider",
     "StorageProvider",
     "ThumbnailArtifact",
     "ThumbnailGeneration",

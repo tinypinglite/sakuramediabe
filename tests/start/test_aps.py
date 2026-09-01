@@ -229,10 +229,13 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
 
     scheduler = build_scheduler()
 
-    # 验证所有任务都已注册
+    # 定时任务注册到 APS；手动任务只暴露给任务中心，不应被调度器执行。
     for job_def in JOB_REGISTRY:
         job = scheduler.get_job(job_def.task_key)
-        assert job is not None, f"Job {job_def.task_key} not registered"
+        if job_def.manual_only:
+            assert job is None
+        else:
+            assert job is not None, f"Job {job_def.task_key} not registered"
 
     # 验证部分 cron 表达式
     assert str(scheduler.get_job("actor_subscription_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='0']"
@@ -831,7 +834,9 @@ def test_build_scheduler_wires_cron_jobs_to_enqueue_only():
     scheduler = build_scheduler()
     jobs = scheduler.get_jobs()
 
-    assert {job.id for job in jobs} == {job_def.task_key for job_def in JOB_REGISTRY}
+    assert {job.id for job in jobs} == {
+        job_def.task_key for job_def in JOB_REGISTRY if not job_def.manual_only
+    }
     # cron 触发一律指向入队函数，绝不在 APS 线程直接执行 handler。
     assert all(job.func is enqueue_scheduled_job for job in jobs)
 

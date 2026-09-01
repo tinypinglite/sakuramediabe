@@ -6,6 +6,7 @@ TASK_NAME_REGISTRY = {
     "movie_similarity_recompute": "影片相似度重算",
     "download_task_sync": "下载任务状态同步",
     "download_task_auto_import": "已完成下载自动导入",
+    "media_duration_backfill": "媒体时长回填",
     "media_thumbnail_generation": "媒体缩略图生成",
     "image_search_index": "图像搜索索引构建",
     "library_import": "媒体库导入",

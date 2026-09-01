@@ -25,7 +25,11 @@ from src.service.discovery import (
     MomentRecommendationService,
     MovieRecommendationService,
 )
-from src.service.playback import MediaFileHashBackfillService, MediaThumbnailService
+from src.service.playback import (
+    MediaDurationBackfillService,
+    MediaFileHashBackfillService,
+    MediaThumbnailService,
+)
 from src.service.system import ActivityCleanupService
 from src.service.transfers.downloads.auto_subscribed.auto_download_service import (
     SubscribedMovieAutoDownloadService,
@@ -107,6 +111,16 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次空媒体文件哈希补算",
         cron_setting="media_file_hash_backfill_cron",
         handler=lambda reporter, _params: MediaFileHashBackfillService.backfill_missing_file_hashes(
+            reporter=reporter,
+        ),
+    ),
+    JobDefinition(
+        task_key=MediaDurationBackfillService.TASK_KEY,
+        log_name="media-duration-backfill",
+        cli_name="backfill-media-durations",
+        cli_help="补齐有效媒体缺失的时长",
+        manual_only=True,
+        handler=lambda reporter, _params: MediaDurationBackfillService.backfill_missing_durations(
             reporter=reporter,
         ),
     ),
