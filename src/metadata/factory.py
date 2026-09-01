@@ -12,6 +12,8 @@ from src.config.config import settings
 from src.metadata._providers.javdb import JavdbProvider
 from src.metadata.gfriends import GfriendsActorImageResolver
 
+JAVDB_HOST = "jdforrepam.com"
+
 # Resolver 单例缓存：预热任务与业务代码共享同一实例的内存 index，
 # 避免"预热把 disk cache 拉下来但内存 index 只属于预热实例"的浪费。
 # key 覆盖会影响构建/行为的所有字段；配置热更新（改 URL/TTL）时自动 miss 重建。
@@ -128,12 +130,11 @@ def build_javdb_provider(
 
     JavDB / GFriends 均不再接收显式代理配置：外部站点请求统一跟随容器
     环境变量 HTTP_PROXY / HTTPS_PROXY / NO_PROXY 分流（httpx trust_env 默认开启），
-    由部署方自行决定哪些域名走代理、哪些直连。站点访问依托 ``settings.metadata.javdb_host``
-    自身的直连/反代能力。账号只用于需登录的 TOP250 榜单，由排行榜插件从自身设置读入后
-    显式传入；宿主常规链路构建无账号实例。
+    由部署方自行决定哪些域名走代理、哪些直连。账号只用于需登录的 TOP250 榜单，
+    由排行榜插件从自身设置读入后显式传入；宿主常规链路构建无账号实例。
     """
     provider = JavdbProvider(
-        host=settings.metadata.javdb_host,
+        host=JAVDB_HOST,
         username=username,
         password=password,
     )

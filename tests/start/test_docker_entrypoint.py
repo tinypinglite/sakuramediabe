@@ -107,7 +107,7 @@ def test_docker_entrypoint_runs_migrations_before_starting_supervisor(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "Waiting for database to become ready..." in result.stdout
-    assert "Checking for a v0.5.3 database upgrade..." in result.stdout
+    assert "Preparing bundled providers and checking for a v0.5.3 database upgrade..." in result.stdout
     assert "Running database migrations..." in result.stdout
     assert "Bootstrapping default account and system playlists..." in result.stdout
     assert "Syncing plugin dependencies..." in result.stdout
@@ -153,7 +153,7 @@ def test_docker_entrypoint_stops_when_v053_upgrade_fails(tmp_path):
     result, lines = _run_entrypoint(tmp_path, fail_v053_upgrade=True)
 
     assert result.returncode != 0
-    assert "Checking for a v0.5.3 database upgrade..." in result.stdout
+    assert "Preparing bundled providers and checking for a v0.5.3 database upgrade..." in result.stdout
     assert "Running database migrations..." not in result.stdout
     assert "Starting supervisor..." not in result.stdout
     assert len(lines) == 2

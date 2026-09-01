@@ -63,7 +63,7 @@ def test_build_javdb_provider_never_uses_explicit_proxy():
     provider = build_javdb_provider()
 
     assert isinstance(provider, GfriendsAvatarJavdbProvider)
-    assert provider.provider.host == settings.metadata.javdb_host
+    assert provider.provider.host == "jdforrepam.com"
     # 显式代理配置已整体移除，client 上不应再出现 proxy 概念。
     assert not hasattr(provider.provider, "proxy")
 

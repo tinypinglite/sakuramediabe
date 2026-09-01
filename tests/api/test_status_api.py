@@ -200,6 +200,10 @@ def test_image_search_status_endpoint_returns_healthy_payload(client, account_us
     assert payload["embedding_service"]["error"] is None
     assert payload["image_search_vector_store"]["healthy"] is True
     assert payload["image_search_vector_store"]["exists"] is True
+    assert payload["indexing"] == {
+        "pending_thumbnails": 0,
+        "failed_thumbnails": 0,
+    }
     assert payload["index_space"] == {
         "state": "uninitialized",
         "indexed_space_id": None,

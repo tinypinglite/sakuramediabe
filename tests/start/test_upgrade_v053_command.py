@@ -88,6 +88,35 @@ def test_upgrade_v053_command_installs_and_loads_both_providers_before_bridge(
     ]
 
 
+def test_upgrade_v053_command_installs_bundled_providers_for_a_fresh_database(
+    monkeypatch,
+):
+    database = object()
+    events: list[str] = []
+    monkeypatch.setattr(
+        "src.start.commands._connect_database_for_migration", lambda: database
+    )
+    monkeypatch.setattr(
+        "src.start.legacy_v053_upgrade.classify_database_schema",
+        lambda value: "fresh" if value is database else "unexpected",
+    )
+    monkeypatch.setattr(
+        "src.plugins.bundled_providers.install_bundled_provider_plugins_once",
+        lambda: events.append("install")
+        or SimpleNamespace(installed=True, already_completed=False),
+    )
+    monkeypatch.setattr(
+        "src.start.legacy_v053_upgrade.upgrade_v053_database",
+        lambda value, *, dry_run: events.append("upgrade")
+        or _summary(upgraded=False),
+    )
+
+    result = CliRunner().invoke(main, ["upgrade-v053"])
+
+    assert result.exit_code == 0, result.output
+    assert events == ["install", "upgrade"]
+
+
 def test_upgrade_v053_command_supports_read_only_preflight(monkeypatch):
     database = object()
     monkeypatch.setattr(

@@ -23,7 +23,7 @@ def _login(client, username: str, password: str) -> str:
     return response.json()["access_token"]
 
 
-def test_config_update_persists_without_refreshing_runtime_settings(
+def test_config_update_rejects_removed_javdb_host(
     client,
     account_user,
     tmp_path,
@@ -32,8 +32,6 @@ def test_config_update_persists_without_refreshing_runtime_settings(
     config_path = tmp_path / "config.toml"
     original_config_path = Settings.model_config["toml_file"]
     monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
-    original_host = settings.metadata.javdb_host
-    updated_host = "config-restart-only.example"
     headers = {
         "Authorization": f"Bearer {_login(client, account_user.username, 'password123')}"
     }
@@ -46,16 +44,12 @@ def test_config_update_persists_without_refreshing_runtime_settings(
         response = client.patch(
             "/config",
             headers=headers,
-            json={"metadata": {"javdb_host": updated_host}},
+            json={"metadata": {"javdb_host": "config-restart-only.example"}},
         )
 
-        assert response.status_code == 200, response.text
-        result = response.json()
-        assert result["values"]["metadata"]["javdb_host"] == updated_host
-        assert result["restart_required"] == ["api", "aps"]
-        # 当前进程继续使用启动快照，避免 API 与 APS 的配置观察不一致。
-        assert settings.metadata.javdb_host == original_host
-        assert toml.load(config_path)["metadata"]["javdb_host"] == updated_host
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "unknown_config_field"
+        assert not config_path.exists()
         assert not list(tmp_path.glob(".config.toml.*.tmp"))
     finally:
         Settings.model_config["toml_file"] = original_config_path
@@ -69,13 +63,13 @@ def test_config_updates_merge_from_disk_and_survive_plugin_updates(tmp_path, mon
 
     try:
         ConfigService.update_config(
-            {"metadata": {"javdb_host": "first-update.example"}}
+            {"media": {"allowed_min_video_file_size": 1}}
         )
         ConfigService.update_config(
             {"scheduler": {"movie_heat_cron": "0 6 * * *"}}
         )
         persisted = toml.load(config_path)
-        assert persisted["metadata"]["javdb_host"] == "first-update.example"
+        assert persisted["media"]["allowed_min_video_file_size"] == 1
         assert persisted["scheduler"]["movie_heat_cron"] == "0 6 * * *"
 
         plugin_update = Settings.model_validate(settings.model_dump())
@@ -83,20 +77,20 @@ def test_config_updates_merge_from_disk_and_survive_plugin_updates(tmp_path, mon
         update_settings(plugin_update)
 
         persisted = toml.load(config_path)
-        assert persisted["metadata"]["javdb_host"] == "first-update.example"
+        assert persisted["media"]["allowed_min_video_file_size"] == 1
         assert persisted["scheduler"]["movie_heat_cron"] == "0 6 * * *"
         assert persisted["plugins"]["settings"] == {"demo_plugin": {"enabled": True}}
 
-        ConfigService.update_config({"metadata": {"javdb_host": "second-update.example"}})
+        ConfigService.update_config({"media": {"allowed_min_video_file_size": 2}})
         persisted = toml.load(config_path)
-        assert persisted["metadata"]["javdb_host"] == "second-update.example"
+        assert persisted["media"]["allowed_min_video_file_size"] == 2
         assert persisted["plugins"]["settings"] == {"demo_plugin": {"enabled": True}}
     finally:
         settings.plugins = original_plugins
         Settings.model_config["toml_file"] = original_config_path
 
 
-def test_ensure_runtime_config_removes_obsolete_media_settings(tmp_path, monkeypatch):
+def test_ensure_runtime_config_removes_obsolete_settings(tmp_path, monkeypatch):
     config_path = tmp_path / "config.toml"
     original_config_path = Settings.model_config["toml_file"]
     monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
@@ -113,6 +107,7 @@ def test_ensure_runtime_config_removes_obsolete_media_settings(tmp_path, monkeyp
                     "uncensored_prefix": ["FC2"],
                 },
                 "media_import": {"browse_roots": ["/mnt"]},
+                "metadata": {"javdb_host": "custom.example"},
                 "unrelated": {"value": "keep"},
             }
         ),
@@ -124,6 +119,7 @@ def test_ensure_runtime_config_removes_obsolete_media_settings(tmp_path, monkeyp
         persisted = toml.load(config_path)
         assert persisted["media"] == {"allowed_min_video_file_size": 1}
         assert "media_import" not in persisted
+        assert "javdb_host" not in persisted.get("metadata", {})
         assert persisted["unrelated"] == {"value": "keep"}
         assert ensure_runtime_config() is False
     finally:

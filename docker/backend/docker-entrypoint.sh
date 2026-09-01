@@ -83,8 +83,8 @@ run_database_migrations() {
 }
 
 run_v053_upgrade() {
-    echo "Checking for a v0.5.3 database upgrade..."
-    # 只在精确 v0.5.3 库上安装内置官方 provider 并执行单向转换；新库和已升级库均为空操作。
+    echo "Preparing bundled providers and checking for a v0.5.3 database upgrade..."
+    # 新库只在首启预装官方 provider；已存在的 current 库完全跳过，避免镜像更新覆盖用户插件。
     su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands upgrade-v053" "${APP_USER}"
 }
 

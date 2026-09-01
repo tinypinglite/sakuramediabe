@@ -277,15 +277,9 @@ class StatusService:
             .where(MediaThumbnail.image_search_index_status == MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_FAILED)
             .count()
         )
-        success = (
-            MediaThumbnail.select()
-            .where(MediaThumbnail.image_search_index_status == MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_SUCCESS)
-            .count()
-        )
         return StatusImageSearchIndexingSummary(
             pending_thumbnails=int(pending),
             failed_thumbnails=int(failed),
-            success_thumbnails=int(success),
         )
 
     @staticmethod

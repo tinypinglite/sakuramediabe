@@ -101,7 +101,6 @@ class Media(BaseModel):
 class Metadata(BaseModel):
     # 不再提供显式代理配置：所有外部站点请求统一跟随容器环境变量
     # HTTP_PROXY / HTTPS_PROXY / NO_PROXY 分流（httpx trust_env 默认开启）。
-    javdb_host: str = "jdforrepam.com"
     gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
     gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
     gfriends_filetree_cache_path: str = "/data/cache/gfriends/gfriends-filetree.json"
@@ -419,7 +418,7 @@ def ensure_runtime_config() -> bool:
     - 始终先确保鉴权密钥就绪（secret_key 空/占位/旧硬编码、file_signature_secret 为空时生成随机值），
       并写回内存全局 settings。
     - 目标 config.toml 缺失或为空时，写入一份含全部配置项默认值（含已生成密钥）的完整文件。
-    - 目标 config.toml 已有内容时，补齐缺失的 [auth] 密钥，并删除已废弃的媒体配置。
+    - 目标 config.toml 已有内容时，补齐缺失的 [auth] 密钥，并删除已废弃的配置。
     仅当确有写盘时返回 True，幂等。
     """
     secret_updates = _ensure_auth_secrets()
@@ -451,6 +450,12 @@ def ensure_runtime_config() -> bool:
         existing_config.pop("media_import")
         removed_legacy_sections.append("media_import")
 
+    metadata_config = existing_config.get("metadata")
+    removed_metadata_keys: list[str] = []
+    if isinstance(metadata_config, dict) and "javdb_host" in metadata_config:
+        metadata_config.pop("javdb_host")
+        removed_metadata_keys.append("javdb_host")
+
     media_config = existing_config.get("media")
     removed_media_keys: list[str] = []
     if isinstance(media_config, dict):
@@ -476,6 +481,7 @@ def ensure_runtime_config() -> bool:
     if (
         not secret_updates
         and not removed_media_keys
+        and not removed_metadata_keys
         and not removed_legacy_sections
         and not migrated_joytag_endpoint
     ):
@@ -490,6 +496,11 @@ def ensure_runtime_config() -> bool:
     if removed_media_keys:
         logger.info(
             "Removed obsolete media settings: {}", ", ".join(sorted(removed_media_keys))
+        )
+    if removed_metadata_keys:
+        logger.info(
+            "Removed obsolete metadata settings: {}",
+            ", ".join(sorted(removed_metadata_keys)),
         )
     if removed_legacy_sections:
         logger.info(

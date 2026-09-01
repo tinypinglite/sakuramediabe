@@ -67,7 +67,6 @@ class StatusImageSearchVectorStoreSummary(SchemaModel):
 class StatusImageSearchIndexingSummary(SchemaModel):
     pending_thumbnails: int
     failed_thumbnails: int
-    success_thumbnails: int
 
 
 class StatusImageSearchIndexSpaceSummary(SchemaModel):

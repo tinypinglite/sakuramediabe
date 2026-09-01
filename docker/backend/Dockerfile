@@ -41,7 +41,7 @@ RUN chmod +x /docker-entrypoint.sh \
     && useradd --create-home --shell /bin/bash --gid app app
 
 COPY docker/backend/supervisord.conf /etc/supervisor/supervisord.conf
-COPY docker/backend/bundled-plugins /app/bundled-plugins
+COPY .bundled-provider-artifacts /app/bundled-plugins
 COPY src /app/src
 RUN chmod -R a+rX /app/src
 # 主服务只保留自身运行所需的数据目录，嵌入模型由独立服务管理。
