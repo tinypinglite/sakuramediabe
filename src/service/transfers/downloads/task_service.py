@@ -150,6 +150,7 @@ class DownloadTaskService:
             "invalid_config": 422,
             "authentication_failed": 401,
             "source_not_found": 404,
+            "task_not_managed": 409,
             "unsupported": 422,
             "unavailable": 503,
         }.get(exc.code, 502)

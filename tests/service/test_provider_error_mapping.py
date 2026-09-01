@@ -42,3 +42,25 @@ def test_provider_error_mappers_use_bundle_contract_statuses(mapper, code, statu
     )
 
     assert mapper(error).status_code == status_code
+
+
+@pytest.mark.parametrize(
+    "mapper",
+    [
+        provider_error,
+        client_error,
+        DownloadRequestService._provider_error,
+        DownloadTaskService._provider_error,
+        DownloadSyncService._provider_error,
+    ],
+)
+def test_download_provider_error_mappers_report_unmanaged_tasks_as_conflicts(mapper):
+    error = ProviderOperationError(
+        provider_key="demo",
+        operation="test",
+        code="task_not_managed",
+        safe_message="task is not managed",
+        retryable=False,
+    )
+
+    assert mapper(error).status_code == 409

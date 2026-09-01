@@ -189,6 +189,7 @@ class DownloadSyncService:
             "invalid_config": 422,
             "authentication_failed": 401,
             "source_not_found": 404,
+            "task_not_managed": 409,
             "source_blacklisted": 422,
             "unsupported": 422,
             "unavailable": 503,
