@@ -21,6 +21,7 @@ MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME = "20260826_01_remove_media_special_ta
 IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME = "20260830_01_add_image_search_queue_indexes"
 IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME = "20260831_01_add_image_search_index_space_state"
 HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME = "20260831_02_remove_hot_review_item"
+MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME = "20260903_01_add_media_import_source_identity"
 
 
 @dataclass(frozen=True)

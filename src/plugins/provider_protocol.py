@@ -331,6 +331,16 @@ class MediaProviderMergedPlaybackBundle(Protocol):
     merged_playback_format: MergedPlaybackFormat
 
 
+class StorageImportSourceIdentityProvider(Protocol):
+    """Optional capability for recognizing an unchanged import source at its current location.
+
+    Equal identities must represent the same unchanged source at the same location;
+    renaming or moving a source must produce a different identity.
+    """
+
+    def get_import_source_identity(self, *, source: ImportFile) -> str | None: ...
+
+
 class StorageMediaRefScanner(Protocol):
     """Optional capability for enumerating provider-native media refs."""
 
@@ -532,6 +542,7 @@ __all__ = [
     "RemoteDownloadTask",
     "StagedMedia",
     "StorageDurationProbeProvider",
+    "StorageImportSourceIdentityProvider",
     "StorageProvider",
     "ThumbnailArtifact",
     "ThumbnailGeneration",

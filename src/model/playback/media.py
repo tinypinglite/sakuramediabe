@@ -43,6 +43,8 @@ class Media(TimestampedMixin, BaseModel):
     resolution = peewee.CharField(max_length=32, null=True)
     file_size_bytes = peewee.BigIntegerField(default=0)
     file_hash = peewee.CharField(max_length=64, null=True, index=True)
+    # 由支持该可选能力的 provider 生成；相同值代表同一位置且未变化的导入源。
+    import_source_identity = peewee.CharField(max_length=512, null=True)
     duration_seconds = peewee.IntegerField(default=0)
     # 统一存放整理后的探测结果，避免把 codec/profile/bitrate 拆成多列重复维护。
     video_info = JsonTextField(null=True)
@@ -68,7 +70,10 @@ class Media(TimestampedMixin, BaseModel):
 
     class Meta:
         table_name = "media"
-        indexes = (("thumbnail_generation_state", "thumbnail_next_retry_at"), False),
+        indexes = (
+            (("thumbnail_generation_state", "thumbnail_next_retry_at"), False),
+            (("library", "import_source_identity"), False),
+        )
 
 
 class MediaThumbnail(TimestampedMixin, BaseModel):

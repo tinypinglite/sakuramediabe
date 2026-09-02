@@ -193,7 +193,6 @@ class MediaImportService:
             raise ApiError(502, "provider_scan_failed", "媒体提供方扫描失败") from exc
         for source in scanned_files:
             self._validate_import_file(source)
-        subtitle_sources = tuple(source for source in scanned_files if self._is_srt(source))
         from src.config.config import settings
 
         minimum_video_file_size = settings.media.allowed_min_video_file_size
@@ -204,6 +203,70 @@ class MediaImportService:
         new_playable_movies: list[dict[str, object]] = []
         imported_subtitle_paths: set[str] = set()
         finalize_error: Exception | None = None
+        import_source_identities: dict[str, str] = {}
+        get_import_source_identity = getattr(storage, "get_import_source_identity", None)
+        if source_disposition == "keep" and callable(get_import_source_identity):
+            for source in scanned_files:
+                if not is_supported_video_file_name(source.name):
+                    continue
+                if media_kind == "jav" and source.size_bytes < minimum_video_file_size:
+                    continue
+                try:
+                    identity = get_import_source_identity(source=source)
+                except ProviderOperationError as exc:
+                    logger.warning(
+                        "Provider import source identity unavailable; falling back to regular import "
+                        "library_id={} source={} code={}",
+                        library_id,
+                        source.name,
+                        exc.code,
+                    )
+                    continue
+                except Exception:
+                    logger.exception(
+                        "Provider import source identity failed; falling back to regular import "
+                        "library_id={} source={}",
+                        library_id,
+                        source.name,
+                    )
+                    continue
+                if identity is None:
+                    continue
+                if not isinstance(identity, str) or not identity:
+                    logger.warning(
+                        "Provider returned invalid import source identity; falling back to regular import "
+                        "library_id={} source={}",
+                        library_id,
+                        source.name,
+                    )
+                    continue
+                import_source_identities[source.relative_path] = identity
+            if import_source_identities:
+                existing_identities = {
+                    identity
+                    for (identity,) in (
+                        Media.select(Media.import_source_identity)
+                        .where(
+                            (Media.library == library)
+                            & Media.import_source_identity.in_(
+                                list(import_source_identities.values())
+                            )
+                        )
+                        .tuples()
+                    )
+                }
+                duplicate_paths = {
+                    relative_path
+                    for relative_path, identity in import_source_identities.items()
+                    if identity in existing_identities
+                }
+                skipped_count += len(duplicate_paths)
+                scanned_files = tuple(
+                    source
+                    for source in scanned_files
+                    if source.relative_path not in duplicate_paths
+                )
+        subtitle_sources = tuple(source for source in scanned_files if self._is_srt(source))
         operation_namespace = operation_namespace or f"import:{uuid4().hex}"
         total = len(scanned_files)
         emit_progress(
@@ -269,7 +332,7 @@ class MediaImportService:
                         if metadata.movie_id is None:
                             raise RuntimeError(metadata.failure_detail or metadata.failure_reason or "metadata import failed")
                         movie = Movie.get_by_id(metadata.movie_id)
-                        self._create_media(
+                        media = self._create_media(
                             storage=storage,
                             movie=movie,
                             video_item=None,
@@ -339,6 +402,10 @@ class MediaImportService:
                             source.name,
                         )
                     else:
+                        import_source_identity = import_source_identities.get(source.relative_path)
+                        if import_source_identity is not None and media is not None:
+                            media.import_source_identity = import_source_identity
+                            media.save(only=[Media.import_source_identity])
                         if stage_receipt_clear_callback is not None:
                             stage_receipt_clear_callback(operation_key)
                         imported_count += 1

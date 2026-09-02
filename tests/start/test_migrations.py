@@ -25,6 +25,7 @@ from src.start.migrations.runner import (
     HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
     IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
     IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
+    MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
     MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
     MOVIE_BLACKLIST_MIGRATION_NAME,
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
@@ -100,6 +101,7 @@ def test_current_migrations_are_discoverable_in_order():
         IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
         IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
         HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
+        MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
     ]
 
 
@@ -151,6 +153,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME, applied=True),
         MigrationExecution(name=IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME, applied=True),
         MigrationExecution(name=HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -162,6 +165,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
         IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
         HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
+        MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
     ]
 
 
@@ -314,7 +318,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 8
+    assert summary.applied_count == 9
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -425,6 +429,25 @@ def test_remove_hot_review_item_migration_drops_snapshot_table(clean_db):
     migration.migrate(clean_db)
 
     assert not clean_db.table_exists("hot_review_item")
+
+
+def test_media_import_source_identity_migration_adds_column_and_index(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    _drop_columns(clean_db, "media", ("import_source_identity",))
+
+    migration = _load_migration_module(
+        Path(
+            "src/start/migrations/versions/"
+            "20260903_01_add_media_import_source_identity.py"
+        )
+    )
+    migration.migrate(clean_db)
+
+    assert "import_source_identity" in _column_names(clean_db, "media")
+    assert "media_library_id_import_source_identity" in {
+        index.name for index in clean_db.get_indexes("media")
+    }
 
 
 def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(clean_db):
