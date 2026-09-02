@@ -15,7 +15,10 @@ def _send_bytes_range_requests(file_path: str, start: int, end: int, chunk_size:
         stream.seek(start)
         while (position := stream.tell()) <= end:
             read_size = min(chunk_size, end + 1 - position)
-            yield stream.read(read_size)
+            chunk = stream.read(read_size)
+            if not chunk:
+                break
+            yield chunk
 
 
 def _get_range_header(range_header: str, file_size: int) -> tuple[int, int]:
