@@ -150,7 +150,7 @@ class QdrantThumbnailStore:
                 max_optimization_threads=self.MAX_OPTIMIZATION_THREADS,
                 indexing_threshold=self.INDEXING_THRESHOLD,
             ),
-            # payload 也落盘，避免百万级元数据索引额外抬高常驻内存。
+            # 非索引 payload 落盘，避免普通元数据常驻内存。
             on_disk_payload=True,
         )
 
@@ -258,7 +258,12 @@ class QdrantThumbnailStore:
                 client.create_payload_index(
                     collection_name=self.collection_name,
                     field_name=field_name,
-                    field_schema=models.PayloadSchemaType.INTEGER,
+                    field_schema=models.IntegerIndexParams(
+                        type=models.IntegerIndexType.INTEGER,
+                        lookup=True,
+                        range=False,
+                        on_disk=True,
+                    ),
                     wait=True,
                 )
             except Exception as exc:

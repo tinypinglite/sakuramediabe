@@ -1,6 +1,8 @@
 import pytest
+from qdrant_client import models
 from qdrant_client.http.exceptions import ResponseHandlingException
 
+from src.service.discovery.qdrant_plot_image_store import QdrantPlotImageStore
 from src.service.discovery.qdrant_thumbnail_store import (
     QdrantThumbnailStore,
     ThumbnailVectorRecord,
@@ -35,6 +37,17 @@ class _RetryClient:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _PayloadIndexClient:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def collection_exists(self, _collection_name: str) -> bool:
+        return True
+
+    def create_payload_index(self, **kwargs) -> None:
+        self.calls.append(kwargs)
 
 
 def _record() -> ThumbnailVectorRecord:
@@ -103,3 +116,33 @@ def test_upsert_reraises_after_response_handling_retries_are_exhausted(monkeypat
     assert [client.calls for client in clients] == [1, 1, 1, 1, 1, 1]
     assert all(client.closed for client in clients)
     assert sleeps == [3, 10, 20, 60, 60]
+
+
+@pytest.mark.parametrize(
+    ("store_type", "expected_fields"),
+    [
+        (QdrantThumbnailStore, ("movie_id", "media_id")),
+        (QdrantPlotImageStore, ("movie_id",)),
+    ],
+)
+def test_scalar_indices_use_on_disk_exact_match_integer_schema(store_type, expected_fields):
+    client = _PayloadIndexClient()
+    store = store_type(client=client)
+
+    store.ensure_scalar_indices()
+
+    assert [call["field_name"] for call in client.calls] == list(expected_fields)
+    assert all(call["collection_name"] == store.collection_name for call in client.calls)
+    assert all(call["wait"] is True for call in client.calls)
+    assert [
+        call["field_schema"].model_dump(mode="json", exclude_none=True)
+        for call in client.calls
+    ] == [
+        {
+            "type": models.IntegerIndexType.INTEGER.value,
+            "lookup": True,
+            "range": False,
+            "on_disk": True,
+        }
+        for _ in expected_fields
+    ]
