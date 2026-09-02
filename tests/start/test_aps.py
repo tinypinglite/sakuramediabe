@@ -251,6 +251,8 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert str(scheduler.get_job("moment_recommendation_generate").trigger) == "cron[month='*', day='*', day_of_week='*', hour='4', minute='0']"
     assert str(scheduler.get_job("daily_recommendation_generate").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"
     assert str(scheduler.get_job("activity_record_cleanup").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='30']"
+    assert scheduler.get_job("telemetry_heartbeat").trigger.interval.total_seconds() == 3600
+    assert scheduler.get_job("telemetry_heartbeat").misfire_grace_time is None
     assert scheduler.timezone.key == "Asia/Shanghai"
 
 
@@ -829,16 +831,19 @@ def test_get_task_logger_recreates_sink_when_level_changes(monkeypatch, tmp_path
 
 
 def test_build_scheduler_wires_cron_jobs_to_enqueue_only():
+    from src.service.system.telemetry_service import TelemetryService
     from src.start.aps import enqueue_scheduled_job
 
     scheduler = build_scheduler()
     jobs = scheduler.get_jobs()
+    telemetry_job = scheduler.get_job("telemetry_heartbeat")
 
     assert {job.id for job in jobs} == {
         job_def.task_key for job_def in JOB_REGISTRY if not job_def.manual_only
-    }
+    } | {"telemetry_heartbeat"}
     # cron 触发一律指向入队函数，绝不在 APS 线程直接执行 handler。
-    assert all(job.func is enqueue_scheduled_job for job in jobs)
+    assert all(job.func is enqueue_scheduled_job for job in jobs if job is not telemetry_job)
+    assert telemetry_job.func.__func__ is TelemetryService.report.__func__
 
 
 def test_submit_manual_job_enqueues_pending_run_without_inline_execution(test_db):

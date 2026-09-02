@@ -30,6 +30,7 @@ from src.service.system.task_queue_service import (
     TaskQueueConflictError,
     TaskQueueService,
 )
+from src.service.system.telemetry_service import TelemetryService
 
 BOOTSTRAP_RETRY_GRACE_SECONDS = 1
 BOOTSTRAP_ERROR_RETRY_SECONDS = 5
@@ -344,6 +345,15 @@ def build_scheduler() -> BlockingScheduler:
             id=job_def.task_key,
             replace_existing=True,
         )
+    scheduler.add_job(
+        TelemetryService.report,
+        trigger="interval",
+        hours=1,
+        id="telemetry_heartbeat",
+        next_run_time=runtime_now(),
+        misfire_grace_time=None,
+        replace_existing=True,
+    )
     return scheduler
 
 
