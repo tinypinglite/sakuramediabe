@@ -24,6 +24,8 @@ from src.model import (
     MediaThumbnail,
     Movie,
     MovieActor,
+    VideoCollection,
+    VideoCollectionItem,
     VideoItem,
 )
 from src.model.base import get_database
@@ -36,6 +38,7 @@ from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import (
     DuplicateMediaGroupResource,
+    DuplicateMediaListItemResource,
     InvalidMediaResource,
     MediaListItemResource,
     MediaPointCreateRequest,
@@ -47,6 +50,7 @@ from src.schema.playback.media import (
     MediaThumbnailGenerationState,
     MediaThumbnailResource,
 )
+from src.schema.videos.items import VideoCollectionRef
 from src.service.catalog.image_cleanup_service import ImageCleanupService
 
 # 直接从子模块导入：collections/__init__ 会引入 clip_collection_service -> playback 形成循环，
@@ -322,17 +326,50 @@ class MediaService:
                 items=[], page=page, page_size=page_size, total=total
             )
 
-        media_by_hash: dict[str, list[MediaListItemResource]] = {
+        media_by_hash: dict[str, list[DuplicateMediaListItemResource]] = {
             file_hash: [] for file_hash in page_hashes
         }
-        rows = (
+        media_rows = list(
             cls._media_list_query()
             .where(kind_filter, Media.file_hash.in_(page_hashes))
             .order_by(Media.file_hash.asc(), Media.created_at.asc(), Media.id.asc())
         )
-        for media in rows:
+        video_ids = [
+            media.video_item_id
+            for media in media_rows
+            if media.video_item_id is not None
+        ]
+        collections_by_video_id: dict[int, list[VideoCollectionRef]] = {}
+        if video_ids:
+            collection_rows = (
+                VideoCollectionItem.select(
+                    VideoCollectionItem.video_item,
+                    VideoCollection.id,
+                    VideoCollection.name,
+                )
+                .join(
+                    VideoCollection,
+                    on=(VideoCollectionItem.collection == VideoCollection.id),
+                )
+                .where(VideoCollectionItem.video_item.in_(video_ids))
+                .order_by(VideoCollection.name.asc(), VideoCollection.id.asc())
+            )
+            for collection_row in collection_rows:
+                collections_by_video_id.setdefault(
+                    collection_row.video_item_id, []
+                ).append(
+                    VideoCollectionRef(
+                        id=collection_row.collection.id,
+                        name=collection_row.collection.name,
+                    )
+                )
+        for media in media_rows:
+            item = cls._to_media_list_item_resource(media)
             media_by_hash[media.file_hash].append(
-                cls._to_media_list_item_resource(media)
+                DuplicateMediaListItemResource(
+                    **item.model_dump(),
+                    collections=collections_by_video_id.get(media.video_item_id, []),
+                )
             )
 
         return PageResponse[DuplicateMediaGroupResource](

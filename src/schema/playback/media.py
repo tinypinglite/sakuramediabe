@@ -6,6 +6,7 @@ from pydantic import Field, field_validator
 
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+from src.schema.videos.items import VideoCollectionRef
 
 
 class MediaPointKind(str, Enum):
@@ -121,7 +122,12 @@ class MediaListItemResource(SchemaModel):
     updated_at: datetime
 
 
+class DuplicateMediaListItemResource(MediaListItemResource):
+    # 仅 PornBox 媒体有归属合集；JAV 媒体返回空列表。
+    collections: list[VideoCollectionRef] = Field(default_factory=list)
+
+
 class DuplicateMediaGroupResource(SchemaModel):
     kind: Literal["jav", "video"]
     media_count: int
-    media_items: list[MediaListItemResource]
+    media_items: list[DuplicateMediaListItemResource]

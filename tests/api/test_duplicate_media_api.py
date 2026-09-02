@@ -1,4 +1,11 @@
-from src.model import Media, MediaLibrary, Movie, VideoItem
+from src.model import (
+    Media,
+    MediaLibrary,
+    Movie,
+    VideoCollection,
+    VideoCollectionItem,
+    VideoItem,
+)
 
 
 def _auth_headers(client, username: str) -> dict[str, str]:
@@ -30,6 +37,10 @@ def test_duplicate_media_groups_are_global_across_libraries_and_kind_specific(
     )
     first_video = VideoItem.create(title="duplicate video one")
     second_video = VideoItem.create(title="duplicate video two")
+    alpha_collection = VideoCollection.create(name="duplicate alpha")
+    beta_collection = VideoCollection.create(name="duplicate beta")
+    VideoCollectionItem.create(collection=beta_collection, video_item=first_video)
+    VideoCollectionItem.create(collection=alpha_collection, video_item=first_video)
     shared_hash = "media-file-hash-v1:" + "a" * 40
 
     first_jav = Media.create(
@@ -93,3 +104,12 @@ def test_duplicate_media_groups_are_global_across_libraries_and_kind_specific(
         first_video_media.id,
         second_video_media.id,
     }
+    collections_by_video_id = {
+        item["video_item_id"]: item["collections"]
+        for item in video_body["items"][0]["media_items"]
+    }
+    assert collections_by_video_id[first_video.id] == [
+        {"id": alpha_collection.id, "name": alpha_collection.name},
+        {"id": beta_collection.id, "name": beta_collection.name},
+    ]
+    assert collections_by_video_id[second_video.id] == []
