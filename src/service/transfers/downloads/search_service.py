@@ -29,7 +29,11 @@ class DownloadSearchService:
         ).upper()
         normalized_kind = self._validate_indexer_kind(indexer_kind)
         try:
-            candidates = self.torznab_client.search(normalized_movie_number, normalized_kind)
+            candidates = self.torznab_client.search(
+                normalized_movie_number,
+                normalized_kind,
+                continue_on_error=True,
+            )
         except TorznabClientError as exc:
             raise ApiError(
                 502,

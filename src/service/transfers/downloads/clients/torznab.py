@@ -43,12 +43,21 @@ class TorznabClient:
     ):
         self.client = client or httpx.Client(timeout=30.0, trust_env=False)
 
-    def search(self, movie_number: str, indexer_kind: str | None = None) -> list[DownloadCandidateResource]:
+    def search(
+        self,
+        movie_number: str,
+        indexer_kind: str | None = None,
+        *,
+        continue_on_error: bool = False,
+    ) -> list[DownloadCandidateResource]:
         candidates: list[DownloadCandidateResource] = []
         normalized_kind = (indexer_kind or "").strip().lower() or None
         search_query = self._build_search_query(movie_number)
         # 一趟 JOIN 取全部索引器绑定关系；候选按索引器绑定顺序解析默认 client。
         clients_by_indexer = self._load_clients_by_indexer()
+        searched_indexer_count = 0
+        successful_indexer_count = 0
+        last_failure: tuple[str, Exception] | None = None
         for indexer in Indexer.select().order_by(Indexer.id.asc()):
             if normalized_kind and indexer.kind != normalized_kind:
                 continue
@@ -58,6 +67,7 @@ class TorznabClient:
                 logger.warning("Skip indexer without bound download clients name={}", indexer.name)
                 continue
             resolved_client = resolve_preferred_client(download_clients)
+            searched_indexer_count += 1
             try:
                 params = {
                     "t": "search",
@@ -81,8 +91,12 @@ class TorznabClient:
                     indexer.name,
                     detail,
                 )
+                if continue_on_error:
+                    last_failure = (detail, exc)
+                    continue
                 raise TorznabClientError(detail) from exc
 
+            successful_indexer_count += 1
             channel = self._coerce_mapping((payload.get("rss") or {}).get("channel"))
             channel_title = self._coerce_text(channel.get("title"))
             for item in self._coerce_items(channel.get("item")):
@@ -96,6 +110,12 @@ class TorznabClient:
                         download_clients=download_clients,
                     )
                 )
+
+        # 下载候选搜索允许部分 indexer 故障，但所有可搜索 indexer 都失败时仍保留
+        # 原有错误语义，避免把服务整体不可用误报成“没有搜索结果”。
+        if continue_on_error and searched_indexer_count and successful_indexer_count == 0:
+            detail, cause = last_failure
+            raise TorznabClientError(detail) from cause
 
         candidates.sort(key=lambda item: (item.seeders, item.size_bytes), reverse=True)
         return candidates
