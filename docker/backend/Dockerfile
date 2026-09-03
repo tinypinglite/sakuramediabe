@@ -8,12 +8,10 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 FROM python:3.10-slim-bookworm AS runtime
 WORKDIR /app
 
-ARG SAKURAMEDIA_BACKEND_VERSION=v0.0.1
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PUID=1000 \
-    PGID=1000 \
-    SAKURAMEDIA_BACKEND_VERSION=${SAKURAMEDIA_BACKEND_VERSION}
+    PGID=1000
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     supervisor \
@@ -44,6 +42,10 @@ COPY docker/backend/supervisord.conf /etc/supervisor/supervisord.conf
 COPY .bundled-provider-artifacts /app/bundled-plugins
 COPY src /app/src
 RUN chmod -R a+rX /app/src
+
+ARG SAKURAMEDIA_BACKEND_VERSION=v0.0.1
+ENV SAKURAMEDIA_BACKEND_VERSION=${SAKURAMEDIA_BACKEND_VERSION}
+
 # 主服务只保留自身运行所需的数据目录，嵌入模型由独立服务管理。
 VOLUME ["/data"]
 EXPOSE 8000 9001
