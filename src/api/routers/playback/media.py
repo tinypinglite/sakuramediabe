@@ -1,3 +1,8 @@
+import hashlib
+import time
+from collections import OrderedDict
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
@@ -41,6 +46,55 @@ router = APIRouter(
     tags=["media"],
     dependencies=[Depends(db_deps)],
 )
+
+
+_AUTO_REDIRECT_MAX_ATTEMPTS = 3
+_AUTO_REDIRECT_RETRY_GAP_SECONDS = 1.5
+_AUTO_REDIRECT_STATE_MAX_ENTRIES = 1024
+
+
+@dataclass
+class _AutoRedirectAttempt:
+    last_seen_at: float
+    count: int
+
+
+class _AutoRedirectRetries:
+    """Detect rapid client reopens of an auto redirect without persisting state."""
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        max_entries: int = _AUTO_REDIRECT_STATE_MAX_ENTRIES,
+    ):
+        self._clock = clock
+        self._max_entries = max_entries
+        self._attempts: OrderedDict[tuple[int, str, str], _AutoRedirectAttempt] = (
+            OrderedDict()
+        )
+
+    def should_use_proxy(self, *, media_id: int, request: Request) -> bool:
+        client_host = request.client.host if request.client is not None else ""
+        user_agent = request.headers.get("user-agent", "")
+        user_agent_hash = hashlib.sha256(user_agent.encode()).hexdigest()
+        key = (media_id, client_host, user_agent_hash)
+        now = self._clock()
+        previous = self._attempts.get(key)
+        count = (
+            previous.count + 1
+            if previous is not None
+            and now - previous.last_seen_at <= _AUTO_REDIRECT_RETRY_GAP_SECONDS
+            else 1
+        )
+        self._attempts[key] = _AutoRedirectAttempt(last_seen_at=now, count=count)
+        self._attempts.move_to_end(key)
+        while len(self._attempts) > self._max_entries:
+            self._attempts.popitem(last=False)
+        return count > _AUTO_REDIRECT_MAX_ATTEMPTS
+
+
+_AUTO_REDIRECT_RETRIES = _AutoRedirectRetries()
 
 
 @router.get("", response_model=PageResponse[MediaListItemResource])
@@ -172,6 +226,14 @@ async def play_media(
             effective_delivery: PlaybackDelivery = (
                 "redirect" if "redirect" in bundle.playback_deliveries else "proxy"
             )
+            if (
+                not normalized_path
+                and effective_delivery == "redirect"
+                and _AUTO_REDIRECT_RETRIES.should_use_proxy(
+                    media_id=media.id, request=request
+                )
+            ):
+                effective_delivery = "proxy"
         elif delivery not in bundle.playback_deliveries:
             raise ApiError(
                 422,

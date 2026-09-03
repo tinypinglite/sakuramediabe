@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from starlette.responses import PlainTextResponse
 
+from src.api.routers.playback import media as media_router
 from src.model import Media, MediaLibrary, Movie
 from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
@@ -160,6 +161,55 @@ def test_media_playback_gateway_auto_retries_proxy_after_redirect_failure(
     assert response.status_code == 200
     assert response.text == "proxy response"
     assert deliveries == ["redirect", "proxy"]
+
+
+def test_media_playback_gateway_falls_back_to_proxy_after_rapid_redirect_retries(
+    client,
+    test_db,
+    build_signed_media_url,
+    monkeypatch,
+):
+    media = _media("gateway-rapid-retries")
+    deliveries = []
+    now = [100.0]
+
+    class Storage:
+        async def handle_playback(self, *, media, context):
+            deliveries.append(context.delivery)
+            return PlainTextResponse(context.delivery)
+
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(
+            playback_deliveries=("proxy", "redirect")
+        ),
+    )
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _handle: Storage()
+    )
+    monkeypatch.setattr(
+        media_router,
+        "_AUTO_REDIRECT_RETRIES",
+        media_router._AutoRedirectRetries(clock=lambda: now[0]),
+    )
+
+    url = build_signed_media_url(media.id)
+    for _ in range(3):
+        response = client.get(url)
+        assert response.status_code == 200
+        assert response.text == "redirect"
+        now[0] += 0.3
+
+    response = client.get(url)
+    assert response.status_code == 200
+    assert response.text == "proxy"
+
+    now[0] += 1.6
+    response = client.get(url)
+    assert response.status_code == 200
+    assert response.text == "redirect"
+    assert deliveries == ["redirect", "redirect", "redirect", "proxy", "redirect"]
 
 
 def test_media_playback_gateway_rejects_provider_unsupported_delivery(
