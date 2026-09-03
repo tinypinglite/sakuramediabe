@@ -211,6 +211,9 @@ def test_aps_manual_subcommand_exits_with_click_error_when_task_conflicts(monkey
 
 
 def test_build_scheduler_registers_all_jobs(monkeypatch):
+    from src.service.system.telemetry_service import TelemetryService
+
+    monkeypatch.delenv(TelemetryService.ENABLED_ENV_KEY, raising=False)
     monkeypatch.setattr("src.start.aps.get_runtime_timezone", lambda: ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr("src.start.aps.get_runtime_timezone_name", lambda: "Asia/Shanghai")
     monkeypatch.setattr("src.start.aps.settings.scheduler.actor_subscription_sync_cron", "0 2 * * *")
@@ -254,6 +257,16 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert scheduler.get_job("telemetry_heartbeat").trigger.interval.total_seconds() == 3600
     assert scheduler.get_job("telemetry_heartbeat").misfire_grace_time is None
     assert scheduler.timezone.key == "Asia/Shanghai"
+
+
+def test_build_scheduler_skips_telemetry_when_disabled(monkeypatch):
+    from src.service.system.telemetry_service import TelemetryService
+
+    monkeypatch.setenv(TelemetryService.ENABLED_ENV_KEY, "false")
+
+    scheduler = build_scheduler()
+
+    assert scheduler.get_job("telemetry_heartbeat") is None
 
 
 def test_bootstrap_movie_similarity_index_schedules_missing_alias(monkeypatch):
@@ -830,10 +843,11 @@ def test_get_task_logger_recreates_sink_when_level_changes(monkeypatch, tmp_path
 # ---------------------------------------------------------------------------
 
 
-def test_build_scheduler_wires_cron_jobs_to_enqueue_only():
+def test_build_scheduler_wires_cron_jobs_to_enqueue_only(monkeypatch):
     from src.service.system.telemetry_service import TelemetryService
     from src.start.aps import enqueue_scheduled_job
 
+    monkeypatch.delenv(TelemetryService.ENABLED_ENV_KEY, raising=False)
     scheduler = build_scheduler()
     jobs = scheduler.get_jobs()
     telemetry_job = scheduler.get_job("telemetry_heartbeat")

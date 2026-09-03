@@ -345,15 +345,16 @@ def build_scheduler() -> BlockingScheduler:
             id=job_def.task_key,
             replace_existing=True,
         )
-    scheduler.add_job(
-        TelemetryService.report,
-        trigger="interval",
-        hours=1,
-        id="telemetry_heartbeat",
-        next_run_time=runtime_now(),
-        misfire_grace_time=None,
-        replace_existing=True,
-    )
+    if TelemetryService.is_enabled():
+        scheduler.add_job(
+            TelemetryService.report,
+            trigger="interval",
+            hours=1,
+            id="telemetry_heartbeat",
+            next_run_time=runtime_now(),
+            misfire_grace_time=None,
+            replace_existing=True,
+        )
     return scheduler
 
 

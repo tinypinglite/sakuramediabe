@@ -17,3 +17,16 @@ SakuraMediaBE 是 SakuraMedia 的服务端项目，负责提供媒体库管理�
 请在遵守当地法律法规、版权要求的前提下使用本项目。
 
 如有侵权，请邮箱联系 tinyping@protonmail.com
+
+## 运行遥测
+
+服务默认会在上报运行遥测，用于了解版本、平台与功能规模的使用情况。
+
+遥测不收集影片名称或番号、文件名或路径、搜索词、下载链接、图片、账号、密码、Token 等任何隐私信息。
+
+如需关闭，在 Docker Compose 的后端服务中添加环境变量并重启容器：
+
+```yaml
+environment:
+  SAKURAMEDIA_TELEMETRY_ENABLED: "false"
+```
