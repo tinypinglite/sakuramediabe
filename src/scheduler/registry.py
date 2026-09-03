@@ -28,6 +28,7 @@ from src.service.discovery import (
 from src.service.playback import (
     MediaDurationBackfillService,
     MediaFileHashBackfillService,
+    MediaResolutionBackfillService,
     MediaThumbnailService,
 )
 from src.service.system import ActivityCleanupService
@@ -121,6 +122,16 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="补齐有效媒体缺失的时长",
         manual_only=True,
         handler=lambda reporter, _params: MediaDurationBackfillService.backfill_missing_durations(
+            reporter=reporter,
+        ),
+    ),
+    JobDefinition(
+        task_key=MediaResolutionBackfillService.TASK_KEY,
+        log_name="media-resolution-backfill",
+        cli_name="backfill-media-resolutions",
+        cli_help="补齐有效媒体缺失的分辨率",
+        manual_only=True,
+        handler=lambda reporter, _params: MediaResolutionBackfillService.backfill_missing_resolutions(
             reporter=reporter,
         ),
     ),

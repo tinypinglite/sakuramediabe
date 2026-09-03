@@ -128,6 +128,9 @@ class StagedMedia:
     size_bytes: int
     duration_seconds: int | None
     video_info: JsonObject | None
+    # Optional provider-observed dimensions. The host validates and persists a
+    # canonical "WxH" value when creating Media.
+    resolution: str | None = None
 
 
 @dataclass(frozen=True)
@@ -359,6 +362,12 @@ class StorageDurationProbeProvider(Protocol):
     def probe_duration_seconds(self, *, media: MediaHandle) -> int: ...
 
 
+class StorageResolutionProbeProvider(Protocol):
+    """Optional capability for resolving dimensions of an existing media file."""
+
+    def probe_resolution(self, *, media: MediaHandle) -> str | None: ...
+
+
 class DownloadComponent(Protocol):
     config_fields: tuple[ConfigField, ...]
 
@@ -544,6 +553,7 @@ __all__ = [
     "StorageDurationProbeProvider",
     "StorageImportSourceIdentityProvider",
     "StorageProvider",
+    "StorageResolutionProbeProvider",
     "ThumbnailArtifact",
     "ThumbnailGeneration",
     "refresh_media_provider_registry",

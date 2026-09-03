@@ -34,3 +34,24 @@ def test_video_detail_exposes_media_playback_deliveries(
     assert response.status_code == 200
     assert response.json()["media_items"][0]["media_id"] == media.id
     assert response.json()["media_items"][0]["playback_deliveries"] == ["proxy", "redirect"]
+
+
+def test_video_list_exposes_first_media_dimensions_for_masonry(client, account_user):
+    library = MediaLibrary.create(
+        name="video-list-library", provider_key="pornbox", provider_config={}
+    )
+    video = VideoItem.create(title="portrait video")
+    Media.create(
+        video_item=video,
+        library=library,
+        file_name="portrait.mp4",
+        resolution=" 720X1280 ",
+    )
+
+    response = client.get("/videos", headers=_auth_headers(client, account_user))
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["id"] == video.id
+    assert item["cover_width"] == 720
+    assert item["cover_height"] == 1280

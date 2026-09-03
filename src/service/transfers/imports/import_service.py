@@ -14,7 +14,10 @@ from loguru import logger
 from pydantic import BaseModel
 
 from src.api.exception.errors import ApiError
-from src.common.media_formats import is_supported_video_file_name
+from src.common.media_formats import (
+    is_supported_video_file_name,
+    normalize_media_resolution,
+)
 from src.common.media_import_status import (
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED,
     FAILURE_REASON_METADATA_FETCH_FAILED,
@@ -472,6 +475,7 @@ class MediaImportService:
                 file_size_bytes=staged.size_bytes,
                 duration_seconds=max(0, staged.duration_seconds or 0),
                 video_info=staged.video_info,
+                resolution=normalize_media_resolution(staged.resolution),
                 valid=True,
             )
             file_hash = storage.compute_file_hash(media=media_handle_for(media))

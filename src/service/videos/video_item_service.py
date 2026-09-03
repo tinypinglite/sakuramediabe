@@ -5,6 +5,7 @@ from peewee import JOIN, Case, fn
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
+from src.common.media_formats import normalize_media_resolution
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     require_by_id,
@@ -53,18 +54,10 @@ class VideoItemService:
         空 / 缺 'x' / 非整数 / 非正值 一律返 (None, None)，由调用方决定回退策略（前端
         瀑布流回退 16:9）。MediaMetadataProbeService 探测失败时本就不写该字段。
         """
-        if not value:
+        normalized = normalize_media_resolution(value)
+        if normalized is None:
             return (None, None)
-        parts = value.split("x", 1)
-        if len(parts) != 2:
-            return (None, None)
-        try:
-            width = int(parts[0])
-            height = int(parts[1])
-        except ValueError:
-            return (None, None)
-        if width <= 0 or height <= 0:
-            return (None, None)
+        width, height = (int(part) for part in normalized.split("x"))
         return (width, height)
 
     @staticmethod

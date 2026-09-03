@@ -1,4 +1,6 @@
-from src.model import Media, MediaLibrary, Movie
+import pytest
+
+from src.model import Media, MediaLibrary, Movie, VideoItem
 from src.plugins.provider_protocol import ImportFile, StagedMedia
 from src.service.transfers.imports.import_service import MediaImportService
 
@@ -42,4 +44,54 @@ def test_create_media_persists_provider_file_hash(test_db):
         staged=staged,
     )
 
-    assert Media.get_by_id(media.id).file_hash == file_hash
+    persisted = Media.get_by_id(media.id)
+    assert persisted.file_hash == file_hash
+    assert persisted.resolution is None
+
+
+@pytest.mark.parametrize(
+    ("provider_resolution", "expected_resolution"),
+    [
+        ("720X1280", "720x1280"),
+        ("not-a-resolution", None),
+    ],
+)
+def test_create_media_normalizes_provider_resolution(
+    test_db, provider_resolution, expected_resolution
+):
+    library = MediaLibrary.create(
+        name="resolution-library",
+        provider_key="test",
+        provider_config={},
+    )
+    video = VideoItem.create(title="portrait")
+    source = ImportFile(
+        source_ref={"path": "source.mp4"},
+        name="portrait.mp4",
+        relative_path="portrait.mp4",
+        size_bytes=123,
+        is_video=True,
+    )
+    staged = StagedMedia(
+        storage_ref={"path": "portrait.mp4"},
+        receipt={"receipt": "resolution"},
+        size_bytes=123,
+        duration_seconds=60,
+        video_info=None,
+        resolution=provider_resolution,
+    )
+
+    class Storage:
+        def compute_file_hash(self, *, media):
+            return "media-file-hash-v1:" + "b" * 40
+
+    media = MediaImportService._create_media(
+        storage=Storage(),
+        movie=None,
+        video_item=video,
+        library=library,
+        source=source,
+        staged=staged,
+    )
+
+    assert Media.get_by_id(media.id).resolution == expected_resolution
