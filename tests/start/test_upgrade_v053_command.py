@@ -9,8 +9,9 @@ def _summary(*, upgraded: bool):
     return SimpleNamespace(upgraded=upgraded, media_count=3, invalid_media_count=1)
 
 
-def test_upgrade_v053_command_is_noop_without_legacy_database(monkeypatch):
+def test_upgrade_v053_command_syncs_bundled_providers_for_current_database(monkeypatch):
     database = object()
+    events: list[str] = []
     monkeypatch.setattr(
         "src.start.commands._connect_database_for_migration", lambda: database
     )
@@ -23,13 +24,15 @@ def test_upgrade_v053_command_is_noop_without_legacy_database(monkeypatch):
         lambda value, *, dry_run: _summary(upgraded=False),
     )
     monkeypatch.setattr(
-        "src.plugins.bundled_providers.install_bundled_provider_plugins_once",
-        lambda: (_ for _ in ()).throw(AssertionError("must not install")),
+        "src.plugins.bundled_providers.sync_bundled_provider_plugins",
+        lambda: events.append("sync")
+        or SimpleNamespace(installed=False, updated=True),
     )
 
     result = CliRunner().invoke(main, ["upgrade-v053"])
 
     assert result.exit_code == 0, result.output
+    assert events == ["sync"]
     assert "upgraded=false media=3 invalid_media=1" in result.output
 
 
@@ -46,10 +49,10 @@ def test_upgrade_v053_command_installs_and_loads_both_providers_before_bridge(
         lambda value: "legacy_v053" if value is database else "unexpected",
     )
     monkeypatch.setattr(
-        "src.plugins.bundled_providers.install_bundled_provider_plugins_once",
+        "src.plugins.bundled_providers.sync_bundled_provider_plugins",
         lambda: (
             events.append("install")
-            or SimpleNamespace(installed=True, already_completed=False)
+            or SimpleNamespace(installed=True, updated=False)
         ),
     )
     monkeypatch.setattr(
@@ -101,9 +104,9 @@ def test_upgrade_v053_command_installs_bundled_providers_for_a_fresh_database(
         lambda value: "fresh" if value is database else "unexpected",
     )
     monkeypatch.setattr(
-        "src.plugins.bundled_providers.install_bundled_provider_plugins_once",
+        "src.plugins.bundled_providers.sync_bundled_provider_plugins",
         lambda: events.append("install")
-        or SimpleNamespace(installed=True, already_completed=False),
+        or SimpleNamespace(installed=True, updated=False),
     )
     monkeypatch.setattr(
         "src.start.legacy_v053_upgrade.upgrade_v053_database",

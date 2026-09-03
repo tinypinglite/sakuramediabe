@@ -1,4 +1,4 @@
-"""Install the two official providers bundled for the v0.5.3 bridge."""
+"""Synchronize the two official providers bundled with the backend image."""
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from src.plugins.loader import check_plugin_dir
 from src.plugins.manager import PluginManager
 
 BUNDLED_PROVIDER_INDEX_NAME = "official-providers.json"
-BUNDLED_PROVIDER_MARKER_NAME = ".official-providers-v053-installed.json"
 OFFICIAL_PROVIDER_PLUGIN_IDS = (
     "sakuramedia_local_provider",
     "sakuramedia_115_provider",
@@ -22,13 +21,13 @@ OFFICIAL_PROVIDER_PLUGIN_IDS = (
 
 
 class BundledProviderInstallError(RuntimeError):
-    """The migration-only provider bundle is missing or invalid."""
+    """The bundled provider archive is missing or invalid."""
 
 
 @dataclass(frozen=True)
 class BundledProviderInstallResult:
     installed: bool
-    already_completed: bool
+    updated: bool
 
 
 def _read_bundle_index(bundle_dir: Path) -> list[dict[str, str]]:
@@ -67,29 +66,13 @@ def _read_bundle_index(bundle_dir: Path) -> list[dict[str, str]]:
     return plugins
 
 
-def _write_completion_marker(marker_path: Path, plugins: list[dict[str, str]]) -> None:
-    marker_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = marker_path.with_suffix(".tmp")
-    temporary_path.write_text(
-        json.dumps(
-            {"version": 1, "plugins": plugins}, ensure_ascii=False, sort_keys=True
-        ),
-        encoding="utf-8",
-    )
-    temporary_path.replace(marker_path)
-
-
-def install_bundled_provider_plugins_once(
+def sync_bundled_provider_plugins(
     *,
     bundle_dir: Path = Path("/app/bundled-plugins"),
     manager: PluginManager | None = None,
 ) -> BundledProviderInstallResult:
-    """Install and validate both providers, then write a permanent completion marker."""
+    """Install missing official providers and update installed ones when bundled newer."""
     plugin_manager = manager or PluginManager()
-    marker_path = plugin_manager.root_dir / BUNDLED_PROVIDER_MARKER_NAME
-    if marker_path.is_file():
-        return BundledProviderInstallResult(installed=False, already_completed=True)
-
     plugins = _read_bundle_index(Path(bundle_dir))
     for item in plugins:
         archive_path = Path(bundle_dir) / item["filename"]
@@ -101,12 +84,29 @@ def install_bundled_provider_plugins_once(
                 f"bundled_provider_sha256_mismatch: plugin_id={item['plugin_id']}"
             )
     try:
+        installed = False
+        updated = False
         for item in plugins:
-            result = plugin_manager.install_zip(
-                Path(bundle_dir) / item["filename"],
-                sha256=item["sha256"],
-                enable=True,
-            )
+            archive_path = Path(bundle_dir) / item["filename"]
+            if plugin_manager.get_plugin(item["plugin_id"]) is None:
+                result = plugin_manager.install_zip(
+                    archive_path,
+                    sha256=item["sha256"],
+                    enable=True,
+                )
+                installed = True
+            else:
+                try:
+                    result = plugin_manager.upgrade_zip(
+                        item["plugin_id"],
+                        archive_path,
+                        sha256=item["sha256"],
+                    )
+                except ValueError as exc:
+                    if not str(exc).startswith("升级包版本必须高于当前版本"):
+                        raise
+                    continue
+                updated = True
             if result.get("plugin_id") != item["plugin_id"]:
                 raise BundledProviderInstallError(
                     "bundled_provider_id_mismatch: "
@@ -138,14 +138,12 @@ def install_bundled_provider_plugins_once(
             f"bundled_provider_install_failed: {exc}"
         ) from exc
 
-    _write_completion_marker(marker_path, plugins)
-    return BundledProviderInstallResult(installed=True, already_completed=False)
+    return BundledProviderInstallResult(installed=installed, updated=updated)
 
 
 __all__ = [
-    "BUNDLED_PROVIDER_MARKER_NAME",
     "OFFICIAL_PROVIDER_PLUGIN_IDS",
     "BundledProviderInstallError",
     "BundledProviderInstallResult",
-    "install_bundled_provider_plugins_once",
+    "sync_bundled_provider_plugins",
 ]

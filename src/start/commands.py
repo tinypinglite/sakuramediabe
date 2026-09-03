@@ -209,8 +209,8 @@ def migrate():
     help="Build and validate the complete upgrade plan without database writes.",
 )
 def upgrade_v053(dry_run: bool):
-    """为新库预装官方存储插件，并单向迁移精确 v0.5.3 数据。"""
-    from src.plugins.bundled_providers import install_bundled_provider_plugins_once
+    """同步官方存储插件，并单向迁移精确 v0.5.3 数据。"""
+    from src.plugins.bundled_providers import sync_bundled_provider_plugins
     from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
     from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
     from src.start.legacy_v053_upgrade import (
@@ -237,17 +237,16 @@ def upgrade_v053(dry_run: bool):
             "v0.5.3 upgrade preserved a custom [image_search].inference_base_url; "
             "configure it to a compatible SigLIP2 embedding service after startup"
         )
-    if state == "legacy_v053" or (state == "fresh" and not dry_run):
+    if not dry_run:
         try:
             logger.info(
                 "preparing bundled official providers schema_state={}", state
             )
-            install_result = install_bundled_provider_plugins_once()
+            install_result = sync_bundled_provider_plugins()
             logger.info(
-                "bundled official providers ready installed={} "
-                "already_completed={}",
+                "bundled official providers ready installed={} updated={}",
                 install_result.installed,
-                install_result.already_completed,
+                install_result.updated,
             )
             if state == "legacy_v053":
                 registrations = load_enabled_plugins(
@@ -282,7 +281,8 @@ def upgrade_v053(dry_run: bool):
             ) from exc
     else:
         logger.info(
-            "v0.5.3 upgrade provider preparation skipped schema_state={}", state
+            "v0.5.3 upgrade provider synchronization skipped for dry run "
+            "schema_state={}", state
         )
     try:
         logger.info("v0.5.3 upgrade invoking database bridge")
