@@ -6,6 +6,7 @@ from .media_metadata_probe_service import MediaMetadataProbeService
 from .media_resolution_backfill_service import MediaResolutionBackfillService
 from .media_service import MediaService
 from .media_thumbnail_service import MediaThumbnailService
+from .media_validity_scan_service import MediaValidityScanService
 
 __all__ = [
     "MediaClipService",
@@ -16,4 +17,5 @@ __all__ = [
     "MediaResolutionBackfillService",
     "MediaService",
     "MediaThumbnailService",
+    "MediaValidityScanService",
 ]

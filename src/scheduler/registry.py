@@ -30,6 +30,7 @@ from src.service.playback import (
     MediaFileHashBackfillService,
     MediaResolutionBackfillService,
     MediaThumbnailService,
+    MediaValidityScanService,
 )
 from src.service.system import ActivityCleanupService
 from src.service.transfers.downloads.auto_subscribed.auto_download_service import (
@@ -132,6 +133,16 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="补齐有效媒体缺失的分辨率",
         manual_only=True,
         handler=lambda reporter, _params: MediaResolutionBackfillService.backfill_missing_resolutions(
+            reporter=reporter,
+        ),
+    ),
+    JobDefinition(
+        task_key=MediaValidityScanService.TASK_KEY,
+        log_name="media-file-scan",
+        cli_name="scan-media-files",
+        cli_help="执行一次媒体文件巡检",
+        cron_setting="media_file_scan_cron",
+        handler=lambda reporter, _params: MediaValidityScanService.scan_media_validity(
             reporter=reporter,
         ),
     ),

@@ -350,6 +350,14 @@ class StorageMediaRefScanner(Protocol):
     def scan_media_refs(self, *, source_ref: JsonObject) -> Iterable[JsonObject]: ...
 
 
+class StorageManagedMediaRefScanner(Protocol):
+    """Optional capability for reconciling the current library's managed media."""
+
+    def scan_managed_media_ref_keys(self) -> set[str]: ...
+
+    def managed_media_ref_key(self, *, media_ref: JsonObject) -> str: ...
+
+
 class StorageCoverSourceProvider(Protocol):
     """Optional capability for opening a video source used to generate its cover."""
 
@@ -552,6 +560,7 @@ __all__ = [
     "StagedMedia",
     "StorageDurationProbeProvider",
     "StorageImportSourceIdentityProvider",
+    "StorageManagedMediaRefScanner",
     "StorageProvider",
     "StorageResolutionProbeProvider",
     "ThumbnailArtifact",

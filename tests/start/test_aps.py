@@ -50,6 +50,7 @@ def test_aps_command_invokes_scheduler_entrypoint(monkeypatch):
         "update-movie-heat",
         "sync-movie-interactions",
         "generate-media-thumbnails",
+        "scan-media-files",
         "cleanup-activity-records",
         "index-image-search",
         "recompute-movie-similarities",
@@ -223,6 +224,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_auto_import_cron", "*/10 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_interaction_sync_cron", "0 5 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_file_hash_backfill_cron", "0 3 * * *")
+    monkeypatch.setattr("src.start.aps.settings.scheduler.media_file_scan_cron", "0 */6 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_thumbnail_cron", "*/5 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.image_search_index_cron", "*/10 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_similarity_recompute_cron", "30 3 * * *")
@@ -248,6 +250,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     assert str(scheduler.get_job("download_task_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/15']"
     assert str(scheduler.get_job("download_task_auto_import").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"
     assert str(scheduler.get_job("media_file_hash_backfill").trigger) == "cron[month='*', day='*', day_of_week='*', hour='3', minute='0']"
+    assert str(scheduler.get_job("media_file_scan").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*/6', minute='0']"
     assert str(scheduler.get_job("media_thumbnail_generation").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/5']"
     assert str(scheduler.get_job("image_search_index").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"
     assert str(scheduler.get_job("movie_similarity_recompute").trigger) == "cron[month='*', day='*', day_of_week='*', hour='3', minute='30']"
