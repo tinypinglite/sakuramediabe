@@ -120,6 +120,54 @@ def test_patch_explicit_null_clears_api_key(client, account_user):
     assert Indexer.get(Indexer.name == "mteam").api_key is None
 
 
+def test_patch_allows_preserving_unbound_legacy_indexers(client, account_user):
+    token = _login(client, account_user.username)
+    download_client = _create_download_client()
+
+    response = client.patch(
+        "/indexer-settings",
+        headers=_auth(token),
+        json={
+            "indexers": [
+                {
+                    "name": "legacy-unbound",
+                    "url": "http://legacy.example/api",
+                    "kind": "pt",
+                    "download_client_ids": [],
+                },
+                {
+                    "name": "recovered",
+                    "url": "http://recovered.example/api",
+                    "kind": "pt",
+                    "download_client_ids": [download_client.id],
+                },
+            ]
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["indexers"] == [
+        {
+            "id": Indexer.get(Indexer.name == "legacy-unbound").id,
+            "name": "legacy-unbound",
+            "url": "http://legacy.example/api",
+            "kind": "pt",
+            "api_key": None,
+            "download_clients": [],
+        },
+        {
+            "id": Indexer.get(Indexer.name == "recovered").id,
+            "name": "recovered",
+            "url": "http://recovered.example/api",
+            "kind": "pt",
+            "api_key": None,
+            "download_clients": [
+                {"id": download_client.id, "name": "client-main"},
+            ],
+        },
+    ]
+
+
 def test_patch_empty_body_still_rejected(client, account_user):
     token = _login(client, account_user.username)
 

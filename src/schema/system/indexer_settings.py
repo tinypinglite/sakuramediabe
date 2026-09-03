@@ -32,7 +32,7 @@ class IndexerItemUpdatePayload(SchemaModel):
     kind: str
     # 可选鉴权 key：空串/空白会归一为 None（不携带 apikey）。
     api_key: str | None = None
-    # 至少绑定一个下载器；重复 id 会被拒绝。
+    # 可暂不绑定下载器；非空时重复 id 会被拒绝。
     download_client_ids: list[int]
 
 
