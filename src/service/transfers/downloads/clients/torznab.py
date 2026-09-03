@@ -1,4 +1,5 @@
 import re
+from html.parser import HTMLParser
 
 import httpx
 import xmltodict
@@ -31,6 +32,32 @@ def _describe_search_error(exc: Exception) -> str:
 
 class TorznabClientError(Exception):
     pass
+
+
+class _CandidateTextParser(HTMLParser):
+    """Turn indexer-supplied HTML fragments into plain candidate text."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        del tag, attrs
+        self.parts.append(" ")
+
+    def handle_endtag(self, tag: str) -> None:
+        del tag
+        self.parts.append(" ")
+
+
+def _clean_candidate_text(value: object) -> str:
+    parser = _CandidateTextParser()
+    parser.feed(TorznabClient._coerce_text(value))
+    parser.close()
+    return " ".join("".join(parser.parts).split())
 
 
 class TorznabClient:
@@ -155,8 +182,8 @@ class TorznabClient:
         remote_indexer = self._extract_indexer_metadata(item, channel_title)
         size_bytes = self._coerce_int(item.get("size"))
         seeders = self._coerce_int(attr_map.get("seeders"))
-        title = self._coerce_text(item.get("title"))
-        description = self._coerce_text(item.get("description"))
+        title = _clean_candidate_text(item.get("title"))
+        description = _clean_candidate_text(item.get("description"))
         full_title = " ".join(part for part in [title, description] if part)
         # Torznab 协议中磁力链可能出现在 magneturl 属性、link 或 guid 任一字段
         # （只有磁力链没有 .torrent 文件时，聚合器如 Jackett 会把磁力链直接塞进 link/guid），

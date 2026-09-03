@@ -24,6 +24,21 @@ TORZNAB_RESPONSE = """
 </rss>
 """
 
+TORZNAB_HTML_TITLE_RESPONSE = """
+<rss xmlns:torznab="http://torznab.com/schemas/2015/feed">
+  <channel>
+    <title>good-indexer</title>
+    <item>
+      <title>SSNI-001</title>
+      <description>uncensored&lt;/br&gt; 1080p &amp;amp; remux</description>
+      <size>1024</size>
+      <torznab:attr name="seeders" value="5" />
+      <link>magnet:?xt=urn:btih:good-result</link>
+    </item>
+  </channel>
+</rss>
+"""
+
 
 class _IndexerQuery:
     def __init__(self, indexers):
@@ -131,3 +146,27 @@ def test_torznab_search_still_reports_when_all_indexers_fail(monkeypatch):
         "http://bad-indexer/api",
         "http://good-indexer/api",
     ]
+
+
+def test_torznab_search_strips_html_from_candidate_title(monkeypatch):
+    _patch_indexers(monkeypatch)
+
+    class HtmlTitleClient(_FakeHttpClient):
+        def get(self, url, *, params):
+            self.calls.append(url)
+            if url == "http://bad-indexer/api":
+                raise httpx.ConnectError(
+                    "connection failed",
+                    request=httpx.Request("GET", url),
+                )
+            return httpx.Response(
+                200,
+                text=TORZNAB_HTML_TITLE_RESPONSE,
+                request=httpx.Request("GET", url, params=params),
+            )
+
+    candidates = DownloadSearchService(TorznabClient(client=HtmlTitleClient())).search_candidates(
+        movie_number="SSNI-001"
+    )
+
+    assert candidates[0].title == "SSNI-001 uncensored 1080p & remux"
