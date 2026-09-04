@@ -30,6 +30,7 @@ from src.schema.playback.media import (
     DuplicateMediaGroupResource,
     InvalidMediaResource,
     MediaListItemResource,
+    MediaPlaybackModeResource,
     MediaPointCreateRequest,
     MediaPointKind,
     MediaPointResource,
@@ -51,6 +52,8 @@ router = APIRouter(
 _AUTO_REDIRECT_MAX_ATTEMPTS = 3
 _AUTO_REDIRECT_RETRY_GAP_SECONDS = 1.5
 _AUTO_REDIRECT_STATE_MAX_ENTRIES = 1024
+_PLAYBACK_MODE_RESULT_TTL_SECONDS = 120.0
+_PLAYBACK_MODE_RESULT_MAX_ENTRIES = 1024
 
 
 @dataclass
@@ -95,6 +98,60 @@ class _AutoRedirectRetries:
 
 
 _AUTO_REDIRECT_RETRIES = _AutoRedirectRetries()
+
+
+@dataclass
+class _PlaybackModeResult:
+    mode: Literal["direct", "proxy"]
+    recorded_at: float
+
+
+class _PlaybackModeResults:
+    """Bounded, short-lived results for one player's actual gateway request."""
+
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        ttl_seconds: float = _PLAYBACK_MODE_RESULT_TTL_SECONDS,
+        max_entries: int = _PLAYBACK_MODE_RESULT_MAX_ENTRIES,
+    ) -> None:
+        self._clock = clock
+        self._ttl_seconds = ttl_seconds
+        self._max_entries = max_entries
+        self._results: OrderedDict[str, _PlaybackModeResult] = OrderedDict()
+
+    def record(self, *, attempt_id: str, delivery: PlaybackDelivery) -> None:
+        now = self._clock()
+        self._discard_expired(now)
+        self._results[attempt_id] = _PlaybackModeResult(
+            mode="direct" if delivery == "redirect" else "proxy",
+            recorded_at=now,
+        )
+        self._results.move_to_end(attempt_id)
+        while len(self._results) > self._max_entries:
+            self._results.popitem(last=False)
+
+    def get(self, attempt_id: str) -> Literal["direct", "proxy"] | None:
+        now = self._clock()
+        self._discard_expired(now)
+        result = self._results.get(attempt_id)
+        if result is None:
+            return None
+        self._results.move_to_end(attempt_id)
+        return result.mode
+
+    def _discard_expired(self, now: float) -> None:
+        expired_ids = [
+            attempt_id
+            for attempt_id, result in self._results.items()
+            if now - result.recorded_at > self._ttl_seconds
+        ]
+        for attempt_id in expired_ids:
+            self._results.pop(attempt_id, None)
+
+
+_PLAYBACK_MODE_RESULTS = _PlaybackModeResults()
 
 
 @router.get("", response_model=PageResponse[MediaListItemResource])
@@ -169,6 +226,14 @@ def _raise_provider_operation_error(exc: ProviderOperationError) -> None:
     raise ApiError(status_code, f"provider_{exc.code}", exc.safe_message) from exc
 
 
+@router.get("/playback-attempts/{attempt_id}", response_model=MediaPlaybackModeResource)
+async def get_playback_attempt_mode(
+    attempt_id: str,
+    current_user=Depends(get_current_user),
+):
+    return MediaPlaybackModeResource(mode=_PLAYBACK_MODE_RESULTS.get(attempt_id))
+
+
 @router.get("/{media_id}/points", response_model=list[MediaPointResource])
 def list_media_points_for_media(
     media_id: int,
@@ -208,6 +273,12 @@ async def play_media(
     expires: int | None = None,
     signature: str | None = None,
     delivery: Literal["auto", "proxy", "redirect"] = "auto",
+    playback_attempt_id: str | None = Query(
+        default=None,
+        min_length=20,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    ),
 ):
     require_signed_params(expires, signature)
 
@@ -262,11 +333,20 @@ async def play_media(
             ),
         )
 
-    try:
-        return await storage.handle_playback(
+    async def handle(actual_delivery: PlaybackDelivery):
+        response = await storage.handle_playback(
             media=media_handle,
-            context=context_for(effective_delivery),
+            context=context_for(actual_delivery),
         )
+        if playback_attempt_id is not None and not normalized_path:
+            _PLAYBACK_MODE_RESULTS.record(
+                attempt_id=playback_attempt_id,
+                delivery=actual_delivery,
+            )
+        return response
+
+    try:
+        return await handle(effective_delivery)
     except ProviderOperationError as exc:
         if (
             delivery == "auto"
@@ -274,10 +354,7 @@ async def play_media(
             and (exc.code == "unsupported" or exc.retryable)
         ):
             try:
-                return await storage.handle_playback(
-                    media=media_handle,
-                    context=context_for("proxy"),
-                )
+                return await handle("proxy")
             except ProviderOperationError as fallback_exc:
                 exc = fallback_exc
         _raise_provider_operation_error(exc)

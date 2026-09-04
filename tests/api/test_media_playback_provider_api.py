@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from starlette.responses import PlainTextResponse
@@ -18,6 +19,14 @@ def _media(test_name: str):
     library = MediaLibrary.create(name=f"{test_name}-library", provider_key="demo", provider_config={})
     movie = Movie.create(movie_number=f"{test_name}-001", javdb_id=f"{test_name}-1", title=test_name)
     return Media.create(movie=movie, library=library, file_name="media.mp4")
+
+
+def _auth_headers(client, account_user):
+    response = client.post(
+        "/auth/tokens",
+        json={"username": account_user.username, "password": "password123"},
+    )
+    return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
 
 def _merged_url(media_ids: tuple[int, ...], resource_path: str = "stream.mp4") -> str:
@@ -83,6 +92,45 @@ def test_media_playback_gateway_auto_uses_supported_delivery(
     }
 
 
+def test_media_playback_gateway_records_actual_playback_mode(
+    client,
+    test_db,
+    build_signed_media_url,
+    monkeypatch,
+    account_user,
+):
+    media = _media("gateway-mode")
+
+    class Storage:
+        async def handle_playback(self, *, media, context):
+            return PlainTextResponse(context.delivery)
+
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(playback_deliveries=("proxy", "redirect")),
+    )
+    monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _handle: Storage())
+    monkeypatch.setattr(
+        media_router,
+        "_AUTO_REDIRECT_RETRIES",
+        media_router._AutoRedirectRetries(),
+    )
+    attempt_id = uuid4().hex
+
+    response = client.get(
+        f"{build_signed_media_url(media.id)}&playback_attempt_id={attempt_id}"
+    )
+
+    assert response.status_code == 200
+    mode_response = client.get(
+        f"/media/playback-attempts/{attempt_id}",
+        headers=_auth_headers(client, account_user),
+    )
+    assert mode_response.status_code == 200
+    assert mode_response.json() == {"mode": "direct"}
+
+
 def test_media_playback_gateway_maps_provider_error(
     client,
     test_db,
@@ -128,6 +176,7 @@ def test_media_playback_gateway_auto_retries_proxy_after_redirect_failure(
     monkeypatch,
     code,
     retryable,
+    account_user,
 ):
     media = _media("gateway-fallback")
     deliveries = []
@@ -155,12 +204,39 @@ def test_media_playback_gateway_auto_retries_proxy_after_redirect_failure(
     monkeypatch.setattr(
         MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _handle: Storage()
     )
+    monkeypatch.setattr(
+        media_router,
+        "_AUTO_REDIRECT_RETRIES",
+        media_router._AutoRedirectRetries(),
+    )
 
-    response = client.get(build_signed_media_url(media.id))
+    attempt_id = uuid4().hex
+    response = client.get(
+        f"{build_signed_media_url(media.id)}&playback_attempt_id={attempt_id}"
+    )
 
     assert response.status_code == 200
     assert response.text == "proxy response"
     assert deliveries == ["redirect", "proxy"]
+    mode_response = client.get(
+        f"/media/playback-attempts/{attempt_id}",
+        headers=_auth_headers(client, account_user),
+    )
+    assert mode_response.json() == {"mode": "proxy"}
+
+
+def test_media_playback_mode_returns_null_for_unknown_attempt(
+    client,
+    test_db,
+    account_user,
+):
+    response = client.get(
+        f"/media/playback-attempts/{uuid4().hex}",
+        headers=_auth_headers(client, account_user),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"mode": None}
 
 
 def test_media_playback_gateway_falls_back_to_proxy_after_rapid_redirect_retries(

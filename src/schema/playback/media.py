@@ -41,6 +41,10 @@ class MediaProgressResource(SchemaModel):
     last_watched_at: datetime
 
 
+class MediaPlaybackModeResource(SchemaModel):
+    mode: Literal["direct", "proxy"] | None
+
+
 class MediaPointCreateRequest(SchemaModel):
     thumbnail_id: int = Field(gt=0)
 
