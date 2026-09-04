@@ -21,6 +21,7 @@ from src.service.discovery import (
     get_image_search_service,
     get_movie_plot_image_search_service,
 )
+from src.service.discovery.image_search_input import normalize_image_search_query
 
 router = APIRouter(
     prefix="/image-search",
@@ -37,11 +38,9 @@ async def create_image_search_session(
     exclude_movie_ids: Annotated[str | None, Form()] = None,
     score_threshold: Annotated[float | None, Form()] = None,
 ):
-    image_bytes = await file.read()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
     service = get_image_search_service()
     try:
+        image_bytes = await _read_image_search_query(file)
         return service.create_session_and_first_page(
             image_bytes=image_bytes,
             page_size=page_size,
@@ -99,10 +98,8 @@ async def create_plot_image_search_session(
     exclude_movie_ids: Annotated[str | None, Form()] = None,
     score_threshold: Annotated[float | None, Form()] = None,
 ):
-    image_bytes = await file.read()
-    if not image_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
     try:
+        image_bytes = await _read_image_search_query(file)
         return get_movie_plot_image_search_service().create_session_and_first_page(
             image_bytes=image_bytes,
             page_size=page_size,
@@ -118,6 +115,13 @@ async def create_plot_image_search_session(
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def _read_image_search_query(file: UploadFile) -> bytes:
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise ValueError("Uploaded file is empty")
+    return normalize_image_search_query(image_bytes)
 
 
 @router.get(
