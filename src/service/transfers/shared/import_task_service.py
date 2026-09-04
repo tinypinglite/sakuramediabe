@@ -16,12 +16,11 @@ from src.common.media_import_status import (
 from src.model import BackgroundTaskRun, DownloadTask, MediaLibrary
 from src.model.base import get_database
 from src.plugins.provider_protocol import (
-    MEDIA_PROVIDER_REGISTRY,
     ProviderOperationError,
 )
 from src.schema.transfers.media_import import ImportAcceptedResponse, ImportRequest
 from src.service.system import ActivityService
-from src.service.transfers.downloads.common import download_provider, library_handle_for
+from src.service.transfers.downloads.common import download_provider
 from src.service.transfers.shared.import_notifications import create_new_media_reminder
 from src.service.transfers.shared.write_mutex import library_import_mutex_key
 
@@ -237,19 +236,6 @@ class ImportTaskService:
                 source_disposition=request.source_disposition,
                 collection_id=request.collection_id,
                 progress_callback=progress_callback,
-                stage_receipt_callback=lambda operation_key, receipt: cls._persist_stage_receipt(
-                    task_run_id,
-                    operation_key,
-                    receipt,
-                ),
-                stage_receipt_commit_callback=lambda operation_key: cls._commit_stage_receipt(
-                    task_run_id,
-                    operation_key,
-                ),
-                stage_receipt_clear_callback=lambda operation_key: cls._clear_stage_receipt(
-                    task_run_id,
-                    operation_key,
-                ),
                 operation_namespace=operation_namespace or f"task:{task_run_id}",
             )
         except Exception:
@@ -328,150 +314,12 @@ class ImportTaskService:
             )
 
     @classmethod
-    def _persist_stage_receipt(
-        cls,
-        task_run_id: int,
-        operation_key: str,
-        receipt: dict,
-    ) -> None:
-        cls._update_stage_receipt(
-            task_run_id,
-            operation_key,
-            receipt=receipt,
-            committed=False,
-        )
-
-    @classmethod
-    def _commit_stage_receipt(cls, task_run_id: int, operation_key: str) -> None:
-        cls._update_stage_receipt(
-            task_run_id,
-            operation_key,
-            receipt=None,
-            committed=True,
-        )
-
-    @classmethod
-    def _clear_stage_receipt(cls, task_run_id: int, operation_key: str) -> None:
-        with get_database().atomic():
-            task_run = (
-                BackgroundTaskRun.select()
-                .where(BackgroundTaskRun.id == task_run_id)
-                .for_update()
-                .first()
-            )
-            if task_run is None:
-                raise RuntimeError("import_task_run_not_found")
-            params = dict(task_run.params or {})
-            staged_receipts = dict(params.get("_staged_receipts") or {})
-            staged_receipts.pop(operation_key, None)
-            if staged_receipts:
-                params["_staged_receipts"] = staged_receipts
-            else:
-                params.pop("_staged_receipts", None)
-            task_run.params = params
-            task_run.save(only=[BackgroundTaskRun.params])
-
-    @staticmethod
-    def _update_stage_receipt(
-        task_run_id: int,
-        operation_key: str,
-        *,
-        receipt: dict | None,
-        committed: bool,
-    ) -> None:
-        """Persist provider receipts in the generic task params JSON.
-
-        The receipt is written before the media transaction starts.  A failed
-        finalize therefore remains recoverable without adding provider fields
-        to a host model.
-        """
-        with get_database().atomic():
-            task_run = (
-                BackgroundTaskRun.select()
-                .where(BackgroundTaskRun.id == task_run_id)
-                .for_update()
-                .first()
-            )
-            if task_run is None:
-                raise RuntimeError("import_task_run_not_found")
-            params = dict(task_run.params or {})
-            staged_receipts = dict(params.get("_staged_receipts") or {})
-            if receipt is None:
-                current = staged_receipts.get(operation_key)
-                if not isinstance(current, dict) or "receipt" not in current:
-                    raise RuntimeError("import_stage_receipt_missing")
-                staged_receipts[operation_key] = {
-                    "receipt": current["receipt"],
-                    "committed": committed,
-                }
-            else:
-                staged_receipts[operation_key] = {
-                    "receipt": receipt,
-                    "committed": committed,
-                }
-            if staged_receipts:
-                params["_staged_receipts"] = staged_receipts
-            else:
-                params.pop("_staged_receipts", None)
-            task_run.params = params
-            task_run.save(only=[BackgroundTaskRun.params])
-
-    @classmethod
     def recover_interrupted_downloads(cls) -> int:
-        failed_runs = list(BackgroundTaskRun.select().where(
+        failed_runs = BackgroundTaskRun.select(BackgroundTaskRun.id).where(
             (BackgroundTaskRun.task_key == cls.TASK_KEY)
             & (BackgroundTaskRun.state == "failed")
-        ))
-        recoverable_run_ids: list[int] = []
-        for task_run in failed_runs:
-            if cls._recover_staged_receipts(task_run):
-                recoverable_run_ids.append(task_run.id)
-        if not recoverable_run_ids:
-            return 0
-        return DownloadTask.update(import_status="pending").where(
+        )
+        return DownloadTask.update(import_status=IMPORT_STATUS_PENDING).where(
             (DownloadTask.import_status == IMPORT_STATUS_RUNNING)
-            & DownloadTask.import_task_run.in_(recoverable_run_ids)
+            & DownloadTask.import_task_run.in_(failed_runs)
         ).execute()
-
-    @classmethod
-    def _recover_staged_receipts(cls, task_run: BackgroundTaskRun) -> bool:
-        params = dict(task_run.params or {})
-        staged_receipts = dict(params.get("_staged_receipts") or {})
-        if not staged_receipts:
-            return True
-        try:
-            library_id = params.get("library_id")
-            if library_id is None:
-                library_id = ImportRequest.model_validate(params).library_id
-            library = MediaLibrary.get_by_id(int(library_id))
-            storage = MEDIA_PROVIDER_REGISTRY.storage_for(library_handle_for(library))
-        except Exception as exc:
-            logger.warning(
-                "Import receipt recovery unavailable task_run_id={} detail={}",
-                task_run.id,
-                exc,
-            )
-            return False
-        for operation_key, entry in staged_receipts.items():
-            if not isinstance(entry, dict) or not isinstance(entry.get("receipt"), dict):
-                logger.error(
-                    "Import receipt recovery found invalid entry task_run_id={} operation_key={}",
-                    task_run.id,
-                    operation_key,
-                )
-                return False
-            try:
-                if entry.get("committed"):
-                    storage.finalize_import(receipt=entry["receipt"])
-                else:
-                    storage.abort_import(receipt=entry["receipt"])
-            except Exception as exc:
-                logger.warning(
-                    "Import receipt recovery failed task_run_id={} operation_key={} detail={}",
-                    task_run.id,
-                    operation_key,
-                    exc,
-                )
-                return False
-            cls._clear_stage_receipt(task_run.id, operation_key)
-        return True

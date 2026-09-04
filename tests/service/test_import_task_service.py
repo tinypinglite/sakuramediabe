@@ -7,6 +7,7 @@ from src.common.media_import_status import (
     IMPORT_STATUS_SKIPPED,
 )
 from src.model import (
+    BackgroundTaskRun,
     DownloadClient,
     DownloadTask,
     MediaLibrary,
@@ -267,3 +268,32 @@ def test_import_notification_reports_unique_movie_count(monkeypatch, batch, has_
         assert notices[0].related_task_run_id == 46
     else:
         assert notices == []
+
+
+def test_recover_interrupted_downloads_only_resets_running_imports_of_failed_runs(test_db):
+    library = MediaLibrary.create(name="recovery", provider_key="test", provider_config={})
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    expected = {}
+    for index, (task_key, run_state, import_status) in enumerate([
+        ("library_import", "failed", "running"),
+        ("library_import", "failed", "completed"),
+        ("library_import", "failed", "failed"),
+        ("library_import", "failed", "skipped"),
+        ("library_import", "running", "running"),
+        ("library_import", "pending", "running"),
+        ("library_import", "completed", "running"),
+        ("other_task", "failed", "running"),
+    ]):
+        run = BackgroundTaskRun.create(
+            task_key=task_key, task_name="import", trigger_type="internal", state=run_state,
+            params={"_staged_receipts": {"old-operation": {"receipt": {}, "committed": False}}},
+        )
+        task = DownloadTask.create(
+            client=client, name=str(index), remote_id=str(index), movie="TEST-001",
+            state="completed", import_status=import_status, import_task_run=run,
+        )
+        expected[task.id] = "pending" if index == 0 else import_status
+
+    assert ImportTaskService.recover_interrupted_downloads() == 1
+    assert {task.id: task.import_status for task in DownloadTask.select()} == expected
+    assert ImportTaskService.recover_interrupted_downloads() == 0

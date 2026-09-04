@@ -50,9 +50,6 @@ from src.service.transfers.downloads.common import library_handle_for
 from src.service.videos.video_cover_service import VideoCoverService
 
 ImportProgressCallback = Callable[[dict[str, object]], None]
-StageReceiptCallback = Callable[[str, dict[str, Any]], None]
-StageReceiptCommitCallback = Callable[[str], None]
-StageReceiptClearCallback = Callable[[str], None]
 
 
 class MetadataImportResult(BaseModel):
@@ -172,9 +169,6 @@ class MediaImportService:
         source_disposition: str = "keep",
         collection_id: int | None = None,
         progress_callback: ImportProgressCallback | None = None,
-        stage_receipt_callback: StageReceiptCallback | None = None,
-        stage_receipt_commit_callback: StageReceiptCommitCallback | None = None,
-        stage_receipt_clear_callback: StageReceiptClearCallback | None = None,
         operation_namespace: str | None = None,
     ) -> ImportResult:
         if not isinstance(source_ref, dict) or not source_ref:
@@ -329,9 +323,6 @@ class MediaImportService:
                     )
                     if not isinstance(staged, StagedMedia):
                         raise ApiError(502, "provider_invalid_response", "媒体提供方返回了无效暂存结果")
-                    if stage_receipt_callback is not None:
-                        # receipt 必须先落通用任务记录，再尝试写入宿主业务表。
-                        stage_receipt_callback(operation_key, staged.receipt)
                     if media_kind == "jav":
                         metadata = metadata_futures[movie_number].result()
                         if metadata.movie_id is None:
@@ -344,13 +335,6 @@ class MediaImportService:
                             library=library,
                             source=source,
                             staged=staged,
-                            on_commit=(
-                                lambda operation_key=operation_key: stage_receipt_commit_callback(
-                                    operation_key
-                                )
-                                if stage_receipt_commit_callback is not None
-                                else None
-                            ),
                         )
                         new_playable_movies.append(
                             {"id": movie.id, "movie_number": movie.movie_number, "title": movie.title}
@@ -372,19 +356,15 @@ class MediaImportService:
                                 )
 
                                 VideoCollectionService.add_item(collection_id, video.id)
-                            if stage_receipt_commit_callback is not None:
-                                stage_receipt_commit_callback(operation_key)
                         created_video_ids.append(video.id)
                 except ProviderOperationError as exc:
                     failed_count += 1
                     failure_items.append(make_failure_item(source.name, exc.code))
-                    if self._abort_staged(storage, staged) and stage_receipt_clear_callback is not None:
-                        stage_receipt_clear_callback(operation_key)
+                    self._abort_staged(storage, staged)
                 except Exception as exc:
                     failed_count += 1
                     failure_items.append(make_failure_item(source.name, str(exc)))
-                    if self._abort_staged(storage, staged) and stage_receipt_clear_callback is not None:
-                        stage_receipt_clear_callback(operation_key)
+                    self._abort_staged(storage, staged)
                 else:
                     try:
                         storage.finalize_import(receipt=staged.receipt)
@@ -411,8 +391,6 @@ class MediaImportService:
                         if import_source_identity is not None and media is not None:
                             media.import_source_identity = import_source_identity
                             media.save(only=[Media.import_source_identity])
-                        if stage_receipt_clear_callback is not None:
-                            stage_receipt_clear_callback(operation_key)
                         imported_count += 1
                         if video is not None and media is not None:
                             self._generate_video_cover(
@@ -465,7 +443,6 @@ class MediaImportService:
         library,
         source: ImportFile,
         staged: StagedMedia,
-        on_commit: Callable[[], None] | None = None,
     ) -> Media:
         with get_database().atomic():
             media = Media.create(
@@ -485,8 +462,6 @@ class MediaImportService:
                 raise ValueError("provider returned an invalid media file hash")
             media.file_hash = file_hash
             media.save(only=[Media.file_hash])
-            if on_commit is not None:
-                on_commit()
             return media
 
     @staticmethod
@@ -605,15 +580,13 @@ class MediaImportService:
         return f"{operation_namespace}:{index}"
 
     @staticmethod
-    def _abort_staged(storage, staged: object) -> bool:
+    def _abort_staged(storage, staged: object) -> None:
         if not isinstance(staged, StagedMedia):
-            return True
+            return
         try:
             storage.abort_import(receipt=staged.receipt)
-            return True
         except Exception:
             logger.exception("Provider import abort failed")
-            return False
 
     @staticmethod
     def _provider_error(exc: ProviderOperationError) -> ApiError:
