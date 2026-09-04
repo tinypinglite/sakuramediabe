@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from peewee import JOIN
-
 from src.api.exception.errors import ApiError
 from src.common.media_import_status import (
     IMPORT_STATUS_FAILED,
@@ -11,8 +9,8 @@ from src.common.media_import_status import (
     IMPORT_STATUS_RUNNING,
     IMPORT_STATUS_SKIPPED,
 )
-from src.common.service_helpers import validate_page
-from src.model import DownloadTask, Image, Movie
+from src.common.service_helpers import validate_page, with_movie_card_relations
+from src.model import DownloadTask, Movie
 from src.plugins.provider_protocol import ProviderOperationError
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
@@ -69,11 +67,8 @@ class DownloadTaskService:
         numbers = list({task.movie for task in tasks if task.movie})
         if not numbers:
             return {}
-        movies = (
-            Movie.select(Movie, Image)
-            .join(Image, JOIN.LEFT_OUTER, on=(Movie.cover_image == Image.id))
-            .where(Movie.movie_number.in_(numbers))
-        )
+        movies, _thin_cover_alias = with_movie_card_relations(Movie.select(Movie))
+        movies = movies.where(Movie.movie_number.in_(numbers))
         return {movie.movie_number: movie for movie in movies}
 
     @classmethod

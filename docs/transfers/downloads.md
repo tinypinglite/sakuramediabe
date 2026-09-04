@@ -54,6 +54,9 @@ GET    /download-tasks
 DELETE /download-tasks/{task_id}
 ```
 
+任务番号命中本地影片时，列表项附带 `movie_title`、`movie_cover` 和可选的
+`movie_thin_cover`；客户端在竖封面缺失时应回退使用 `movie_cover`。
+
 删除远端文件必须显式传 `delete_files=true&confirm_delete_files=true`。正在导入的任务
 不能删除。
 

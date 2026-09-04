@@ -120,6 +120,7 @@ class DownloadTaskResource(SchemaModel):
     import_status: str
     movie_title: str | None = None
     movie_cover: ImageResource | None = None
+    movie_thin_cover: ImageResource | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -147,6 +148,8 @@ class DownloadTaskResource(SchemaModel):
             data["movie_title"] = title or None
             if movie.cover_image is not None:
                 data["movie_cover"] = ImageResource.from_attributes_model(movie.cover_image)
+            if movie.thin_cover_image is not None:
+                data["movie_thin_cover"] = ImageResource.from_attributes_model(movie.thin_cover_image)
         return cls.model_validate(data)
 
     @classmethod

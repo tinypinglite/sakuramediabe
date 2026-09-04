@@ -1,6 +1,6 @@
 """下载任务列表接口按 provider 协议状态筛选的回归测试。"""
 
-from src.model import DownloadClient, DownloadTask, MediaLibrary
+from src.model import DownloadClient, DownloadTask, Image, MediaLibrary, Movie
 
 
 def _login(client, username: str) -> str:
@@ -92,3 +92,39 @@ def test_download_tasks_ignores_body_as_filter(client, account_user):
 
     assert response.status_code == 200, response.text
     assert response.json()["total"] == 3
+
+
+def test_download_tasks_returns_movie_cover_variants(client, account_user):
+    token = _login(client, account_user.username)
+    _seed_tasks()
+    cover = Image.create(
+        origin="/files/images/cover.jpg",
+        small="/files/images/cover-small.jpg",
+        medium="/files/images/cover-medium.jpg",
+        large="/files/images/cover-large.jpg",
+    )
+    thin_cover = Image.create(
+        origin="/files/images/thin-cover.jpg",
+        small="/files/images/thin-cover-small.jpg",
+        medium="/files/images/thin-cover-medium.jpg",
+        large="/files/images/thin-cover-large.jpg",
+    )
+    Movie.create(
+        movie_number="ABP-001",
+        javdb_id="download-task-abp-001",
+        title="下载任务影片",
+        cover_image=cover,
+        thin_cover_image=thin_cover,
+    )
+
+    response = client.get(
+        "/download-tasks",
+        params={"movie_number": "ABP-001"},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["movie_title"] == "下载任务影片"
+    assert item["movie_cover"]["large"] == "/files/images/cover-large.jpg"
+    assert item["movie_thin_cover"]["large"] == "/files/images/thin-cover-large.jpg"
