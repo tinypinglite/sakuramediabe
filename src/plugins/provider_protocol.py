@@ -365,6 +365,12 @@ class StorageMergedPlaybackProvider(Protocol):
     ) -> Response: ...
 
 
+class StorageMergedPlaybackPreflightProvider(Protocol):
+    """Optional capability for validating a merged stream before its URL is issued."""
+
+    def preflight_merged_playback(self, *, medias: tuple[MediaHandle, ...]) -> None: ...
+
+
 class MediaProviderMergedPlaybackBundle(Protocol):
     """Optional bundle declaration paired with ``StorageMergedPlaybackProvider``."""
 
@@ -661,6 +667,7 @@ __all__ = [
     "StorageMediaTransferSourceCleanupProvider",
     "StorageMediaTransferSourceProvider",
     "StorageMediaTransferTargetProvider",
+    "StorageMergedPlaybackPreflightProvider",
     "StorageProvider",
     "StorageResolutionProbeProvider",
     "ThumbnailArtifact",
