@@ -49,11 +49,13 @@ class TaskWorker:
         self._in_flight: dict[int, str] = {}
 
     def start(self) -> None:
+        interrupted = TaskQueueService.recover_interrupted_runs()
         recoverable_task_keys = {
             definition.task_key
             for definition in (*JOB_REGISTRY_BY_KEY.values(), *QUEUE_TASK_REGISTRY.values())
             if definition.business_recovery is not None
         }
+        recoverable_task_keys.update(run.task_key for run in interrupted)
         if recoverable_task_keys:
             self._run_business_recovery(recoverable_task_keys)
         for lane, concurrency in self._lanes.items():

@@ -200,6 +200,27 @@ class TaskQueueService:
         )
 
     @classmethod
+    def recover_interrupted_runs(cls) -> list[BackgroundTaskRun]:
+        """单 APS 启动时回收旧进程遗留任务，必须在领取线程启动前调用。"""
+        with get_database().atomic():
+            interrupted = list(
+                BackgroundTaskRun.select()
+                .where(
+                    BackgroundTaskRun.state == "running",
+                    BackgroundTaskRun.scheduled_at.is_null(False),
+                )
+                .order_by(BackgroundTaskRun.id.asc())
+                .for_update()
+            )
+            return [
+                TaskRunService.fail_task_run(
+                    task_run.id,
+                    error_message="任务执行进程重启，执行已中断",
+                )
+                for task_run in interrupted
+            ]
+
+    @classmethod
     def recover_expired_leases(
         cls, *, error_message: str = LEASE_EXPIRED_ERROR_MESSAGE
     ) -> list[BackgroundTaskRun]:
