@@ -27,6 +27,8 @@ provider 的 `handle_playback`；`resource_path` 及响应内容由 provider 解
 用、鉴权失败、来源不存在和上游暂不可用分别返回 `provider_*` 错误。`delivery` 默认 `auto`：
 provider 声明支持 `redirect` 时使用 302，否则使用 `proxy`。`auto` 选择 302 后若 provider
 返回不支持或可重试错误，宿主只重试一次代理；302 已发出后的客户端播放失败不在后端可见范围内。
+自动直连的重试计数仅累计连续相同完整 Range 的请求；Range 变化重新计数，
+无 Range 请求单独计数。原有的 1.5 秒相邻请求间隔和第 4 次回退阈值保持不变。
 
 ## 进度、时刻点和缩略图
 

@@ -60,10 +60,11 @@ _PLAYBACK_MODE_RESULT_MAX_ENTRIES = 1024
 class _AutoRedirectAttempt:
     last_seen_at: float
     count: int
+    range_header: str
 
 
 class _AutoRedirectRetries:
-    """Detect rapid client reopens of an auto redirect without persisting state."""
+    """Detect consecutive reopens of the same byte range without persisting state."""
 
     def __init__(
         self,
@@ -84,13 +85,17 @@ class _AutoRedirectRetries:
         key = (media_id, client_host, user_agent_hash)
         now = self._clock()
         previous = self._attempts.get(key)
+        range_header = request.headers.get("range", "").strip()
         count = (
             previous.count + 1
             if previous is not None
+            and previous.range_header == range_header
             and now - previous.last_seen_at <= _AUTO_REDIRECT_RETRY_GAP_SECONDS
             else 1
         )
-        self._attempts[key] = _AutoRedirectAttempt(last_seen_at=now, count=count)
+        self._attempts[key] = _AutoRedirectAttempt(
+            last_seen_at=now, count=count, range_header=range_header
+        )
         self._attempts.move_to_end(key)
         while len(self._attempts) > self._max_entries:
             self._attempts.popitem(last=False)
