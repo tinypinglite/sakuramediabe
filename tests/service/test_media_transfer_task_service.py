@@ -368,7 +368,7 @@ def test_task_lease_loss_during_stage_prevents_switch_and_cleanup(move):
 
 def test_enqueue_requires_cleanup_capability(move):
     move.source.cleanup_transfer_source = None
-    with pytest.raises(Exception, match="不支持迁移清理"):
+    with pytest.raises(Exception, match="不支持迁移"):
         enqueue(move)
     assert BackgroundTaskRun.select().count() == 0
 

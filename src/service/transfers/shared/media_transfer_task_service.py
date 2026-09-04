@@ -135,7 +135,7 @@ class MediaTransferTaskService:
             source
         ) or not supports_media_transfer_source_cleanup(source):
             raise ApiError(
-                422, "media_transfer_source_unsupported", "源媒体库不支持迁移清理"
+                422, "media_transfer_source_unsupported", "源媒体库不支持迁移"
             )
 
     @classmethod
