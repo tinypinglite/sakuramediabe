@@ -374,16 +374,51 @@ def test_auto_import_skips_unbound_completed_tasks(test_db, monkeypatch):
         completed_source_ref={"id": "external-source"},
         import_status="pending",
     )
-    triggered_task_ids: list[int] = []
+    triggered_batches: list[list[int]] = []
     monkeypatch.setattr(
-        "src.service.transfers.downloads.sync_service.DownloadTaskService.trigger_import",
-        lambda task_id, **_kwargs: triggered_task_ids.append(task_id),
+        "src.service.transfers.downloads.sync_service.ImportTaskService.enqueue_batch",
+        lambda tasks, **_kwargs: triggered_batches.append([task.id for task in tasks]),
     )
 
     result = DownloadSyncService().enqueue_auto_imports()
 
-    assert triggered_task_ids == [tracked_task.id]
+    assert triggered_batches == [[tracked_task.id]]
     assert result["queued_count"] == 1
+
+
+def test_auto_import_batches_tasks_for_each_library(test_db, monkeypatch):
+    library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    first = DownloadTask.create(
+        client=client,
+        movie="ABC-001",
+        remote_id="first",
+        name="first",
+        state="completed",
+        progress=1,
+        completed_source_ref={"id": "first-source"},
+        import_status="pending",
+    )
+    second = DownloadTask.create(
+        client=client,
+        movie="ABC-002",
+        remote_id="second",
+        name="second",
+        state="completed",
+        progress=1,
+        completed_source_ref={"id": "second-source"},
+        import_status="pending",
+    )
+    triggered_batches: list[list[int]] = []
+    monkeypatch.setattr(
+        "src.service.transfers.downloads.sync_service.ImportTaskService.enqueue_batch",
+        lambda tasks, **_kwargs: triggered_batches.append([task.id for task in tasks]),
+    )
+
+    result = DownloadSyncService().enqueue_auto_imports()
+
+    assert triggered_batches == [[first.id, second.id]]
+    assert result["queued_count"] == 2
 
 
 def test_download_sync_skips_clients_without_active_tasks(test_db):

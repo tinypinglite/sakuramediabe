@@ -17,7 +17,6 @@ from src.service.transfers.downloads.common import (
     require_client,
     validate_remote_download_task,
 )
-from src.service.transfers.downloads.task_service import DownloadTaskService
 from src.service.transfers.shared.import_task_service import ImportTaskService
 
 
@@ -154,23 +153,22 @@ class DownloadSyncService:
     def enqueue_auto_imports(self) -> dict[str, int]:
         recovered_count = self._recover_orphaned_imports()
         queued_count = 0
+        tasks_by_library: dict[int, list[DownloadTask]] = {}
         for task in DownloadTask.select().where(
             (DownloadTask.state == "completed")
             & (DownloadTask.completed_source_ref.is_null(False))
             & (DownloadTask.import_status == IMPORT_STATUS_PENDING)
             & (DownloadTask.movie.is_null(False))
-        ):
+        ).order_by(DownloadTask.id.asc()):
+            tasks_by_library.setdefault(task.client.library_id, []).append(task)
+        for tasks in tasks_by_library.values():
             try:
-                DownloadTaskService.trigger_import(
-                    task.id,
-                    allowed_statuses={IMPORT_STATUS_PENDING},
-                    trigger_type="internal",
-                )
-                queued_count += 1
+                ImportTaskService.enqueue_batch(tasks)
+                queued_count += len(tasks)
             except ApiError as exc:
                 logger.warning(
-                    "Skip auto import task_id={} code={} detail={}",
-                    task.id,
+                    "Skip auto import task_ids={} code={} detail={}",
+                    [task.id for task in tasks],
                     exc.code,
                     exc.details,
                 )

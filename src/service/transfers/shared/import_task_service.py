@@ -9,6 +9,7 @@ from src.api.exception.errors import ApiError
 from src.common.media_import_status import (
     IMPORT_STATUS_COMPLETED,
     IMPORT_STATUS_FAILED,
+    IMPORT_STATUS_PENDING,
     IMPORT_STATUS_RUNNING,
     IMPORT_STATUS_SKIPPED,
 )
@@ -83,7 +84,144 @@ class ImportTaskService:
         )
 
     @classmethod
+    def enqueue_batch(cls, download_tasks: list[DownloadTask]) -> None:
+        if not download_tasks:
+            raise ValueError("download_tasks must not be empty")
+        library_ids = {task.client.library_id for task in download_tasks}
+        if len(library_ids) != 1:
+            raise ValueError("download_tasks must belong to one media library")
+        library = MediaLibrary.get_by_id(next(iter(library_ids)))
+        if library.provider_key == "":
+            raise ApiError(422, "invalid_media_library_provider", "媒体库缺少 provider_key")
+        batch_items = []
+        for task in download_tasks:
+            request = ImportRequest(
+                media_kind="jav",
+                library_id=library.id,
+                source_ref=task.completed_source_ref,
+                source_disposition="keep",
+            )
+            batch_items.append(
+                {
+                    "download_task_id": int(task.id),
+                    **request.model_dump(),
+                }
+            )
+        params = {
+            "download_tasks": batch_items,
+            "library_id": library.id,
+        }
+        mutex_key = library_import_mutex_key(library=library)
+        try:
+            with get_database().atomic():
+                task_run = ActivityService.create_task_run(
+                    task_key=cls.TASK_KEY,
+                    task_name=f"下载任务连续导入（{len(batch_items)}个）",
+                    trigger_type="internal",
+                    mutex_key=mutex_key,
+                    params=params,
+                )
+                updated_count = (
+                    DownloadTask.update(
+                        import_status=IMPORT_STATUS_RUNNING,
+                        import_task_run=task_run,
+                    )
+                    .where(
+                        DownloadTask.id.in_([task.id for task in download_tasks]),
+                        DownloadTask.import_status == IMPORT_STATUS_PENDING,
+                    )
+                    .execute()
+                )
+                if updated_count != len(download_tasks):
+                    raise ApiError(
+                        409,
+                        "download_task_import_conflict",
+                        "部分下载任务已被其它导入任务占用",
+                    )
+        except IntegrityError as exc:
+            blocking = ActivityService.find_task_run_by_mutex_key(mutex_key)
+            raise ApiError(
+                409,
+                "import_task_conflict",
+                "同一媒体库已有导入任务",
+                {"blocking_task_run_id": blocking.id if blocking else None},
+            ) from exc
+
+    @classmethod
     def execute(cls, reporter, params: dict) -> dict:
+        if "download_tasks" in params:
+            result = cls._execute_batch(reporter, params)
+        else:
+            result = cls._execute_single(
+                reporter, params, progress_callback=reporter.progress_callback
+            )
+        if (
+            "download_tasks" in params or params.get("download_task_id") is not None
+        ) and result["new_playable_movies"]:
+            try:
+                create_new_media_reminder(
+                    movie_items=result["new_playable_movies"],
+                    related_task_run_id=reporter.task_run_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Create import reminder skipped task_run_id={} detail={}",
+                    reporter.task_run_id,
+                    exc,
+                )
+        return result
+
+    @classmethod
+    def _execute_batch(cls, reporter, params: dict) -> dict:
+        batch_items = params["download_tasks"]
+        if not batch_items:
+            raise ValueError("download_tasks must not be empty")
+        total = len(batch_items)
+        processed_count = failed_task_count = 0
+        new_playable_movies = []
+        reporter.emit(current=0, total=total, text=f"待处理下载任务 {total} 个")
+        for item in batch_items:
+            task_id = int(item["download_task_id"])
+            try:
+                result = cls._execute_single(
+                    reporter,
+                    item,
+                    progress_callback=None,
+                    operation_namespace=f"task:{reporter.task_run_id}:download:{task_id}",
+                )
+                new_playable_movies.extend(result["new_playable_movies"])
+                if result.get("failed_count", 0):
+                    failed_task_count += 1
+            except Exception:
+                failed_task_count += 1
+                logger.exception(
+                    "Batch library import failed task_run_id={} download_task_id={}",
+                    reporter.task_run_id,
+                    task_id,
+                )
+            finally:
+                processed_count += 1
+                reporter.emit(
+                    current=processed_count,
+                    total=total,
+                    text=f"已处理下载任务 {processed_count}/{total}",
+                )
+        return {
+            "download_task_count": total,
+            "processed_download_task_count": processed_count,
+            "failed_download_task_count": failed_task_count,
+            "new_playable_movies": new_playable_movies,
+        }
+
+    @classmethod
+    def _execute_single(
+        cls,
+        reporter,
+        params: dict,
+        *,
+        progress_callback,
+        operation_namespace: str | None = None,
+    ) -> dict:
         request = ImportRequest.model_validate(params)
         download_task_id = params.get("download_task_id")
         task_run_id = getattr(reporter, "task_run_id", None)
@@ -98,7 +236,7 @@ class ImportTaskService:
                 media_kind=request.media_kind,
                 source_disposition=request.source_disposition,
                 collection_id=request.collection_id,
-                progress_callback=reporter.progress_callback,
+                progress_callback=progress_callback,
                 stage_receipt_callback=lambda operation_key, receipt: cls._persist_stage_receipt(
                     task_run_id,
                     operation_key,
@@ -112,7 +250,7 @@ class ImportTaskService:
                     task_run_id,
                     operation_key,
                 ),
-                operation_namespace=f"task:{task_run_id}",
+                operation_namespace=operation_namespace or f"task:{task_run_id}",
             )
         except Exception:
             cls._set_download_status(download_task_id, IMPORT_STATUS_FAILED)
@@ -126,18 +264,6 @@ class ImportTaskService:
         cls._set_download_status(download_task_id, status)
         if status == IMPORT_STATUS_COMPLETED:
             cls._delete_remote_download_task(download_task_id)
-        if download_task_id is not None and result.new_playable_movies:
-            try:
-                create_new_media_reminder(
-                    movie_items=result.new_playable_movies,
-                    related_task_run_id=reporter.task_run_id,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Create import reminder skipped task_run_id={} detail={}",
-                    reporter.task_run_id,
-                    exc,
-                )
         summary = result.model_dump()
         if download_task_id is not None:
             summary["download_task_id"] = int(download_task_id)
@@ -314,8 +440,10 @@ class ImportTaskService:
         if not staged_receipts:
             return True
         try:
-            request = ImportRequest.model_validate(params)
-            library = MediaLibrary.get_by_id(request.library_id)
+            library_id = params.get("library_id")
+            if library_id is None:
+                library_id = ImportRequest.model_validate(params).library_id
+            library = MediaLibrary.get_by_id(int(library_id))
             storage = MEDIA_PROVIDER_REGISTRY.storage_for(library_handle_for(library))
         except Exception as exc:
             logger.warning(

@@ -22,16 +22,11 @@ def create_new_media_reminder(
     if not unique_items:
         return None
 
-    sample_text = "、".join(
-        item.get("movie_number") or "" for item in unique_items[:3]
-    )
-    if len(unique_items) > 3:
-        sample_text = f"{sample_text} 等 {len(unique_items)} 部影片"
     related_resource_id = unique_items[0].get("movie_id")
     draft = NotificationDraft(
         category="reminder",
         title="有新的影片可以播放了",
-        content=f"本次后台处理新增可播放影片 {len(unique_items)} 部：{sample_text}",
+        content=f"新增了 {len(unique_items)} 个影片",
         related_task_run_id=related_task_run_id,
         related_resource_type="movie",
         related_resource_id=(

@@ -124,7 +124,7 @@ class DownloadTaskService:
             )
         accepted = ImportTaskService.enqueue(
             ImportRequest(
-                media_kind="jav" if task.movie else "video",
+                media_kind="jav",
                 library_id=task.client.library_id,
                 source_ref=task.completed_source_ref,
                 source_disposition="keep",
