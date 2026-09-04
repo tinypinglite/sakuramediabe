@@ -177,16 +177,20 @@ def test_import_movie_by_number_returns_snapshot(monkeypatch):
     assert not hasattr(snapshot, "save")
 
 
-def test_host_api_accepts_only_current_version(tmp_path):
-    """破坏性契约变更后，旧 Host API 不再兼容加载。"""
+def test_host_api_accepts_supported_manifest_versions(tmp_path):
+    """v5 Host 在 import 前拒绝范围外 manifest，并保留 v4 包兼容。"""
     import json
 
     from src.config.config import Plugins
 
-    assert HOST_API_VERSION == 4
+    assert HOST_API_VERSION == 5
     assert MIN_SUPPORTED_HOST_API_VERSION == 4
 
-    for plugin_id, declared in (("legacy_plugin", 2), ("current_plugin", HOST_API_VERSION)):
+    for plugin_id, declared in (
+        ("unsupported_plugin", 2),
+        ("legacy_plugin", MIN_SUPPORTED_HOST_API_VERSION),
+        ("current_plugin", HOST_API_VERSION),
+    ):
         pkg = tmp_path / plugin_id
         pkg.mkdir(parents=True, exist_ok=True)
         (pkg / "manifest.json").write_text(
@@ -200,17 +204,22 @@ def test_host_api_accepts_only_current_version(tmp_path):
             ),
             encoding="utf-8",
         )
+        registration_version = (
+            str(MIN_SUPPORTED_HOST_API_VERSION)
+            if plugin_id == "legacy_plugin"
+            else "HOST_API_VERSION"
+        )
         source = (
             "from src.plugins import HOST_API_VERSION, PluginContext, PluginRegistration\n"
             "def register(context):\n"
             f"    return PluginRegistration(plugin_id={plugin_id!r}, display_name='x', version='1.0.0', "
-            f"host_api_version={declared}, jobs=())\n"
+            f"host_api_version={registration_version}, jobs=())\n"
         )
         (pkg / "__init__.py").write_text(source, encoding="utf-8")
 
     loaded = load_enabled_plugins(
-        Plugins(enabled=["legacy_plugin", "current_plugin"]),
+        Plugins(enabled=["unsupported_plugin", "legacy_plugin", "current_plugin"]),
         root_dir=tmp_path,
     )
-    assert [registration.plugin_id for registration in loaded] == ["current_plugin"]
-    assert PLUGIN_LOAD_ERRORS["legacy_plugin"]["stage"] == "register"
+    assert [registration.plugin_id for registration in loaded] == ["legacy_plugin", "current_plugin"]
+    assert PLUGIN_LOAD_ERRORS["unsupported_plugin"]["stage"] == "validate_manifest"

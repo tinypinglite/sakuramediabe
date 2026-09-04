@@ -47,6 +47,10 @@ from src.schema.playback.clips import (
     MediaClipUpdateRequest,
 )
 from src.service.playback.media_metadata_probe_service import MediaMetadataProbeService
+from src.service.playback.operation_locks import (
+    MEDIA_LOCK,
+    media_operation_lock,
+)
 from src.service.playback.provider_helpers import media_handle_for
 
 
@@ -227,55 +231,30 @@ class MediaClipService:
         media_id: int,
         payload: MediaClipCreateRequest,
     ) -> tuple[MediaClipResource, bool]:
-        media = cls._require_media(media_id)
-        start_thumbnail = cls._require_thumbnail_for_media(media, payload.start_thumbnail_id)
-        end_thumbnail = cls._require_thumbnail_for_media(media, payload.end_thumbnail_id)
+        with media_operation_lock(MEDIA_LOCK, media_id):
+            media = cls._require_media(media_id)
+            start_thumbnail = cls._require_thumbnail_for_media(media, payload.start_thumbnail_id)
+            end_thumbnail = cls._require_thumbnail_for_media(media, payload.end_thumbnail_id)
 
-        start = min(start_thumbnail.offset, end_thumbnail.offset)
-        end = max(start_thumbnail.offset, end_thumbnail.offset)
-        if start >= end:
-            raise ApiError(
-                422,
-                "media_clip_invalid_range",
-                "片段需要选择两个不同的时间点",
-                {"start_offset_seconds": start, "end_offset_seconds": end},
-            )
-        max_duration = settings.media.media_clip_max_duration_seconds
-        if end - start > max_duration:
-            raise ApiError(
-                422,
-                "media_clip_too_long",
-                "片段时长超过上限",
-                {"duration_seconds": end - start, "max_duration_seconds": max_duration},
-            )
+            start = min(start_thumbnail.offset, end_thumbnail.offset)
+            end = max(start_thumbnail.offset, end_thumbnail.offset)
+            if start >= end:
+                raise ApiError(
+                    422,
+                    "media_clip_invalid_range",
+                    "片段需要选择两个不同的时间点",
+                    {"start_offset_seconds": start, "end_offset_seconds": end},
+                )
+            max_duration = settings.media.media_clip_max_duration_seconds
+            if end - start > max_duration:
+                raise ApiError(
+                    422,
+                    "media_clip_too_long",
+                    "片段时长超过上限",
+                    {"duration_seconds": end - start, "max_duration_seconds": max_duration},
+                )
 
-        # 去重：同一来源媒体的同一区间已存在则幂等返回，不重复切片。
-        existing = MediaClip.get_or_none(
-            MediaClip.media == media,
-            MediaClip.start_offset_seconds == start,
-            MediaClip.end_offset_seconds == end,
-        )
-        if existing is not None:
-            if cls._has_valid_artifact(existing):
-                return cls.build_clip_resource(existing, cls._resolve_single_cover(existing)), False
-            cls._discard_invalid_clip(existing)
-
-        movie_number = media.movie_number
-        # 先落库拿 id 作为文件名，天然避免跨媒体的文件名冲突。
-        try:
-            clip = MediaClip.create(
-                media=media,
-                movie_number=movie_number,
-                start_offset_seconds=start,
-                end_offset_seconds=end,
-                title=payload.title,
-                file_path="",
-                file_size_bytes=0,
-                duration_seconds=0,
-            )
-        except IntegrityError:
-            # 与上方去重判断并发：判重到落库之间已出现同区间片段（唯一约束 (media,start,end) 命中），
-            # 重查并幂等返回已有片段，不重复切片，与 existing 分支语义一致。
+            # 去重：同一来源媒体的同一区间已存在则幂等返回，不重复切片。
             existing = MediaClip.get_or_none(
                 MediaClip.media == media,
                 MediaClip.start_offset_seconds == start,
@@ -285,68 +264,94 @@ class MediaClipService:
                 if cls._has_valid_artifact(existing):
                     return cls.build_clip_resource(existing, cls._resolve_single_cover(existing)), False
                 cls._discard_invalid_clip(existing)
-            raise
-        relative_path = cls._clip_relative_path(movie_number, clip.id)
-        target_path = media_clip_root_path() / relative_path
-        try:
-            with TemporaryDirectory(prefix=f"media-clip-{media.id}-") as workspace_name:
-                workspace = Path(workspace_name)
-                try:
-                    media_handle = media_handle_for(media)
-                    storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
-                    artifact = storage.create_clip(
-                        media=media_handle,
-                        start_offset_seconds=start,
-                        end_offset_seconds=end,
-                        workspace=workspace,
-                    )
-                except ProviderUnavailableError as exc:
-                    raise ApiError(
-                        503,
-                        "provider_not_installed",
-                        "媒体提供方未安装",
-                    ) from exc
-                except ProviderOperationError as exc:
-                    status_code = {
-                        "source_not_found": 404,
-                        "authentication_failed": 401,
-                        "unavailable": 503,
-                        "invalid_config": 422,
-                        "unsupported": 422,
-                    }[exc.code]
-                    raise ApiError(
-                        status_code,
-                        f"provider_{exc.code}",
-                        exc.safe_message,
-                    ) from exc
-                source_path = cls._workspace_file(workspace, artifact.relative_path)
-                if source_path.suffix.lower() != ".mp4" or not source_path.is_file():
-                    raise RuntimeError("clip_output_invalid")
-                file_size = source_path.stat().st_size
-                if file_size <= 0:
-                    raise RuntimeError("clip_output_empty")
-                probe = MediaMetadataProbeService.probe_file(source_path)
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                move(str(source_path), str(target_path))
-            clip.file_path = relative_path
-            clip.file_size_bytes = file_size
-            clip.duration_seconds = probe.duration_seconds or (end - start)
-            clip.save()
-        except Exception as exc:
-            # 切片失败：清掉占位记录与半成品文件，保持数据与磁盘一致。
-            clip.delete_instance()
-            cls._unlink_clip_file(target_path)
-            logger.warning("Media clip generation failed media_id={} detail={}", media.id, exc)
-            if isinstance(exc, ApiError):
-                raise
-            raise ApiError(
-                500,
-                "media_clip_generation_failed",
-                "片段生成失败",
-                {"media_id": media.id},
-            ) from exc
 
-        return cls.build_clip_resource(clip, cls._resolve_single_cover(clip)), True
+            movie_number = media.movie_number
+            # 先落库拿 id 作为文件名，天然避免跨媒体的文件名冲突。
+            try:
+                clip = MediaClip.create(
+                    media=media,
+                    movie_number=movie_number,
+                    start_offset_seconds=start,
+                    end_offset_seconds=end,
+                    title=payload.title,
+                    file_path="",
+                    file_size_bytes=0,
+                    duration_seconds=0,
+                )
+            except IntegrityError:
+                # 与上方去重判断并发：判重到落库之间已出现同区间片段（唯一约束 (media,start,end) 命中），
+                # 重查并幂等返回已有片段，不重复切片，与 existing 分支语义一致。
+                existing = MediaClip.get_or_none(
+                    MediaClip.media == media,
+                    MediaClip.start_offset_seconds == start,
+                    MediaClip.end_offset_seconds == end,
+                )
+                if existing is not None:
+                    if cls._has_valid_artifact(existing):
+                        return cls.build_clip_resource(existing, cls._resolve_single_cover(existing)), False
+                    cls._discard_invalid_clip(existing)
+                raise
+            relative_path = cls._clip_relative_path(movie_number, clip.id)
+            target_path = media_clip_root_path() / relative_path
+            try:
+                with TemporaryDirectory(prefix=f"media-clip-{media.id}-") as workspace_name:
+                    workspace = Path(workspace_name)
+                    try:
+                        media_handle = media_handle_for(media)
+                        storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
+                        artifact = storage.create_clip(
+                            media=media_handle,
+                            start_offset_seconds=start,
+                            end_offset_seconds=end,
+                            workspace=workspace,
+                        )
+                    except ProviderUnavailableError as exc:
+                        raise ApiError(
+                            503,
+                            "provider_not_installed",
+                            "媒体提供方未安装",
+                        ) from exc
+                    except ProviderOperationError as exc:
+                        status_code = {
+                            "source_not_found": 404,
+                            "authentication_failed": 401,
+                            "unavailable": 503,
+                            "invalid_config": 422,
+                            "unsupported": 422,
+                        }[exc.code]
+                        raise ApiError(
+                            status_code,
+                            f"provider_{exc.code}",
+                            exc.safe_message,
+                        ) from exc
+                    source_path = cls._workspace_file(workspace, artifact.relative_path)
+                    if source_path.suffix.lower() != ".mp4" or not source_path.is_file():
+                        raise RuntimeError("clip_output_invalid")
+                    file_size = source_path.stat().st_size
+                    if file_size <= 0:
+                        raise RuntimeError("clip_output_empty")
+                    probe = MediaMetadataProbeService.probe_file(source_path)
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    move(str(source_path), str(target_path))
+                clip.file_path = relative_path
+                clip.file_size_bytes = file_size
+                clip.duration_seconds = probe.duration_seconds or (end - start)
+                clip.save()
+            except Exception as exc:
+                # 切片失败：清掉占位记录与半成品文件，保持数据与磁盘一致。
+                clip.delete_instance()
+                cls._unlink_clip_file(target_path)
+                logger.warning("Media clip generation failed media_id={} detail={}", media.id, exc)
+                if isinstance(exc, ApiError):
+                    raise
+                raise ApiError(
+                    500,
+                    "media_clip_generation_failed",
+                    "片段生成失败",
+                    {"media_id": media.id},
+                ) from exc
+
+            return cls.build_clip_resource(clip, cls._resolve_single_cover(clip)), True
 
     # ------------------------------------------------------------------ 查询
 

@@ -1,6 +1,7 @@
 """插件注册契约。
 
-宿主只接受当前接口版本；旧版本插件在加载阶段直接拒绝。
+宿主接受受支持的 manifest 接口版本范围；旧插件运行时可保留 manifest 版本，
+也可像现有官方插件一样动态声明当前宿主版本。
 
 机制层只认识两类声明：后台任务（``jobs``，宿主平台能力）与
 扩展点声明（``extensions``，业务领域扩展）。任何领域的扩展点载荷与
@@ -16,8 +17,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.scheduler.contracts import JobDefinition
 
-HOST_API_VERSION = 4
-MIN_SUPPORTED_HOST_API_VERSION = HOST_API_VERSION
+HOST_API_VERSION = 5
+MIN_SUPPORTED_HOST_API_VERSION = 4
 
 
 class PluginExtension(BaseModel):
@@ -60,7 +61,7 @@ class PluginRegistration(BaseModel):
 
     @model_validator(mode="after")
     def _validate_host_api_version(self):
-        if self.host_api_version != HOST_API_VERSION:
+        if not MIN_SUPPORTED_HOST_API_VERSION <= self.host_api_version <= HOST_API_VERSION:
             raise ValueError(
                 "Host API 版本不兼容: "
                 f"plugin={self.host_api_version} "

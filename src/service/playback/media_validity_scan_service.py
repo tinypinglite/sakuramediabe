@@ -6,7 +6,15 @@ from loguru import logger
 
 from src.common.runtime_time import utc_now_for_db
 from src.model import Media, MediaLibrary, MediaThumbnail
-from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY, ProviderOperationError
+from src.plugins.provider_protocol import (
+    MEDIA_PROVIDER_REGISTRY,
+    ProviderOperationError,
+)
+from src.service.playback.operation_locks import (
+    LIBRARY_LOCK,
+    MediaOperationBusy,
+    media_operation_lock,
+)
 from src.service.playback.provider_helpers import library_handle_for
 
 
@@ -78,66 +86,77 @@ class MediaValidityScanService:
         completed = 0
 
         for library in MediaLibrary.select().order_by(MediaLibrary.id):
-            media_items = cls._library_media_query(library, max_media_id)
-            if not media_items.exists():
-                continue
             try:
-                managed_inventory = cls._managed_ref_keys(library)
-            except Exception as exc:
-                stats["failed_libraries"] += 1
-                logger.warning(
-                    "Media validity scan skipped library_id={} provider_key={} detail={}",
-                    library.id,
-                    library.provider_key,
-                    exc,
-                )
-                managed_inventory = None
-            else:
-                if managed_inventory is None:
-                    stats["unsupported_libraries"] += 1
-                else:
-                    stats["scanned_libraries"] += 1
-
-            for media in media_items:
-                completed += 1
-                if managed_inventory is None:
-                    stats["skipped_media"] += 1
-                    reporter.emit(current=completed, total=total_media, summary_patch=stats)
-                    continue
-
-                stats["scanned_media"] += 1
-                try:
-                    managed_media_ref_key, managed_ref_keys = managed_inventory
-                    exists = managed_media_ref_key(media_ref=media.storage_ref) in managed_ref_keys
-                except (ValueError, ProviderOperationError) as exc:
-                    stats["failed_media"] += 1
-                    logger.warning(
-                        "Media validity scan skipped invalid storage ref media_id={} library_id={} detail={}",
-                        media.id,
-                        library.id,
-                        exc,
-                    )
-                else:
-                    valid_before = bool(media.valid)
-                    if valid_before == exists:
-                        stats["unchanged_media"] += 1
-                    else:
-                        updates = {Media.valid: exists, Media.updated_at: utc_now_for_db()}
-                        if exists:
-                            updates.update(cls._revival_thumbnail_values(media))
-                        updated = (
-                            Media.update(updates)
-                            .where(Media.id == media.id, Media.valid == valid_before)
-                            .execute()
+                with media_operation_lock(LIBRARY_LOCK, library.id):
+                    library = MediaLibrary.get_or_none(MediaLibrary.id == library.id)
+                    if library is None:
+                        continue
+                    media_items = cls._library_media_query(library, max_media_id)
+                    if not media_items.exists():
+                        continue
+                    try:
+                        managed_inventory = cls._managed_ref_keys(library)
+                    except Exception as exc:
+                        stats["failed_libraries"] += 1
+                        logger.warning(
+                            "Media validity scan skipped library_id={} provider_key={} detail={}",
+                            library.id,
+                            library.provider_key,
+                            exc,
                         )
-                        if updated != 1:
-                            stats["skipped_media"] += 1
+                        managed_inventory = None
+                    else:
+                        if managed_inventory is None:
+                            stats["unsupported_libraries"] += 1
                         else:
-                            stats["updated_media"] += 1
-                            if exists:
-                                stats["revived_media"] += 1
+                            stats["scanned_libraries"] += 1
+
+                    for media in media_items:
+                        completed += 1
+                        if managed_inventory is None:
+                            stats["skipped_media"] += 1
+                            reporter.emit(current=completed, total=total_media, summary_patch=stats)
+                            continue
+
+                        stats["scanned_media"] += 1
+                        try:
+                            managed_media_ref_key, managed_ref_keys = managed_inventory
+                            exists = managed_media_ref_key(media_ref=media.storage_ref) in managed_ref_keys
+                        except (ValueError, ProviderOperationError) as exc:
+                            stats["failed_media"] += 1
+                            logger.warning(
+                                "Media validity scan skipped invalid storage ref media_id={} library_id={} detail={}",
+                                media.id,
+                                library.id,
+                                exc,
+                            )
+                        else:
+                            valid_before = bool(media.valid)
+                            if valid_before == exists:
+                                stats["unchanged_media"] += 1
                             else:
-                                stats["invalidated_media"] += 1
+                                updates = {Media.valid: exists, Media.updated_at: utc_now_for_db()}
+                                if exists:
+                                    updates.update(cls._revival_thumbnail_values(media))
+                                updated = (
+                                    Media.update(updates)
+                                    .where(Media.id == media.id, Media.valid == valid_before)
+                                    .execute()
+                                )
+                                if updated != 1:
+                                    stats["skipped_media"] += 1
+                                else:
+                                    stats["updated_media"] += 1
+                                    if exists:
+                                        stats["revived_media"] += 1
+                                    else:
+                                        stats["invalidated_media"] += 1
+                        reporter.emit(current=completed, total=total_media, summary_patch=stats)
+
+            except MediaOperationBusy:
+                skipped = cls._library_media_query(library, max_media_id).count()
+                stats["skipped_media"] += skipped
+                completed += skipped
                 reporter.emit(current=completed, total=total_media, summary_patch=stats)
 
         return stats

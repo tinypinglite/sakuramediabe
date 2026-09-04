@@ -17,11 +17,13 @@ from src.scheduler.contracts import JobDefinition
 
 LANE_DEFAULT = "default"
 LANE_IMPORT = "import"
+LANE_TRANSFER = "transfer"
 
 # 并发道容量：default 复刻 APS ThreadPoolExecutor(4)，导入道使用 2 并发。
 LANE_CONCURRENCY: dict[str, int] = {
     LANE_DEFAULT: 4,
     LANE_IMPORT: 2,
+    LANE_TRANSFER: 1,
 }
 
 
@@ -29,6 +31,22 @@ def _run_library_import(reporter, params: dict[str, Any]) -> dict:
     from src.service.transfers.shared.import_task_service import ImportTaskService
 
     return ImportTaskService.execute(reporter, params)
+
+
+def _run_media_storage_transfer(reporter, params: dict[str, Any]) -> dict:
+    from src.service.transfers.shared.media_transfer_task_service import (
+        MediaTransferTaskService,
+    )
+
+    return MediaTransferTaskService.execute(reporter, params)
+
+
+def _recover_media_storage_transfers() -> dict[str, int]:
+    from src.service.transfers.shared.media_transfer_task_service import (
+        MediaTransferTaskService,
+    )
+
+    return MediaTransferTaskService.recover_interrupted_transfers()
 
 
 def _run_gfriends_filetree_refresh(_reporter, params: dict[str, Any]) -> dict:
@@ -52,6 +70,16 @@ QUEUE_TASK_REGISTRY: dict[str, JobDefinition] = {
             manual_only=True,
             handler=_run_library_import,
             lane=LANE_IMPORT,
+        ),
+        JobDefinition(
+            task_key="media_storage_transfer",
+            log_name="media-storage-transfer",
+            cli_name="media-storage-transfer",
+            cli_help="执行一次媒体存储迁移",
+            manual_only=True,
+            handler=_run_media_storage_transfer,
+            business_recovery=_recover_media_storage_transfers,
+            lane=LANE_TRANSFER,
         ),
     )
 }

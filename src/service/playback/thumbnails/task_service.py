@@ -20,6 +20,11 @@ from src.plugins.provider_protocol import (
     ThumbnailBackendUnavailable,
     ThumbnailGenerationDeferred,
 )
+from src.service.playback.operation_locks import (
+    MEDIA_LOCK,
+    MediaOperationBusy,
+    media_operation_lock,
+)
 from src.service.playback.provider_helpers import media_handle_for
 from src.service.playback.thumbnails.artifacts import ThumbnailArtifactService
 from src.service.playback.thumbnails.contracts import ThumbnailDeferred
@@ -300,6 +305,14 @@ class MediaThumbnailTaskService:
     @classmethod
     def _generate_one(cls, media_id: int) -> ThumbnailGenerationOutcome:
         ensure_database_ready()
+        try:
+            with media_operation_lock(MEDIA_LOCK, media_id):
+                return cls._generate_one_locked(media_id)
+        except MediaOperationBusy:
+            return ThumbnailGenerationOutcome("skipped")
+
+    @classmethod
+    def _generate_one_locked(cls, media_id: int) -> ThumbnailGenerationOutcome:
         media = Media.get_or_none(Media.id == media_id)
         if media is None or not media.valid:
             return ThumbnailGenerationOutcome("skipped")

@@ -13,6 +13,15 @@ from .media_import import (
     ImportRequest,
     ImportResult,
 )
+from .media_transfer import (
+    MediaStorageTransferAcceptedResponse,
+    MediaStorageTransferCandidatesRequest,
+    MediaStorageTransferCandidatesResponse,
+    MediaStorageTransferLibraryResource,
+    MediaStorageTransferRequest,
+    MediaStorageTransferResult,
+    MediaStorageTransferSelectionRequest,
+)
 
 __all__ = [
     "DownloadClientCreateRequest",
@@ -26,4 +35,11 @@ __all__ = [
     "ImportBrowseResponse",
     "ImportRequest",
     "ImportResult",
+    "MediaStorageTransferAcceptedResponse",
+    "MediaStorageTransferCandidatesRequest",
+    "MediaStorageTransferCandidatesResponse",
+    "MediaStorageTransferLibraryResource",
+    "MediaStorageTransferRequest",
+    "MediaStorageTransferResult",
+    "MediaStorageTransferSelectionRequest",
 ]

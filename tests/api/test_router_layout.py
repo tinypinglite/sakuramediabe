@@ -24,7 +24,7 @@ from src.api.routers.system import (
     status,
 )
 from src.api.routers.system import config as system_config
-from src.api.routers.transfers import downloads, media_import
+from src.api.routers.transfers import downloads, media_import, media_transfer
 from src.api.routers.videos import collections as video_collections
 from src.api.routers.videos import items as video_items
 
@@ -37,6 +37,7 @@ from src.api.routers.videos import items as video_items
         (media_libraries.router, (deps.db_deps,)),
         (downloads.router, (deps.db_deps,)),
         (media_import.router, (deps.db_deps, deps.get_current_user)),
+        (media_transfer.router, (deps.db_deps, deps.get_current_user)),
         (status.router, (deps.db_deps, deps.get_current_user)),
         (activity.router, (deps.db_deps, deps.get_current_user)),
         (indexer_settings.router, (deps.db_deps,)),
@@ -103,6 +104,16 @@ def test_create_app_registers_only_unified_media_import_route():
     assert ("/imports", "POST") in route_methods
     assert ("/subtitle-imports", "POST") not in route_methods
     assert not any((path or "").startswith("/imports/") for path, _ in route_methods)
+
+
+def test_create_app_registers_media_storage_transfer_route():
+    route_methods = {
+        (getattr(route, "path", None), method)
+        for route in create_app().routes
+        for method in getattr(route, "methods", set())
+    }
+    assert ("/media-transfers", "POST") in route_methods
+    assert ("/media-transfers/candidates", "POST") in route_methods
 
 
 def test_openapi_uses_oauth2_password_flow_for_authorize_button():

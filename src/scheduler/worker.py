@@ -49,6 +49,13 @@ class TaskWorker:
         self._in_flight: dict[int, str] = {}
 
     def start(self) -> None:
+        recoverable_task_keys = {
+            definition.task_key
+            for definition in (*JOB_REGISTRY_BY_KEY.values(), *QUEUE_TASK_REGISTRY.values())
+            if definition.business_recovery is not None
+        }
+        if recoverable_task_keys:
+            self._run_business_recovery(recoverable_task_keys)
         for lane, concurrency in self._lanes.items():
             for index in range(concurrency):
                 threading.Thread(
@@ -125,6 +132,8 @@ class TaskWorker:
                 task_run.task_key,
                 task_run.id,
             )
+            # 任务失败后立即收口领域状态，不等待下一次租约回收。
+            self._run_business_recovery({task_run.task_key})
         finally:
             with self._lock:
                 self._in_flight.pop(task_run.id, None)

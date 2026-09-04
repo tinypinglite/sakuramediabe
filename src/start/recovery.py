@@ -14,10 +14,11 @@ BUSINESS_RECOVERY_HANDLERS: dict[str, Callable[[], object]] = {
 
 def recover_business_states(task_keys: set[str]) -> None:
     """优先调用 JobDefinition 声明的恢复钩子，队列专属任务再查宿主注册表。"""
+    from src.scheduler.queue_tasks import QUEUE_TASK_REGISTRY
     from src.scheduler.registry import JOB_REGISTRY_BY_KEY
 
     for task_key in sorted(task_keys):
-        job_def = JOB_REGISTRY_BY_KEY.get(task_key)
+        job_def = JOB_REGISTRY_BY_KEY.get(task_key) or QUEUE_TASK_REGISTRY.get(task_key)
         handler = (
             job_def.business_recovery
             if job_def is not None and job_def.business_recovery is not None

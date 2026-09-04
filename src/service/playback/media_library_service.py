@@ -14,6 +14,10 @@ from src.schema.playback.media_libraries import (
     MediaLibraryResource,
     MediaLibraryUpdateRequest,
 )
+from src.service.playback.operation_locks import (
+    LIBRARY_LOCK,
+    media_operation_lock,
+)
 from src.service.playback.provider_helpers import library_handle_for
 
 
@@ -216,41 +220,43 @@ class MediaLibraryService:
         library_id: int,
         payload: MediaLibraryUpdateRequest,
     ) -> MediaLibraryResource:
-        library = cls._require_library(library_id)
-        update_data = payload.model_dump(exclude_unset=True, by_alias=False)
-        if not update_data:
-            raise ApiError(422, "empty_media_library_update", "At least one field must be provided")
-        if "name" in update_data and update_data["name"] is not None:
-            name = cls._validate_name(update_data["name"])
-            if name != library.name:
-                cls._ensure_name_available(name, exclude_library_id=library.id)
-            library.name = name
-        if "provider_config" in update_data:
-            bundle = cls._bundle(library.provider_key)
-            provider_config, prepared = cls._prepare_config(
-                bundle,
-                cls._submitted_config(update_data["provider_config"]),
-                library,
-            )
-            library.provider_config = provider_config
-            library.account_key = prepared.account_key
-        library.save()
-        return cls._resource(library)
+        with media_operation_lock(LIBRARY_LOCK, library_id):
+            library = cls._require_library(library_id)
+            update_data = payload.model_dump(exclude_unset=True, by_alias=False)
+            if not update_data:
+                raise ApiError(422, "empty_media_library_update", "At least one field must be provided")
+            if "name" in update_data and update_data["name"] is not None:
+                name = cls._validate_name(update_data["name"])
+                if name != library.name:
+                    cls._ensure_name_available(name, exclude_library_id=library.id)
+                library.name = name
+            if "provider_config" in update_data:
+                bundle = cls._bundle(library.provider_key)
+                provider_config, prepared = cls._prepare_config(
+                    bundle,
+                    cls._submitted_config(update_data["provider_config"]),
+                    library,
+                )
+                library.provider_config = provider_config
+                library.account_key = prepared.account_key
+            library.save()
+            return cls._resource(library)
 
     @classmethod
     def delete_library(cls, library_id: int) -> None:
-        library = cls._require_library(library_id)
-        if (
-            Media.select().where(Media.library == library.id).exists()
-            or DownloadClient.select().where(DownloadClient.library == library.id).exists()
-        ):
-            raise ApiError(
-                409,
-                "media_library_in_use",
-                "Media library is still referenced",
-                {"library_id": library.id},
-            )
-        library.delete_instance()
+        with media_operation_lock(LIBRARY_LOCK, library_id):
+            library = cls._require_library(library_id)
+            if (
+                Media.select().where(Media.library == library.id).exists()
+                or DownloadClient.select().where(DownloadClient.library == library.id).exists()
+            ):
+                raise ApiError(
+                    409,
+                    "media_library_in_use",
+                    "Media library is still referenced",
+                    {"library_id": library.id},
+                )
+            library.delete_instance()
 
 
 __all__ = ["MediaLibraryService"]

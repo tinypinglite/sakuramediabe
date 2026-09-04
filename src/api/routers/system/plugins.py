@@ -121,6 +121,8 @@ def install_plugin(
         with temp_path.open("wb") as handle:
             shutil.copyfileobj(file.file, handle)
         result = manager.install_zip(temp_path, sha256=sha256, enable=enable)
+    except ApiError:
+        raise
     except Exception as exc:
         raise ApiError(422, "plugin_install_failed", f"插件安装失败: {exc}") from exc
     finally:
@@ -149,6 +151,8 @@ def upgrade_plugin(
         with temp_path.open("wb") as handle:
             shutil.copyfileobj(file.file, handle)
         result = manager.upgrade_zip(plugin_id, temp_path, sha256=sha256)
+    except ApiError:
+        raise
     except Exception as exc:
         raise ApiError(422, "plugin_upgrade_failed", f"插件升级失败: {exc}") from exc
     finally:

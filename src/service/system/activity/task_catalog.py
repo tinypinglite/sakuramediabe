@@ -11,4 +11,5 @@ TASK_NAME_REGISTRY = {
     "media_thumbnail_generation": "媒体缩略图生成",
     "image_search_index": "图像搜索索引构建",
     "library_import": "媒体库导入",
+    "media_storage_transfer": "媒体存储迁移",
 }

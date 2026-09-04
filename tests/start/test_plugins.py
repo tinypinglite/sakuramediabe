@@ -414,7 +414,36 @@ def test_manifest_host_api_version_range_enforced(tmp_path):
         root_dir=tmp_path,
     )
     assert loaded == ()
-    assert PLUGIN_LOAD_ERRORS[plugin_id]["stage"] == "validate_registration"
+    assert PLUGIN_LOAD_ERRORS[plugin_id]["stage"] == "validate_manifest"
+
+
+def test_loader_rejects_incompatible_manifest_before_plugin_import(tmp_path):
+    import json
+
+    from src.config.config import Plugins
+    from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
+
+    plugin_id = "future_plugin"
+    package = tmp_path / plugin_id
+    package.mkdir()
+    (package / "manifest.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": plugin_id,
+                "display_name": "future",
+                "version": "1.0.0",
+                "host_api_version": HOST_API_VERSION + 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text(
+        "raise RuntimeError('plugin import must not run')\n",
+        encoding="utf-8",
+    )
+
+    assert load_enabled_plugins(Plugins(enabled=[plugin_id]), root_dir=tmp_path) == ()
+    assert PLUGIN_LOAD_ERRORS[plugin_id]["stage"] == "validate_manifest"
 
 
 def test_manifest_register_version_mismatch_rejects_legacy_plugin(tmp_path):
@@ -448,7 +477,7 @@ def test_manifest_register_version_mismatch_rejects_legacy_plugin(tmp_path):
 
     loaded = load_enabled_plugins(Plugins(enabled=[plugin_id]), root_dir=tmp_path)
     assert loaded == ()
-    assert PLUGIN_LOAD_ERRORS[plugin_id]["stage"] == "validate_registration"
+    assert PLUGIN_LOAD_ERRORS[plugin_id]["stage"] == "validate_manifest"
 
 
 def test_registry_skips_plugin_job_conflicting_with_queue_key():

@@ -48,6 +48,7 @@ from src.api.routers.system.plugins import router as plugins_router
 from src.api.routers.system.status import router as status_router
 from src.api.routers.transfers.downloads import router as downloads_router
 from src.api.routers.transfers.media_import import router as media_import_router
+from src.api.routers.transfers.media_transfer import router as media_transfer_router
 from src.api.routers.videos.collections import router as video_collections_router
 from src.api.routers.videos.items import router as videos_router
 from src.common.database import ensure_database_ready
@@ -101,6 +102,7 @@ def create_app() -> FastAPI:
     app.include_router(ranking_sources_router)
     app.include_router(downloads_router)
     app.include_router(media_import_router)
+    app.include_router(media_transfer_router)
     app.include_router(status_router)
     app.include_router(activity_router)
     app.include_router(jobs_router)

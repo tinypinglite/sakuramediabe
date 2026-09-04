@@ -58,6 +58,10 @@ from src.service.catalog.image_cleanup_service import ImageCleanupService
 from src.service.collections.playlist_service import PlaylistService
 from src.service.discovery import get_qdrant_thumbnail_store
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
+from src.service.playback.operation_locks import (
+    MEDIA_LOCK,
+    media_operation_lock,
+)
 from src.service.playback.provider_helpers import media_handle_for
 
 
@@ -523,57 +527,58 @@ class MediaService:
 
     @classmethod
     def delete_media(cls, media_id: int) -> None:
-        media = cls._require_media(media_id)
-        media_handle = media_handle_for(media)
-        try:
-            storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
-            storage.delete_media(media=media_handle)
-        except ProviderUnavailableError as exc:
-            raise ApiError(
-                503,
-                "provider_not_installed",
-                "媒体提供方未安装",
-            ) from exc
-        except ProviderOperationError as exc:
-            if exc.code == "source_not_found":
-                # Provider 已确认来源不存在，宿主记录已无对应远端对象，继续清理本地元数据。
-                pass
-            else:
-                status_code = {
-                    "authentication_failed": 401,
-                    "unavailable": 503,
-                    "invalid_config": 422,
-                    "unsupported": 422,
-                }[exc.code]
-                raise ApiError(
-                    status_code,
-                    f"provider_{exc.code}",
-                    exc.safe_message,
-                ) from exc
-        thumbnails = list(
-            MediaThumbnail.select(MediaThumbnail, Image)
-            .join(Image)
-            .where(MediaThumbnail.media == media)
-        )
-        thumbnail_image_ids = [thumbnail.image_id for thumbnail in thumbnails]
-
-        with get_database().atomic():
-            # 依赖 DB 外键 CASCADE 自动清 MediaProgress / MediaPoint / MediaThumbnail。
-            Media.delete().where(Media.id == media.id).execute()
-
-            obsolete_image_paths: set[str] = set()
-            for image_id in thumbnail_image_ids:
-                image = Image.get_or_none(Image.id == image_id)
-                obsolete_image_paths |= ImageCleanupService.delete_image_record_if_unused(image)
-
-        ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
-
-        # 仅 JAV 媒体缩略图会进向量库；非 JAV 缩略图落 SKIPPED 从不入库，跳过空删省一次远端往返。
-        if media.movie_number:
+        with media_operation_lock(MEDIA_LOCK, media_id):
+            media = cls._require_media(media_id)
+            media_handle = media_handle_for(media)
             try:
-                get_qdrant_thumbnail_store().delete_by_media_id(media.id)
-            except Exception as exc:
-                logger.warning("Delete media vectors failed media_id={} detail={}", media.id, exc)
+                storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
+                storage.delete_media(media=media_handle)
+            except ProviderUnavailableError as exc:
+                raise ApiError(
+                    503,
+                    "provider_not_installed",
+                    "媒体提供方未安装",
+                ) from exc
+            except ProviderOperationError as exc:
+                if exc.code == "source_not_found":
+                    # Provider 已确认来源不存在，宿主记录已无对应远端对象，继续清理本地元数据。
+                    pass
+                else:
+                    status_code = {
+                        "authentication_failed": 401,
+                        "unavailable": 503,
+                        "invalid_config": 422,
+                        "unsupported": 422,
+                    }[exc.code]
+                    raise ApiError(
+                        status_code,
+                        f"provider_{exc.code}",
+                        exc.safe_message,
+                    ) from exc
+            thumbnails = list(
+                MediaThumbnail.select(MediaThumbnail, Image)
+                .join(Image)
+                .where(MediaThumbnail.media == media)
+            )
+            thumbnail_image_ids = [thumbnail.image_id for thumbnail in thumbnails]
+
+            with get_database().atomic():
+                # 依赖 DB 外键 CASCADE 自动清 MediaProgress / MediaPoint / MediaThumbnail。
+                Media.delete().where(Media.id == media.id).execute()
+
+                obsolete_image_paths: set[str] = set()
+                for image_id in thumbnail_image_ids:
+                    image = Image.get_or_none(Image.id == image_id)
+                    obsolete_image_paths |= ImageCleanupService.delete_image_record_if_unused(image)
+
+            ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
+
+            # 仅 JAV 媒体缩略图会进向量库；非 JAV 缩略图落 SKIPPED 从不入库，跳过空删省一次远端往返。
+            if media.movie_number:
+                try:
+                    get_qdrant_thumbnail_store().delete_by_media_id(media.id)
+                except Exception as exc:
+                    logger.warning("Delete media vectors failed media_id={} detail={}", media.id, exc)
 
     @classmethod
     def list_thumbnails(cls, media_id: int) -> list[MediaThumbnailResource]:

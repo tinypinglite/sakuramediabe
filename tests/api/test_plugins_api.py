@@ -7,8 +7,17 @@ import io
 import json
 import zipfile
 
+import pytest
+
 from src.config.config import settings
 from src.plugins import HOST_API_VERSION
+
+
+@pytest.fixture(autouse=True)
+def isolated_plugin_settings(monkeypatch):
+    monkeypatch.setattr(settings, "plugins", settings.plugins.model_copy(deep=True))
+    settings.plugins.enabled = []
+    settings.plugins.settings = {}
 
 
 def _login(client, username="account", password="password123"):
@@ -295,3 +304,36 @@ def test_plugin_settings_endpoints(
     # 清理全局配置，避免影响同进程内的其它测试。
     settings.plugins.enabled = []
     settings.plugins.settings = {}
+
+
+def test_plugin_install_and_upgrade_return_busy_during_move(
+    client, account_user, tmp_path, monkeypatch
+):
+    from src.plugins.operation_lock import plugin_operation_lock
+
+    root = tmp_path / "plugins"
+    monkeypatch.setattr("src.plugins.manager._plugin_root", lambda: root)
+    headers = {
+        "Authorization": f"Bearer {_login(client, username=account_user.username)}"
+    }
+    response = client.post(
+        "/system/plugins",
+        headers=headers,
+        files={"file": ("demo.zip", _zip_bytes(), "application/zip")},
+        data={"enable": "false"},
+    )
+    assert response.status_code == 201
+    with plugin_operation_lock(root, shared=True):
+        for url in ("/system/plugins", "/system/plugins/api_plugin/upgrade"):
+            response = client.post(
+                url,
+                headers=headers,
+                files={
+                    "file": ("demo.zip", _zip_bytes(version="2.0.0"), "application/zip")
+                },
+            )
+            assert response.status_code == 409
+            assert response.json()["error"]["code"] == "plugin_operation_busy"
+    assert (
+        client.get("/system/plugins", headers=headers).json()[0]["version"] == "1.0.0"
+    )

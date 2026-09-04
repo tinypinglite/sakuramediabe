@@ -10,7 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from src.config.config import settings
-from src.plugins import HOST_API_VERSION
+from src.plugins import HOST_API_VERSION, MIN_SUPPORTED_HOST_API_VERSION
 from src.plugins.installer import PluginInstallError
 from src.plugins.manager import PluginManager, PluginSettingsValidationError
 from src.start.commands import main
@@ -23,6 +23,7 @@ def _make_plugin_dir(
     version: str = "1.0.0",
     broken_register: bool = False,
     release_api_url: str | None = None,
+    manifest_host_api_version: int | None = None,
 ) -> Path:
     pkg = tmp_path / plugin_id
     pkg.mkdir(exist_ok=True)
@@ -32,7 +33,11 @@ def _make_plugin_dir(
                 "plugin_id": plugin_id,
                 "display_name": "演示",
                 "version": version,
-                "host_api_version": HOST_API_VERSION,
+                "host_api_version": (
+                    manifest_host_api_version
+                    if manifest_host_api_version is not None
+                    else HOST_API_VERSION
+                ),
                 **(
                     {"release_api_url": release_api_url}
                     if release_api_url is not None
@@ -66,12 +71,14 @@ def _make_plugin_zip(
     *,
     version: str = "1.0.0",
     broken_register: bool = False,
+    manifest_host_api_version: int | None = None,
 ) -> Path:
     pkg = _make_plugin_dir(
         tmp_path,
         plugin_id,
         version=version,
         broken_register=broken_register,
+        manifest_host_api_version=manifest_host_api_version,
     )
     zip_path = tmp_path / f"{plugin_id}.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
@@ -187,6 +194,21 @@ def test_manager_install_zip_publishes_plugin(tmp_path):
     assert result == {"plugin_id": "demo_plugin", "version": "1.0.0"}
     assert (root / "demo_plugin" / "manifest.json").is_file()
     assert manager.get_plugin("demo_plugin")["enabled"] is False
+
+
+def test_manager_install_zip_accepts_v4_manifest_on_v5_host(tmp_path):
+    root = tmp_path / "root"
+    manager = PluginManager(root_dir=root)
+
+    result = manager.install_zip(
+        _make_plugin_zip(
+            tmp_path,
+            manifest_host_api_version=MIN_SUPPORTED_HOST_API_VERSION,
+        ),
+        enable=False,
+    )
+
+    assert result == {"plugin_id": "demo_plugin", "version": "1.0.0"}
 
 
 def test_manager_install_zip_replaces_code_and_preserves_data(tmp_path):

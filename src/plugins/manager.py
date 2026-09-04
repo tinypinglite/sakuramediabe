@@ -14,7 +14,7 @@ from typing import Any
 from packaging.version import InvalidVersion, Version
 
 from src.config.config import Settings, settings, update_settings
-from src.plugins.contracts import HOST_API_VERSION
+from src.plugins.contracts import HOST_API_VERSION, MIN_SUPPORTED_HOST_API_VERSION
 from src.plugins.dependencies import dependency_failure_message
 from src.plugins.installer import PluginInstaller, PluginInstallError
 from src.plugins.loader import PLUGIN_LOAD_ERRORS, PluginLoadError, check_plugin_dir
@@ -24,6 +24,7 @@ from src.plugins.manifest import (
     PluginManifest,
     load_manifest_from_file,
 )
+from src.plugins.operation_lock import plugin_operation_lock
 
 
 class PluginSettingsValidationError(ValueError):
@@ -32,6 +33,15 @@ class PluginSettingsValidationError(ValueError):
 
 def _plugin_root() -> Path:
     return Path(settings.plugins.root_dir).expanduser()
+
+
+def _validate_manifest_host_api_version(manifest: PluginManifest) -> None:
+    if not MIN_SUPPORTED_HOST_API_VERSION <= manifest.host_api_version <= HOST_API_VERSION:
+        raise ValueError(
+            "插件包 Host API 版本不兼容: "
+            f"plugin={manifest.host_api_version} "
+            f"host=[{MIN_SUPPORTED_HOST_API_VERSION},{HOST_API_VERSION}]"
+        )
 
 
 class PluginManager:
@@ -143,6 +153,7 @@ class PluginManager:
         if not source_dir.is_dir():
             raise ValueError(f"插件目录不存在: {source_dir}")
         manifest = load_manifest_from_file(source_dir)
+        _validate_manifest_host_api_version(manifest)
         staging = self._staging_dir(manifest.plugin_id)
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
@@ -161,6 +172,7 @@ class PluginManager:
             zip_path, sha256=sha256
         )
         try:
+            _validate_manifest_host_api_version(manifest)
             # 声明依赖的插件要在完整容器启动时先同步依赖，不能在这里 import。
             # 未声明依赖的既有插件继续保持安装期试加载的行为。
             if not manifest.dependencies:
@@ -200,11 +212,7 @@ class PluginManager:
                 raise ValueError(
                     f"升级包 plugin_id 不匹配: 期望 {plugin_id}，实际 {manifest.plugin_id}"
                 )
-            if manifest.host_api_version != HOST_API_VERSION:
-                raise ValueError(
-                    "升级包 Host API 版本不兼容: "
-                    f"plugin={manifest.host_api_version} host={HOST_API_VERSION}"
-                )
+            _validate_manifest_host_api_version(manifest)
             try:
                 is_newer = Version(manifest.version) > Version(current_manifest.version)
             except InvalidVersion as exc:
@@ -246,6 +254,16 @@ class PluginManager:
         return self.root_dir / ".staging" / plugin_id
 
     def _publish_staging(
+        self, staging: Path, manifest: PluginManifest, *, enable: bool
+    ) -> dict[str, str]:
+        try:
+            with plugin_operation_lock(self.root_dir):
+                return self._publish_staging_locked(staging, manifest, enable=enable)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+
+    def _publish_staging_locked(
         self,
         staging: Path,
         manifest: PluginManifest,
@@ -273,6 +291,10 @@ class PluginManager:
         return {"plugin_id": plugin_id, "version": manifest.version}
 
     def remove(self, plugin_id: str) -> None:
+        with plugin_operation_lock(self.root_dir):
+            self._remove_locked(plugin_id)
+
+    def _remove_locked(self, plugin_id: str) -> None:
         """删除插件代码并保留宿主托管的 ``data/``。"""
         target = self._plugin_dir(plugin_id)
         if not (target / MANIFEST_FILENAME).is_file():
@@ -291,6 +313,10 @@ class PluginManager:
                 entry.unlink(missing_ok=True)
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> None:
+        with plugin_operation_lock(self.root_dir):
+            self._set_enabled_checked(plugin_id, enabled)
+
+    def _set_enabled_checked(self, plugin_id: str, enabled: bool) -> None:
         if not (self._plugin_dir(plugin_id) / MANIFEST_FILENAME).is_file():
             raise ValueError(f"插件未安装: {plugin_id}")
         self._set_enabled(plugin_id, enabled)
