@@ -93,6 +93,8 @@ class JavdbMovieReview(ProviderModel):
 
 
 class JavdbMovieDetail(JavdbMovieBase):
+    actors_available: bool = Field(default=True, exclude=True)
+    tags_available: bool = Field(default=True, exclude=True)
     summary: str
     series_name: str | None = Field(default=None)
     maker_name: str | None = Field(default=None)

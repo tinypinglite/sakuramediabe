@@ -114,18 +114,20 @@ class MediaImportService:
             provider = build_javdb_provider()
             self._worker_local.metadata_provider = provider
         try:
-            detail = provider.get_movie_by_number(movie_number)
-        except (MetadataNotFoundError, MetadataRequestError, Exception) as exc:
+            from src.service.catalog.metadata_source_service import (
+                MetadataSourceError,
+                MetadataSourceService,
+            )
+
+            movie, _created = MetadataSourceService.import_by_number(
+                movie_number, provider, self.catalog_import_service, force_subscribed=True
+            )
+        except (MetadataNotFoundError, MetadataRequestError, MetadataSourceError) as exc:
             logger.warning("Import metadata fetch failed movie_number={} detail={}", movie_number, exc)
             return MetadataImportResult(
                 movie_number=movie_number,
                 failure_reason=FAILURE_REASON_METADATA_FETCH_FAILED,
                 failure_detail=str(exc),
-            )
-        try:
-            movie, _created = self.catalog_import_service.import_movie_if_missing(
-                detail,
-                force_subscribed=True,
             )
         except ImageDownloadError as exc:
             return MetadataImportResult(

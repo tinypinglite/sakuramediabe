@@ -26,6 +26,10 @@ from src.plugins.dependencies import (
     enable_dependency_site_packages,
 )
 from src.plugins.extensions import EXTENSION_VALIDATORS
+from src.plugins.extensions.metadata import (
+    METADATA_SOURCE_EXTENSION_KEY,
+    METADATA_SOURCE_HOST_API_VERSION,
+)
 from src.plugins.manifest import MANIFEST_FILENAME, load_manifest_from_file
 from src.plugins.provider_protocol import refresh_media_provider_registry
 from src.scheduler.contracts import JobDefinition
@@ -240,6 +244,14 @@ def _load_plugin_dir(
             "register 返回的 host_api_version 与 manifest/宿主版本不兼容: "
             f"register={registration.host_api_version} "
             f"manifest={manifest.host_api_version} host={HOST_API_VERSION}",
+        )
+
+    if (
+        any(ext.key == METADATA_SOURCE_EXTENSION_KEY for ext in registration.extensions)
+        and manifest.host_api_version < METADATA_SOURCE_HOST_API_VERSION
+    ):
+        raise PluginLoadError(
+            plugin_id, "validate_extensions", "元数据来源插件的 manifest 必须声明 Host API 6 或更高版本"
         )
 
     jobs = _validate_plugin_jobs(

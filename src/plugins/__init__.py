@@ -6,6 +6,10 @@ import importlib
 from typing import Any
 
 _PUBLIC_EXPORTS = {
+    "PluginMovieMetadata": "src.plugins.extensions.metadata",
+    "PluginMetadataActor": "src.plugins.extensions.metadata",
+    "PluginMetadataSource": "src.plugins.extensions.metadata",
+    "METADATA_SOURCE_EXTENSION_KEY": "src.plugins.extensions.metadata",
     "ACTOR_SNAPSHOT_FIELDS": "src.plugins.types",
     "ActorSnapshot": "src.plugins.types",
     "ActorPage": "src.plugins.types",
@@ -26,6 +30,7 @@ _PUBLIC_EXPORTS = {
 __all__ = [
     "ACTOR_SNAPSHOT_FIELDS",
     "HOST_API_VERSION",
+    "METADATA_SOURCE_EXTENSION_KEY",
     "MIN_SUPPORTED_HOST_API_VERSION",
     "MOVIE_SNAPSHOT_FIELDS",
     "RANKING_SOURCE_EXTENSION_KEY",
@@ -35,6 +40,9 @@ __all__ = [
     "MovieSnapshot",
     "PluginContext",
     "PluginExtension",
+    "PluginMetadataActor",
+    "PluginMetadataSource",
+    "PluginMovieMetadata",
     "PluginRankingBoard",
     "PluginRankingSource",
     "PluginRegistration",

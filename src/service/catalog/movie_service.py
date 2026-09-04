@@ -717,6 +717,8 @@ class MovieService:
     ) -> list[JavdbMovieReviewResource]:
         movie = cls._require_movie(movie_number)
         sort_value = sort.value if isinstance(sort, MovieReviewSort) else str(sort)
+        if not movie.javdb_id:
+            return []
         try:
             return build_javdb_provider().get_movie_reviews_by_javdb_id(
                 movie.javdb_id,

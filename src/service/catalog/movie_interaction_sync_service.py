@@ -59,7 +59,7 @@ class MovieInteractionSyncService:
                 & (Movie.interaction_synced_at <= now - cls.MIDDLE_REFRESH_INTERVAL)
             )
         )
-        query = query.where(due)
+        query = query.where(due & Movie.javdb_id.is_null(False))
         return [int(movie_id) for (movie_id,) in query.order_by(Movie.id).tuples()]
 
     def _fetch_and_apply(self, movie: Movie) -> tuple[bool, int]:

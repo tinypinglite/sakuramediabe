@@ -30,6 +30,7 @@ from src.start.migrations.runner import (
     MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
     MOVIE_BLACKLIST_MIGRATION_NAME,
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
+    PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
     SUPPORTED_BASE_MIGRATION_NAME,
     MigrationExecution,
     MigrationRunSummary,
@@ -104,7 +105,23 @@ def test_current_migrations_are_discoverable_in_order():
         HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
         MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
         ACTOR_METADATA_MIGRATION_NAME,
+        PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
     ]
+
+
+def test_plugin_metadata_migration_preserves_movies_and_allows_multiple_null_ids(clean_db):
+    clean_db.create_tables(TEST_MODELS)
+    _drop_columns(clean_db, "movie", ("metadata_source", "javdb_next_check_at"))
+    clean_db.execute_sql("ALTER TABLE movie ALTER COLUMN javdb_id SET NOT NULL")
+    existing = Movie.create(movie_number="OLD-001", javdb_id="real-id", title="Original")
+    module = _load_migration_module(Path(f"{PLUGIN_MOVIE_METADATA_MIGRATION_NAME}.py"))
+    module.migrate(clean_db)
+    current = Movie.get_by_id(existing.id)
+    assert current.javdb_id == "real-id" and current.title == "Original"
+    assert current.metadata_source is None and current.javdb_next_check_at is None
+    for number in ("NEW-001", "NEW-002"):
+        Movie.create(movie_number=number, javdb_id=None, title="Plugin", metadata_source={"plugin_id": "test"})
+    assert Movie.select().where(Movie.javdb_id.is_null()).count() == 2
 
 
 def test_run_pending_migrations_rejects_v0421_base(clean_db):
@@ -157,6 +174,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME, applied=True),
         MigrationExecution(name=MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME, applied=True),
         MigrationExecution(name=ACTOR_METADATA_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=PLUGIN_MOVIE_METADATA_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -170,6 +188,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
         MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
         ACTOR_METADATA_MIGRATION_NAME,
+        PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
     ]
 
 
@@ -322,7 +341,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 10
+    assert summary.applied_count == 11
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

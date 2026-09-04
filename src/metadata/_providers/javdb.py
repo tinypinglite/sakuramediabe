@@ -900,9 +900,13 @@ class JavdbProvider(MetadataRequestClient):
                 "extra": payload,
                 "actors": self._build_movie_actors(actors),
                 "tags": self._build_movie_tags(tags),
+                "actors_available": isinstance(movie.get("actors"), list),
+                "tags_available": isinstance(movie.get("tags"), list),
                 "plot_images": self._build_preview_images(preview_images),
             }
         )
+        detail.actors_available = detail.actors_available and len(detail.actors) == len(actors)
+        detail.tags_available = detail.tags_available and len(detail.tags) == len(tags)
         logger.debug(
             "Javdb movie detail mapped javdb_id={} movie_number={} actors={} tags={} plot_images={}",
             detail.javdb_id,

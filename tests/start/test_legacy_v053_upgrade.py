@@ -525,7 +525,7 @@ def test_v053_upgrade_preserves_media_memory(
     assert "download_task" not in clean_db.get_tables()
 
     ordinary_summary = run_pending_migrations(clean_db)
-    assert ordinary_summary.applied_count == 6
+    assert ordinary_summary.applied_count == 7
     clean_db.create_tables(TEST_MODELS)
     assert run_pending_migrations(clean_db).applied_count == 0
     assert "special_tags" not in _column_names(clean_db, "media")

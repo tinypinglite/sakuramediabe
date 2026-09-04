@@ -16,6 +16,8 @@ from src.service.catalog import (
     MovieTaskService,
     SubscribedActorMovieSyncService,
 )
+from src.service.catalog.metadata_source_service import MetadataSourceService
+from src.service.catalog.movie_javdb_backfill_service import MovieJavdbBackfillService
 from src.service.catalog.movie_subscription_search_state_service import (
     MovieSubscriptionSearchStateService,
 )
@@ -51,6 +53,14 @@ def _run_movie_heat(reporter, params):
     )
 
 BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
+    JobDefinition(
+        task_key="movie_javdb_backfill",
+        log_name="movie-javdb-backfill",
+        cli_name="backfill-movie-javdb",
+        cli_help="尝试从 JavDB 补录插件影片",
+        cron_setting="movie_javdb_backfill_cron",
+        handler=lambda reporter, _params: MovieJavdbBackfillService().run(reporter=reporter),
+    ),
     JobDefinition(
         task_key="actor_subscription_sync",
         log_name="actor-subscription-sync",
@@ -307,4 +317,5 @@ _ACTIVE_PLUGINS = tuple(
     != "registry_conflict"
 )
 refresh_media_provider_registry(_ACTIVE_PLUGINS)
+MetadataSourceService.register(_ACTIVE_PLUGINS)
 JOB_REGISTRY_BY_KEY: dict[str, JobDefinition] = {job.task_key: job for job in JOB_REGISTRY}

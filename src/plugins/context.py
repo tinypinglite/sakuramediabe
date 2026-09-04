@@ -270,7 +270,7 @@ class PluginContext:
         *,
         force_subscribed: bool = False,
     ) -> MovieSnapshot:
-        """通过 JavDB 获取影片详情并复用核心目录入库能力；已存在影片跳过不更新。
+        """按 JavDB 优先规则导入，未找到时调用元数据来源插件；本地已存在则复用。
 
         返回不可变 MovieSnapshot（不暴露 ORM 对象）；插件要更新既有字段，必须
         重新取得 snapshot 并单独调用 ``context.movies.patch``。
@@ -278,9 +278,10 @@ class PluginContext:
         """
         provider = self.build_javdb_provider()
         importer = self.build_catalog_import_service()
-        detail = provider.get_movie_by_number(movie_number)
-        movie, _created = importer.import_movie_if_missing(
-            detail,
+        from src.service.catalog.metadata_source_service import MetadataSourceService
+
+        movie, _created = MetadataSourceService.import_by_number(
+            movie_number, provider, importer,
             force_subscribed=force_subscribed,
         )
         return MovieApi._to_snapshot(movie)

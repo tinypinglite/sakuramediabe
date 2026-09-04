@@ -371,7 +371,7 @@ class RankingSyncService:
         if movie_numbers:
             existing_movies = {
                 movie.movie_number: movie
-                for movie in Movie.select(Movie.id, Movie.movie_number).where(
+                for movie in Movie.select(Movie.id, Movie.movie_number, Movie.javdb_id, Movie.metadata_source).where(
                     Movie.movie_number.in_(movie_numbers)
                 )
             }
@@ -402,6 +402,12 @@ class RankingSyncService:
                 imported_count += 1
             else:
                 local_hit_count += 1
+                if not movie.javdb_id and movie.metadata_source:
+                    try:
+                        detail = self._get_movie_detail(source_key, movie_number)
+                        movie, _created = self.import_service.import_movie_if_missing(detail)
+                    except Exception as exc:
+                        logger.warning("排行榜影片 JavDB 补录失败，保留本地条目 movie={} detail={}", movie_number, exc)
 
             insert_rows.append(
                 {

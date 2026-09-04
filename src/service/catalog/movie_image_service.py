@@ -14,9 +14,11 @@ import tempfile
 import time
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
 from loguru import logger
@@ -541,6 +543,60 @@ class MovieImageService:
 
         for temp_root in {prepared_file.temp_root for prepared_file in prepared_files}:
             shutil.rmtree(temp_root, ignore_errors=True)
+
+    @contextmanager
+    def prepare_metadata_images(
+        self, movie_number, cover, plots, actors=(), *, local=False
+    ):
+        """补缺与补录的新图独立落盘，调用方事务只切换已经存在的文件。"""
+        cover_task, plot_tasks, actor_tasks = self.build_movie_import_image_tasks(
+            movie_number, cover, list(dict.fromkeys(plots)), list(actors)
+        )
+        tasks = self.collect_image_tasks(cover_task, plot_tasks, actor_tasks)
+        root = media_image_root_path()
+        root.mkdir(parents=True, exist_ok=True)
+        temp_root = Path(tempfile.mkdtemp(prefix="metadata-", dir=root))
+        prepared = []
+        final_paths = []
+        try:
+            for task in tasks:
+                path = temp_root / task.relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if local:
+                    shutil.copyfile(task.image_url, path)
+                else:
+                    self.image_downloader(task.image_url, path)
+                with PillowImage.open(path) as image:
+                    image.load()
+                prepared.append(PreparedImageFile(task, path, temp_root))
+            thin = self.resolve_thin_cover_from_prepared_images(
+                movie_number, cover_task, plot_tasks, prepared
+            )
+            if thin.generated_prepared_file is not None:
+                prepared.append(thin.generated_prepared_file)
+            token = uuid4().hex
+            for item in prepared:
+                path = Path(item.image_task.relative_path)
+                relative = path.with_name(f"{path.stem}-{token}{path.suffix}")
+                item.image_task.relative_path = relative.as_posix()
+                item.image_task.absolute_path = root / relative
+                final_paths.append(relative.as_posix())
+            self.finalize_prepared_image_files(prepared)
+            yield cover_task, plot_tasks, actor_tasks, thin
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+            # 事务回滚或并发查重跳过时，不留下本次未使用的目标图片。
+            # 查询失败时保留文件，避免把提交状态不明的图片删掉。
+            try:
+                used = {
+                    item.origin
+                    for item in Image.select(Image.origin).where(
+                        Image.origin.in_(final_paths)
+                    )
+                }
+                self.delete_obsolete_image_files(set(final_paths) - used)
+            except Exception as exc:
+                logger.warning("元数据未引用图片清理失败 detail={}", exc)
 
     def persist_image(
         self,

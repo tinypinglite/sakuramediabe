@@ -162,6 +162,7 @@ class Scheduler(BaseModel):
     download_task_auto_import_cron: str = "* * * * *"
     movie_heat_cron: str = "15 0 * * *"
     movie_interaction_sync_cron: str = "0 5 * * *"
+    movie_javdb_backfill_cron: str = "30 5 * * *"
     media_file_hash_backfill_cron: str = "0 3 * * *"
     # 115 使用整库远端清单对账；每天一次且 Provider 内部限速，避免逐条探测触发风控。
     media_file_scan_cron: str = "0 4 * * *"

@@ -214,12 +214,12 @@ def test_import_movie_by_number_returns_snapshot(test_db, monkeypatch):
 
 
 def test_host_api_accepts_supported_manifest_versions(tmp_path):
-    """v5 Host 在 import 前拒绝范围外 manifest，并保留 v4 包兼容。"""
+    """v6 Host 在 import 前拒绝范围外 manifest，并保留 v4/v5 包兼容。"""
     import json
 
     from src.config.config import Plugins
 
-    assert HOST_API_VERSION == 5
+    assert HOST_API_VERSION == 6
     assert MIN_SUPPORTED_HOST_API_VERSION == 4
 
     for plugin_id, declared in (

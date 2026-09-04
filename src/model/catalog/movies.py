@@ -40,7 +40,9 @@ class MovieSeries(TimestampedMixin, BaseModel):
 
 
 class Movie(TimestampedMixin, BaseModel):
-    javdb_id = CaseSensitiveCharField(max_length=64, unique=True, index=True, verbose_name="JavDB ID")
+    javdb_id = CaseSensitiveCharField(max_length=64, unique=True, index=True, null=True, verbose_name="JavDB ID")
+    metadata_source = JsonbField(null=True)
+    javdb_next_check_at = peewee.DateTimeField(null=True, index=True)
     movie_number = peewee.CharField(max_length=255, unique=True, index=True, verbose_name="番号")
     title = peewee.TextField(verbose_name="标题")
     release_date = peewee.DateTimeField(verbose_name="发布时间", index=True, null=True)
@@ -131,7 +133,7 @@ class Movie(TimestampedMixin, BaseModel):
         # 分隔符与大小写都是有效信息（一本道 072625_001 与加勒比 072625-001 是两部不同影片，
         # 东热 n0646 的规范写法就是小写）。系统内部各处番号副本列只允许拷贝本列；
         # 人工输入的匹配统一走 service_helpers.find_movie_by_number（大小写不敏感 + 分隔符候选）。
-        self.javdb_id = (self.javdb_id or "").strip()
+        self.javdb_id = (self.javdb_id or "").strip() or None
         self.movie_number = (self.movie_number or "").strip()
         self._guard_protected_field_write(
             only=kwargs.get("only"),
