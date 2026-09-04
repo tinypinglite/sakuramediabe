@@ -9,15 +9,61 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from src.plugins.types import (
+    ACTOR_SNAPSHOT_FIELDS,
     MOVIE_SNAPSHOT_FIELDS,
+    ActorPage,
+    ActorSnapshot,
     MoviePage,
     MovieSnapshot,
     SubtitleAsset,
     SubtitleContent,
+    TagSnapshot,
 )
+
+
+class ActorApi:
+    """context.actors：演员只读快照与资料 patch，不暴露 ORM。"""
+
+    def __init__(self, plugin_id: str):
+        self._plugin_id = plugin_id
+
+    @staticmethod
+    def _to_snapshot(actor) -> ActorSnapshot:
+        return ActorSnapshot(
+            actor_id=actor.id,
+            revision=actor.mutation_revision,
+            values=MappingProxyType({name: getattr(actor, name) for name in ACTOR_SNAPSHOT_FIELDS}),
+            owners=MappingProxyType(dict(actor.field_owners or {})),
+        )
+
+    def get(self, actor_id: int) -> ActorSnapshot | None:
+        from src.model import Actor
+
+        actor = Actor.get_or_none(Actor.id == actor_id)
+        return self._to_snapshot(actor) if actor is not None else None
+
+    def list_page(self, *, after_id: int = 0, limit: int = 500) -> ActorPage:
+        if type(after_id) is not int or after_id < 0:
+            raise ValueError("after_id 必须是非负整数")
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit 必须在 1 到 1000 之间")
+        from src.model import Actor
+
+        rows = list(Actor.select().where(Actor.id > after_id).order_by(Actor.id).limit(limit + 1))
+        page = rows[:limit]
+        return ActorPage(
+            items=tuple(self._to_snapshot(actor) for actor in page),
+            next_cursor=page[-1].id if len(rows) > limit else None,
+        )
+
+    def patch(self, actor_id: int, fields: dict[str, Any], expected_revision: int) -> bool:
+        from src.service.catalog.actor_ownership_gateway import ActorOwnershipGateway
+
+        return ActorOwnershipGateway.patch_plugin(actor_id, self._plugin_id, fields, expected_revision)
 
 
 class MovieApi:
@@ -30,16 +76,52 @@ class MovieApi:
     def __init__(self, plugin_id: str):
         self._plugin_id = plugin_id
 
+    @classmethod
+    def _to_snapshot(cls, movie) -> MovieSnapshot:
+        return cls._to_snapshots([movie])[0]
+
     @staticmethod
-    def _to_snapshot(movie) -> MovieSnapshot:
-        return MovieSnapshot(
-            movie_id=movie.id,
-            revision=movie.mutation_revision,
-            values={
-                name: getattr(movie, name) for name in MOVIE_SNAPSHOT_FIELDS
-            },
-            owners=dict(movie.field_owners or {}),
-        )
+    def _to_snapshots(movies) -> list[MovieSnapshot]:
+        from src.model import Actor, MovieActor, MovieSeries, MovieTag, Tag
+
+        if not movies:
+            return []
+        movie_ids = [movie.id for movie in movies]
+        actors = {movie_id: [] for movie_id in movie_ids}
+        tags = {movie_id: [] for movie_id in movie_ids}
+        # 一页内批量读取关联，避免每部影片/每位演员单独查询。
+        for link in (
+            MovieActor.select(MovieActor, Actor).join(Actor)
+            .where(MovieActor.movie.in_(movie_ids))
+            .order_by(MovieActor.movie, MovieActor.actor)
+        ):
+            actors[link.movie_id].append(ActorApi._to_snapshot(link.actor))
+        for link in (
+            MovieTag.select(MovieTag, Tag).join(Tag)
+            .where(MovieTag.movie.in_(movie_ids))
+            .order_by(MovieTag.movie, MovieTag.tag)
+        ):
+            tags[link.movie_id].append(TagSnapshot(tag_id=link.tag_id, name=link.tag.name))
+        series_ids = {movie.series_id for movie in movies if movie.series_id is not None}
+        series_names = {
+            series.id: series.name
+            for series in MovieSeries.select().where(MovieSeries.id.in_(series_ids))
+        } if series_ids else {}
+        return [
+            MovieSnapshot(
+                movie_id=movie.id,
+                revision=movie.mutation_revision,
+                values=MappingProxyType({
+                    name: series_names.get(movie.series_id) if name == "series_name"
+                    else getattr(movie, name)
+                    for name in MOVIE_SNAPSHOT_FIELDS
+                }),
+                owners=MappingProxyType(dict(movie.field_owners or {})),
+                actors=tuple(actors[movie.id]),
+                tags=tuple(tags[movie.id]),
+            )
+            for movie in movies
+        ]
 
     def get(self, movie_id: int) -> MovieSnapshot | None:
         """按内部 id 读取影片快照；不存在返回 None。"""
@@ -57,15 +139,15 @@ class MovieApi:
         """
         from src.common.service_helpers import find_movie_by_number
 
-        snapshots: list[MovieSnapshot] = []
+        movies = []
         seen_ids: set[int] = set()
         for number in numbers:
             movie = find_movie_by_number(number)
             if movie is None or movie.id in seen_ids:
                 continue
             seen_ids.add(movie.id)
-            snapshots.append(self._to_snapshot(movie))
-        return snapshots
+            movies.append(movie)
+        return self._to_snapshots(movies)
 
     def list_page(self, *, after_id: int = 0, limit: int = 500) -> MoviePage:
         """按 Movie.id 游标分页遍历全库，返回不可变影片快照。"""
@@ -85,7 +167,7 @@ class MovieApi:
         has_more = len(rows) > limit
         page_rows = rows[:limit]
         return MoviePage(
-            items=tuple(self._to_snapshot(movie) for movie in page_rows),
+            items=tuple(self._to_snapshots(page_rows)),
             next_cursor=page_rows[-1].id if has_more else None,
         )
 
@@ -97,8 +179,8 @@ class MovieApi:
     ) -> bool:
         """写受保护字段（白名单内）并取得/续持 owner，乐观并发提交。
 
-        revision 不匹配或字段已被其他插件接管时返回 False 且整次零修改；
-        插件应重新读取 snapshot 后决定是否重试。
+        不存在、revision 不匹配、字段由人工/其他插件持有，或试图屏蔽已订阅影片时，
+        返回 False 且整次零修改；插件应重新读取 snapshot 后决定是否重试。
         """
         from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
 
@@ -149,6 +231,11 @@ class PluginContext:
     @property
     def data_dir(self) -> Path:
         return self.ensure_data_dir()
+
+    @property
+    def actors(self) -> ActorApi:
+        """演员资料读写；身份及订阅字段只读。"""
+        return ActorApi(self.plugin_id)
 
     @property
     def movies(self) -> MovieApi:

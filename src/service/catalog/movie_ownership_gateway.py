@@ -66,7 +66,7 @@ class MovieOwnershipGateway:
     ) -> bool:
         """插件写字段：每个字段要求“未接管或 owner 是当前插件”，且 revision 匹配。
 
-        单条 UPDATE 原子完成：任一字段条件失败则整次零修改并返回 False，插件应
+        屏蔽已订阅影片也返回 False。单条 UPDATE 原子完成：任一字段条件失败则整次零修改，插件应
         重新读取 snapshot 后决定是否重试。成功时字段值、owner、revision、updated_at
         在同一语句中提交。
         """
@@ -86,6 +86,10 @@ class MovieOwnershipGateway:
         ]
         for name in fields:
             params.extend((name, name, owner))
+        # 订阅不属于受保护字段，revision 不会随它变化；在 UPDATE 内检查当前值。
+        subscription_condition = (
+            "AND NOT is_subscribed" if fields.get("is_blacklisted") is True else ""
+        )
         cursor = Movie._meta.database.execute_sql(
             f"""
             UPDATE {table}
@@ -96,6 +100,7 @@ class MovieOwnershipGateway:
             WHERE id = %s
               AND mutation_revision = %s
               AND {owner_conditions}
+              {subscription_condition}
             """,
             params,
         )

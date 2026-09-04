@@ -21,6 +21,7 @@ from src.start.commands import main
 from src.start.legacy_v053_upgrade import LEGACY_V053_UPGRADE_MIGRATION_NAME
 from src.start.migrations.runner import (
     ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
+    ACTOR_METADATA_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
     HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
     IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
@@ -102,6 +103,7 @@ def test_current_migrations_are_discoverable_in_order():
         IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
         HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
         MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
+        ACTOR_METADATA_MIGRATION_NAME,
     ]
 
 
@@ -154,6 +156,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME, applied=True),
         MigrationExecution(name=HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME, applied=True),
         MigrationExecution(name=MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=ACTOR_METADATA_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -166,6 +169,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
         HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
         MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
+        ACTOR_METADATA_MIGRATION_NAME,
     ]
 
 
@@ -318,7 +322,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 9
+    assert summary.applied_count == 10
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

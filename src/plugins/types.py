@@ -41,7 +41,38 @@ MOVIE_SNAPSHOT_FIELDS: tuple[str, ...] = (
     "series_name",
     "is_collection",
     "is_subscribed",
+    "is_blacklisted",
 )
+
+ACTOR_SNAPSHOT_FIELDS: tuple[str, ...] = (
+    "javdb_id", "javdb_type", "name", "alias_name", "gender", "is_subscribed",
+    "birthday", "height_cm", "bust_cm", "waist_cm", "hips_cm", "cup",
+    "birthplace", "blood_type",
+)
+
+
+@dataclass(frozen=True)
+class ActorSnapshot:
+    """演员身份和资料快照；revision 只覆盖资料及字段归属。"""
+
+    actor_id: int
+    revision: int
+    values: Mapping[str, Any]
+    owners: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class ActorPage:
+    items: tuple[ActorSnapshot, ...]
+    next_cursor: int | None
+
+
+@dataclass(frozen=True)
+class TagSnapshot:
+    """影片关联标签的只读身份和名称。"""
+
+    tag_id: int
+    name: str
 
 
 @dataclass(frozen=True)
@@ -51,12 +82,15 @@ class MovieSnapshot:
     - ``values``：MOVIE_SNAPSHOT_FIELDS 固定只读集合的快照值；
     - ``owners``：字段 -> owner 的接管映射（缺键代表自动宿主管理，``host:manual`` 代表人工）；
     - ``revision``：受保护字段版本，``patch`` 的乐观并发依据。
+    - ``actors`` / ``tags``：影片关联的只读快照元组，不由影片 revision 覆盖。
     """
 
     movie_id: int
     revision: int
     values: Mapping[str, Any]
     owners: Mapping[str, str]
+    actors: tuple[ActorSnapshot, ...] = ()
+    tags: tuple[TagSnapshot, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -68,7 +102,10 @@ class MoviePage:
 
 
 __all__ = [
+    "ACTOR_SNAPSHOT_FIELDS",
     "MOVIE_SNAPSHOT_FIELDS",
+    "ActorPage",
+    "ActorSnapshot",
     "ImageDownloadError",
     "JavdbMovieActor",
     "JavdbMovieDetail",
@@ -80,4 +117,5 @@ __all__ = [
     "SubtitleImportResult",
     "SubtitleImportStatus",
     "SubtitleReadError",
+    "TagSnapshot",
 ]

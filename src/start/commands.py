@@ -598,6 +598,7 @@ def plugins_sync_dependencies():
 
 
 @plugins_group.command("clear-field-owners")
+@click.option("--entity", type=click.Choice(["movie", "actor"]), default="movie", show_default=True)
 @click.option("--plugin-id", required=True, type=str, help="解除接管的目标插件 id。")
 @click.option(
     "--field",
@@ -606,13 +607,15 @@ def plugins_sync_dependencies():
     type=str,
     help="只清除指定字段的 owner（可重复）；不传则清除该插件全部字段 owner。",
 )
-def plugins_clear_field_owners(plugin_id: str, fields: tuple[str, ...]):
-    """解除插件对 Movie 受保护字段的接管（插件被删除后其字段会冻结，用本命令释放回宿主）。"""
+def plugins_clear_field_owners(plugin_id: str, fields: tuple[str, ...], entity: str):
+    """解除插件对影片或演员字段的接管，保留字段值。"""
+    from src.service.catalog.actor_ownership_gateway import ActorOwnershipGateway
     from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
 
     _ensure_database_ready()
     try:
-        affected = MovieOwnershipGateway.release_plugin_owners(
+        gateway = ActorOwnershipGateway if entity == "actor" else MovieOwnershipGateway
+        affected = gateway.release_plugin_owners(
             plugin_id,
             fields=fields if fields else None,
         )

@@ -128,7 +128,7 @@ class SubscribedActorMovieSyncService:
         actor.subscribed_movies_synced_at = synced_at
         if mode == "full" and actor.subscribed_movies_full_synced_at is None:
             actor.subscribed_movies_full_synced_at = synced_at
-        actor.save()
+        actor.save(only=[Actor.subscribed_movies_synced_at, Actor.subscribed_movies_full_synced_at])
         logger.info(
             "Subscribed actor sync actor finished actor_id={} actor_javdb_id={} mode={} imported_movies={} stop_reason={} synced_at={}",
             actor.id,

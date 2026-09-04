@@ -8,12 +8,12 @@ from src.model.catalog.tags import Tag
 from src.model.mixins import TimestampedMixin
 
 # 受保护字段白名单（v2-lite 字段主权）：插件可写字段的宿主固定名单。
-# 当前开放 title / summary / maker_name / director_name / is_collection（宿主严格刷新已收敛走
-# gateway，插件可补充/修正文案、厂商/导演信息和合集判定）；后续每个可写字段必须由第一个
+# 开放文案、厂商/导演、合集判定与屏蔽状态；宿主刷新和人工修改均收敛走 gateway。
+# 屏蔽写入还需校验订阅状态。后续每个可写字段必须由第一个
 # 真实插件提出、补 MOVIE_FIELD_CODECS 类型校验、并收敛对应宿主写点后才加入。
 # 白名单非空后，已持久化 Movie 的裸 save() 会被护栏拒绝。
 PROTECTED_MOVIE_FIELDS: frozenset[str] = frozenset(
-    {"title", "summary", "maker_name", "director_name", "is_collection"}
+    {"title", "summary", "maker_name", "director_name", "is_collection", "is_blacklisted"}
 )
 
 # 受保护字段 codec：字段名 -> 接受的值类型；开放写入前必须补上（v2-lite 文档约定）。
@@ -23,6 +23,7 @@ MOVIE_FIELD_CODECS: dict[str, type] = {
     "maker_name": str,
     "director_name": str,
     "is_collection": bool,
+    "is_blacklisted": bool,
 }
 
 

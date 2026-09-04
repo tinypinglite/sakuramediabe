@@ -643,7 +643,7 @@ class CatalogImportService:
         )
         actor.javdb_type = actor_resource.javdb_type
         actor.profile_image = profile_image
-        actor.save()
+        actor.save(only=[Actor.name, Actor.alias_name, Actor.javdb_type, Actor.profile_image])
         return actor, obsolete_paths
 
     def backfill_movie_thin_cover(self, movie: Movie) -> bool:
@@ -730,7 +730,12 @@ class CatalogImportService:
                     actor.gender = actor_resource.gender
                 if profile_image is not None:
                     actor.profile_image = profile_image
-                actor.save()
+                columns = [Actor.name, Actor.alias_name, Actor.javdb_type]
+                if update_gender:
+                    columns.append(Actor.gender)
+                if profile_image is not None:
+                    columns.append(Actor.profile_image)
+                actor.save(only=columns)
 
         return actor
 

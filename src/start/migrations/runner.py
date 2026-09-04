@@ -22,6 +22,7 @@ IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME = "20260830_01_add_image_search_queue_
 IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME = "20260831_01_add_image_search_index_space_state"
 HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME = "20260831_02_remove_hot_review_item"
 MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME = "20260903_01_add_media_import_source_identity"
+ACTOR_METADATA_MIGRATION_NAME = "20260905_01_add_actor_metadata"
 
 
 @dataclass(frozen=True)

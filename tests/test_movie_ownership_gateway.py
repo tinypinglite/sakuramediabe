@@ -122,6 +122,55 @@ def test_patch_plugin_can_take_collection_ownership(test_db):
     assert movie.mutation_revision == 1
 
 
+def test_patch_blacklist_requires_bool_and_leaves_other_fields_unchanged(test_db):
+    movie = _create_movie(test_db)
+    with pytest.raises(ValueError, match="值类型错误"):
+        MovieOwnershipGateway.patch_plugin(
+            movie.id, "filter", {"title": "不能写入", "is_blacklisted": 1}, 0,
+        )
+    fresh = Movie.get_by_id(movie.id)
+    assert fresh.title == movie.title
+    assert fresh.field_owners == {}
+    assert fresh.mutation_revision == 0
+
+
+def test_patch_blacklist_checks_subscription_after_waiting_for_row_lock(test_db):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    movie = _create_movie(test_db)
+    started = Event()
+
+    def patch():
+        with test_db.connection_context():
+            started.set()
+            return MovieOwnershipGateway.patch_plugin(
+                movie.id, "filter", {"is_blacklisted": True, "title": "不能写入"}, 0,
+            )
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        with test_db.atomic():
+            Movie.update(is_subscribed=True).where(Movie.id == movie.id).execute()
+            future = executor.submit(patch)
+            assert started.wait(timeout=5)
+        assert future.result(timeout=5) is False
+    fresh = Movie.get_by_id(movie.id)
+    assert fresh.is_subscribed is True
+    assert fresh.is_blacklisted is False
+    assert fresh.title == movie.title
+    assert fresh.field_owners == {}
+    assert fresh.mutation_revision == 0
+
+
+def test_blacklist_direct_write_is_guarded(test_db):
+    movie = _create_movie(test_db)
+    with pytest.raises(RuntimeError, match="受保护字段"):
+        Movie.update(is_blacklisted=True).where(Movie.id == movie.id).execute()
+    movie.is_blacklisted = True
+    with pytest.raises(RuntimeError, match="受保护字段"):
+        movie.save(only=[Movie.is_blacklisted])
+
+
 def test_update_host_unowned_skips_owned_field(test_db):
     movie = _create_movie(test_db)
     assert MovieOwnershipGateway.patch_plugin(

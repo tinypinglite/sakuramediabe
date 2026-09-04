@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
 from pydantic import Field, field_validator
@@ -52,7 +52,15 @@ class ActorResource(SchemaModel):
 
 
 class ActorDetailResource(ActorResource):
-    pass
+    birthday: date | None = None
+    age: int | None = None
+    height_cm: int | None = None
+    bust_cm: int | None = None
+    waist_cm: int | None = None
+    hips_cm: int | None = None
+    cup: str | None = None
+    birthplace: str | None = None
+    blood_type: str | None = None
 
 
 class MovieIdResource(SchemaModel):

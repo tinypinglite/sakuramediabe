@@ -849,28 +849,32 @@ class MovieService:
         blacklisted: bool,
     ) -> None:
         ordered_keys, display_by_key = cls._dedup_movie_number_keys(payload.movie_numbers)
-        movies = list(Movie.select().where(fn.UPPER(Movie.movie_number).in_(ordered_keys)))
-        matched_keys = {movie.movie_number.strip().upper() for movie in movies}
-        missing = [display_by_key[key] for key in ordered_keys if key not in matched_keys]
-        if missing:
-            raise ApiError(
-                404,
-                "movie_not_found",
-                "影片不存在",
-                {"movie_numbers": missing},
+        with Movie._meta.database.atomic():
+            movies = list(
+                Movie.select().where(fn.UPPER(Movie.movie_number).in_(ordered_keys))
+                .order_by(Movie.id).for_update()
             )
-        if blacklisted:
-            subscribed = [movie.movie_number for movie in movies if movie.is_subscribed]
-            if subscribed:
+            matched_keys = {movie.movie_number.strip().upper() for movie in movies}
+            missing = [display_by_key[key] for key in ordered_keys if key not in matched_keys]
+            if missing:
                 raise ApiError(
-                    409,
-                    "movie_is_subscribed",
-                    "已订阅影片不能加入黑名单，请先取消订阅",
-                    {"movie_numbers": subscribed},
+                    404,
+                    "movie_not_found",
+                    "影片不存在",
+                    {"movie_numbers": missing},
                 )
-        Movie.update(is_blacklisted=blacklisted).where(
-            Movie.id.in_([movie.id for movie in movies])
-        ).execute()
+            if blacklisted:
+                subscribed = [movie.movie_number for movie in movies if movie.is_subscribed]
+                if subscribed:
+                    raise ApiError(
+                        409,
+                        "movie_is_subscribed",
+                        "已订阅影片不能加入黑名单，请先取消订阅",
+                        {"movie_numbers": subscribed},
+                    )
+            MovieOwnershipGateway.update_host_manual(
+                [movie.id for movie in movies], {"is_blacklisted": blacklisted}
+            )
 
     @classmethod
     def batch_set_subscription(
