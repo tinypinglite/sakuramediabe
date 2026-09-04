@@ -1,5 +1,6 @@
 """JavDB 优先；插件结果只在本次调用期间交付给宿主。"""
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -58,8 +59,7 @@ class MetadataSourceService:
         )
 
     @staticmethod
-    def _delivery_paths(detail: PluginMovieMetadata, root: Path) -> list[Path]:
-        paths = []
+    def _delivery_paths(detail: PluginMovieMetadata, root: Path) -> Iterator[Path]:
         request_dir = None
         for raw in [detail.cover_image_path, *detail.plot_image_paths]:
             path = Path(raw).resolve()
@@ -70,11 +70,10 @@ class MetadataSourceService:
             if request_dir is not None and current_dir != request_dir:
                 raise ValueError("同一结果的图片必须来自同一请求目录")
             request_dir = current_dir
-            paths.append(path)
-        return list(dict.fromkeys(paths))
+            yield path
 
     @staticmethod
-    def _cleanup_delivery(paths: list[Path]):
+    def _cleanup_delivery(paths: set[Path]):
         for path in paths:
             try:
                 path.unlink(missing_ok=True)
@@ -104,7 +103,7 @@ class MetadataSourceService:
             if plugin_id not in sources:
                 continue
             name, source = sources[plugin_id]
-            paths = []
+            paths: set[Path] = set()
             try:
                 result = source.fetch_movie(movie_number)
                 if result is None:
@@ -117,7 +116,7 @@ class MetadataSourceService:
                     / "metadata-tmp"
                 )
                 root.resolve().relative_to((Path(settings.plugins.root_dir) / plugin_id).resolve())
-                paths = cls._delivery_paths(detail, root)
+                paths.update(cls._delivery_paths(detail, root))
                 if normalize_movie_number(
                     detail.movie_number
                 ) != normalize_movie_number(movie_number):

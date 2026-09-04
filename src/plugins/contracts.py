@@ -21,6 +21,15 @@ HOST_API_VERSION = 6
 MIN_SUPPORTED_HOST_API_VERSION = 4
 
 
+def validate_host_api_version(version: int) -> None:
+    if not MIN_SUPPORTED_HOST_API_VERSION <= version <= HOST_API_VERSION:
+        raise ValueError(
+            "Host API 版本不兼容: "
+            f"plugin={version} "
+            f"host=[{MIN_SUPPORTED_HOST_API_VERSION},{HOST_API_VERSION}]"
+        )
+
+
 class PluginExtension(BaseModel):
     """通用扩展点声明；核心机制只做结构校验，不解释 data 的领域语义。
 
@@ -61,10 +70,5 @@ class PluginRegistration(BaseModel):
 
     @model_validator(mode="after")
     def _validate_host_api_version(self):
-        if not MIN_SUPPORTED_HOST_API_VERSION <= self.host_api_version <= HOST_API_VERSION:
-            raise ValueError(
-                "Host API 版本不兼容: "
-                f"plugin={self.host_api_version} "
-                f"host=[{MIN_SUPPORTED_HOST_API_VERSION},{HOST_API_VERSION}]"
-            )
+        validate_host_api_version(self.host_api_version)
         return self

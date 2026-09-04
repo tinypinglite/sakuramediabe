@@ -307,7 +307,11 @@ def test_manager_install_zip_rejects_broken_register(tmp_path):
     assert not (root / ".staging" / "demo_plugin").exists()
 
 
-def test_manager_remove_disables_and_preserves_data(tmp_path):
+def test_manager_remove_disables_and_preserves_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.plugins.manager.update_settings",
+        lambda new_settings: monkeypatch.setattr(settings, "plugins", new_settings.plugins),
+    )
     root = tmp_path / "root"
     manager = PluginManager(root_dir=root)
     manager.install(_make_plugin_dir(tmp_path), enable=True)

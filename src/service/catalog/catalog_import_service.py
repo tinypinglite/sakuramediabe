@@ -455,12 +455,7 @@ class CatalogImportService:
                     )
                     MovieActor.get_or_create(movie=movie, actor=actor)
             if detail.tags_available:
-                MovieTag.delete().where(MovieTag.movie == movie).execute()
-                for name in dict.fromkeys(
-                    tag.name.strip() for tag in detail.tags if tag.name.strip()
-                ):
-                    tag, _ = Tag.get_or_create(name=name)
-                    MovieTag.get_or_create(movie=movie, tag=tag)
+                self._replace_movie_tags(movie, detail.tags)
             for image in {
                 image.id: image for image in old_images if image is not None
             }.values():
@@ -681,8 +676,6 @@ class CatalogImportService:
 
         # 演员关系同样按远端列表全量替换，避免残留已下线演员。
         MovieActor.delete().where(MovieActor.movie == movie).execute()
-        # 标签关联同样严格重建，保证旧标签不会残留。
-        MovieTag.delete().where(MovieTag.movie == movie).execute()
 
         images_to_cleanup: dict[int, Image] = {}
         for image in [old_cover_image, old_thin_cover_image, *[plot_link.image for plot_link in old_plot_links]]:
@@ -752,15 +745,7 @@ class CatalogImportService:
             obsolete_paths.update(actor_obsolete_paths)
             MovieActor.get_or_create(movie=movie, actor=actor)
 
-        seen_tag_names: set[str] = set()
-        for tag_resource in tags:
-            normalized_tag_name = (tag_resource.name or "").strip()
-            if not normalized_tag_name or normalized_tag_name in seen_tag_names:
-                continue
-            seen_tag_names.add(normalized_tag_name)
-        for tag_name in seen_tag_names:
-            tag, _ = Tag.get_or_create(name=tag_name)
-            MovieTag.get_or_create(movie=movie, tag=tag)
+        self._replace_movie_tags(movie, tags)
 
         plot_images_by_index: dict[int, Image] = {}
         # 剧照整批一次 upsert，避免逐张 get_or_none + create 的 2N 次往返。
@@ -786,6 +771,14 @@ class CatalogImportService:
         # 保证返回对象与库内真实状态一致（内存中的远端值不得外泄给调用方）。
         movie = Movie.get_by_id(movie.id)
         return movie, obsolete_paths, old_plot_image_ids
+
+    @staticmethod
+    def _replace_movie_tags(movie: Movie, tags) -> None:
+        MovieTag.delete().where(MovieTag.movie == movie).execute()
+        for name in dict.fromkeys((tag.name or "").strip() for tag in tags):
+            if name:
+                tag, _ = Tag.get_or_create(name=name)
+                MovieTag.get_or_create(movie=movie, tag=tag)
 
     def _refresh_actor_from_javdb_resource_strict(
         self,

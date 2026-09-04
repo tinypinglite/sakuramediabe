@@ -213,49 +213,37 @@ def test_import_movie_by_number_returns_snapshot(test_db, monkeypatch):
     assert snapshot.tags[0].tag_id == tag.id
 
 
-def test_host_api_accepts_supported_manifest_versions(tmp_path):
-    """v6 Host 在 import 前拒绝范围外 manifest，并保留 v4/v5 包兼容。"""
+@pytest.mark.parametrize(
+    "declared", range(MIN_SUPPORTED_HOST_API_VERSION - 1, HOST_API_VERSION + 2)
+)
+@pytest.mark.parametrize("registration_version", ["declared", "host"])
+def test_host_api_accepts_supported_manifest_versions(tmp_path, declared, registration_version):
+    """兼容区间内每个版本均可保留声明版本或跟随宿主，区间外拒绝加载。"""
     import json
 
     from src.config.config import Plugins
 
-    assert HOST_API_VERSION == 6
-    assert MIN_SUPPORTED_HOST_API_VERSION == 4
-
-    for plugin_id, declared in (
-        ("unsupported_plugin", 2),
-        ("legacy_plugin", MIN_SUPPORTED_HOST_API_VERSION),
-        ("current_plugin", HOST_API_VERSION),
-    ):
-        pkg = tmp_path / plugin_id
-        pkg.mkdir(parents=True, exist_ok=True)
-        (pkg / "manifest.json").write_text(
-            json.dumps(
-                {
-                    "plugin_id": plugin_id,
-                    "display_name": plugin_id,
-                    "version": "1.0.0",
-                    "host_api_version": declared,
-                }
-            ),
-            encoding="utf-8",
-        )
-        registration_version = (
-            str(MIN_SUPPORTED_HOST_API_VERSION)
-            if plugin_id == "legacy_plugin"
-            else "HOST_API_VERSION"
-        )
-        source = (
-            "from src.plugins import HOST_API_VERSION, PluginContext, PluginRegistration\n"
-            "def register(context):\n"
-            f"    return PluginRegistration(plugin_id={plugin_id!r}, display_name='x', version='1.0.0', "
-            f"host_api_version={registration_version}, jobs=())\n"
-        )
-        (pkg / "__init__.py").write_text(source, encoding="utf-8")
-
-    loaded = load_enabled_plugins(
-        Plugins(enabled=["unsupported_plugin", "legacy_plugin", "current_plugin"]),
-        root_dir=tmp_path,
+    plugin_id = "version_plugin"
+    pkg = tmp_path / plugin_id
+    pkg.mkdir()
+    (pkg / "manifest.json").write_text(
+        json.dumps({
+            "plugin_id": plugin_id, "display_name": plugin_id, "version": "1.0.0",
+            "host_api_version": declared,
+        }), encoding="utf-8",
     )
-    assert [registration.plugin_id for registration in loaded] == ["legacy_plugin", "current_plugin"]
-    assert PLUGIN_LOAD_ERRORS["unsupported_plugin"]["stage"] == "validate_manifest"
+    version = str(declared) if registration_version == "declared" else "HOST_API_VERSION"
+    (pkg / "__init__.py").write_text(
+        "from src.plugins import HOST_API_VERSION, PluginRegistration\n"
+        "def register(context):\n"
+        f"    return PluginRegistration(plugin_id={plugin_id!r}, display_name='x', "
+        f"version='1.0.0', host_api_version={version}, jobs=())\n",
+        encoding="utf-8",
+    )
+    loaded = load_enabled_plugins(Plugins(enabled=[plugin_id]), root_dir=tmp_path)
+    if MIN_SUPPORTED_HOST_API_VERSION <= declared <= HOST_API_VERSION:
+        assert [registration.plugin_id for registration in loaded] == [plugin_id]
+        assert plugin_id not in PLUGIN_LOAD_ERRORS
+    else:
+        assert loaded == ()
+        assert PLUGIN_LOAD_ERRORS[plugin_id]["stage"] == "validate_manifest"

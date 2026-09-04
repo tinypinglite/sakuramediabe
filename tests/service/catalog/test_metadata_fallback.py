@@ -70,7 +70,7 @@ def remote_detail(**changes):
 
 
 @pytest.fixture
-def metadata_env(test_db, tmp_path, monkeypatch):
+def metadata_files(tmp_path, monkeypatch):
     monkeypatch.setattr(settings.plugins, "root_dir", str(tmp_path / "plugins"))
     monkeypatch.setattr(settings.plugins, "enabled", ["metadata_one"])
     monkeypatch.setattr(
@@ -92,6 +92,11 @@ def metadata_env(test_db, tmp_path, monkeypatch):
     return SimpleNamespace(
         provider=provider, service=service, root=tmp_path, download=image_download
     )
+
+
+@pytest.fixture
+def metadata_env(test_db, metadata_files):
+    return metadata_files
 
 
 def delivery(env, plugin_id="metadata_one", request="one", **changes):
@@ -172,10 +177,10 @@ def test_contract_rejects_missing_metadata_and_host_fields(changes):
         PluginMovieMetadata.model_validate(values | changes)
 
 
-def test_javdb_found_and_request_error_never_call_plugins(metadata_env, monkeypatch):
+def test_javdb_found_and_request_error_never_call_plugins(metadata_files, monkeypatch):
     callback = Mock()
     register_sources(monkeypatch, {"metadata_one": callback})
-    provider = metadata_env.provider
+    provider = metadata_files.provider
     provider.get_movie_by_number.side_effect = None
     provider.get_movie_by_number.return_value = remote_detail()
     with MetadataSourceService.fetch("TEST-001", provider) as (detail, source):
@@ -191,11 +196,26 @@ def test_javdb_found_and_request_error_never_call_plugins(metadata_env, monkeypa
     callback.assert_not_called()
 
 
+@pytest.mark.parametrize("failure", ["number", "missing", "outside", "other_request"])
 def test_invalid_result_continues_in_order_and_cleans_delivery(
-    metadata_env, monkeypatch
+    metadata_files, monkeypatch, failure
 ):
-    bad = delivery(metadata_env, movie_number="OTHER-002")
-    good = delivery(metadata_env, "metadata_two")
+    bad = delivery(metadata_files)
+    protected = None
+    if failure == "number":
+        bad.movie_number = "OTHER-002"
+    else:
+        path = Path(bad.cover_image_path).parent / "missing.png"
+        if failure in {"outside", "other_request"}:
+            protected = (
+                metadata_files.root / "outside.png" if failure == "outside"
+                else path.parent.parent / "other-request" / "plot.png"
+            )
+            protected.parent.mkdir(parents=True, exist_ok=True)
+            PillowImage.new("RGB", (10, 10)).save(protected)
+            path = protected
+        bad.plot_image_paths = [str(path)]
+    good = delivery(metadata_files, "metadata_two")
     third = Mock()
     register_sources(
         monkeypatch,
@@ -205,7 +225,7 @@ def test_invalid_result_continues_in_order_and_cleans_delivery(
             "metadata_three": third,
         },
     )
-    with MetadataSourceService.fetch("TEST-001", metadata_env.provider) as (
+    with MetadataSourceService.fetch("TEST-001", metadata_files.provider) as (
         detail,
         source,
     ):
@@ -215,13 +235,15 @@ def test_invalid_result_continues_in_order_and_cleans_delivery(
         assert Path(good.cover_image_path).exists()
     assert not Path(good.cover_image_path).exists()
     third.assert_not_called()
+    if protected is not None:
+        assert protected.is_file()
 
 
-def test_all_not_found_is_different_from_plugin_failure(metadata_env, monkeypatch):
+def test_all_not_found_is_different_from_plugin_failure(metadata_files, monkeypatch):
     register_sources(monkeypatch, {"metadata_one": Mock(return_value=None)})
     with (
         pytest.raises(MetadataNotFoundError),
-        MetadataSourceService.fetch("TEST-001", metadata_env.provider),
+        MetadataSourceService.fetch("TEST-001", metadata_files.provider),
     ):
         pass
     register_sources(
@@ -229,27 +251,26 @@ def test_all_not_found_is_different_from_plugin_failure(metadata_env, monkeypatc
     )
     with (
         pytest.raises(MetadataSourceError, match="metadata_one"),
-        MetadataSourceService.fetch("TEST-001", metadata_env.provider),
+        MetadataSourceService.fetch("TEST-001", metadata_files.provider),
     ):
         pass
 
 
 def test_outside_and_symlink_paths_are_not_imported_or_deleted(
-    metadata_env, monkeypatch
+    metadata_files, monkeypatch
 ):
-    detail = delivery(metadata_env)
-    outside = metadata_env.root / "outside.png"
+    detail = delivery(metadata_files)
+    outside = metadata_files.root / "outside.png"
     PillowImage.new("RGB", (10, 10)).save(outside)
     Path(detail.cover_image_path).unlink()
     Path(detail.cover_image_path).symlink_to(outside)
     register_sources(monkeypatch, {"metadata_one": Mock(return_value=detail)})
     with (
         pytest.raises(MetadataSourceError),
-        MetadataSourceService.fetch("TEST-001", metadata_env.provider),
+        MetadataSourceService.fetch("TEST-001", metadata_files.provider),
     ):
         pass
     assert outside.is_file()
-    assert Movie.select().count() == 0
 
 
 def test_import_zero_statistics_images_and_repeat_lookup(metadata_env, monkeypatch):
@@ -368,6 +389,23 @@ def test_backfill_replaces_lists_and_images_after_preparation(
     assert new_cover.is_file() and new_cover != old_cover and not old_cover.exists()
     assert MovieTag.select().where(MovieTag.movie == movie).count() == 0
     assert MovieActor.get(MovieActor.movie == movie).actor.javdb_id == "new-actor"
+
+
+@pytest.mark.parametrize("method", ["backfill_plugin_movie", "refresh_movie_metadata_strict"])
+@pytest.mark.parametrize("names", [[], [" new ", "new", "", "second"]])
+def test_metadata_updates_replace_only_target_movie_tags(metadata_env, monkeypatch, method, names):
+    movie = import_plugin(metadata_env, monkeypatch)
+    other = Movie.create(movie_number="OTHER-002", title="Other")
+    old_tag = Tag.get(Tag.name == "tag")
+    MovieTag.create(movie=other, tag=old_tag)
+    detail = remote_detail(tags=[{"javdb_id": str(i), "name": name} for i, name in enumerate(names)])
+
+    getattr(metadata_env.service, method)(movie, detail)
+
+    assert [link.tag.name for link in MovieTag.select().where(MovieTag.movie == other)] == ["tag"]
+    actual = [link.tag.name for link in MovieTag.select().where(MovieTag.movie == movie)]
+    expected = {name.strip() for name in names if name.strip()}
+    assert set(actual) == expected and len(actual) == len(expected)
 
 
 @pytest.mark.parametrize("case", ["replace", "shared", "missing", "rollback"])

@@ -18,8 +18,8 @@ from src.config.config import Plugins
 from src.plugins.context import PluginContext
 from src.plugins.contracts import (
     HOST_API_VERSION,
-    MIN_SUPPORTED_HOST_API_VERSION,
     PluginRegistration,
+    validate_host_api_version,
 )
 from src.plugins.dependencies import (
     dependency_failure_message,
@@ -154,18 +154,6 @@ def _validate_plugin_extensions(
             ) from exc
 
 
-def _validate_manifest_host_api_version(*, plugin_id: str, manifest) -> None:
-    """Reject an incompatible package before executing arbitrary plugin imports."""
-    if not MIN_SUPPORTED_HOST_API_VERSION <= manifest.host_api_version <= HOST_API_VERSION:
-        raise PluginLoadError(
-            plugin_id,
-            "validate_manifest",
-            "manifest 声明的 Host API 版本不兼容: "
-            f"manifest={manifest.host_api_version} "
-            f"host=[{MIN_SUPPORTED_HOST_API_VERSION},{HOST_API_VERSION}]",
-        )
-
-
 def _load_plugin_dir(
     *,
     plugin_id: str,
@@ -178,7 +166,10 @@ def _load_plugin_dir(
         raise PluginLoadError(
             plugin_id, "resolve", f"manifest.plugin_id={manifest.plugin_id} 与启用项不一致"
         )
-    _validate_manifest_host_api_version(plugin_id=plugin_id, manifest=manifest)
+    try:
+        validate_host_api_version(manifest.host_api_version)
+    except ValueError as exc:
+        raise PluginLoadError(plugin_id, "validate_manifest", str(exc)) from exc
     dependency_error = dependency_failure_message(
         root_dir=plugin_dir.parent,
         manifest=manifest,
