@@ -16,7 +16,10 @@ from src.model import (
     VideoItem,
 )
 from src.model.base import get_database
-from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
+from src.plugins.provider_protocol import (
+    MEDIA_PROVIDER_REGISTRY,
+    ProviderUnavailableError,
+)
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.schema.videos.collections import (
@@ -229,16 +232,16 @@ class VideoCollectionService:
         items: list[VideoCollectionItemResource] = []
         for link in links:
             media_count, can_play = stats.get(link.video_item_id, (0, False))
-            play_url = (
-                build_signed_media_url(
-                    link.play_media_id,
-                    delivery=MEDIA_PROVIDER_REGISTRY.require(
-                        link.play_provider_key
-                    ).playback_deliveries[0],
-                )
-                if include_play_url and link.play_media_id
-                else None
-            )
+            play_url = None
+            if include_play_url and link.play_media_id:
+                try:
+                    bundle = MEDIA_PROVIDER_REGISTRY.require(link.play_provider_key)
+                except ProviderUnavailableError:
+                    can_play = False
+                else:
+                    play_url = build_signed_media_url(
+                        link.play_media_id, delivery=bundle.playback_deliveries[0]
+                    )
             cover_width, cover_height = VideoItemService._parse_resolution(
                 link.first_resolution
             )
