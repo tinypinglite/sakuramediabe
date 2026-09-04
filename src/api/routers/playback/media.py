@@ -1,4 +1,3 @@
-import hashlib
 import time
 from collections import OrderedDict
 from collections.abc import Callable
@@ -49,60 +48,8 @@ router = APIRouter(
 )
 
 
-_AUTO_REDIRECT_MAX_ATTEMPTS = 3
-_AUTO_REDIRECT_RETRY_GAP_SECONDS = 1.5
-_AUTO_REDIRECT_STATE_MAX_ENTRIES = 1024
 _PLAYBACK_MODE_RESULT_TTL_SECONDS = 120.0
 _PLAYBACK_MODE_RESULT_MAX_ENTRIES = 1024
-
-
-@dataclass
-class _AutoRedirectAttempt:
-    last_seen_at: float
-    count: int
-    range_header: str
-
-
-class _AutoRedirectRetries:
-    """Detect consecutive reopens of the same byte range without persisting state."""
-
-    def __init__(
-        self,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-        max_entries: int = _AUTO_REDIRECT_STATE_MAX_ENTRIES,
-    ):
-        self._clock = clock
-        self._max_entries = max_entries
-        self._attempts: OrderedDict[tuple[int, str, str], _AutoRedirectAttempt] = (
-            OrderedDict()
-        )
-
-    def should_use_proxy(self, *, media_id: int, request: Request) -> bool:
-        client_host = request.client.host if request.client is not None else ""
-        user_agent = request.headers.get("user-agent", "")
-        user_agent_hash = hashlib.sha256(user_agent.encode()).hexdigest()
-        key = (media_id, client_host, user_agent_hash)
-        now = self._clock()
-        previous = self._attempts.get(key)
-        range_header = request.headers.get("range", "").strip()
-        count = (
-            previous.count + 1
-            if previous is not None
-            and previous.range_header == range_header
-            and now - previous.last_seen_at <= _AUTO_REDIRECT_RETRY_GAP_SECONDS
-            else 1
-        )
-        self._attempts[key] = _AutoRedirectAttempt(
-            last_seen_at=now, count=count, range_header=range_header
-        )
-        self._attempts.move_to_end(key)
-        while len(self._attempts) > self._max_entries:
-            self._attempts.popitem(last=False)
-        return count > _AUTO_REDIRECT_MAX_ATTEMPTS
-
-
-_AUTO_REDIRECT_RETRIES = _AutoRedirectRetries()
 
 
 @dataclass
@@ -277,7 +224,7 @@ async def play_media(
     resource_path: str,
     expires: int | None = None,
     signature: str | None = None,
-    delivery: Literal["auto", "proxy", "redirect"] = "auto",
+    delivery: Literal["proxy", "redirect"] | None = None,
     playback_attempt_id: str | None = Query(
         default=None,
         min_length=20,
@@ -298,26 +245,13 @@ async def play_media(
     media_handle = media_handle_for(media)
     try:
         bundle = MEDIA_PROVIDER_REGISTRY.require(library_handle.provider_key)
-        if delivery == "auto":
-            effective_delivery: PlaybackDelivery = (
-                "redirect" if "redirect" in bundle.playback_deliveries else "proxy"
-            )
-            if (
-                not normalized_path
-                and effective_delivery == "redirect"
-                and _AUTO_REDIRECT_RETRIES.should_use_proxy(
-                    media_id=media.id, request=request
-                )
-            ):
-                effective_delivery = "proxy"
-        elif delivery not in bundle.playback_deliveries:
+        effective_delivery: PlaybackDelivery = delivery or bundle.playback_deliveries[0]
+        if effective_delivery not in bundle.playback_deliveries:
             raise ApiError(
                 422,
                 "provider_playback_delivery_unsupported",
                 "媒体提供方不支持该播放方式",
             )
-        else:
-            effective_delivery = delivery
         storage = MEDIA_PROVIDER_REGISTRY.storage_for(library_handle)
     except ProviderUnavailableError as exc:
         raise ApiError(
@@ -353,15 +287,6 @@ async def play_media(
     try:
         return await handle(effective_delivery)
     except ProviderOperationError as exc:
-        if (
-            delivery == "auto"
-            and effective_delivery == "redirect"
-            and (exc.code == "unsupported" or exc.retryable)
-        ):
-            try:
-                return await handle("proxy")
-            except ProviderOperationError as fallback_exc:
-                exc = fallback_exc
         _raise_provider_operation_error(exc)
 
 

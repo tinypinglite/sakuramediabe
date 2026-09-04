@@ -8,8 +8,15 @@ from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import count_by_owner, require_by_id, validate_page
-from src.model import Image, VideoCollection, VideoCollectionItem, VideoItem
+from src.model import (
+    Image,
+    MediaLibrary,
+    VideoCollection,
+    VideoCollectionItem,
+    VideoItem,
+)
 from src.model.base import get_database
+from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.pagination import PageResponse
 from src.schema.videos.collections import (
@@ -180,6 +187,7 @@ class VideoCollectionService:
     ) -> list[VideoCollectionItemResource]:
         """查询并组装成员资源列表。[offset]/[limit] 为 None 时返回全部（供 reorder 用）。"""
         first_media, first_media_id = VideoItemService._first_media_alias()
+        first_library = MediaLibrary.alias()
         # 默认 position 升序（合集手动顺序，前端据此顺序播放）；另支持入库时间/标题/时长/文件大小排序。
         order_by = VideoItemService._build_video_order(
             sort,
@@ -201,12 +209,14 @@ class VideoCollectionService:
                 # 用 COALESCE 包裹才会作为标量挂到 link 上（裸 alias 字段会归到 aliased model）；
                 # 0 作「无媒体」哨兵（media id 恒为正）。
                 fn.COALESCE(first_media.id, 0).alias("play_media_id"),
+                fn.COALESCE(first_library.provider_key, "").alias("play_provider_key"),
             )
             .join(VideoItem)
             .join(Image, JOIN.LEFT_OUTER, on=(VideoItem.cover_image == Image.id))
             .switch(VideoItem)
             .join(first_media_id, JOIN.LEFT_OUTER, on=(first_media_id.c.owner_id == VideoItem.id))
             .join(first_media, JOIN.LEFT_OUTER, on=(first_media.id == first_media_id.c.first_media_id))
+            .join(first_library, JOIN.LEFT_OUTER, on=(first_media.library == first_library.id))
             .where(VideoCollectionItem.collection == collection)
             .order_by(*order_by)
         )
@@ -220,7 +230,12 @@ class VideoCollectionService:
         for link in links:
             media_count, can_play = stats.get(link.video_item_id, (0, False))
             play_url = (
-                build_signed_media_url(link.play_media_id)
+                build_signed_media_url(
+                    link.play_media_id,
+                    delivery=MEDIA_PROVIDER_REGISTRY.require(
+                        link.play_provider_key
+                    ).playback_deliveries[0],
+                )
                 if include_play_url and link.play_media_id
                 else None
             )

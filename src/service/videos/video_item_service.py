@@ -303,11 +303,12 @@ class VideoItemService:
                 )
             )
             media.points = points_by_media_id.get(media.id, [])
-            media.play_url = build_signed_media_url(media.id)
-            media.provider_key = media.library.provider_key if media.library_id is not None else None
-            media.playback_deliveries = list(
-                MEDIA_PROVIDER_REGISTRY.require(media.library.provider_key).playback_deliveries
+            bundle = MEDIA_PROVIDER_REGISTRY.require(media.library.provider_key)
+            media.play_url = build_signed_media_url(
+                media.id, delivery=bundle.playback_deliveries[0]
             )
+            media.provider_key = media.library.provider_key
+            media.playback_deliveries = list(bundle.playback_deliveries)
             resources.append(MovieMediaResource.from_attributes_model(media))
         return resources
 

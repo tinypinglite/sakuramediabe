@@ -470,6 +470,7 @@ class MediaProviderBundle(Protocol):
     provider_key: str
     display_name: str
     library_config_fields: tuple[ConfigField, ...]
+    # 首项为插件默认传输方式；其余项为可显式请求的方式。
     playback_deliveries: tuple[PlaybackDelivery, ...]
     downloads: DownloadComponent | None
 

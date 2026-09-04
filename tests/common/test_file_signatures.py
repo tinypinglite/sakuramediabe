@@ -12,7 +12,7 @@ def test_media_resource_path_accepts_relative_segments():
     url = build_signed_media_url(7, "hls/segment-0.ts")
 
     assert "/media/7/play/hls/segment-0.ts?" in url
-    assert url.endswith("&delivery=auto")
+    assert url.endswith("&delivery=proxy")
 
 
 def test_media_url_accepts_redirect_delivery_without_changing_signature_scope():
@@ -42,3 +42,8 @@ def test_media_resource_path_rejects_unsafe_syntax(resource_path):
         verify_media_signature(7, resource_path, 2_000_000_000, "invalid")
 
     assert error.value.code == "file_path_invalid"
+
+
+def test_media_url_rejects_auto_delivery():
+    with pytest.raises(ValueError, match="unsupported playback delivery"):
+        build_signed_media_url(7, delivery="auto")

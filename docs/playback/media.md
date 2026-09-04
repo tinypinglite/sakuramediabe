@@ -19,16 +19,23 @@ GET /media/invalid
 ## 播放
 
 ```http
-GET /media/{media_id}/play/{resource_path:path}?expires=...&signature=...&delivery=auto|proxy|redirect
+GET /media/{media_id}/play/{resource_path:path}?expires=...&signature=...&delivery=proxy|redirect
 ```
 
 播放 URL 使用统一签名。宿主校验签名并构造 `MediaHandle`，随后把请求交给该媒体所属
 provider 的 `handle_playback`；`resource_path` 及响应内容由 provider 解释。provider 不可
-用、鉴权失败、来源不存在和上游暂不可用分别返回 `provider_*` 错误。`delivery` 默认 `auto`：
-provider 声明支持 `redirect` 时使用 302，否则使用 `proxy`。`auto` 选择 302 后若 provider
-返回不支持或可重试错误，宿主只重试一次代理；302 已发出后的客户端播放失败不在后端可见范围内。
-自动直连的重试计数仅累计连续相同完整 Range 的请求；Range 变化重新计数，
-无 Range 请求单独计数。原有的 1.5 秒相邻请求间隔和第 4 次回退阈值保持不变。
+用、鉴权失败、来源不存在和上游暂不可用分别返回 `provider_*` 错误。
+
+`delivery` 只接受 `proxy` 或 `redirect`；签名播放 URL 使用插件声明的
+`playback_deliveries` 首项作为明确的默认值，直接调用网关未传参数时也使用该声明。
+宿主不按 provider 名称决定传输方式，不统计 Range 重试，也不在请求失败后改用代理。
+
+115 插件默认 `redirect`：HLS 已就绪时 302 到 115 HLS 播放地址，明确未就绪时
+302 到原文件地址。显式 `proxy` 时优先代理 HLS，未就绪时代理原文件并保留 Range。
+鉴权、风控和网络错误不等同于转码未就绪。本地插件只支持 `proxy`，读取原文件。
+
+App 合集逐项使用媒体播放地址。JAV 真正合并仍走独立的 merged-play 接口，
+固定为代理：115 提供合并 HLS，本地提供虚拟 MP4；115 任一分段无 HLS 时合并不可用。
 
 ## 进度、时刻点和缩略图
 

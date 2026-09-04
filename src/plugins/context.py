@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from src.plugins.types import MOVIE_SNAPSHOT_FIELDS, MoviePage, MovieSnapshot
+from src.plugins.types import (
+    MOVIE_SNAPSHOT_FIELDS,
+    MoviePage,
+    MovieSnapshot,
+    SubtitleAsset,
+    SubtitleContent,
+)
 
 
 class MovieApi:
@@ -104,6 +110,24 @@ class MovieApi:
         )
 
 
+class SubtitleApi:
+    """``context.subtitles``：已登记影片字幕的只读访问。"""
+
+    @staticmethod
+    def list(movie_id: int) -> tuple[SubtitleAsset, ...]:
+        """列出仍可访问的字幕；影片不存在时抛 SubtitleReadError。"""
+        from src.service.catalog.movie_subtitle_service import MovieSubtitleService
+
+        return MovieSubtitleService.list_subtitle_assets(movie_id)
+
+    @staticmethod
+    def read(movie_id: int, subtitle_id: int) -> SubtitleContent:
+        """读取属于该影片的字幕，最多 10 MiB；失败抛 SubtitleReadError。"""
+        from src.service.catalog.movie_subtitle_service import MovieSubtitleService
+
+        return MovieSubtitleService.read_subtitle_content(movie_id, subtitle_id)
+
+
 @dataclass(frozen=True, init=False)
 class PluginContext:
     """插件上下文：配置只读、数据目录归插件所有、宿主能力按方法暴露。"""
@@ -130,6 +154,11 @@ class PluginContext:
     def movies(self) -> MovieApi:
         """影片只读快照与受保护字段写入出口（v2-lite 契约 v2）。"""
         return MovieApi(self.plugin_id)
+
+    @property
+    def subtitles(self) -> SubtitleApi:
+        """字幕元信息、原始字节和内容指纹；不提供可写句柄。"""
+        return SubtitleApi()
 
     @staticmethod
     def build_javdb_provider(

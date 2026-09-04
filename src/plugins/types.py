@@ -14,8 +14,11 @@ from src.metadata._providers.models import (
     JavdbMovieTag,
 )
 from src.schema.catalog.subtitles import (
+    SubtitleAsset,
+    SubtitleContent,
     SubtitleImportResult,
     SubtitleImportStatus,
+    SubtitleReadError,
 )
 from src.service.catalog.catalog_import_service import ImageDownloadError
 
@@ -72,6 +75,9 @@ __all__ = [
     "JavdbMovieTag",
     "MoviePage",
     "MovieSnapshot",
+    "SubtitleAsset",
+    "SubtitleContent",
     "SubtitleImportResult",
     "SubtitleImportStatus",
+    "SubtitleReadError",
 ]
