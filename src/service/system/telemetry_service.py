@@ -17,7 +17,10 @@ from src.service.system.status_service import StatusService
 
 
 class TelemetryService:
-    ENDPOINT = "https://sakuramedia-telemetry.tinyping.workers.dev/v1/heartbeats"
+    ENDPOINTS = (
+        "https://sakuramedia-telemetry.tinyping.workers.dev/v1/heartbeats",
+        "https://pswhnebzlzdcdljzvrqa.supabase.co/functions/v1/telemetry/v1/heartbeats",
+    )
     ENABLED_ENV_KEY = "SAKURAMEDIA_TELEMETRY_ENABLED"
 
     @classmethod
@@ -28,11 +31,14 @@ class TelemetryService:
     def report(cls) -> None:
         if not cls.is_enabled():
             return
-        try:
-            response = httpx.post(cls.ENDPOINT, json=cls._build_payload(), timeout=10.0)
-            response.raise_for_status()
-        except httpx.HTTPError as exc:
-            logger.warning("Telemetry heartbeat failed detail={}", exc)
+        payload = cls._build_payload()
+
+        for endpoint in cls.ENDPOINTS:
+            try:
+                response = httpx.post(endpoint, json=payload, timeout=10.0)
+                response.raise_for_status()
+            except httpx.HTTPError as exc:
+                logger.warning("Telemetry heartbeat failed endpoint={} detail={}", endpoint, exc)
 
     @classmethod
     def _build_payload(cls) -> dict[str, object]:

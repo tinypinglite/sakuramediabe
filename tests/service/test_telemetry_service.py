@@ -31,7 +31,7 @@ def test_report_posts_heartbeat(monkeypatch):
         "managed_media_file_count": 0,
         "managed_media_total_bytes": 0,
     }
-    sent: dict[str, object] = {}
+    sent = []
 
     class Response:
         @staticmethod
@@ -39,7 +39,7 @@ def test_report_posts_heartbeat(monkeypatch):
             return None
 
     def post(url: str, *, json: dict[str, object], timeout: float) -> Response:
-        sent.update(url=url, json=json, timeout=timeout)
+        sent.append({"url": url, "json": json, "timeout": timeout})
         return Response()
 
     monkeypatch.setattr(TelemetryService, "_build_payload", lambda: payload)
@@ -47,11 +47,10 @@ def test_report_posts_heartbeat(monkeypatch):
 
     TelemetryService.report()
 
-    assert sent == {
-        "url": TelemetryService.ENDPOINT,
-        "json": payload,
-        "timeout": 10.0,
-    }
+    assert sent == [
+        {"url": endpoint, "json": payload, "timeout": 10.0}
+        for endpoint in TelemetryService.ENDPOINTS
+    ]
 
 
 def test_build_payload_reports_only_valid_managed_media(test_db, monkeypatch):
