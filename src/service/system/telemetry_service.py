@@ -18,7 +18,6 @@ from src.service.system.status_service import StatusService
 
 class TelemetryService:
     ENDPOINTS = (
-        "https://sakuramedia-telemetry.tinyping.workers.dev/v1/heartbeats",
         "https://pswhnebzlzdcdljzvrqa.supabase.co/functions/v1/telemetry/v1/heartbeats",
     )
     ENABLED_ENV_KEY = "SAKURAMEDIA_TELEMETRY_ENABLED"
