@@ -24,6 +24,8 @@ from src.model import (
     ClipCollectionItem,
     DailyRecommendationItem,
     DownloadClient,
+    DownloadResourceBlacklist,
+    DownloadSubmissionRecord,
     DownloadTask,
     Image,
     ImageSearchIndexState,
@@ -102,6 +104,8 @@ TEST_MODELS = [
     Indexer,
     IndexerDownloadClient,
     DownloadTask,
+    DownloadSubmissionRecord,
+    DownloadResourceBlacklist,
 ]
 
 

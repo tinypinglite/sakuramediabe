@@ -12,6 +12,8 @@ from src.model import (
     ClipCollectionItem,
     DailyRecommendationItem,
     DownloadClient,
+    DownloadResourceBlacklist,
+    DownloadSubmissionRecord,
     DownloadTask,
     Image,
     ImageSearchIndexState,
@@ -87,6 +89,8 @@ def create_tables():
             Indexer,
             IndexerDownloadClient,
             DownloadTask,
+            DownloadSubmissionRecord,
+            DownloadResourceBlacklist,
         ],
         safe=True,
     )

@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from src.api.exception.errors import ApiError
 from src.model import Movie
 from src.service.catalog.movie_subscription_search_state_service import (
@@ -111,7 +113,8 @@ def test_auto_download_does_not_duplicate_submit_failure(monkeypatch):
     assert summary["failed_items"][0]["stage"] == "submit"
 
 
-def test_auto_download_tries_next_candidate_after_blacklist_rejection(monkeypatch):
+@pytest.mark.parametrize("code", ["provider_source_blacklisted", "download_source_blacklisted"])
+def test_auto_download_tries_next_candidate_after_blacklist_rejection(monkeypatch, code):
     response = SimpleNamespace(created=False)
     service, request_service = _build_service(
         monkeypatch,
@@ -122,7 +125,7 @@ def test_auto_download_tries_next_candidate_after_blacklist_rejection(monkeypatc
         response=response,
     )
     request_service.create_request.side_effect = [
-        ApiError(422, "provider_source_blacklisted", "该种子已被标记为死种"),
+        ApiError(422, code, "该资源已被拉黑"),
         response,
     ]
 

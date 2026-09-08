@@ -24,6 +24,7 @@ HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME = "20260831_02_remove_hot_review_item"
 MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME = "20260903_01_add_media_import_source_identity"
 ACTOR_METADATA_MIGRATION_NAME = "20260905_01_add_actor_metadata"
 PLUGIN_MOVIE_METADATA_MIGRATION_NAME = "20260905_02_add_plugin_movie_metadata"
+DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME = "20260908_01_add_download_resource_history"
 
 
 @dataclass(frozen=True)

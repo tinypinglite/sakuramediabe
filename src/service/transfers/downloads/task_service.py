@@ -10,7 +10,13 @@ from src.common.media_import_status import (
     IMPORT_STATUS_SKIPPED,
 )
 from src.common.service_helpers import validate_page, with_movie_card_relations
-from src.model import DownloadTask, Movie
+from src.model import (
+    DownloadResourceBlacklist,
+    DownloadSubmissionRecord,
+    DownloadTask,
+    Movie,
+)
+from src.model.base import get_database
 from src.plugins.provider_protocol import ProviderOperationError
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
@@ -26,6 +32,7 @@ from src.service.transfers.downloads.common import (
     require_task,
     resolve_task_sort,
 )
+from src.service.transfers.downloads.resource_hash import canonical_info_hash
 from src.service.transfers.shared.import_task_service import ImportTaskService
 
 
@@ -81,6 +88,15 @@ class DownloadTaskService:
                 "Cannot delete a download task while importing media",
                 {"task_id": task.id},
             )
+        info_hash = None
+        if task.import_status in {IMPORT_STATUS_FAILED, IMPORT_STATUS_SKIPPED}:
+            record = (
+                DownloadSubmissionRecord.select()
+                .where(DownloadSubmissionRecord.task_id == task.id)
+                .order_by(DownloadSubmissionRecord.id.desc())
+                .first()
+            )
+            info_hash = canonical_info_hash(record.info_hash if record else task.remote_id)
         try:
             download_provider(task.client).delete_task(
                 remote_id=task.remote_id,
@@ -95,7 +111,10 @@ class DownloadTaskService:
             "movie_number": task.movie,
             "remote_id": task.remote_id,
         }
-        task.delete_instance()
+        with get_database().atomic():
+            if info_hash is not None:
+                DownloadResourceBlacklist.insert(info_hash=info_hash).on_conflict_ignore().execute()
+            task.delete_instance()
         return removed
 
     @classmethod

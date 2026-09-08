@@ -83,3 +83,27 @@ class DownloadTask(TimestampedMixin, BaseModel):
     class Meta:
         table_name = "download_task"
         indexes = ((('client', 'remote_id'), True),)
+
+
+class DownloadSubmissionRecord(TimestampedMixin, BaseModel):
+    # 保留提交历史，不随下载任务或下载器删除。
+    client_id = peewee.IntegerField()
+    task_id = peewee.IntegerField(null=True, index=True)
+    movie_number = peewee.CharField(max_length=255)
+    indexer_name = peewee.CharField(max_length=255)
+    title = peewee.CharField(max_length=255)
+    source_uri = peewee.TextField()
+    info_hash = peewee.CharField(max_length=40)
+    state = peewee.CharField(max_length=32, default="submitting")
+    remote_id = peewee.CharField(max_length=255, null=True)
+    error_code = peewee.CharField(max_length=255, null=True)
+
+    class Meta:
+        table_name = "download_submission_record"
+
+
+class DownloadResourceBlacklist(TimestampedMixin, BaseModel):
+    info_hash = peewee.CharField(max_length=40, unique=True)
+
+    class Meta:
+        table_name = "download_resource_blacklist"

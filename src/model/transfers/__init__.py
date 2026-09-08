@@ -1,5 +1,7 @@
 from .downloads import (
     DownloadClient,
+    DownloadResourceBlacklist,
+    DownloadSubmissionRecord,
     DownloadTask,
     Indexer,
     IndexerDownloadClient,
@@ -7,6 +9,8 @@ from .downloads import (
 
 __all__ = [
     "DownloadClient",
+    "DownloadResourceBlacklist",
+    "DownloadSubmissionRecord",
     "DownloadTask",
     "Indexer",
     "IndexerDownloadClient",

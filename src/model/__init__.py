@@ -51,6 +51,8 @@ from .system import (
 )
 from .transfers import (
     DownloadClient,
+    DownloadResourceBlacklist,
+    DownloadSubmissionRecord,
     DownloadTask,
     Indexer,
     IndexerDownloadClient,
@@ -74,6 +76,8 @@ __all__ = [
     "ClipCollectionItem",
     "DailyRecommendationItem",
     "DownloadClient",
+    "DownloadResourceBlacklist",
+    "DownloadSubmissionRecord",
     "DownloadTask",
     "Image",
     "ImageSearchIndexState",

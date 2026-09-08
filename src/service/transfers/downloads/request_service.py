@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from src.api.exception.errors import ApiError
-from src.model import DownloadTask
+from src.model import DownloadResourceBlacklist, DownloadSubmissionRecord, DownloadTask
+from src.model.base import get_database
 from src.plugins.provider_protocol import DownloadSubmission, ProviderOperationError
 from src.schema.transfers.downloads import (
     DownloadRequestCreateRequest,
@@ -19,6 +20,7 @@ from src.service.transfers.downloads.common import (
     validate_non_empty,
     validate_remote_download_task,
 )
+from src.service.transfers.downloads.resource_hash import resolve_resource_hash
 
 
 class DownloadRequestService:
@@ -39,6 +41,19 @@ class DownloadRequestService:
             "invalid_download_request_candidate",
             "candidate title cannot be empty",
         )
+        info_hash = resolve_resource_hash(source_uri)
+        if DownloadResourceBlacklist.select().where(
+            DownloadResourceBlacklist.info_hash == info_hash
+        ).exists():
+            raise ApiError(422, "download_source_blacklisted", "该资源已被拉黑")
+        record = DownloadSubmissionRecord.create(
+            client_id=client.id,
+            movie_number=movie_number,
+            indexer_name=payload.candidate.indexer_name,
+            title=display_name,
+            source_uri=source_uri,
+            info_hash=info_hash,
+        )
         try:
             remote_task = download_provider(client).submit(
                 submission=DownloadSubmission(
@@ -46,36 +61,49 @@ class DownloadRequestService:
                     display_name=display_name,
                 )
             )
-        except ProviderOperationError as exc:
-            raise self._provider_error(exc) from exc
-        remote_task = validate_remote_download_task(remote_task)
-        task, created = DownloadTask.get_or_create(
-            client=client,
-            remote_id=remote_task.remote_id,
-            defaults={
-                "movie": movie_number,
-                "name": remote_task.name or display_name,
-                "state": remote_task.state,
-                "progress": remote_task.progress,
-                "completed_source_ref": remote_task.completed_source_ref,
-                "import_status": "pending",
-            },
-        )
-        if not created:
-            task.movie = movie_number
-            task.name = remote_task.name or display_name
-            task.state = remote_task.state
-            task.progress = remote_task.progress
-            task.completed_source_ref = remote_task.completed_source_ref
-            task.save(
-                only=[
-                    DownloadTask.movie,
-                    DownloadTask.name,
-                    DownloadTask.state,
-                    DownloadTask.progress,
-                    DownloadTask.completed_source_ref,
-                ]
+            remote_task = validate_remote_download_task(remote_task)
+        except Exception as exc:
+            record.state = "failed"
+            record.error_code = (
+                exc.code if isinstance(exc, (ApiError, ProviderOperationError)) else type(exc).__name__
             )
+            record.save()
+            if isinstance(exc, ProviderOperationError):
+                raise self._provider_error(exc) from exc
+            raise
+        record.state = "submitted"
+        record.remote_id = remote_task.remote_id
+        record.save()
+        with get_database().atomic():
+            task, created = DownloadTask.get_or_create(
+                client=client,
+                remote_id=remote_task.remote_id,
+                defaults={
+                    "movie": movie_number,
+                    "name": remote_task.name or display_name,
+                    "state": remote_task.state,
+                    "progress": remote_task.progress,
+                    "completed_source_ref": remote_task.completed_source_ref,
+                    "import_status": "pending",
+                },
+            )
+            if not created:
+                task.movie = movie_number
+                task.name = remote_task.name or display_name
+                task.state = remote_task.state
+                task.progress = remote_task.progress
+                task.completed_source_ref = remote_task.completed_source_ref
+                task.save(
+                    only=[
+                        DownloadTask.movie,
+                        DownloadTask.name,
+                        DownloadTask.state,
+                        DownloadTask.progress,
+                        DownloadTask.completed_source_ref,
+                    ]
+                )
+            record.task_id = task.id
+            record.save(only=[DownloadSubmissionRecord.task_id])
         return DownloadRequestCreateResponse(
             task=DownloadTaskResource.from_model(task),
             created=created,
