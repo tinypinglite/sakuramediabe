@@ -155,6 +155,7 @@ class Plugins(BaseModel):
 
 class Scheduler(BaseModel):
     enabled: bool = True
+    worker_default_concurrency: int = Field(default=4, ge=1, le=32)
     log_dir: str = "/data/logs"
     actor_subscription_sync_cron: str = "0 2 * * *"
     subscribed_movie_auto_download_cron: str = "30 2 * * *"

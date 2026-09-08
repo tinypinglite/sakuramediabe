@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from src.scheduler.queue_tasks import (
     LANE_CONCURRENCY,
+    LANE_DEFAULT,
     LANE_TRANSFER,
     NON_DEFAULT_LANE_TASK_KEYS,
     QUEUE_TASK_REGISTRY,
@@ -18,6 +19,15 @@ def test_media_transfer_uses_dedicated_single_worker_lane():
     assert lane_task_keys(LANE_TRANSFER) == {MediaTransferTaskService.TASK_KEY}
     assert MediaTransferTaskService.TASK_KEY in NON_DEFAULT_LANE_TASK_KEYS
     assert QUEUE_TASK_REGISTRY[MediaTransferTaskService.TASK_KEY].business_recovery is not None
+
+
+def test_worker_reads_default_lane_concurrency_from_scheduler_config(monkeypatch):
+    monkeypatch.setattr("src.scheduler.worker.settings.scheduler.worker_default_concurrency", 6)
+
+    worker = TaskWorker()
+
+    assert worker._lanes[LANE_DEFAULT] == 6
+    assert worker._lanes[LANE_TRANSFER] == 1
 
 
 def test_worker_runs_business_recovery_immediately_after_task_failure(monkeypatch):

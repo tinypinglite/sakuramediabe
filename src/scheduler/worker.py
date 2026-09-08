@@ -13,6 +13,7 @@ import threading
 from loguru import logger
 
 from src.common.database import ensure_database_ready
+from src.config.config import settings
 from src.model import BackgroundTaskRun
 from src.scheduler.contracts import JobExecutionError
 from src.scheduler.queue_tasks import (
@@ -40,7 +41,9 @@ class TaskWorker:
         poll_interval: float = CLAIM_POLL_INTERVAL_SECONDS,
         lease_seconds: int = DEFAULT_LEASE_SECONDS,
     ):
-        self._lanes = dict(lanes or LANE_CONCURRENCY)
+        configured_lanes = dict(LANE_CONCURRENCY)
+        configured_lanes[LANE_DEFAULT] = settings.scheduler.worker_default_concurrency
+        self._lanes = dict(lanes or configured_lanes)
         self._poll_interval = poll_interval
         self._lease_seconds = lease_seconds
         self._stop = threading.Event()
