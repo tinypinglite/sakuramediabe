@@ -63,6 +63,25 @@ class ActorDetailResource(ActorResource):
     blood_type: str | None = None
 
 
+class ActorFilterRangeResource(SchemaModel):
+    min: int | None = None
+    max: int | None = None
+    populated_count: int = 0
+
+
+class ActorCupFilterOption(SchemaModel):
+    value: str
+    count: int
+
+
+class ActorFilterOptionsResource(SchemaModel):
+    actor_count: int
+    as_of_date: date
+    age: ActorFilterRangeResource
+    height_cm: ActorFilterRangeResource
+    cups: list[ActorCupFilterOption]
+
+
 class MovieIdResource(SchemaModel):
     movie_id: int
 
