@@ -4,7 +4,15 @@ import json
 from datetime import date
 from typing import Any
 
-from src.model.catalog.actors import ACTOR_FIELD_CODECS, PROTECTED_ACTOR_FIELDS, Actor
+from src.model.catalog.actors import (
+    ACTOR_FIELD_ALLOWED_VALUES,
+    ACTOR_FIELD_CODECS,
+    PROTECTED_ACTOR_FIELDS,
+    Actor,
+)
+
+JAVDB_ACTOR_FIELD_OWNER = "host:javdb"
+MANUAL_ACTOR_FIELD_OWNER = "host:manual"
 
 
 class ActorOwnershipGateway:
@@ -15,6 +23,8 @@ class ActorOwnershipGateway:
         normalized = dict(fields)
         for name, value in fields.items():
             if value is None:
+                if name in ACTOR_FIELD_ALLOWED_VALUES:
+                    raise ValueError(f"字段 {name} 值必须是 {sorted(ACTOR_FIELD_ALLOWED_VALUES[name])}")
                 continue
             expected = ACTOR_FIELD_CODECS[name]
             if expected is date and isinstance(value, str):
@@ -27,7 +37,10 @@ class ActorOwnershipGateway:
                 normalized[name] = value
             if type(value) is not expected:
                 raise ValueError(f"字段 {name} 值类型错误: 期望 {expected.__name__}")
-            if expected is int and not 1 <= value <= 2147483647:
+            allowed_values = ACTOR_FIELD_ALLOWED_VALUES.get(name)
+            if allowed_values is not None and value not in allowed_values:
+                raise ValueError(f"字段 {name} 值必须是 {sorted(allowed_values)}")
+            if allowed_values is None and expected is int and not 1 <= value <= 2147483647:
                 raise ValueError(f"字段 {name} 必须是正整数厘米值")
             if expected is str and (not value.strip() or len(value) > 255):
                 raise ValueError(f"字段 {name} 必须是 1 到 255 字符的非空文本；清空请传 None")
@@ -58,6 +71,46 @@ class ActorOwnershipGateway:
                 field_owners = field_owners || %s::jsonb,
                 mutation_revision = mutation_revision + 1, updated_at = now()
             WHERE id = %s AND mutation_revision = %s AND {conditions}
+            """,
+            params,
+        )
+        return cursor.rowcount == 1
+
+    @classmethod
+    def update_host_source(
+        cls,
+        actor_id: int,
+        fields: dict[str, Any],
+        *,
+        owner: str = JAVDB_ACTOR_FIELD_OWNER,
+    ) -> bool:
+        """宿主权威来源更新字段；可替换插件 owner，但不覆盖人工 owner。"""
+        fields = cls._normalize_fields(fields)
+        if not isinstance(owner, str) or not owner.startswith("host:") or owner == MANUAL_ACTOR_FIELD_OWNER:
+            raise ValueError("owner 必须是非人工的宿主来源 owner")
+        assignments = ", ".join(f"{name} = %s" for name in fields)
+        owner_conditions = " AND ".join(
+            "(field_owners->>%s IS NULL OR field_owners->>%s <> %s)" for _ in fields
+        )
+        changed_conditions = " OR ".join(
+            f"({name} IS DISTINCT FROM %s OR field_owners->>%s IS DISTINCT FROM %s)"
+            for name in fields
+        )
+        params: list[Any] = [
+            *fields.values(),
+            json.dumps({name: owner for name in fields}),
+            actor_id,
+        ]
+        for name in fields:
+            params.extend((name, name, MANUAL_ACTOR_FIELD_OWNER))
+        for name, value in fields.items():
+            params.extend((value, name, owner))
+        cursor = Actor._meta.database.execute_sql(
+            f"""
+            UPDATE actor SET {assignments},
+                field_owners = field_owners || %s::jsonb,
+                mutation_revision = mutation_revision + 1, updated_at = now()
+            WHERE id = %s AND {owner_conditions} AND ({changed_conditions})
             """,
             params,
         )

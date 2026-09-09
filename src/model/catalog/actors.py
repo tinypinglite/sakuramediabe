@@ -8,6 +8,7 @@ from src.model.catalog.images import Image
 from src.model.mixins import TimestampedMixin
 
 ACTOR_FIELD_CODECS = {
+    "gender": int,
     "birthday": date,
     "height_cm": int,
     "bust_cm": int,
@@ -16,6 +17,9 @@ ACTOR_FIELD_CODECS = {
     "cup": str,
     "birthplace": str,
     "blood_type": str,
+}
+ACTOR_FIELD_ALLOWED_VALUES: dict[str, frozenset[int]] = {
+    "gender": frozenset({1, 2}),
 }
 PROTECTED_ACTOR_FIELDS = frozenset(ACTOR_FIELD_CODECS)
 _GUARDED_FIELDS = PROTECTED_ACTOR_FIELDS | {"field_owners", "mutation_revision"}

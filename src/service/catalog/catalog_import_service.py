@@ -36,6 +36,10 @@ from src.model import (
 )
 from src.model.catalog.movies import PROTECTED_MOVIE_FIELDS
 from src.plugins.extensions.metadata import PluginMovieMetadata
+from src.service.catalog.actor_ownership_gateway import (
+    JAVDB_ACTOR_FIELD_OWNER,
+    ActorOwnershipGateway,
+)
 from src.service.catalog.movie_heat_service import MovieHeatService
 from src.service.catalog.movie_image_service import (
     ImageDownloadError,
@@ -878,6 +882,11 @@ class CatalogImportService:
 
         lock_context = self.persist_lock or nullcontext()
         with lock_context, get_database().atomic():
+            explicit_gender = (
+                actor_resource.gender
+                if update_gender and actor_resource.gender in (1, 2)
+                else None
+            )
             merged_alias_name = self._merge_actor_alias_name(
                 primary_name=actor_resource.name,
                 alias_names=actor_resource.alias_names,
@@ -889,8 +898,9 @@ class CatalogImportService:
                 "profile_image": profile_image,
                 "javdb_type": actor_resource.javdb_type,
             }
-            if update_gender:
-                defaults["gender"] = actor_resource.gender
+            if explicit_gender is not None:
+                defaults["gender"] = explicit_gender
+                defaults["field_owners"] = {"gender": JAVDB_ACTOR_FIELD_OWNER}
             actor, created = Actor.get_or_create(
                 javdb_id=actor_resource.javdb_id,
                 defaults=defaults,
@@ -904,16 +914,18 @@ class CatalogImportService:
                     existing_alias_name=actor.alias_name,
                 )
                 actor.javdb_type = actor_resource.javdb_type
-                if update_gender:
-                    actor.gender = actor_resource.gender
                 if profile_image is not None:
                     actor.profile_image = profile_image
                 columns = [Actor.name, Actor.alias_name, Actor.javdb_type]
-                if update_gender:
-                    columns.append(Actor.gender)
                 if profile_image is not None:
                     columns.append(Actor.profile_image)
                 actor.save(only=columns)
+                if explicit_gender is not None:
+                    ActorOwnershipGateway.update_host_source(
+                        actor.id,
+                        {"gender": explicit_gender},
+                    )
+                    actor = Actor.get_by_id(actor.id)
 
         return actor
 

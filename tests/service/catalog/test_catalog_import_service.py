@@ -136,7 +136,42 @@ def test_import_movie_if_missing_updates_actor_gender_from_movie_detail(test_db)
 
     CatalogImportService().import_movie_if_missing(detail)
 
-    assert Actor.get(Actor.javdb_id == "actor-1").gender == 1
+    actor = Actor.get(Actor.javdb_id == "actor-1")
+    assert actor.gender == 1
+    assert actor.field_owners == {"gender": "host:javdb"}
+
+
+def test_javdb_gender_overrides_plugin_inference(test_db):
+    actor = Actor.create(
+        javdb_id="actor-override",
+        name="演员",
+        gender=1,
+        field_owners={"gender": "plugin:actor-metadata"},
+    )
+    resource = JavdbMovieActorResource(
+        javdb_id=actor.javdb_id,
+        name=actor.name,
+        gender=2,
+    )
+
+    CatalogImportService().upsert_actor_from_javdb_resource(resource, update_gender=True)
+
+    refreshed = Actor.get_by_id(actor.id)
+    assert refreshed.gender == 2
+    assert refreshed.field_owners == {"gender": "host:javdb"}
+
+
+def test_javdb_unknown_gender_does_not_overwrite_existing_gender(test_db):
+    actor = Actor.create(javdb_id="actor-unknown", name="演员", gender=1)
+    resource = JavdbMovieActorResource(
+        javdb_id=actor.javdb_id,
+        name=actor.name,
+        gender=0,
+    )
+
+    CatalogImportService().upsert_actor_from_javdb_resource(resource, update_gender=True)
+
+    assert Actor.get_by_id(actor.id).gender == 1
 
 
 def test_actor_upsert_without_gender_update_preserves_existing_gender(test_db):

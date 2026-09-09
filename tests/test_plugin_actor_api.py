@@ -66,9 +66,29 @@ def test_patch_ownership_conflict_null_and_release(actors, tmp_path):
     assert not actors.patch(999999, {"cup": "F"}, 0)
 
 
+def test_plugin_can_patch_gender_and_rejects_unknown_value(actors):
+    actor = Actor.create(javdb_id="actor-gender", name="演员")
+    assert actors.patch(actor.id, {"gender": 1}, 0)
+    snapshot = actors.get(actor.id)
+    assert snapshot.values["gender"] == 1
+    assert snapshot.owners["gender"] == "plugin:actor_demo"
+    with pytest.raises(ValueError):
+        actors.patch(actor.id, {"gender": 0}, snapshot.revision)
+    assert actors.get(actor.id).revision == snapshot.revision
+
+
+def test_gender_is_guarded_for_direct_model_writes():
+    actor = Actor.create(javdb_id="actor-guarded-gender", name="演员")
+    actor.gender = 1
+    with pytest.raises(RuntimeError, match="gender"):
+        actor.save(only=[Actor.gender])
+
+
 @pytest.mark.parametrize("fields", [
     {"height_cm": 160, "is_subscribed": True},
     {"height_cm": 160, "blood_type": 5},
+    {"gender": None},
+    {"gender": 3},
 ])
 def test_invalid_patch_is_rejected_without_changes(actors, fields):
     actor = Actor.create(javdb_id="actor-1", name="演员")
@@ -113,7 +133,8 @@ def test_host_writes_preserve_plugin_metadata(actors):
     assert snapshot.values["name"] == "新名字"
     assert snapshot.values["gender"] == 1
     assert snapshot.values["is_subscribed"] is True
-    assert snapshot.revision == 1
+    assert snapshot.owners["gender"] == "host:javdb"
+    assert snapshot.revision == 2
     with pytest.raises(RuntimeError):
         actor.save()
     with pytest.raises(RuntimeError):
@@ -142,7 +163,10 @@ def test_detail_exposes_profile_and_computes_age(actors, monkeypatch, client, ac
 
 
 def test_actor_migration_preserves_rows_and_is_idempotent(clean_db):
-    clean_db.execute_sql("CREATE TABLE actor (id SERIAL PRIMARY KEY, name TEXT NOT NULL)")
+    clean_db.execute_sql(
+        "CREATE TABLE actor (id SERIAL PRIMARY KEY, name TEXT NOT NULL, "
+        "gender INTEGER NOT NULL DEFAULT 0)"
+    )
     clean_db.execute_sql("INSERT INTO actor (name) VALUES ('existing')")
     migration = import_module("src.start.migrations.versions.20260905_01_add_actor_metadata")
     migration.migrate(clean_db)
