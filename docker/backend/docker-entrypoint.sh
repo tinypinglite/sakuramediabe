@@ -101,6 +101,11 @@ sync_plugin_dependencies() {
     su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands plugins sync-dependencies" "${APP_USER}"
 }
 
+validate_plugin_installation() {
+    echo "Validating plugin installation..."
+    su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands plugins validate-installation" "${APP_USER}"
+}
+
 if [ "${1:-}" = "start" ]; then
     ensure_app_identity
     bootstrap_data_dirs
@@ -109,6 +114,7 @@ if [ "${1:-}" = "start" ]; then
     run_database_migrations
     bootstrap_default_data
     sync_plugin_dependencies
+    validate_plugin_installation
 
     # 主服务只负责 API 和任务编排，不处理嵌入推理设备映射。
     id "${APP_USER}" || true

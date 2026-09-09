@@ -112,17 +112,18 @@ def test_docker_entrypoint_runs_migrations_before_starting_supervisor(tmp_path):
     assert "Bootstrapping default account and system playlists..." in result.stdout
     assert "Syncing plugin dependencies..." in result.stdout
     assert "Starting supervisor..." in result.stdout
-    assert len(lines) == 6
+    assert len(lines) == 7
     assert "-m src.start.commands wait-db" in lines[0]
     assert "-m src.start.commands upgrade-v053" in lines[1]
     assert "-m src.start.commands migrate" in lines[2]
     assert "-m src.start.commands initdb" in lines[3]
     assert "-m src.start.commands plugins sync-dependencies" in lines[4]
+    assert "-m src.start.commands plugins validate-installation" in lines[5]
     assert lines[0].startswith("su:")
     assert lines[1].startswith("su:")
     assert lines[2].startswith("su:")
     assert lines[3].startswith("su:")
-    assert lines[5].startswith("supervisord:")
+    assert lines[6].startswith("supervisord:")
 
 
 def test_docker_entrypoint_stops_when_database_is_not_ready(tmp_path):
@@ -167,13 +168,14 @@ def test_docker_entrypoint_starts_without_config_file(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "Starting supervisor..." in result.stdout
-    assert len(lines) == 6
+    assert len(lines) == 7
     assert "-m src.start.commands wait-db" in lines[0]
     assert "-m src.start.commands upgrade-v053" in lines[1]
     assert "-m src.start.commands migrate" in lines[2]
     assert "-m src.start.commands initdb" in lines[3]
     assert "-m src.start.commands plugins sync-dependencies" in lines[4]
-    assert lines[5].startswith("supervisord:")
+    assert "-m src.start.commands plugins validate-installation" in lines[5]
+    assert lines[6].startswith("supervisord:")
 
 
 def test_docker_entrypoint_passthrough_for_non_start_commands(tmp_path):

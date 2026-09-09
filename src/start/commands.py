@@ -597,6 +597,12 @@ def plugins_sync_dependencies():
         click.echo(f"插件 {plugin_id} {message}")
 
 
+@plugins_group.command("validate-installation", hidden=True)
+def plugins_validate_installation():
+    """启动前校验插件目录身份。"""
+    _plugin_operation(lambda: PluginManager().validate_installation())
+
+
 @plugins_group.command("clear-field-owners")
 @click.option("--entity", type=click.Choice(["movie", "actor"]), default="movie", show_default=True)
 @click.option("--plugin-id", required=True, type=str, help="解除接管的目标插件 id。")

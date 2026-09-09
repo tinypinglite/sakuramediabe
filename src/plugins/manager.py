@@ -59,6 +59,34 @@ class PluginManager:
         except ValueError as exc:
             return None, str(exc)
 
+    def validate_installation(self) -> None:
+        """校验可识别插件目录的逻辑身份唯一。"""
+        seen: dict[str, Path] = {}
+        if not self.root_dir.is_dir():
+            return
+
+        for plugin_dir in sorted(self.root_dir.iterdir()):
+            if not plugin_dir.is_dir() or plugin_dir.name.startswith("."):
+                continue
+            if not (plugin_dir / MANIFEST_FILENAME).is_file():
+                continue
+            manifest, manifest_error = self._load_manifest(plugin_dir)
+            if manifest is None or manifest_error is not None:
+                continue
+
+            previous_dir = seen.get(manifest.plugin_id)
+            if previous_dir is not None:
+                raise ValueError(
+                    f"插件 plugin_id 重复: {manifest.plugin_id}; "
+                    f"目录={previous_dir}, {plugin_dir}"
+                )
+            if manifest.plugin_id != plugin_dir.name:
+                raise ValueError(
+                    "插件目录名与 manifest.plugin_id 不一致: "
+                    f"目录={plugin_dir.name}, manifest={manifest.plugin_id}"
+                )
+            seen[manifest.plugin_id] = plugin_dir
+
     # ---- 状态 ----
 
     def list_plugins(self) -> list[dict[str, Any]]:
