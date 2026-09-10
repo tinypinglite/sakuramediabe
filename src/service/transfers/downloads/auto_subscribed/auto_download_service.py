@@ -115,12 +115,47 @@ class SubscribedMovieAutoDownloadService:
         candidate_ids = self._select_candidate_ids()
         shared = self._setup_run()
         total = len(candidate_ids)
+
+        def summary_patch() -> dict[str, int]:
+            return {
+                "searched_movies": shared["searched_movies"],
+                "submitted_movies": shared["submitted_movies"],
+                "no_candidate_movies": shared["no_candidate_movies"],
+                "skipped_movies": shared["skipped_movies"],
+                "failed_movies": len(shared["failed_items"]),
+            }
+
+        def progress_text(completed: int, *, action: str | None = None) -> str:
+            fragments = ["订阅缺失影片自动下载"]
+            if action:
+                fragments.append(action)
+            fragments.extend(
+                (
+                    f"已完成 {completed}/{total}",
+                    f"已提交 {shared['submitted_movies']}",
+                    f"未找到 {shared['no_candidate_movies']}",
+                    f"失败 {len(shared['failed_items'])}",
+                )
+            )
+            return " · ".join(fragments)
+
         for current, movie_id in enumerate(candidate_ids, start=1):
             movie = MovieSubscriptionSearchStateService.begin_attempt(movie_id)
             if movie is None:
                 shared["skipped_movies"] += 1
-                reporter.emit(current=current, total=total)
+                reporter.emit(
+                    current=current,
+                    total=total,
+                    text=progress_text(current),
+                    summary_patch=summary_patch(),
+                )
                 continue
+            reporter.emit(
+                current=current - 1,
+                total=total,
+                text=progress_text(current - 1, action=f"正在搜索 {movie.movie_number}"),
+                summary_patch=summary_patch(),
+            )
             try:
                 self._process_one(shared, movie)
                 MovieSubscriptionSearchStateService.mark_succeeded(movie.id)
@@ -136,7 +171,12 @@ class SubscribedMovieAutoDownloadService:
                         "subscription_search_process_failed", str(exc), consumes_budget=False
                     ),
                 )
-            reporter.emit(current=current, total=total)
+            reporter.emit(
+                current=current,
+                total=total,
+                text=progress_text(current),
+                summary_patch=summary_patch(),
+            )
         return {
             "candidate_movies": len(candidate_ids),
             "searched_movies": shared["searched_movies"],

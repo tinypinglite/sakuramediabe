@@ -385,10 +385,24 @@ class MediaThumbnailTaskService:
             "skipped_media": 0,
         }
         paused_lanes: set[tuple[str, int]] = set()
+
+        def emit_progress(completed: int) -> None:
+            reporter.emit(
+                current=completed,
+                total=len(entries),
+                text=(
+                    f"媒体缩略图生成 · 已完成 {completed}/{len(entries)}"
+                    f" · 成功 {stats['successful_media']}"
+                    f" · 延后 {stats['deferred_media'] + stats['backend_deferred_media']}"
+                    f" · 失败 {stats['retryable_failed_media'] + stats['terminal_failed_media']}"
+                ),
+                summary_patch=stats,
+            )
+
         for completed, (media_id, lane) in enumerate(entries, start=1):
             if lane in paused_lanes:
                 stats["backend_deferred_media"] += 1
-                reporter.emit(current=completed, total=len(entries), summary_patch=stats)
+                emit_progress(completed)
                 continue
             outcome = cls._generate_one(media_id)
             if outcome.state == "backend_unavailable":
@@ -411,7 +425,7 @@ class MediaThumbnailTaskService:
                 stats["terminal_failed_media_ids"].append(media_id)
             else:
                 stats["skipped_media"] += 1
-            reporter.emit(current=completed, total=len(entries), summary_patch=stats)
+            emit_progress(completed)
         logger.info(
             "Finished media thumbnail generation pending_media={} successful_media={} "
             "generated_thumbnails={} terminal_failed_media={} elapsed_ms={}",

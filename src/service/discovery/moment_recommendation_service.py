@@ -417,6 +417,7 @@ class MomentRecommendationService:
     ) -> dict[str, int]:
         safe_limit = max(int(limit), 0)
         seeds = self._load_seeds()
+        emit_progress(progress_callback, current=0, total=0, text="推荐时刻生成 · 正在收集候选")
         candidates_by_thumbnail_id: dict[int, _MomentCandidate] = {}
         visual_candidates = self._collect_visual_candidates(seeds, candidates_by_thumbnail_id) if seeds else 0
         similar_candidates = 0
@@ -426,7 +427,37 @@ class MomentRecommendationService:
         if len(candidates_by_thumbnail_id) < safe_limit:
             popular_candidates = self._collect_popular_candidates(candidates_by_thumbnail_id, safe_limit)
 
+        def build_summary(stored_items: int) -> dict[str, int]:
+            return {
+                "seed_points": len(seeds),
+                "visual_candidates": visual_candidates,
+                "similar_candidates": similar_candidates,
+                "popular_candidates": popular_candidates,
+                "stored_items": stored_items,
+            }
+
+        collected = len(candidates_by_thumbnail_id)
+        emit_progress(
+            progress_callback,
+            current=collected,
+            total=0,
+            text=f"推荐时刻生成 · 已收集候选 {collected} 个",
+            summary_patch=build_summary(0),
+        )
+        emit_progress(
+            progress_callback,
+            current=collected,
+            total=0,
+            text=f"推荐时刻生成 · 正在排序候选 · 已收集 {collected} 个",
+        )
         ranked = self._rank_candidates(list(candidates_by_thumbnail_id.values()), safe_limit)
+        emit_progress(
+            progress_callback,
+            current=collected,
+            total=0,
+            text=f"推荐时刻生成 · 正在写入结果 · 入选 {len(ranked)} 个",
+            summary_patch=build_summary(len(ranked)),
+        )
         generated_at = utc_now_for_db()
         rows = [
             {
@@ -462,7 +493,6 @@ class MomentRecommendationService:
             "popular_candidates": popular_candidates,
             "stored_items": len(ranked),
         }
-        emit_progress(progress_callback, **stats)
         return stats
 
     @classmethod

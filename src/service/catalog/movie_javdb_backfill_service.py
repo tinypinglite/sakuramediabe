@@ -39,13 +39,39 @@ class MovieJavdbBackfillService:
             "not_found_movies": 0,
             "failed_movies": 0,
         }
+
+        def progress_text(completed: int, *, action: str | None = None) -> str:
+            fragments = ["JavDB 补录"]
+            if action:
+                fragments.append(action)
+            fragments.extend(
+                (
+                    f"已完成 {completed}/{len(ids)}",
+                    f"成功 {stats['succeeded_movies']}",
+                    f"未收录 {stats['not_found_movies']}",
+                    f"失败 {stats['failed_movies']}",
+                )
+            )
+            return " · ".join(fragments)
+
         for current, movie_id in enumerate(ids, 1):
             if current > 1:
                 time.sleep(self.REQUEST_INTERVAL)
             movie = self.pending().where(Movie.id == movie_id).get_or_none()
             if movie is None:
-                reporter.emit(current=current, total=len(ids))
+                reporter.emit(
+                    current=current,
+                    total=len(ids),
+                    text=progress_text(current),
+                    summary_patch=stats,
+                )
                 continue
+            reporter.emit(
+                current=current - 1,
+                total=len(ids),
+                text=progress_text(current - 1, action=f"正在查询 {movie.movie_number}"),
+                summary_patch=stats,
+            )
             try:
                 detail = self.provider.get_movie_by_number(movie.movie_number)
                 self.import_service.backfill_plugin_movie(movie, detail)
@@ -63,5 +89,10 @@ class MovieJavdbBackfillService:
                     javdb_next_check_at=utc_now_for_db()
                     + self.import_service.JAVDB_CHECK_INTERVAL
                 ).where((Movie.id == movie_id) & Movie.javdb_id.is_null(True)).execute()
-                reporter.emit(current=current, total=len(ids))
+                reporter.emit(
+                    current=current,
+                    total=len(ids),
+                    text=progress_text(current),
+                    summary_patch=stats,
+                )
         return stats

@@ -9,7 +9,9 @@ class Reporter:
     def __init__(self) -> None:
         self.events: list[tuple[int, int, dict]] = []
 
-    def emit(self, *, current: int, total: int, summary_patch: dict) -> None:
+    def emit(
+        self, *, current: int, total: int, summary_patch: dict, text: str | None = None
+    ) -> None:
         self.events.append((current, total, dict(summary_patch)))
 
 

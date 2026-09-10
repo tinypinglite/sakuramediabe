@@ -85,6 +85,20 @@ class MediaValidityScanService:
         }
         completed = 0
 
+        def emit_progress(completed_count: int) -> None:
+            reporter.emit(
+                current=completed_count,
+                total=total_media,
+                text=(
+                    f"媒体文件巡检 · 已检查 {completed_count}/{total_media}"
+                    f" · 未变化 {stats['unchanged_media']}"
+                    f" · 失效 {stats['invalidated_media']}"
+                    f" · 恢复 {stats['revived_media']}"
+                    f" · 失败 {stats['failed_media']}"
+                ),
+                summary_patch=stats,
+            )
+
         for library in MediaLibrary.select().order_by(MediaLibrary.id):
             try:
                 with media_operation_lock(LIBRARY_LOCK, library.id):
@@ -115,7 +129,7 @@ class MediaValidityScanService:
                         completed += 1
                         if managed_inventory is None:
                             stats["skipped_media"] += 1
-                            reporter.emit(current=completed, total=total_media, summary_patch=stats)
+                            emit_progress(completed)
                             continue
 
                         stats["scanned_media"] += 1
@@ -151,12 +165,12 @@ class MediaValidityScanService:
                                         stats["revived_media"] += 1
                                     else:
                                         stats["invalidated_media"] += 1
-                        reporter.emit(current=completed, total=total_media, summary_patch=stats)
+                        emit_progress(completed)
 
             except MediaOperationBusy:
                 skipped = cls._library_media_query(library, max_media_id).count()
                 stats["skipped_media"] += skipped
                 completed += skipped
-                reporter.emit(current=completed, total=total_media, summary_patch=stats)
+                emit_progress(completed)
 
         return stats

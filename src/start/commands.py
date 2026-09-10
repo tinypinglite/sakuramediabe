@@ -10,11 +10,7 @@ from loguru import logger
 
 import src.common.logging as app_logging
 from src.common.logging import configure_logging
-from src.config.config import (
-    DEFAULT_SIGLIP2_INFERENCE_URL,
-    LEGACY_JOYTAG_INFERENCE_URL,
-    settings,
-)
+from src.config.config import settings
 from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import init_database
@@ -199,99 +195,6 @@ def migrate():
         f"applied={summary.applied_count} "
         f"skipped={summary.skipped_count} "
         f"total={len(summary.executed)}"
-    )
-
-
-@main.command(name="upgrade-v053")
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    help="Build and validate the complete upgrade plan without database writes.",
-)
-def upgrade_v053(dry_run: bool):
-    """加载已有 provider 并单向迁移精确 v0.5.3 数据。"""
-    from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
-    from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
-    from src.start.legacy_v053_upgrade import (
-        LegacyV053UpgradeError,
-        classify_database_schema,
-        cleanup_legacy_v053_qdrant_collections,
-        upgrade_v053_database,
-    )
-
-    logger.info("v0.5.3 upgrade command started")
-    database = _connect_database_for_migration()
-    state = classify_database_schema(database)
-    logger.info("v0.5.3 upgrade command schema state={}", state)
-    if state == "unsupported":
-        raise click.ClickException(
-            "unsupported_schema: only the exact v0.5.3 schema can use this bridge"
-        )
-    if (
-        state == "legacy_v053"
-        and settings.image_search.inference_base_url
-        not in {LEGACY_JOYTAG_INFERENCE_URL, DEFAULT_SIGLIP2_INFERENCE_URL}
-    ):
-        logger.warning(
-            "v0.5.3 upgrade preserved a custom [image_search].inference_base_url; "
-            "configure it to a compatible SigLIP2 embedding service after startup"
-        )
-    if state == "legacy_v053" and not dry_run:
-        try:
-            logger.info("loading installed providers for v0.5.3 upgrade")
-            registrations = load_enabled_plugins(
-                settings.plugins,
-                root_dir=Path(settings.plugins.root_dir).expanduser(),
-            )
-            logger.info(
-                "v0.5.3 upgrade enabled plugins loaded registrations={} enabled={}",
-                len(registrations),
-                len(settings.plugins.enabled),
-            )
-            for provider_key in ("local", "cloud115"):
-                MEDIA_PROVIDER_REGISTRY.require(provider_key)
-                logger.info(
-                    "v0.5.3 upgrade required provider available provider={}",
-                    provider_key,
-                )
-            logger.info("v0.5.3 upgrade installed provider preparation completed")
-        except Exception as exc:
-            failures = {
-                plugin_id: value
-                for plugin_id, value in PLUGIN_LOAD_ERRORS.items()
-                if plugin_id
-                in {
-                    "sakuramedia_local_provider",
-                    "sakuramedia_115_provider",
-                }
-            }
-            detail = f" errors={failures}" if failures else ""
-            raise click.ClickException(
-                f"v0.5.3 provider loading failed: {exc}{detail}"
-            ) from exc
-    elif dry_run:
-        logger.info(
-            "v0.5.3 upgrade installed provider loading skipped for dry run "
-            "schema_state={}", state
-        )
-    try:
-        logger.info("v0.5.3 upgrade invoking database bridge")
-        summary = upgrade_v053_database(database, dry_run=dry_run)
-    except LegacyV053UpgradeError as exc:
-        raise click.ClickException(str(exc)) from exc
-    if summary.upgraded:
-        cleanup_legacy_v053_qdrant_collections()
-    click.echo(
-        "upgrade-v053 finished: "
-        f"dry_run={str(dry_run).lower()} "
-        f"upgraded={str(summary.upgraded).lower()} "
-        f"media={summary.media_count} invalid_media={summary.invalid_media_count}"
-    )
-    logger.info(
-        "v0.5.3 upgrade command finished upgraded={} media={} invalid_media={}",
-        summary.upgraded,
-        summary.media_count,
-        summary.invalid_media_count,
     )
 
 

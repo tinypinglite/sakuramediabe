@@ -18,7 +18,6 @@ from src.model import (
     SystemNotification,
 )
 from src.start.commands import main
-from src.start.legacy_v053_upgrade import LEGACY_V053_UPGRADE_MIGRATION_NAME
 from src.start.migrations.runner import (
     ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
     ACTOR_LOCAL_PROFILE_MIGRATION_NAME,
@@ -34,7 +33,6 @@ from src.start.migrations.runner import (
     MOVIE_BLACKLIST_MIGRATION_NAME,
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
     PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
-    SUPPORTED_BASE_MIGRATION_NAME,
     MigrationExecution,
     MigrationRunSummary,
     _list_migration_modules,
@@ -42,6 +40,8 @@ from src.start.migrations.runner import (
     run_pending_migrations,
 )
 from tests.conftest import TEST_MODELS
+
+V0421_BASE_MIGRATION_NAME = "20260816_01_add_movie_field_owners"
 
 
 def _schema_migration_names(database) -> list[str]:
@@ -101,7 +101,6 @@ def test_current_migrations_are_discoverable_in_order():
         MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
         ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
         MOVIE_BLACKLIST_MIGRATION_NAME,
-        LEGACY_V053_UPGRADE_MIGRATION_NAME,
         MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
         IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
         IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
@@ -132,7 +131,7 @@ def test_plugin_metadata_migration_preserves_movies_and_allows_multiple_null_ids
 
 def test_run_pending_migrations_rejects_v0421_base(clean_db):
     clean_db.create_tables([SchemaMigration])
-    SchemaMigration.create(name=SUPPORTED_BASE_MIGRATION_NAME)
+    SchemaMigration.create(name=V0421_BASE_MIGRATION_NAME)
 
     with pytest.raises(ValueError, match="unsupported_migration_source"):
         run_pending_migrations(clean_db)
@@ -173,7 +172,6 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=MOVIE_COLLECTION_OWNER_MIGRATION_NAME, applied=True),
         MigrationExecution(name=ACTOR_GENDER_BACKFILL_MIGRATION_NAME, applied=True),
         MigrationExecution(name=MOVIE_BLACKLIST_MIGRATION_NAME, applied=True),
-        MigrationExecution(name=LEGACY_V053_UPGRADE_MIGRATION_NAME, applied=True),
         MigrationExecution(name=MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME, applied=True),
         MigrationExecution(name=IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME, applied=True),
         MigrationExecution(name=IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME, applied=True),
@@ -190,7 +188,6 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
         ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
         MOVIE_BLACKLIST_MIGRATION_NAME,
-        LEGACY_V053_UPGRADE_MIGRATION_NAME,
         MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
         IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
         IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
@@ -261,7 +258,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         trigger_type="manual",
         mutex_key="aps:legacy_task",
     )
-    SchemaMigration.create(name=SUPPORTED_BASE_MIGRATION_NAME)
+    SchemaMigration.create(name=V0421_BASE_MIGRATION_NAME)
 
     _drop_columns(
         clean_db,
@@ -353,7 +350,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 14
+    assert summary.applied_count == 13
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

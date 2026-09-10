@@ -44,6 +44,19 @@ class MediaFileHashBackfillService:
         }
         storage_by_library: dict[int, Any] = {}
 
+        def emit_progress(completed: int) -> None:
+            reporter.emit(
+                current=completed,
+                total=len(media_ids),
+                text=(
+                    f"媒体文件哈希补算 · 已完成 {completed}/{len(media_ids)}"
+                    f" · 已更新 {stats['updated_media']}"
+                    f" · 跳过 {stats['skipped_media']}"
+                    f" · 失败 {stats['failed_media']}"
+                ),
+                summary_patch=stats,
+            )
+
         for completed, media_id in enumerate(media_ids, start=1):
             try:
                 with media_operation_lock(MEDIA_LOCK, media_id):
@@ -55,9 +68,7 @@ class MediaFileHashBackfillService:
                     )
                     if media is None:
                         stats["skipped_media"] += 1
-                        reporter.emit(
-                            current=completed, total=len(media_ids), summary_patch=stats
-                        )
+                        emit_progress(completed)
                         continue
 
                     try:
@@ -81,10 +92,10 @@ class MediaFileHashBackfillService:
                         )
                     else:
                         stats["updated_media"] += 1
-                    reporter.emit(current=completed, total=len(media_ids), summary_patch=stats)
+                    emit_progress(completed)
 
             except MediaOperationBusy:
                 stats["skipped_media"] += 1
-                reporter.emit(current=completed, total=len(media_ids), summary_patch=stats)
+                emit_progress(completed)
 
         return stats

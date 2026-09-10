@@ -32,7 +32,6 @@ from pydantic_settings import (
 
 from src.plugins.manifest import PLUGIN_ID_PATTERN
 
-LEGACY_JOYTAG_INFERENCE_URL = "http://joytag-infer:8001"
 DEFAULT_SIGLIP2_INFERENCE_URL = "http://siglip2-embed:8080"
 
 
@@ -278,16 +277,6 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def _upgrade_legacy_settings(cls, data: Any):
-        if not isinstance(data, dict):
-            return data
-        normalized_data = dict(data)
-        # 兼容历史遗留的媒体音频识别配置节，读取时直接忽略，避免旧 config.toml 导致启动失败。
-        normalized_data.pop("media_asr", None)
-        return normalized_data
-
     @classmethod
     def settings_customise_sources(
         cls,
@@ -422,7 +411,7 @@ def ensure_runtime_config() -> bool:
     - 始终先确保鉴权密钥就绪（secret_key 空/占位/旧硬编码、file_signature_secret 为空时生成随机值），
       并写回内存全局 settings。
     - 目标 config.toml 缺失或为空时，写入一份含全部配置项默认值（含已生成密钥）的完整文件。
-    - 目标 config.toml 已有内容时，补齐缺失的 [auth] 密钥，并删除已废弃的配置。
+    - 目标 config.toml 已有内容时，只补齐缺失的 [auth] 密钥。
     仅当确有写盘时返回 True，幂等。
     """
     secret_updates = _ensure_auth_secrets()
@@ -449,69 +438,11 @@ def ensure_runtime_config() -> bool:
 
     # 文件已有内容：只改动必要字段，避免 model_dump 丢弃模型外字段。
     existing_config: dict[str, Any] = toml.load(settings_path)
-    removed_legacy_sections: list[str] = []
-    if "media_import" in existing_config:
-        existing_config.pop("media_import")
-        removed_legacy_sections.append("media_import")
-
-    metadata_config = existing_config.get("metadata")
-    removed_metadata_keys: list[str] = []
-    if isinstance(metadata_config, dict) and "javdb_host" in metadata_config:
-        metadata_config.pop("javdb_host")
-        removed_metadata_keys.append("javdb_host")
-
-    media_config = existing_config.get("media")
-    removed_media_keys: list[str] = []
-    if isinstance(media_config, dict):
-        for key in (
-            "inner_sub_tags",
-            "blueray_tags",
-            "uncensored_tags",
-            "uncensored_prefix",
-        ):
-            if key in media_config:
-                media_config.pop(key)
-                removed_media_keys.append(key)
-
-    image_search_config = existing_config.get("image_search")
-    migrated_joytag_endpoint = False
-    if (
-        isinstance(image_search_config, dict)
-        and image_search_config.get("inference_base_url") == LEGACY_JOYTAG_INFERENCE_URL
-    ):
-        image_search_config["inference_base_url"] = DEFAULT_SIGLIP2_INFERENCE_URL
-        migrated_joytag_endpoint = True
-
-    if (
-        not secret_updates
-        and not removed_media_keys
-        and not removed_metadata_keys
-        and not removed_legacy_sections
-        and not migrated_joytag_endpoint
-    ):
+    if not secret_updates:
         return False
 
-    if secret_updates:
-        existing_config.setdefault("auth", {}).update(secret_updates)
+    existing_config.setdefault("auth", {}).update(secret_updates)
     with open(settings_path, "w", encoding="utf-8") as file:
         file.write(toml.dumps(existing_config))
-    if secret_updates:
-        logger.info("Persisted generated auth secrets: {}", ", ".join(sorted(secret_updates)))
-    if removed_media_keys:
-        logger.info(
-            "Removed obsolete media settings: {}", ", ".join(sorted(removed_media_keys))
-        )
-    if removed_metadata_keys:
-        logger.info(
-            "Removed obsolete metadata settings: {}",
-            ", ".join(sorted(removed_metadata_keys)),
-        )
-    if removed_legacy_sections:
-        logger.info(
-            "Removed obsolete config sections: {}", ", ".join(sorted(removed_legacy_sections))
-        )
-    if migrated_joytag_endpoint:
-        logger.info(
-            "Migrated [image_search].inference_base_url from the JoyTag default to SigLIP2"
-        )
+    logger.info("Persisted generated auth secrets: {}", ", ".join(sorted(secret_updates)))
     return True

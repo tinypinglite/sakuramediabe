@@ -5,8 +5,6 @@ from __future__ import annotations
 import toml
 
 from src.config.config import (
-    DEFAULT_SIGLIP2_INFERENCE_URL,
-    LEGACY_JOYTAG_INFERENCE_URL,
     Settings,
     ensure_runtime_config,
     settings,
@@ -96,21 +94,17 @@ def test_config_updates_merge_from_disk_and_survive_plugin_updates(tmp_path, mon
         Settings.model_config["toml_file"] = original_config_path
 
 
-def test_ensure_runtime_config_removes_obsolete_settings(tmp_path, monkeypatch):
+def test_settings_load_config_written_by_v06_with_obsolete_keys(tmp_path, monkeypatch):
+    """v0.6.x 写盘时残留的旧键必须能原样加载，不影响升到 v0.7.0。"""
     config_path = tmp_path / "config.toml"
     original_config_path = Settings.model_config["toml_file"]
     monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
-    monkeypatch.setattr(settings.auth, "secret_key", "test-secret")
-    monkeypatch.setattr(settings.auth, "file_signature_secret", "test-file-secret")
     config_path.write_text(
         toml.dumps(
             {
                 "media": {
                     "allowed_min_video_file_size": 1,
                     "inner_sub_tags": ["中字"],
-                    "blueray_tags": ["4K"],
-                    "uncensored_tags": ["无码"],
-                    "uncensored_prefix": ["FC2"],
                 },
                 "media_import": {"browse_roots": ["/mnt"]},
                 "metadata": {"javdb_host": "custom.example"},
@@ -121,40 +115,8 @@ def test_ensure_runtime_config_removes_obsolete_settings(tmp_path, monkeypatch):
     )
 
     try:
-        assert ensure_runtime_config() is True
-        persisted = toml.load(config_path)
-        assert persisted["media"] == {"allowed_min_video_file_size": 1}
-        assert "media_import" not in persisted
-        assert "javdb_host" not in persisted.get("metadata", {})
-        assert persisted["unrelated"] == {"value": "keep"}
-        assert ensure_runtime_config() is False
-    finally:
-        Settings.model_config["toml_file"] = original_config_path
-
-
-def test_ensure_runtime_config_migrates_the_default_joytag_endpoint(
-    tmp_path, monkeypatch
-):
-    config_path = tmp_path / "config.toml"
-    original_config_path = Settings.model_config["toml_file"]
-    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
-    monkeypatch.setattr(settings.auth, "secret_key", "test-secret")
-    monkeypatch.setattr(settings.auth, "file_signature_secret", "test-file-secret")
-    config_path.write_text(
-        toml.dumps(
-            {
-                "image_search": {"inference_base_url": LEGACY_JOYTAG_INFERENCE_URL},
-                "unrelated": {"value": "keep"},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    try:
-        assert ensure_runtime_config() is True
-        persisted = toml.load(config_path)
-        assert persisted["image_search"]["inference_base_url"] == DEFAULT_SIGLIP2_INFERENCE_URL
-        assert persisted["unrelated"] == {"value": "keep"}
+        loaded = Settings()
+        assert loaded.media.allowed_min_video_file_size == 1
     finally:
         Settings.model_config["toml_file"] = original_config_path
 

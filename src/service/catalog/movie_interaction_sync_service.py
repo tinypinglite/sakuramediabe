@@ -94,9 +94,29 @@ class MovieInteractionSyncService:
             "failed_movie_ids": [],
         }
         total = len(candidate_ids)
+
+        def progress_text(completed: int, *, action: str | None = None) -> str:
+            fragments = ["影片互动数同步"]
+            if action:
+                fragments.append(action)
+            fragments.extend(
+                (
+                    f"已完成 {completed}/{total}",
+                    f"成功 {stats['succeeded_movies']}",
+                    f"失败 {stats['failed_movies']}",
+                )
+            )
+            return " · ".join(fragments)
+
         for current, movie_id in enumerate(candidate_ids, start=1):
             try:
                 movie = Movie.get_by_id(movie_id)
+                reporter.emit(
+                    current=current - 1,
+                    total=total,
+                    text=progress_text(current - 1, action=f"正在刷新 {movie.movie_number}"),
+                    summary_patch=stats,
+                )
                 changed, heat_updated = self._fetch_and_apply(movie)
             except MetadataNotFoundError as exc:
                 logger.warning(
@@ -124,5 +144,10 @@ class MovieInteractionSyncService:
                 stats["heat_updated_movies"] += heat_updated
             finally:
                 stats["processed_movies"] += 1
-                reporter.emit(current=current, total=total)
+                reporter.emit(
+                    current=current,
+                    total=total,
+                    text=progress_text(current),
+                    summary_patch=stats,
+                )
         return stats

@@ -11,9 +11,13 @@ from src.service.playback.media_file_hash_backfill_service import (
 class Reporter:
     def __init__(self) -> None:
         self.events: list[tuple[int, int, dict]] = []
+        self.texts: list[str | None] = []
 
-    def emit(self, *, current: int, total: int, summary_patch: dict) -> None:
+    def emit(
+        self, *, current: int, total: int, summary_patch: dict, text: str | None = None
+    ) -> None:
         self.events.append((current, total, dict(summary_patch)))
+        self.texts.append(text)
 
 
 def _media(library: MediaLibrary, number: str, *, file_hash: str | None) -> Media:
@@ -62,6 +66,10 @@ def test_backfill_calculates_only_missing_file_hashes(test_db, monkeypatch):
     assert [(current, total) for current, total, _summary in reporter.events] == [
         (1, 2),
         (2, 2),
+    ]
+    assert reporter.texts == [
+        "媒体文件哈希补算 · 已完成 1/2 · 已更新 1 · 跳过 0 · 失败 0",
+        "媒体文件哈希补算 · 已完成 2/2 · 已更新 2 · 跳过 0 · 失败 0",
     ]
 
 

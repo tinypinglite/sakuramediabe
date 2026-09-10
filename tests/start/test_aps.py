@@ -882,6 +882,26 @@ def test_submit_manual_job_enqueues_pending_run_without_inline_execution(test_db
         submit_manual_job(job_def)
 
 
+def test_submit_manual_job_uses_cli_help_when_task_name_not_registered(test_db):
+    from src.model import BackgroundTaskRun
+    from src.scheduler.contracts import JobDefinition
+    from src.start.aps import submit_manual_job
+
+    job_def = JobDefinition(
+        task_key="demo_plugin_sync",
+        log_name="demo-plugin-sync",
+        cli_name="demo-plugin-sync",
+        cli_help="同步插件数据",
+        default_cron="0 1 * * *",
+        handler=lambda _reporter, _params: None,
+    )
+
+    task_run = submit_manual_job(job_def)
+
+    stored = BackgroundTaskRun.get_by_id(task_run.id)
+    assert stored.task_name == "同步插件数据"
+
+
 def test_task_worker_executes_claimed_queue_run(test_db, monkeypatch):
     from src.model import BackgroundTaskRun
     from src.scheduler.worker import TaskWorker
