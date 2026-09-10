@@ -67,6 +67,7 @@ def test_patch_actor_profile_preserves_source_identity_and_marks_manual_fields(
     payload = response.json()
     assert payload["display_name"] == "我的显示名"
     assert payload["name"] == "来源名称"
+    assert payload["gender"] == 1
     assert payload["birthday"] == "1998-04-12"
     assert payload["height_cm"] == 160
     assert payload["mutation_revision"] == 1
@@ -84,6 +85,7 @@ def test_patch_actor_profile_preserves_source_identity_and_marks_manual_fields(
     assert refreshed.status_code == 200
     assert refreshed.json()["name"] == "来源新名称"
     assert refreshed.json()["display_name"] == "我的显示名"
+    assert refreshed.json()["gender"] == 1
 
 
 def test_patch_actor_profile_uses_last_write_wins_for_local_display_name(

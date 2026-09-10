@@ -57,6 +57,7 @@ class ActorResource(SchemaModel):
 
 
 class ActorDetailResource(ActorResource):
+    gender: int = 0
     birthday: date | None = None
     age: int | None = None
     height_cm: int | None = None
@@ -84,6 +85,7 @@ def _actor_resource_payload(actor) -> dict:
         "is_subscribed": actor.is_subscribed,
         "subscribed_at": actor.subscribed_at,
         "movie_count": getattr(actor, "movie_count", 0) or 0,
+        "gender": actor.gender,
         "birthday": actor.birthday,
         "age": actor.age,
         "height_cm": actor.height_cm,
