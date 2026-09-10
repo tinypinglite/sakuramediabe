@@ -72,11 +72,6 @@ jobs:
             exit 1
           fi
 
-      - name: Download latest official provider releases
-        run: |
-          python3 docker/backend/package_bundled_providers.py \
-            --output .bundled-provider-artifacts
-
       # arm64 侧通过 QEMU 模拟构建;依赖全部是预编译 wheel,无源码编译,模拟开销可接受。
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

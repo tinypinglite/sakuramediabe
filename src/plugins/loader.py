@@ -222,7 +222,7 @@ def _load_plugin_dir(
             f"register={registration.version} manifest={manifest.version}",
         )
     # Legacy packages exist in both forms: some retain their v4 registration,
-    # while the official bundled plugins import the host's current constant at
+    # while the official plugins import the host's current constant at
     # runtime.  The manifest remains the pre-import compatibility boundary.
     supported_registration_versions = {
         manifest.host_api_version,

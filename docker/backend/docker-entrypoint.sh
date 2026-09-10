@@ -83,8 +83,8 @@ run_database_migrations() {
 }
 
 run_v053_upgrade() {
-    echo "Syncing bundled providers and checking for a v0.5.3 database upgrade..."
-    # 官方 provider 随镜像升级；仅更高版本替换代码，插件 data/ 和启停状态由插件管理器保留。
+    echo "Checking for a v0.5.3 database upgrade..."
+    # 旧库迁移只加载用户已有的 provider，不从镜像安装内置插件。
     su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands upgrade-v053" "${APP_USER}"
 }
 

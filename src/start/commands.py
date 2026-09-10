@@ -209,8 +209,7 @@ def migrate():
     help="Build and validate the complete upgrade plan without database writes.",
 )
 def upgrade_v053(dry_run: bool):
-    """同步官方存储插件，并单向迁移精确 v0.5.3 数据。"""
-    from src.plugins.bundled_providers import sync_bundled_provider_plugins
+    """加载已有 provider 并单向迁移精确 v0.5.3 数据。"""
     from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
     from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
     from src.start.legacy_v053_upgrade import (
@@ -237,34 +236,25 @@ def upgrade_v053(dry_run: bool):
             "v0.5.3 upgrade preserved a custom [image_search].inference_base_url; "
             "configure it to a compatible SigLIP2 embedding service after startup"
         )
-    if not dry_run:
+    if state == "legacy_v053" and not dry_run:
         try:
-            logger.info(
-                "preparing bundled official providers schema_state={}", state
+            logger.info("loading installed providers for v0.5.3 upgrade")
+            registrations = load_enabled_plugins(
+                settings.plugins,
+                root_dir=Path(settings.plugins.root_dir).expanduser(),
             )
-            install_result = sync_bundled_provider_plugins()
             logger.info(
-                "bundled official providers ready installed={} updated={}",
-                install_result.installed,
-                install_result.updated,
+                "v0.5.3 upgrade enabled plugins loaded registrations={} enabled={}",
+                len(registrations),
+                len(settings.plugins.enabled),
             )
-            if state == "legacy_v053":
-                registrations = load_enabled_plugins(
-                    settings.plugins,
-                    root_dir=Path(settings.plugins.root_dir).expanduser(),
-                )
+            for provider_key in ("local", "cloud115"):
+                MEDIA_PROVIDER_REGISTRY.require(provider_key)
                 logger.info(
-                    "v0.5.3 upgrade enabled plugins loaded registrations={} enabled={}",
-                    len(registrations),
-                    len(settings.plugins.enabled),
+                    "v0.5.3 upgrade required provider available provider={}",
+                    provider_key,
                 )
-                for provider_key in ("local", "cloud115"):
-                    MEDIA_PROVIDER_REGISTRY.require(provider_key)
-                    logger.info(
-                        "v0.5.3 upgrade required provider available provider={}",
-                        provider_key,
-                    )
-                logger.info("v0.5.3 upgrade official provider preparation completed")
+            logger.info("v0.5.3 upgrade installed provider preparation completed")
         except Exception as exc:
             failures = {
                 plugin_id: value
@@ -277,11 +267,11 @@ def upgrade_v053(dry_run: bool):
             }
             detail = f" errors={failures}" if failures else ""
             raise click.ClickException(
-                f"官方存储插件预装或加载失败: {exc}{detail}"
+                f"v0.5.3 provider loading failed: {exc}{detail}"
             ) from exc
-    else:
+    elif dry_run:
         logger.info(
-            "v0.5.3 upgrade provider synchronization skipped for dry run "
+            "v0.5.3 upgrade installed provider loading skipped for dry run "
             "schema_state={}", state
         )
     try:
