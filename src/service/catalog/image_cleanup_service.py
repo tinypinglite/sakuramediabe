@@ -6,7 +6,15 @@ catalog 目录导入和媒体硬删除都需要这份逻辑，抽出来避免重
 from pathlib import Path
 
 from src.config.config import settings
-from src.model import Actor, Image, MediaThumbnail, Movie, MoviePlotImage, get_database
+from src.model import (
+    Actor,
+    Image,
+    MediaThumbnail,
+    Movie,
+    MoviePlotImage,
+    VideoItem,
+    get_database,
+)
 
 
 class ImageCleanupService:
@@ -47,6 +55,8 @@ class ImageCleanupService:
                 and MoviePlotImage.select(MoviePlotImage.id).where(MoviePlotImage.image == image).exists(),
                 database.table_exists(MediaThumbnail._meta.table_name)
                 and MediaThumbnail.select(MediaThumbnail.id).where(MediaThumbnail.image == image).exists(),
+                database.table_exists(VideoItem._meta.table_name)
+                and VideoItem.select(VideoItem.id).where(VideoItem.cover_image == image).exists(),
             )
         )
 

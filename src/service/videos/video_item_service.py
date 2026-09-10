@@ -359,6 +359,35 @@ class VideoItemService:
         update_data = payload.model_dump(exclude_unset=True, by_alias=False)
         if not update_data:
             raise ApiError(422, "validation_error", "At least one field must be provided")
+        obsolete_cover_image = None
+        if "cover_thumbnail_id" in update_data:
+            thumbnail_id = update_data["cover_thumbnail_id"]
+            if thumbnail_id is None:
+                raise ApiError(
+                    422,
+                    "video_cover_thumbnail_required",
+                    "cover_thumbnail_id cannot be null",
+                )
+            thumbnail = (
+                MediaThumbnail.select(MediaThumbnail, Media)
+                .join(Media)
+                .where(
+                    MediaThumbnail.id == thumbnail_id,
+                    Media.video_item == video,
+                )
+                .get_or_none()
+            )
+            if thumbnail is None:
+                raise ApiError(
+                    404,
+                    "video_cover_thumbnail_not_found",
+                    "Video cover thumbnail not found",
+                    {"video_id": video.id, "thumbnail_id": thumbnail_id},
+                )
+            obsolete_cover_image = (
+                video.cover_image if video.cover_image_id is not None else None
+            )
+            video.cover_image = thumbnail.image
         if "title" in update_data and update_data["title"] is not None:
             video.title = update_data["title"]
         if "summary" in update_data and update_data["summary"] is not None:
@@ -367,6 +396,13 @@ class VideoItemService:
             video.release_date = update_data["release_date"]
         video.updated_at = utc_now_for_db()
         video.save()
+        if obsolete_cover_image is not None:
+            from src.service.catalog.image_cleanup_service import ImageCleanupService
+
+            obsolete_image_paths = ImageCleanupService.delete_image_record_if_unused(
+                obsolete_cover_image
+            )
+            ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
         return cls.get_video_detail(video.id)
 
     @classmethod

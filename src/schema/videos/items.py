@@ -56,6 +56,8 @@ class VideoItemUpdateRequest(SchemaModel):
     title: str | None = None
     summary: str | None = None
     release_date: datetime | None = None
+    # 仅支持把已有缩略图设为当前封面，不支持恢复自动首帧。
+    cover_thumbnail_id: int | None = Field(default=None, gt=0)
 
     @field_validator("title")
     @classmethod
