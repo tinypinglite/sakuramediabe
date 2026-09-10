@@ -1,4 +1,5 @@
 from .clips import ClipCollection, ClipCollectionItem
+from .moments import MomentCollection, MomentCollectionItem
 from .playlists import (
     PLAYLIST_KIND_CUSTOM,
     PLAYLIST_KIND_RECENTLY_PLAYED,
@@ -17,6 +18,8 @@ __all__ = [
     "SYSTEM_PLAYLIST_KINDS",
     "ClipCollection",
     "ClipCollectionItem",
+    "MomentCollection",
+    "MomentCollectionItem",
     "Playlist",
     "PlaylistMovie",
 ]

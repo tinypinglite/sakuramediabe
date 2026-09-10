@@ -26,6 +26,8 @@ from src.model import (
     MediaPoint,
     MediaProgress,
     MediaThumbnail,
+    MomentCollection,
+    MomentCollectionItem,
     MomentRecommendation,
     Movie,
     MovieActor,
@@ -77,6 +79,8 @@ def create_tables():
             MediaClip,
             ClipCollection,
             ClipCollectionItem,
+            MomentCollection,
+            MomentCollectionItem,
             MomentRecommendation,
             ImageSearchIndexState,
             ImageSearchSession,
@@ -117,7 +121,11 @@ def init_user() -> bool:
 
 # 系统播放列表预置清单：最近播放成员物化存储，由播放进度上报维护。
 SYSTEM_PLAYLIST_SPECS = (
-    (PLAYLIST_KIND_RECENTLY_PLAYED, RECENTLY_PLAYED_PLAYLIST_NAME, RECENTLY_PLAYED_PLAYLIST_DESCRIPTION),
+    (
+        PLAYLIST_KIND_RECENTLY_PLAYED,
+        RECENTLY_PLAYED_PLAYLIST_NAME,
+        RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
+    ),
 )
 
 

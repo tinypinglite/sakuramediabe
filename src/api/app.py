@@ -20,6 +20,9 @@ from src.api.routers.catalog.tags import router as tags_router
 from src.api.routers.collections.clip_collections import (
     router as clip_collections_router,
 )
+from src.api.routers.collections.moment_collections import (
+    router as moment_collections_router,
+)
 from src.api.routers.collections.playlists import router as playlists_router
 from src.api.routers.discovery.daily_recommendations import (
     router as daily_recommendations_router,
@@ -89,6 +92,7 @@ def create_app() -> FastAPI:
     app.include_router(tags_router)
     app.include_router(playlists_router)
     app.include_router(clip_collections_router)
+    app.include_router(moment_collections_router)
     app.include_router(file_images_router)
     app.include_router(file_subtitles_router)
     app.include_router(media_router)

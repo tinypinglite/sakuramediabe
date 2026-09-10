@@ -22,6 +22,7 @@ from src.service.discovery.embedding_client import (
 from src.service.discovery.image_search_index_space_service import (
     ImageSearchIndexSpaceService,
 )
+from src.service.discovery.image_search_input import normalize_image_search_query
 from src.service.discovery.qdrant_plot_image_store import (
     PlotImageVectorRecord,
     QdrantPlotImageStore,
@@ -210,11 +211,21 @@ class ImageSearchIndexService:
             for thumbnail in batch:
                 try:
                     payloads.append(
-                        resolve_image_file_path(thumbnail.image.origin).read_bytes()
+                        self._normalize_image_payload(
+                            resolve_image_file_path(thumbnail.image.origin).read_bytes()
+                        )
                     )
                 except FileNotFoundError:
                     logger.warning(
                         "Image search thumbnail file is missing thumbnail_id={} media_id={}",
+                        thumbnail.id,
+                        thumbnail.media_id,
+                    )
+                    failed_ids.append(thumbnail.id)
+                    continue
+                except ValueError:
+                    logger.warning(
+                        "Image search thumbnail file is invalid thumbnail_id={} media_id={}",
                         thumbnail.id,
                         thumbnail.media_id,
                     )
@@ -268,11 +279,21 @@ class ImageSearchIndexService:
             for plot_image in batch:
                 try:
                     payloads.append(
-                        resolve_image_file_path(plot_image.image.origin).read_bytes()
+                        self._normalize_image_payload(
+                            resolve_image_file_path(plot_image.image.origin).read_bytes()
+                        )
                     )
                 except FileNotFoundError:
                     logger.warning(
                         "Plot image file is missing plot_image_id={} movie_id={}",
+                        plot_image.id,
+                        plot_image.movie_id,
+                    )
+                    failed_ids.append(plot_image.id)
+                    continue
+                except ValueError:
+                    logger.warning(
+                        "Plot image file is invalid plot_image_id={} movie_id={}",
                         plot_image.id,
                         plot_image.movie_id,
                     )
@@ -310,6 +331,14 @@ class ImageSearchIndexService:
             failed_status=MoviePlotImage.IMAGE_SEARCH_INDEX_STATUS_FAILED,
         )
 
+    @staticmethod
+    def _normalize_image_payload(payload: bytes) -> bytes:
+        if payload.startswith(b"\xff\xd8\xff") or (
+            payload.startswith(b"RIFF") and payload[8:12] == b"WEBP"
+        ):
+            return payload
+        return normalize_image_search_query(payload)
+
     def _embed_image_payloads(
         self, payloads: list[bytes]
     ) -> list[Sequence[float] | None]:
@@ -318,21 +347,22 @@ class ImageSearchIndexService:
         try:
             vectors = self.embedder.embed_images(payloads)
         except EmbeddingClientError as exc:
-            if exc.status_code != 422:
+            if exc.status_code not in (413, 422):
                 raise
             if len(payloads) == 1:
                 return [None]
             logger.warning(
                 "Embedding service rejected an image batch; retrying images individually "
-                "batch_size={}",
+                "batch_size={} status_code={}",
                 len(payloads),
+                exc.status_code,
             )
             vectors = []
             for payload in payloads:
                 try:
                     item_vectors = self.embedder.embed_images([payload])
                 except EmbeddingClientError as item_exc:
-                    if item_exc.status_code == 422:
+                    if item_exc.status_code in (413, 422):
                         vectors.append(None)
                         continue
                     raise

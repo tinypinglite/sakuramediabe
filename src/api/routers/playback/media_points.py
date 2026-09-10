@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Depends, Query
 
 from src.api.routers.deps import db_deps, get_current_user
+from src.schema.collections.moments import MomentCollectionSummary
 from src.schema.common.pagination import PageResponse
 from src.schema.playback.media import MediaPointKind, MediaPointListItemResource
+from src.service.collections import MomentCollectionService
 from src.service.playback import MediaService
 
 router = APIRouter(
@@ -20,4 +22,13 @@ def list_media_points(
     kind: MediaPointKind = Query(default=MediaPointKind.JAV),
     current_user=Depends(get_current_user),
 ):
-    return MediaService.list_media_points(page=page, page_size=page_size, sort=sort, kind=kind)
+    return MediaService.list_media_points(
+        page=page, page_size=page_size, sort=sort, kind=kind
+    )
+
+
+@router.get(
+    "/media-points/{point_id}/collections", response_model=list[MomentCollectionSummary]
+)
+def list_media_point_collections(point_id: int, current_user=Depends(get_current_user)):
+    return MomentCollectionService.list_point_collections(point_id)

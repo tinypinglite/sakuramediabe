@@ -22,7 +22,12 @@ ACTOR_FIELD_ALLOWED_VALUES: dict[str, frozenset[int]] = {
     "gender": frozenset({1, 2}),
 }
 PROTECTED_ACTOR_FIELDS = frozenset(ACTOR_FIELD_CODECS)
-_GUARDED_FIELDS = PROTECTED_ACTOR_FIELDS | {"field_owners", "mutation_revision"}
+_GUARDED_FIELDS = PROTECTED_ACTOR_FIELDS | {
+    "field_owners",
+    "mutation_revision",
+    "display_name_override",
+    "profile_image_override",
+}
 
 
 class Actor(TimestampedMixin, BaseModel):
@@ -35,6 +40,18 @@ class Actor(TimestampedMixin, BaseModel):
         backref="actors",
         on_delete="SET NULL",
         verbose_name="头像图片",
+    )
+    profile_image_override = peewee.ForeignKeyField(
+        Image,
+        null=True,
+        backref="actor_profile_image_overrides",
+        on_delete="SET NULL",
+        verbose_name="本地头像覆盖图片",
+    )
+    display_name_override = peewee.CharField(
+        max_length=255,
+        null=True,
+        verbose_name="本地显示名称",
     )
     javdb_type = peewee.IntegerField(default=0, verbose_name="JavDB 类型")
     gender = peewee.IntegerField(default=0, verbose_name="性别")
@@ -62,6 +79,8 @@ class Actor(TimestampedMixin, BaseModel):
         self.javdb_id = (self.javdb_id or "").strip()
         self.name = (self.name or "").strip()
         self.alias_name = (self.alias_name or "").strip()
+        if self.display_name_override is not None:
+            self.display_name_override = self.display_name_override.strip() or None
         return super().save(*args, **kwargs)
 
     @staticmethod
@@ -88,9 +107,27 @@ class Actor(TimestampedMixin, BaseModel):
         )
 
     @property
+    def display_name(self) -> str:
+        local_name = (self.display_name_override or "").strip()
+        if local_name:
+            return local_name
+        return self.name
+
+    @property
+    def effective_profile_image(self):
+        if self.profile_image_override_id and self.profile_image_override:
+            return self.profile_image_override
+        return self.profile_image
+
+    @property
+    def has_profile_image_override(self) -> bool:
+        return bool(self.profile_image_override_id)
+
+    @property
     def avatar_url(self) -> str | None:
-        if self.profile_image_id and self.profile_image:
-            return self.profile_image.medium
+        image = self.effective_profile_image
+        if image is not None:
+            return image.medium
         return None
 
     class Meta:

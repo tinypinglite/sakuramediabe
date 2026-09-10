@@ -187,6 +187,11 @@ def test_create_app_registers_media_clip_routes():
     assert "/clip-collections/{collection_id}" in paths
     assert "/clip-collections/{collection_id}/clips" in paths
     assert "/clip-collections/{collection_id}/clips/{clip_id}" in paths
+    assert "/moment-collections" in paths
+    assert "/moment-collections/{collection_id}" in paths
+    assert "/moment-collections/{collection_id}/points" in paths
+    assert "/moment-collections/{collection_id}/points/{point_id}" in paths
+    assert "/media-points/{point_id}/collections" in paths
 
 
 def test_create_app_registers_provider_media_play_gateway_and_removes_legacy_routes():

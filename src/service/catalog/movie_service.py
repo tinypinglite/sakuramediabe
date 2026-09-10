@@ -50,6 +50,7 @@ from src.plugins.provider_protocol import (
 )
 from src.schema.catalog.actors import ImageResource
 from src.schema.catalog.movies import (
+    MovieActorResource,
     MovieBlacklistBatchRequest,
     MovieCollectionMarkResponse,
     MovieCollectionMarkType,
@@ -322,14 +323,40 @@ class MovieService:
         )
 
     @staticmethod
-    def _actors(movie: Movie) -> list[Actor]:
-        return list(
-            Actor.select(Actor, Image)
+    def _actors(movie: Movie) -> list[MovieActorResource]:
+        profile_image_override = Image.alias()
+        actors = list(
+            Actor.select(Actor, Image, profile_image_override)
             .join(Image, JOIN.LEFT_OUTER, on=(Actor.profile_image == Image.id))
+            .switch(Actor)
+            .join(
+                profile_image_override,
+                JOIN.LEFT_OUTER,
+                on=(Actor.profile_image_override == profile_image_override.id),
+                attr="profile_image_override",
+            )
+            .switch(Actor)
             .join(MovieActor, JOIN.INNER, on=(MovieActor.actor == Actor.id))
             .where(MovieActor.movie == movie)
             .order_by(Actor.id)
         )
+        return [
+            MovieActorResource(
+                id=actor.id,
+                javdb_id=actor.javdb_id,
+                name=actor.name,
+                alias_name=actor.alias_name,
+                display_name=actor.display_name,
+                gender=actor.gender,
+                is_subscribed=actor.is_subscribed,
+                profile_image=(
+                    ImageResource.from_attributes_model(actor.effective_profile_image)
+                    if actor.effective_profile_image is not None
+                    else None
+                ),
+            )
+            for actor in actors
+        ]
 
     @staticmethod
     def _plot_images(movie: Movie) -> list[Image]:

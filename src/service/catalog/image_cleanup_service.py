@@ -37,7 +37,12 @@ class ImageCleanupService:
                     (Movie.cover_image == image) | (Movie.thin_cover_image == image)
                 ).exists(),
                 database.table_exists(Actor._meta.table_name)
-                and Actor.select(Actor.id).where(Actor.profile_image == image).exists(),
+                and Actor.select(Actor.id)
+                .where(
+                    (Actor.profile_image == image)
+                    | (Actor.profile_image_override == image)
+                )
+                .exists(),
                 database.table_exists(MoviePlotImage._meta.table_name)
                 and MoviePlotImage.select(MoviePlotImage.id).where(MoviePlotImage.image == image).exists(),
                 database.table_exists(MediaThumbnail._meta.table_name)

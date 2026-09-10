@@ -6,6 +6,7 @@ from src.schema.common.base import SchemaModel
 class HotActressResource(SchemaModel):
     id: int
     name: str
+    display_name: str
     profile_image: ImageResource | None = None
     historical_movie_count: int
     hotness_score: float

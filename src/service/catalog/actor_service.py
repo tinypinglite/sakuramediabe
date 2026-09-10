@@ -4,14 +4,23 @@
 阅读入口建议从 ``list_actors``、``get_actor_movie_ids``、``stream_search_and_upsert_actor_from_javdb`` 开始。
 """
 
+import json
+import shutil
+import tempfile
 from calendar import monthrange
 from collections.abc import Iterator, Sequence
 from datetime import date
+from io import BytesIO
+from pathlib import Path
+from uuid import uuid4
 
 from loguru import logger
 from peewee import JOIN, fn
+from PIL import Image as PillowImage
+from PIL import ImageOps, UnidentifiedImageError
 
 from src.api.exception.errors import ApiError
+from src.common.media_paths import media_image_root_path
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     build_ordered_expressions,
@@ -21,7 +30,7 @@ from src.common.service_helpers import (
 from src.metadata._providers.models import JavdbMovieActorResource
 from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError
-from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag
+from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag, get_database
 from src.model.expressions import year_expression
 from src.schema.catalog.actors import (
     ActorCupFilterOption,
@@ -31,6 +40,7 @@ from src.schema.catalog.actors import (
     ActorListGender,
     ActorListSubscriptionStatus,
     ActorResource,
+    ActorUpdateRequest,
     YearResource,
 )
 from src.schema.catalog.movies import TagResource
@@ -39,10 +49,33 @@ from src.service.catalog.catalog_import_service import (
     CatalogImportService,
     ImageDownloadError,
 )
+from src.service.catalog.image_cleanup_service import ImageCleanupService
 
 
 class ActorService:
     """聚合 Actor 查询和 JavDB 演员导入流程。"""
+
+    ACTOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+    ACTOR_PROFILE_IMAGE_MAX_DIMENSION = 4096
+    ACTOR_PROFILE_IMAGE_OUTPUT_DIMENSION = 1024
+    ACTOR_PROFILE_IMAGE_CONTENT_TYPES = frozenset(
+        {"image/jpeg", "image/jpg", "image/png", "image/webp"}
+    )
+    ACTOR_PROFILE_IMAGE_FORMATS = frozenset({"JPEG", "PNG", "WEBP"})
+    ACTOR_PROFILE_EDITABLE_FIELDS = frozenset(
+        {
+            "display_name_override",
+            "gender",
+            "birthday",
+            "height_cm",
+            "bust_cm",
+            "waist_cm",
+            "hips_cm",
+            "cup",
+            "birthplace",
+            "blood_type",
+        }
+    )
 
     FEMALE_GENDER = 1
     MALE_GENDER = 2
@@ -116,8 +149,17 @@ class ActorService:
         movie_count_expression = ActorService._movie_count_expression().alias(
             "movie_count"
         )
-        return Actor.select(Actor, Image, movie_count_expression).join(
-            Image, JOIN.LEFT_OUTER, on=(Actor.profile_image == Image.id)
+        profile_image_override = Image.alias()
+        return (
+            Actor.select(Actor, Image, profile_image_override, movie_count_expression)
+            .join(Image, JOIN.LEFT_OUTER, on=(Actor.profile_image == Image.id))
+            .switch(Actor)
+            .join(
+                profile_image_override,
+                JOIN.LEFT_OUTER,
+                on=(Actor.profile_image_override == profile_image_override.id),
+                attr="profile_image_override",
+            )
         )
 
     @classmethod
@@ -246,7 +288,7 @@ class ActorService:
             .limit(page_size)
         )
         return PageResponse[ActorResource](
-            items=ActorResource.from_items(actors),
+            items=[ActorResource.from_actor(actor) for actor in actors],
             page=page,
             page_size=page_size,
             total=total,
@@ -399,7 +441,7 @@ class ActorService:
                     or actor
                 )
                 imported_actors.append(
-                    ActorResource.from_attributes_model(actor_with_profile)
+                    ActorResource.from_actor(actor_with_profile)
                 )
                 if existed_before_upsert:
                     already_exists_count += 1
@@ -479,7 +521,166 @@ class ActorService:
     @classmethod
     def get_actor_detail(cls, actor_id: int) -> ActorDetailResource:
         actor = cls._require_actor(actor_id)
-        return ActorDetailResource.from_attributes_model(actor)
+        return ActorDetailResource.from_actor(actor)
+
+    @classmethod
+    def update_profile(
+        cls,
+        actor_id: int,
+        payload: ActorUpdateRequest,
+    ) -> ActorDetailResource:
+        cls._require_actor(actor_id)
+        changes = payload.model_dump(
+            exclude_unset=True,
+        )
+        if not changes:
+            raise ApiError(422, "empty_actor_update", "至少需要修改一个资料字段")
+        if payload.birthday is not None and payload.birthday > utc_now_for_db().date():
+            raise ApiError(422, "invalid_actor_profile", "birthday 不能晚于今天")
+
+        unsupported_fields = set(changes) - cls.ACTOR_PROFILE_EDITABLE_FIELDS
+        if unsupported_fields:
+            raise ApiError(
+                422,
+                "invalid_actor_update",
+                "包含不支持修改的女优字段",
+                {"fields": sorted(unsupported_fields)},
+            )
+
+        assignments = [f"{field} = %s" for field in changes]
+        params = list(changes.values())
+        scalar_fields = set(changes) & (cls.ACTOR_PROFILE_EDITABLE_FIELDS - {"display_name_override"})
+        if scalar_fields:
+            assignments.append("field_owners = field_owners || %s::jsonb")
+            params.append(
+                json.dumps(
+                    {field: "host:manual" for field in scalar_fields},
+                    ensure_ascii=False,
+                )
+            )
+        if scalar_fields:
+            assignments.append("mutation_revision = mutation_revision + 1")
+        assignments.append("updated_at = now()")
+        params.append(actor_id)
+        cursor = get_database().execute_sql(
+            f"""
+            UPDATE actor SET {", ".join(assignments)}
+            WHERE id = %s
+            """,
+            params,
+        )
+        if cursor.rowcount != 1:
+            raise ApiError(404, "actor_not_found", "演员不存在")
+        return cls.get_actor_detail(actor_id)
+
+    @classmethod
+    def upload_profile_image(
+        cls,
+        actor_id: int,
+        *,
+        content: bytes,
+        content_type: str | None,
+    ) -> ActorDetailResource:
+        actor = cls._require_actor(actor_id)
+        if len(content) > cls.ACTOR_PROFILE_IMAGE_MAX_BYTES:
+            raise ApiError(413, "actor_profile_image_too_large", "头像图片不能超过 10 MiB")
+        normalized_content_type = (content_type or "").lower().strip()
+        if normalized_content_type and normalized_content_type not in cls.ACTOR_PROFILE_IMAGE_CONTENT_TYPES:
+            raise ApiError(422, "invalid_actor_profile_image", "只支持 JPEG、PNG 或 WebP 图片")
+
+        image_root = media_image_root_path()
+        image_root.mkdir(parents=True, exist_ok=True)
+        temp_root = Path(tempfile.mkdtemp(prefix=".actor-profile-upload-", dir=image_root))
+        relative_path = Path("actors") / "manual" / f"{actor.id}-{uuid4().hex}.webp"
+        final_path = image_root / relative_path
+        committed = False
+        old_override = actor.profile_image_override if actor.profile_image_override_id else None
+        try:
+            temp_path = temp_root / "avatar.webp"
+            with PillowImage.open(BytesIO(content)) as source:
+                if source.format not in cls.ACTOR_PROFILE_IMAGE_FORMATS:
+                    raise ApiError(422, "invalid_actor_profile_image", "只支持 JPEG、PNG 或 WebP 图片")
+                if max(source.size) > cls.ACTOR_PROFILE_IMAGE_MAX_DIMENSION:
+                    raise ApiError(422, "invalid_actor_profile_image", "头像图片边长不能超过 4096 像素")
+                normalized = ImageOps.exif_transpose(source)
+                try:
+                    normalized.thumbnail(
+                        (
+                            cls.ACTOR_PROFILE_IMAGE_OUTPUT_DIMENSION,
+                            cls.ACTOR_PROFILE_IMAGE_OUTPUT_DIMENSION,
+                        ),
+                        PillowImage.Resampling.LANCZOS,
+                    )
+                    if normalized.mode not in {"RGB", "RGBA"}:
+                        normalized = normalized.convert("RGBA" if "A" in normalized.getbands() else "RGB")
+                    normalized.save(temp_path, format="WEBP", quality=90, method=6)
+                finally:
+                    if normalized is not source:
+                        normalized.close()
+
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path.replace(final_path)
+            with get_database().atomic():
+                image = Image.create(
+                    origin=relative_path.as_posix(),
+                    small=relative_path.as_posix(),
+                    medium=relative_path.as_posix(),
+                    large=relative_path.as_posix(),
+                )
+                cursor = get_database().execute_sql(
+                    """
+                    UPDATE actor
+                    SET profile_image_override_id = %s,
+                        updated_at = now()
+                    WHERE id = %s
+                    """,
+                    [image.id, actor_id],
+                )
+                if cursor.rowcount != 1:
+                    raise ApiError(404, "actor_not_found", "演员不存在")
+            committed = True
+        except ApiError:
+            raise
+        except (
+            OSError,
+            UnidentifiedImageError,
+            PillowImage.DecompressionBombError,
+            ValueError,
+        ) as exc:
+            raise ApiError(422, "invalid_actor_profile_image", "无法读取或处理头像图片") from exc
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+            if not committed:
+                final_path.unlink(missing_ok=True)
+
+        if old_override is not None:
+            obsolete_paths = ImageCleanupService.delete_image_record_if_unused(old_override)
+            ImageCleanupService.delete_obsolete_image_files(obsolete_paths)
+        return cls.get_actor_detail(actor_id)
+
+    @classmethod
+    def clear_profile_image(
+        cls,
+        actor_id: int,
+    ) -> ActorDetailResource:
+        actor = cls._require_actor(actor_id)
+        old_override = actor.profile_image_override if actor.profile_image_override_id else None
+        if old_override is None:
+            return cls.get_actor_detail(actor_id)
+        cursor = get_database().execute_sql(
+            """
+            UPDATE actor
+            SET profile_image_override_id = NULL,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            [actor_id],
+        )
+        if cursor.rowcount != 1:
+            raise ApiError(404, "actor_not_found", "演员不存在")
+        obsolete_paths = ImageCleanupService.delete_image_record_if_unused(old_override)
+        ImageCleanupService.delete_obsolete_image_files(obsolete_paths)
+        return cls.get_actor_detail(actor_id)
 
     @classmethod
     def set_subscription(cls, actor_id: int, subscribed: bool) -> None:

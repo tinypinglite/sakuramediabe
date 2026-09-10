@@ -90,6 +90,7 @@ class MovieActorResource(SchemaModel):
     javdb_id: str = Field()
     name: str
     alias_name: str = Field()
+    display_name: str
     gender: int
     is_subscribed: bool = Field()
     profile_image: ImageResource | None = None

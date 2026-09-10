@@ -5,6 +5,14 @@ from .clips import (
     ClipCollectionSetClipsRequest,
     ClipCollectionUpdateRequest,
 )
+from .moments import (
+    MomentCollectionCreateRequest,
+    MomentCollectionPointItemResource,
+    MomentCollectionResource,
+    MomentCollectionSetPointsRequest,
+    MomentCollectionSummary,
+    MomentCollectionUpdateRequest,
+)
 from .playlists import (
     PlaylistCreateRequest,
     PlaylistMovieListItemResource,
@@ -18,6 +26,12 @@ __all__ = [
     "ClipCollectionResource",
     "ClipCollectionSetClipsRequest",
     "ClipCollectionUpdateRequest",
+    "MomentCollectionCreateRequest",
+    "MomentCollectionPointItemResource",
+    "MomentCollectionResource",
+    "MomentCollectionSetPointsRequest",
+    "MomentCollectionSummary",
+    "MomentCollectionUpdateRequest",
     "PlaylistCreateRequest",
     "PlaylistMovieListItemResource",
     "PlaylistResource",

@@ -24,6 +24,8 @@ from .collections import (
     SYSTEM_PLAYLIST_KINDS,
     ClipCollection,
     ClipCollectionItem,
+    MomentCollection,
+    MomentCollectionItem,
     Playlist,
     PlaylistMovie,
 )
@@ -90,6 +92,8 @@ __all__ = [
     "MediaPoint",
     "MediaProgress",
     "MediaThumbnail",
+    "MomentCollection",
+    "MomentCollectionItem",
     "MomentRecommendation",
     "Movie",
     "MovieActor",

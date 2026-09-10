@@ -171,11 +171,19 @@ class HotActressReleaseService:
         movies = [movies_by_id[item.movie_id] for item in scored_movies if item.movie_id in movies_by_id]
         MovieRecommendationService._attach_movie_flags(movies)
 
+        profile_image_override = Image.alias()
         actors_by_id = {
             actor.id: actor
             for actor in (
-                Actor.select(Actor, Image)
+                Actor.select(Actor, Image, profile_image_override)
                 .join(Image, JOIN.LEFT_OUTER, on=(Actor.profile_image == Image.id))
+                .switch(Actor)
+                .join(
+                    profile_image_override,
+                    JOIN.LEFT_OUTER,
+                    on=(Actor.profile_image_override == profile_image_override.id),
+                    attr="profile_image_override",
+                )
                 .where(Actor.id.in_(actor_ids))
             )
         }
@@ -190,7 +198,8 @@ class HotActressReleaseService:
                 {
                     "id": actor.id,
                     "name": actor.name,
-                    "profile_image": actor.profile_image,
+                    "display_name": actor.display_name,
+                    "profile_image": actor.effective_profile_image,
                     "historical_movie_count": scored_movie.historical_movie_count,
                     "hotness_score": round(scored_movie.score, 4),
                 }

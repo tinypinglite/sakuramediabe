@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 
 from src.api.exception.errors import ApiError
 from src.api.routers._utils import sse_streaming_response, to_sse_event
@@ -10,6 +10,7 @@ from src.schema.catalog.actors import (
     ActorListGender,
     ActorListSubscriptionStatus,
     ActorResource,
+    ActorUpdateRequest,
     YearResource,
 )
 from src.schema.catalog.movies import TagResource
@@ -96,6 +97,39 @@ def search_javdb_actor_stream(
 )
 def get_actor(actor_id: int):
     return ActorService.get_actor_detail(actor_id)
+
+
+@router.patch(
+    "/{actor_id}", response_model=ActorDetailResource, response_model_by_alias=False
+)
+def update_actor(actor_id: int, payload: ActorUpdateRequest):
+    return ActorService.update_profile(actor_id, payload)
+
+
+@router.put(
+    "/{actor_id}/profile-image",
+    response_model=ActorDetailResource,
+    response_model_by_alias=False,
+)
+async def upload_actor_profile_image(
+    actor_id: int,
+    file: UploadFile = File(...),
+):
+    content = await file.read()
+    return ActorService.upload_profile_image(
+        actor_id,
+        content=content,
+        content_type=file.content_type,
+    )
+
+
+@router.delete(
+    "/{actor_id}/profile-image",
+    response_model=ActorDetailResource,
+    response_model_by_alias=False,
+)
+def clear_actor_profile_image(actor_id: int):
+    return ActorService.clear_profile_image(actor_id)
 
 
 @router.put("/{actor_id}/subscription", status_code=status.HTTP_204_NO_CONTENT)
