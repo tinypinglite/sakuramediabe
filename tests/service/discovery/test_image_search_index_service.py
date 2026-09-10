@@ -163,12 +163,13 @@ def test_index_task_drains_both_queues_in_bounded_round_robin_batches(
     thumbnail_store = _Store("thumbnail", trace)
     plot_store = _Store("plot", trace)
     embedder = _Embedder()
+    progress = []
 
     stats = ImageSearchIndexService(
         store=thumbnail_store,
         plot_store=plot_store,
         embedder=embedder,
-    ).index_pending_images()
+    ).index_pending_images(progress_callback=progress.append)
 
     assert stats == {
         "processed_thumbnails": 3,
@@ -177,6 +178,10 @@ def test_index_task_drains_both_queues_in_bounded_round_robin_batches(
         "processed_plot_images": 3,
         "successful_plot_images": 3,
         "failed_plot_images": 0,
+        "processed": 6,
+        "succeeded": 6,
+        "failed": 0,
+        "pending": 0,
     }
     assert trace == ["thumbnail", "plot", "thumbnail", "plot"]
     assert [len(batch) for batch in thumbnail_store.batches] == [2, 1]
@@ -184,6 +189,12 @@ def test_index_task_drains_both_queues_in_bounded_round_robin_batches(
     assert embedder.batch_sizes == [1, 1, 1, 1, 1, 1]
     assert thumbnail_store.ensure_table_calls == 1
     assert plot_store.ensure_table_calls == 1
+    assert progress[0]["current"] == 0
+    assert progress[0]["total"] == 0
+    assert progress[1]["current"] == 0
+    assert progress[1]["total"] == 6
+    assert progress[-1]["current"] == progress[-1]["total"] == 6
+    assert progress[-1]["summary_patch"] == stats
     assert all(
         item.image_search_index_status
         == MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
@@ -219,12 +230,13 @@ def test_reset_task_clears_vectors_then_reindexes_current_space(
     trace: list[str] = []
     thumbnail_store = _Store("thumbnail", trace)
     plot_store = _Store("plot", trace)
+    progress = []
 
     stats = ImageSearchIndexService(
         store=thumbnail_store,
         plot_store=plot_store,
         embedder=_Embedder(),
-    ).index_pending_images(reset=True)
+    ).index_pending_images(progress_callback=progress.append, reset=True)
 
     assert trace == ["clear-thumbnail", "clear-plot", "thumbnail", "plot"]
     assert thumbnail_store.clear_count == 1
@@ -234,6 +246,18 @@ def test_reset_task_clears_vectors_then_reindexes_current_space(
     assert stats["sessions_deleted"] == 1
     assert stats["thumbnails_reset"] == 1
     assert stats["plot_images_reset"] == 1
+    assert stats["processed"] == 2
+    assert stats["succeeded"] == 2
+    assert stats["failed"] == 0
+    assert stats["pending"] == 0
+    assert progress[0]["text"] == "阶段 1/2 · 重置旧索引 · 正在清空图像搜索索引"
+    assert any(
+        item["text"].startswith("阶段 1/2 · 重置旧索引 · 已完成") for item in progress
+    )
+    assert any(
+        item["text"].startswith("阶段 2/2 · 构建图像搜索索引")
+        for item in progress
+    )
     assert (
         MediaThumbnail.get_by_id(thumbnails[0].id).image_search_index_status
         == MediaThumbnail.IMAGE_SEARCH_INDEX_STATUS_SUCCESS
