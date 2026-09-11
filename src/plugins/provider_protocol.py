@@ -18,6 +18,8 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 JsonObject: TypeAlias = dict[str, Any]
+ScanProgressCallback: TypeAlias = Callable[[JsonObject], None]
+SCAN_PROGRESS_HOST_API_VERSION = 7
 PlaybackDelivery: TypeAlias = Literal["proxy", "redirect"]
 MergedPlaybackFormat: TypeAlias = Literal["mp4", "hls"]
 MEDIA_PROVIDER_EXTENSION_KEY = "media.provider"
@@ -313,7 +315,10 @@ class StorageProvider(Protocol):
         self, *, parent_ref: JsonObject | None, cursor: str | None, limit: int
     ) -> BrowsePage: ...
 
-    def scan_import_source(self, *, source_ref: JsonObject) -> Iterable[ImportFile]: ...
+    def scan_import_source(
+        self, *, source_ref: JsonObject,
+        progress_callback: ScanProgressCallback | None = None,
+    ) -> Iterable[ImportFile]: ...
 
     def read_import_file(self, *, source: ImportFile) -> ImportFileContent: ...
 
@@ -341,7 +346,8 @@ class StorageProvider(Protocol):
     ) -> Response: ...
 
     def generate_thumbnails(
-        self, *, media: MediaHandle, workspace: Path
+        self, *, media: MediaHandle, workspace: Path,
+        progress_callback: Callable[[str], None] | None = None,
     ) -> ThumbnailGeneration: ...
 
     def create_clip(
@@ -559,6 +565,10 @@ class MediaProviderRegistry:
 
     def __init__(self) -> None:
         self._bundles: dict[str, tuple[str, MediaProviderBundle]] = {}
+        self._host_api_versions: dict[str, int] = {}
+
+    def supports_scan_progress(self, provider_key: str) -> bool:
+        return self._host_api_versions.get(provider_key, 0) >= SCAN_PROGRESS_HOST_API_VERSION
 
     def require(self, provider_key: str) -> MediaProviderBundle:
         entry = self._bundles.get(provider_key)
@@ -590,6 +600,7 @@ class MediaProviderRegistry:
         """Build the startup provider table and return conflicting plugin IDs."""
         bundles: dict[str, tuple[str, MediaProviderBundle]] = {}
         rejected: set[str] = set()
+        versions: dict[str, int] = {}
         for registration in registrations:
             for extension in registration.extensions:
                 if extension.key != MEDIA_PROVIDER_EXTENSION_KEY:
@@ -600,7 +611,9 @@ class MediaProviderRegistry:
                     rejected.add(registration.plugin_id)
                 else:
                     bundles[provider_key] = (registration.plugin_id, bundle)
+                    versions[provider_key] = registration.host_api_version
         self._bundles = bundles
+        self._host_api_versions = versions
         return rejected
 
     def storage_for(self, library: LibraryHandle) -> StorageProvider:

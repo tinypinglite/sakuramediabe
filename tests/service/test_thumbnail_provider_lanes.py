@@ -15,7 +15,7 @@ def test_thumbnail_backend_failure_pauses_only_its_library(monkeypatch):
         lambda: [(1, ("cloud115", 1)), (2, ("cloud115", 1)), (3, ("local", 2))],
     )
 
-    def generate(media_id):
+    def generate(media_id, progress_callback):
         calls.append(media_id)
         if media_id == 1:
             return ThumbnailGenerationOutcome(
@@ -34,4 +34,7 @@ def test_thumbnail_backend_failure_pauses_only_its_library(monkeypatch):
     assert result["backend_deferred_media"] == 2
     assert result["successful_media"] == 1
     assert result["generated_thumbnails"] == 2
-    assert len(events) == 3
+    assert events[0]["current"] == 0
+    assert events[-1]["current"] == events[-1]["total"] == 3
+    assert "任务完成" in events[-1]["text"]
+    assert "延后 2" in events[-1]["text"]

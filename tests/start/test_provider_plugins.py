@@ -27,8 +27,8 @@ from src.plugins.provider_protocol import (
 )
 
 
-def test_plugin_protocol_uses_host_api_v8():
-    assert HOST_API_VERSION == 8
+def test_plugin_protocol_uses_host_api_v7():
+    assert HOST_API_VERSION == 7
 
 
 def test_provider_operation_error_rejects_unknown_code():
@@ -176,6 +176,7 @@ def test_media_provider_registry_builds_and_unloads_storage():
         (),
         {
             "plugin_id": "demo_plugin",
+            "host_api_version": 6,
             "extensions": (
                 PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
             ),
@@ -305,3 +306,20 @@ def test_loader_isolates_duplicate_media_provider_key(tmp_path):
     )
     assert [registration.plugin_id for registration in loaded] == ["first"]
     assert PLUGIN_LOAD_ERRORS["second"]["stage"] == "provider_registry"
+
+
+@pytest.mark.parametrize("api_version, supports_progress", [(6, False), (7, True)])
+def test_scan_progress_uses_manifest_version(tmp_path, api_version, supports_progress):
+    _write_bundle_plugin(tmp_path, "scan_plugin", "scan")
+    manifest_path = tmp_path / "scan_plugin" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["host_api_version"] = api_version
+    manifest_path.write_text(json.dumps(manifest))
+    loaded = load_enabled_plugins(Plugins(enabled=["scan_plugin"]), root_dir=tmp_path)
+    assert len(loaded) == 1
+    assert loaded[0].host_api_version == api_version
+    registry = MediaProviderRegistry()
+    registry.replace(loaded)
+    assert registry.supports_scan_progress("scan") is supports_progress
+    registry.replace(())
+    assert not registry.supports_scan_progress("scan")

@@ -253,7 +253,9 @@ def _load_plugin_dir(
         plugin_id=plugin_id,
         registration=registration,
     )
-    return registration.model_copy(update={"jobs": jobs})
+    return registration.model_copy(update={
+        "jobs": jobs, "host_api_version": manifest.host_api_version,
+    })
 
 
 def check_plugin_dir(

@@ -184,7 +184,12 @@ class MediaImportService:
             raise ApiError(422, "invalid_collection", "jav import does not support collection_id")
         storage = self._storage(library)
         try:
-            scanned_files = tuple(storage.scan_import_source(source_ref=source_ref))
+            if progress_callback is not None and MEDIA_PROVIDER_REGISTRY.supports_scan_progress(library.provider_key):
+                scanned_files = tuple(storage.scan_import_source(
+                    source_ref=source_ref, progress_callback=progress_callback,
+                ))
+            else:
+                scanned_files = tuple(storage.scan_import_source(source_ref=source_ref))
         except ProviderOperationError as exc:
             raise self._provider_error(exc) from exc
         except Exception as exc:
