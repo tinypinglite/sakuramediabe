@@ -23,6 +23,7 @@ from src.service.catalog.catalog_import_service import (
     ImageDownloadError,
 )
 from src.service.catalog.metadata_source_service import MetadataSourceService
+from src.service.catalog.movie_list_media_service import attach_movie_list_media
 from src.service.catalog.movie_service import MovieService
 
 
@@ -221,6 +222,7 @@ class MovieMetadataRefreshService:
         existing = find_movie_by_number(movie_number)
         if existing is not None and not existing.javdb_id and existing.metadata_source:
             movie = MovieService.movie_list_query().where(Movie.id == existing.id).get()
+            attach_movie_list_media([movie])
             yield "completed", {
                 "success": True,
                 "movies": [MovieListItemResource.from_attributes_model(movie).model_dump(exclude={"can_play"})],
@@ -267,6 +269,7 @@ class MovieMetadataRefreshService:
                         else service.import_plugin_movie(detail, source, provider)
                     )
                     movie_with_cover = MovieService.movie_list_query().where(Movie.id == movie.id).get_or_none() or movie
+                    attach_movie_list_media([movie_with_cover])
                     imported_movies.append(MovieListItemResource.from_attributes_model(movie_with_cover))
                     if created:
                         created_count += 1
@@ -446,6 +449,7 @@ class MovieMetadataRefreshService:
                 detail = provider.get_movie_by_javdb_id(movie_item.javdb_id)
                 movie, _created = import_service.import_movie_if_missing(detail)
                 movie_with_cover = MovieService.movie_list_query().where(Movie.id == movie.id).get_or_none() or movie
+                attach_movie_list_media([movie_with_cover])
                 imported_movies.append(MovieListItemResource.from_attributes_model(movie_with_cover))
                 created_count += 1
                 yield "movie_upsert_finished", {

@@ -16,8 +16,9 @@ from src.common.service_helpers import (
     find_movie_by_number,
     with_movie_card_relations,
 )
-from src.model import Media, Movie, MovieActor, MovieTag
+from src.model import Movie, MovieActor, MovieTag
 from src.schema.catalog.movies import MovieListItemResource
+from src.service.catalog.movie_list_media_service import attach_movie_list_media
 from src.service.discovery.qdrant_movie_similarity_store import (
     MovieSimilarityIndexError,
     MovieSimilarityIndexNotReadyError,
@@ -299,27 +300,6 @@ class MovieRecommendationService:
     ) -> dict[int, list[MovieSimilaritySearchHit]]:
         return self.store.search_many(source_movie_ids, limit=limit)
 
-    @staticmethod
-    def _attach_movie_flags(movies: Sequence[Movie]) -> None:
-        movie_numbers = [movie.movie_number for movie in movies]
-        if not movie_numbers:
-            return
-
-        playable_movie_numbers: set[str] = set()
-        media_rows = (
-            Media.select(Media.movie)
-            .where(
-                Media.valid == True,
-                Media.movie.in_(movie_numbers),
-            )
-            .tuples()
-        )
-        for (movie_number,) in media_rows:
-            playable_movie_numbers.add(movie_number)
-
-        for movie in movies:
-            movie.can_play = movie.movie_number in playable_movie_numbers
-
     def list_similar(
         self,
         movie_number: str,
@@ -368,7 +348,7 @@ class MovieRecommendationService:
                 Movie.id.in_(target_ids), Movie.is_blacklisted == False
             )
         }
-        self._attach_movie_flags(list(movies_by_id.values()))
+        attach_movie_list_media(list(movies_by_id.values()))
 
         items: list[SimilarMovieItem] = []
         for target_id in target_ids:

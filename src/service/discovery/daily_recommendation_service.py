@@ -28,6 +28,7 @@ from src.model import (
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.common.pagination import PageResponse
 from src.schema.discovery import DailyRecommendationMovieResource
+from src.service.catalog.movie_list_media_service import attach_movie_list_media
 from src.service.discovery.qdrant_movie_similarity_store import (
     MovieSimilarityIndexError,
 )
@@ -434,7 +435,7 @@ class DailyRecommendationService:
             movie.id: movie
             for movie in movie_query.where(Movie.id.in_(movie_ids))
         }
-        MovieRecommendationService._attach_movie_flags(list(movies_by_id.values()))
+        attach_movie_list_media(list(movies_by_id.values()))
         today = runtime_now().date()
 
         items: list[DailyRecommendationMovieResource] = []

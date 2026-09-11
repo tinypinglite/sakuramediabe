@@ -14,7 +14,7 @@ from src.common.service_helpers import (
     with_movie_card_relations,
 )
 from src.metadata.factory import build_javdb_provider
-from src.model import Media, Movie, RankingItem, get_database
+from src.model import Movie, RankingItem, get_database
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.discovery import (
     RankedMovieListItemResource,
@@ -23,6 +23,7 @@ from src.schema.discovery import (
     RankingSourceResource,
 )
 from src.service.catalog.catalog_import_service import CatalogImportService
+from src.service.catalog.movie_list_media_service import attach_movie_list_media
 
 
 @dataclass(frozen=True)
@@ -255,23 +256,12 @@ class RankingCatalogService:
             )
 
         movie_ids = [item.movie_id for item in ranking_rows]
-        movie_numbers = [item.movie_number for item in ranking_rows]
         movie_query, _thin_cover_alias = with_movie_card_relations(Movie.select(Movie))
         movies = {
             movie.id: movie
             for movie in movie_query.where(Movie.id.in_(movie_ids))
         }
-        playable_movie_numbers: set[str] = set()
-        media_rows = (
-            Media.select(Media.movie)
-            .where(
-                Media.valid == True,
-                Media.movie.in_(movie_numbers),
-            )
-            .tuples()
-        )
-        for (movie_number,) in media_rows:
-            playable_movie_numbers.add(movie_number)
+        attach_movie_list_media(list(movies.values()))
 
         items: list[RankedMovieListItemResource] = []
         for ranking_row in ranking_rows:
@@ -279,7 +269,6 @@ class RankingCatalogService:
             if movie is None:
                 continue
             movie_item = MovieListItemResource.from_attributes_model(movie)
-            movie_item.can_play = movie.movie_number in playable_movie_numbers
             items.append(
                 RankedMovieListItemResource.model_validate(
                     {

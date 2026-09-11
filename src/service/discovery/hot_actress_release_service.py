@@ -13,7 +13,7 @@ from src.model import Actor, Image, Movie, MovieActor
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.common.pagination import PageResponse
 from src.schema.discovery import HotActressReleaseMovieResource, HotActressResource
-from src.service.discovery.recommendation_service import MovieRecommendationService
+from src.service.catalog.movie_list_media_service import attach_movie_list_media
 
 
 @dataclass(frozen=True)
@@ -169,7 +169,7 @@ class HotActressReleaseService:
             for movie in movie_query.where(Movie.id.in_(movie_ids))
         }
         movies = [movies_by_id[item.movie_id] for item in scored_movies if item.movie_id in movies_by_id]
-        MovieRecommendationService._attach_movie_flags(movies)
+        attach_movie_list_media(movies)
 
         profile_image_override = Image.alias()
         actors_by_id = {

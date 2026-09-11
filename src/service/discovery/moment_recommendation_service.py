@@ -27,6 +27,7 @@ from src.schema.discovery import (
     MomentRecommendationItemResource,
     MomentRecommendationPageResource,
 )
+from src.service.catalog.movie_list_media_service import attach_movie_list_media
 from src.service.discovery.embedding_client import (
     EmbeddingClientError,
     get_embedding_client,
@@ -536,7 +537,7 @@ class MomentRecommendationService:
             movie.id: movie
             for movie in movie_query.where(Movie.id.in_([row.movie_id for row in rows]))
         }
-        MovieRecommendationService._attach_movie_flags(list(movies_by_id.values()))
+        attach_movie_list_media(list(movies_by_id.values()))
 
         items: list[MomentRecommendationItemResource] = []
         for row in rows:

@@ -38,6 +38,7 @@ from src.schema.collections.playlists import (
 )
 from src.schema.common.pagination import PageResponse
 from src.schema.common.playlists import PlaylistSummaryResource
+from src.service.catalog.movie_list_media_service import attach_movie_list_media
 
 # 系统列表内部展示次序：最近播放在前，自定义列表在后。
 _SYSTEM_KIND_ORDER = (
@@ -377,11 +378,11 @@ class PlaylistService:
         if order_by is None:
             order_by = [PlaylistMovie.updated_at.desc(), PlaylistMovie.id.desc()]
         links = list(query.order_by(*order_by).offset(start).limit(page_size))
+        attach_movie_list_media([link.movie for link in links])
         items: list[PlaylistMovieListItemResource] = []
         for link in links:
             # schema 读取的是 Movie 对象，所以把列表关系上的附加信息临时挂回 movie 实例。
             link.movie.playlist_item_updated_at = link.updated_at
-            link.movie.can_play = getattr(link.movie, "can_play", getattr(link, "can_play", False))
             items.append(PlaylistMovieListItemResource.from_attributes_model(link.movie))
         return PageResponse[PlaylistMovieListItemResource](
             items=items,

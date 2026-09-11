@@ -1,11 +1,12 @@
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field, field_validator
 
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+from src.schema.common.media import MediaSummaryResource
 from src.schema.common.playlists import PlaylistSummaryResource
 
 
@@ -68,6 +69,8 @@ class MovieListItemResource(SchemaModel):
     is_subscribed: bool
     is_blacklisted: bool = False
     can_play: bool = False
+    media_count: int = 0
+    media_items: list[MediaSummaryResource] = Field(default_factory=list)
 
     @field_validator("release_date", mode="before")
     @classmethod
@@ -119,18 +122,9 @@ class MovieMediaPointResource(SchemaModel):
     image: ImageResource
 
 
-class MovieMediaResource(SchemaModel):
-    media_id: int = Field(validation_alias="id")
-    library_id: int | None = None
-    provider_key: str | None = None
+class MovieMediaResource(MediaSummaryResource):
     play_url: str
     playback_deliveries: list[Literal["proxy", "redirect"]]
-    file_name: str = ""
-    resolution: str | None = None
-    file_size_bytes: int = 0
-    duration_seconds: int = 0
-    video_info: dict[str, Any] | None = None
-    valid: bool = True
     progress: MovieMediaProgressResource | None = None
     points: list[MovieMediaPointResource] = Field(default_factory=list)
 

@@ -3,7 +3,7 @@ from math import log1p
 
 import pytest
 
-from src.model import Actor, Movie, MovieActor
+from src.model import Actor, Media, MediaLibrary, Movie, MovieActor
 from src.service.discovery.hot_actress_release_service import HotActressReleaseService
 
 TODAY = date(2026, 8, 23)
@@ -54,6 +54,8 @@ def test_hot_actress_releases_use_only_matured_single_female_history_and_keep_du
     _create_movie("COLLECTION", TODAY - timedelta(days=90), 100_000, [actress], is_collection=True)
 
     first_new = _create_movie("NEW-1", TODAY + timedelta(days=10), 0, [actress])
+    library = MediaLibrary.create(name="Hot release library", provider_key="not-installed")
+    media = Media.create(movie=first_new, library=library, file_name="new.mp4", resolution="1920x1080")
     second_new = _create_movie("NEW-2", TODAY + timedelta(days=20), 0, [actress, second_actress])
     self_history = _create_movie("SELF-HISTORY", TODAY - timedelta(days=80), 100_000, [actress])
     _create_movie("MALE-ONLY", TODAY + timedelta(days=15), 0, [male_actor])
@@ -72,6 +74,10 @@ def test_hot_actress_releases_use_only_matured_single_female_history_and_keep_du
         "TOO-NEW",
     }
     assert response.total == 5
+    assert items_by_number["NEW-1"].media_count == 1
+    assert items_by_number["NEW-1"].media_items[0].media_id == media.id
+    assert items_by_number["NEW-1"].media_items[0].library_name == library.name
+    assert items_by_number["NEW-1"].can_play is True
     assert items_by_number["NEW-2"].hot_actress.id == actress.id
 
     expected_self_score = sum(

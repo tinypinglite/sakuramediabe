@@ -35,6 +35,8 @@ def test_movie_detail_exposes_media_playback_deliveries(
     )
 
     assert response.status_code == 200
+    assert response.json()["media_count"] == 1
+    assert response.json()["media_items"][0]["library_name"] == "detail-library"
     assert response.json()["media_items"][0]["media_id"] == media.id
     assert response.json()["media_items"][0]["playback_deliveries"] == ["proxy", "redirect"]
 

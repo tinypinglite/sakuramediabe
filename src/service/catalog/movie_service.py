@@ -73,6 +73,7 @@ from src.schema.catalog.movies import (
     TagResource,
 )
 from src.schema.common.pagination import PageResponse
+from src.service.catalog.movie_list_media_service import attach_movie_list_media
 from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
 from src.service.collections import PlaylistService
 from src.service.playback.provider_helpers import library_handle_for, media_handle_for
@@ -424,6 +425,7 @@ class MovieService:
             media.play_url = build_signed_media_url(
                 media.id, delivery=bundle.playback_deliveries[0]
             )
+            media.library_name = media.library.name
             media.provider_key = media.library.provider_key
             media.playback_deliveries = list(bundle.playback_deliveries)
             resources.append(MovieMediaResource.from_attributes_model(media))
@@ -533,6 +535,7 @@ class MovieService:
         movie.tags = tags
         movie.plot_images = MovieService._plot_images(movie)
         movie.media_items = MovieService._media_items(movie)
+        movie.media_count = len(movie.media_items)
         movie.merge_playback_candidates = MovieService._merge_playback_candidates(movie)
         movie.playlists = PlaylistService.list_movie_playlists(movie)
         movie.can_play = any(media_item.valid for media_item in movie.media_items)
@@ -588,6 +591,7 @@ class MovieService:
                 blacklisted=blacklisted,
             ).offset(start).limit(page_size)
         )
+        attach_movie_list_media(movies)
         return PageResponse[MovieListItemResource](
             items=MovieListItemResource.from_items(movies),
             page=page,
@@ -609,6 +613,7 @@ class MovieService:
             .offset(start)
             .limit(page_size)
         )
+        attach_movie_list_media(movies)
         return PageResponse[MovieListItemResource](
             items=MovieListItemResource.from_items(movies),
             page=page,
@@ -624,6 +629,7 @@ class MovieService:
         start = max(page - 1, 0) * page_size
         total = Movie.select(Movie.id).join(Media).group_by(Movie.id).count()
         movies = list(MovieService._latest_movies_query().offset(start).limit(page_size))
+        attach_movie_list_media(movies)
         return PageResponse[MovieListItemResource](
             items=MovieListItemResource.from_items(movies),
             page=page,
@@ -641,6 +647,7 @@ class MovieService:
         movies = list(
             MovieService._subscribed_actor_latest_movies_query().offset(start).limit(page_size)
         )
+        attach_movie_list_media(movies)
         return PageResponse[MovieListItemResource](
             items=MovieListItemResource.from_items(movies),
             page=page,
@@ -673,6 +680,7 @@ class MovieService:
         if movie is None:
             return []
         movies = list(cls.movie_list_query().where(Movie.id == movie.id))
+        attach_movie_list_media(movies)
         return MovieListItemResource.from_items(movies)
 
     @classmethod
