@@ -49,33 +49,26 @@ def parse_movie_number_from_text(value: str) -> str:
 
 
 def normalize_movie_number(value: str) -> str:
-    """番号的**匹配键**：只用于两个番号字符串之间的宽松相等比较，绝不用于落库改写。
+    """番号匹配键；纯数字番号保留分隔符，其他番号沿用宽松匹配。
 
-    ``_`` -> ``-`` 与抹 ``PPV-`` 都是有损折叠（``072625_001`` 一本道与 ``072625-001`` 加勒比
-    是两部不同影片），所以库里的 ``movie.movie_number`` 永远存 provider（JavDB）给出的规范
-    原样（``Movie.save()`` 只 strip）；本函数只出现在"两侧同时折叠后比较"的场景（字幕配对、
-    provider 番号一致性校验、合集前缀判定等）。
-
-    人工输入按番号查库不要用它——那会因大小写/分隔符与列的原样形态对不上而 miss，
-    统一走 ``movie_number_lookup_values`` + ``UPPER(movie_number) IN (...)``（有函数索引）。
+    仅用于匹配，不用于落库改写。人工输入查库走 movie_number_lookup_values。
     """
     normalized = (value or "").strip().upper()
     normalized = normalized.replace(" ", "")
+    if re.fullmatch(r"\d+[-_]\d+", normalized):
+        return normalized
     normalized = normalized.replace("_", "-")
     normalized = normalized.replace("PPV-", "")
     return normalized
 
 
 def movie_number_lookup_values(value: str) -> list[str]:
-    """人工输入 -> 按番号点查的等值候选集（已大写，去重保序）。
-
-    列里存的是 provider 规范原样，用户手输的大小写/分隔符未必一致：大小写交给
-    ``UPPER(movie_number)``（配套函数索引 ``movie_movie_number_upper``），分隔符靠
-    候选集把 ``_``/``-`` 两种形态都列出来。等值 IN 走索引，不做模糊匹配，也不改写库值。
-    """
+    """人工输入的等值候选集；纯数字番号不互换分隔符，其他番号先原形后互换。"""
     stripped = (value or "").strip().upper()
     if not stripped:
         return []
+    if re.fullmatch(r"\d+[-_]\d+", stripped):
+        return [stripped]
     candidates = [stripped]
     for swapped in (stripped.replace("_", "-"), stripped.replace("-", "_")):
         if swapped not in candidates:

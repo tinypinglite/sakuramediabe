@@ -173,3 +173,39 @@ def test_javdb_adapter_keeps_original_avatar_when_gfriends_fails():
     detail = provider.get_movie_by_number("ABP-001")
 
     assert detail.actors[0].avatar_url == "https://javdb.example/avatar.jpg"
+
+
+@pytest.mark.parametrize("number,other", [("072625_001", "072625-001"), ("072625-001", "072625_001")])
+@pytest.mark.parametrize("include_match", [False, True])
+def test_javdb_search_preserves_numeric_separator(monkeypatch, number, other, include_match):
+    from src.metadata._providers.exceptions import MetadataNotFoundError
+
+    provider = JavdbProvider("example.com")
+    movies = [{"number": other, "id": "wrong", "release_date": "2026-01-02"}]
+    if include_match:
+        movies.append({"number": number, "id": "correct", "release_date": "2026-01-01"})
+    monkeypatch.setattr(provider, "request_json", lambda *args, **kwargs: {"data": {"movies": movies}})
+    try:
+        if include_match:
+            assert provider._search_movie(number)["id"] == "correct"
+        else:
+            with pytest.raises(MetadataNotFoundError):
+                provider._search_movie(number)
+    finally:
+        provider.client.close()
+
+
+@pytest.mark.parametrize("number,other", [("072625_001", "072625-001"), ("072625-001", "072625_001")])
+def test_metadata_refresh_rejects_other_numeric_movie(number, other):
+    from types import SimpleNamespace
+
+    from src.common.service_helpers import ApiError
+    from src.service.catalog.movie_metadata_refresh_service import (
+        MovieMetadataRefreshService,
+    )
+
+    with pytest.raises(ApiError):
+        MovieMetadataRefreshService._validate_remote_movie_metadata_number(
+            movie=SimpleNamespace(movie_number=number),
+            detail=SimpleNamespace(movie_number=other),
+        )

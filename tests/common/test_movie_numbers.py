@@ -1,17 +1,10 @@
-"""番号处理函数的回归护栏。
-
-这些边界全部在真实数据上踩过坑：
-- 库里的规范番号来自 provider 原样，一本道用下划线（072625_001）、加勒比用横杠（072625-001），
-  是两部不同影片；东热（n0646）与欧美（Vixen.2026.05.07）是小写。任何"写入侧归一化"都会
-  损坏它们，normalize_movie_number 因此只允许当匹配键用，绝不落库。
-- 人工输入点查走 movie_number_lookup_values 候选集：先精确后互换，两种分隔符影片同时存在时
-  必须命中用户输入的那一部。
-"""
+"""番号匹配保留纯数字分隔符，其他番号保持已有宽松规则。"""
 
 from src.common.movie_numbers import (
     movie_number_lookup_values,
     normalize_movie_number,
     parse_movie_number_from_text,
+    subtitle_matches_movie_number,
 )
 
 
@@ -45,7 +38,9 @@ class TestNormalizeMovieNumber:
     def test_folds_case_space_and_separator(self):
         assert normalize_movie_number("  abc-123 ") == "ABC-123"
         assert normalize_movie_number("ABC 123") == "ABC123"
-        assert normalize_movie_number("072625_001") == "072625-001"
+        assert normalize_movie_number("ABC_123") == "ABC-123"
+        for number in ("072625_001", "072625-001", "1_22", "1-22"):
+            assert normalize_movie_number(number) == number
 
     def test_strips_ppv_prefix(self):
         # 有损折叠：仅用于两侧同时折叠后的比较（字幕配对、provider 一致性校验）。
@@ -58,9 +53,9 @@ class TestNormalizeMovieNumber:
 
 class TestMovieNumberLookupValues:
     def test_exact_candidate_comes_first(self):
-        # 先精确后互换：一本道/加勒比同日番号同时在库时，必须先命中用户输入的形态。
-        assert movie_number_lookup_values("072625_001") == ["072625_001", "072625-001"]
-        assert movie_number_lookup_values("072625-001") == ["072625-001", "072625_001"]
+        # 纯数字番号只能命中自身。
+        assert movie_number_lookup_values("072625_001") == ["072625_001"]
+        assert movie_number_lookup_values("072625-001") == ["072625-001"]
 
     def test_case_folded_but_shape_preserved(self):
         # 大小写交给 UPPER(movie_number) 抹平，候选集只负责分隔符形态。
@@ -77,3 +72,10 @@ class TestMovieNumberLookupValues:
         assert movie_number_lookup_values("") == []
         assert movie_number_lookup_values("   ") == []
         assert movie_number_lookup_values(None) == []
+
+
+def test_subtitle_pairing_preserves_numeric_separator():
+    for number, other in (("072625_001", "072625-001"), ("072625-001", "072625_001")):
+        assert subtitle_matches_movie_number(number + ".srt", number)
+        assert not subtitle_matches_movie_number(other + ".srt", number)
+    assert subtitle_matches_movie_number("ABC-123.srt", "ABC_123")

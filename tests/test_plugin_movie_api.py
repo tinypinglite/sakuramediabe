@@ -69,7 +69,7 @@ def test_movies_get_returns_snapshot_or_none(test_db):
     assert api.get(999999) is None
 
 
-def test_movies_find_by_numbers_is_case_and_separator_insensitive(test_db):
+def test_movies_find_by_numbers_preserves_numeric_separator(test_db):
     _create_movie(test_db, movie_number="ABP-001")
     _create_movie(test_db, javdb_id="javdb-2", movie_number="072625_001")
     api = MovieApi("demo_plugin")
@@ -78,8 +78,11 @@ def test_movies_find_by_numbers_is_case_and_separator_insensitive(test_db):
     snapshots = api.find_by_numbers(["abp-001"])
     assert [snapshot.values["movie_number"] for snapshot in snapshots] == ["ABP-001"]
 
-    snapshots = api.find_by_numbers(["072625-001"])
-    assert [snapshot.values["movie_number"] for snapshot in snapshots] == ["072625_001"]
+    assert api.find_by_numbers(["072625-001"]) == []
+    _create_movie(test_db, javdb_id="javdb-3", movie_number="072625-001")
+    snapshots = api.find_by_numbers(["072625-001", "072625_001"])
+    assert [snapshot.values["movie_number"] for snapshot in snapshots] == ["072625-001", "072625_001"]
+    assert api.find_by_numbers(["abp_001"])[0].values["movie_number"] == "ABP-001"
 
     # 找不到的番号跳过；重复番号按输入顺序去重。
     snapshots = api.find_by_numbers(["abp-001", "ZZZ-999", "ABP-001"])

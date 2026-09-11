@@ -755,3 +755,16 @@ def test_ranking_hit_backfills_existing_plugin_movie(metadata_env, monkeypatch):
     service.sync_board_period("test_rank", "all", None)
     assert Movie.get_by_id(movie.id).javdb_id == "real-id"
     assert Movie.select().count() == 1
+
+
+@pytest.mark.parametrize("number,other", [("072625_001", "072625-001"), ("072625-001", "072625_001")])
+def test_plugin_import_keeps_numeric_movies_separate(metadata_env, monkeypatch, number, other):
+    existing = Movie.create(movie_number=other, title="Other movie", javdb_id=None)
+    detail = delivery(metadata_env, movie_number=number)
+    register_sources(monkeypatch, {"metadata_one": Mock(return_value=detail)})
+    movie, created = MetadataSourceService.import_by_number(
+        number, metadata_env.provider, metadata_env.service
+    )
+    assert created and movie.id != existing.id
+    assert movie.movie_number == number
+    assert {row.movie_number for row in Movie.select()} == {number, other}
