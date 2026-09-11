@@ -42,10 +42,13 @@ def test_groups_by_jav_movie_across_libraries_without_hash_requirement(client, a
     assert group['media_items'][2]['valid'] is False
 
 
-def test_pagination_counts_movies_and_returns_all_versions(test_db):
+def test_pagination_excludes_vr_numbers_and_returns_all_versions(test_db):
     library = MediaLibrary.create(name='local', provider_key='local')
     timestamp = datetime(2026, 1, 1)
-    for number in ['MULTI-003', 'MULTI-001', 'MULTI-002']:
+    for number in [
+        'MULTI-003', 'MULTI-001', 'MULTI-002',
+        'VR-001', 'AAA-VR-001', 'AAA-001vr', 'AAA-Vr-002',
+    ]:
         movie = Movie.create(movie_number=number, javdb_id=number, title=number)
         for index in range(3):
             Media.create(movie=movie, library=library, file_name=str(index), updated_at=timestamp)

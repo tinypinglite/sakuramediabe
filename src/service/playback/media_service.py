@@ -295,7 +295,7 @@ class MediaService:
         validate_page(page, page_size, error_code="invalid_media_filter")
         groups = (
             Media.select(Media.movie)
-            .where(Media.movie.is_null(False))
+            .where(Media.movie.is_null(False), ~Media.movie.contains("VR"))
             .group_by(Media.movie)
             .having(peewee.fn.COUNT(Media.id) > 1)
         )
