@@ -135,3 +135,9 @@ class DuplicateMediaGroupResource(SchemaModel):
     kind: Literal["jav", "video"]
     media_count: int
     media_items: list[DuplicateMediaListItemResource]
+
+
+class MultiVersionMovieResource(SchemaModel):
+    movie_number: str
+    media_count: int
+    media_items: list[MediaListItemResource]

@@ -37,6 +37,7 @@ from src.schema.playback.media import (
     MediaProgressUpdateRequest,
     MediaThumbnailGenerationState,
     MediaThumbnailResource,
+    MultiVersionMovieResource,
 )
 from src.service.playback import MediaService
 from src.service.playback.provider_helpers import library_handle_for, media_handle_for
@@ -150,6 +151,15 @@ def list_duplicate_media_groups(
         page=page,
         page_size=page_size,
     )
+
+
+@router.get("/multi-version-movies", response_model=PageResponse[MultiVersionMovieResource])
+def list_multi_version_movies(
+    page: int = 1,
+    page_size: int = 20,
+    current_user=Depends(get_current_user),
+):
+    return MediaService.list_multi_version_movies(page=page, page_size=page_size)
 
 
 def _parse_merged_media_ids(raw: str | None) -> tuple[int, ...]:

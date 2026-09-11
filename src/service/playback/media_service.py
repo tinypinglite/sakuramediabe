@@ -49,6 +49,7 @@ from src.schema.playback.media import (
     MediaProgressUpdateRequest,
     MediaThumbnailGenerationState,
     MediaThumbnailResource,
+    MultiVersionMovieResource,
 )
 from src.schema.videos.items import VideoCollectionRef
 from src.service.catalog.image_cleanup_service import ImageCleanupService
@@ -285,6 +286,46 @@ class MediaService:
             page=page,
             page_size=page_size,
             total=total,
+        )
+
+    @classmethod
+    def list_multi_version_movies(
+        cls, *, page: int = 1, page_size: int = 20,
+    ) -> PageResponse[MultiVersionMovieResource]:
+        validate_page(page, page_size, error_code="invalid_media_filter")
+        groups = (
+            Media.select(Media.movie)
+            .where(Media.movie.is_null(False))
+            .group_by(Media.movie)
+            .having(peewee.fn.COUNT(Media.id) > 1)
+        )
+        total = groups.count()
+        movie_numbers = [
+            number for (number,) in (
+                groups.order_by(peewee.fn.MAX(Media.updated_at).desc(), Media.movie.asc())
+                .offset((page - 1) * page_size).limit(page_size).tuples()
+            )
+        ]
+        media_by_movie: dict[str, list[MediaListItemResource]] = {
+            number: [] for number in movie_numbers
+        }
+        if movie_numbers:
+            rows = (
+                cls._media_list_query()
+                .where(Media.movie.in_(movie_numbers))
+                .order_by(Media.created_at.asc(), Media.id.asc())
+            )
+            for media in rows:
+                media_by_movie[media.movie_number].append(cls._to_media_list_item_resource(media))
+        return PageResponse[MultiVersionMovieResource](
+            items=[
+                MultiVersionMovieResource(
+                    movie_number=number, media_count=len(items), media_items=items,
+                )
+                for number, items in media_by_movie.items()
+                if len(items) > 1
+            ],
+            page=page, page_size=page_size, total=total,
         )
 
     @classmethod
