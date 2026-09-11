@@ -82,23 +82,26 @@ def get_plugin(plugin_id: str):
     return detail
 
 
-@router.get("/{plugin_id}/settings", response_model=PluginSettingsResource)
+@router.get("/{plugin_id}/settings", response_model=PluginSettingsResource, response_model_exclude_none=True)
 def get_plugin_settings(plugin_id: str):
     manager = PluginManager()
     try:
         settings_values = manager.get_plugin_settings(plugin_id)
+        definition = manager.get_plugin_settings_definition(plugin_id)
+    except PluginSettingsValidationError as exc:
+        raise ApiError(422, "invalid_plugin_settings", str(exc), {"fields": exc.errors}) from exc
     except ValueError as exc:
         raise ApiError(404, "plugin_not_found", str(exc)) from exc
-    return PluginSettingsResource(settings=settings_values)
+    return PluginSettingsResource(settings=settings_values, **definition)
 
 
-@router.put("/{plugin_id}/settings", response_model=PluginSettingsUpdateResource)
+@router.put("/{plugin_id}/settings", response_model=PluginSettingsUpdateResource, response_model_exclude_none=True)
 def update_plugin_settings(plugin_id: str, payload: dict[str, Any] = Body(...)):
     manager = PluginManager()
     try:
         settings_values = manager.set_plugin_settings(plugin_id, payload)
     except PluginSettingsValidationError as exc:
-        raise ApiError(422, "invalid_plugin_settings", str(exc)) from exc
+        raise ApiError(422, "invalid_plugin_settings", str(exc), {"fields": exc.errors}) from exc
     except ValueError as exc:
         raise ApiError(404, "plugin_not_found", str(exc)) from exc
     return PluginSettingsUpdateResource(

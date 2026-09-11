@@ -23,6 +23,7 @@ class PluginManifest(BaseModel):
     display_name: str = Field(min_length=1)
     version: str = Field(min_length=1)
     host_api_version: int = Field(ge=1)
+    settings_model: str | None = Field(default=None, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     requires_python: str | None = None
     dependencies: list[str] = Field(default_factory=list)
     author: str | None = None

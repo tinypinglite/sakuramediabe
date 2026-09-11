@@ -12,12 +12,18 @@ from pathlib import Path
 from typing import Any
 
 from packaging.version import InvalidVersion, Version
+from pydantic import ValidationError
 
 from src.config.config import Settings, settings, update_settings
 from src.plugins.contracts import validate_host_api_version
 from src.plugins.dependencies import dependency_failure_message
 from src.plugins.installer import PluginInstaller, PluginInstallError
-from src.plugins.loader import PLUGIN_LOAD_ERRORS, PluginLoadError, check_plugin_dir
+from src.plugins.loader import (
+    PLUGIN_LOAD_ERRORS,
+    PluginLoadError,
+    check_plugin_dir,
+    load_plugin_settings_model,
+)
 from src.plugins.manifest import (
     MANIFEST_FILENAME,
     PLUGIN_ID_PATTERN,
@@ -25,10 +31,15 @@ from src.plugins.manifest import (
     load_manifest_from_file,
 )
 from src.plugins.operation_lock import plugin_operation_lock
+from src.plugins.settings_schema import settings_defaults
 
 
 class PluginSettingsValidationError(ValueError):
-    """插件私有配置不合法（如包含 null），区别于「插件不存在」。"""
+    """插件私有配置不合法，区别于「插件不存在」。"""
+
+    def __init__(self, message: str, errors: list[dict[str, Any]] | None = None):
+        super().__init__(message)
+        self.errors = errors or []
 
 
 def _plugin_root() -> Path:
@@ -360,6 +371,23 @@ class PluginManager:
             raise ValueError(f"插件未安装: {plugin_id}")
         return dict(settings.plugins.settings.get(plugin_id, {}))
 
+    def _settings_model(self, plugin_id: str):
+        try:
+            return load_plugin_settings_model(self._plugin_dir(plugin_id))
+        except Exception as exc:
+            raise PluginSettingsValidationError(f"无法读取插件配置定义: {exc}") from exc
+
+    def get_plugin_settings_definition(self, plugin_id: str) -> dict[str, Any]:
+        if self.get_plugin(plugin_id) is None:
+            raise ValueError(f"插件未安装: {plugin_id}")
+        model = self._settings_model(plugin_id)
+        if model is None:
+            return {}
+        try:
+            return {"schema": model.model_json_schema(), "defaults": settings_defaults(model)}
+        except Exception as exc:
+            raise PluginSettingsValidationError(f"无法读取插件配置定义: {exc}") from exc
+
     def set_plugin_settings(
         self,
         plugin_id: str,
@@ -370,6 +398,24 @@ class PluginManager:
             raise ValueError(f"非法插件 ID: {plugin_id}")
         if self.get_plugin(plugin_id) is None:
             raise ValueError(f"插件未安装: {plugin_id}")
+        model = self._settings_model(plugin_id)
+        if model is not None:
+            try:
+                validated = model.model_validate(values)
+                values = validated.model_dump(mode="json", by_alias=True, exclude_none=True)
+                # TOML 没有 null；省略可空字段后必须仍能恢复同一份配置。
+                restored = model.model_validate(values)
+                if restored.model_dump() != validated.model_dump():
+                    raise PluginSettingsValidationError("可空字段省略后会改变配置，请使用默认值")
+            except ValidationError as exc:
+                message = "; ".join(
+                    f"{'.'.join(map(str, error['loc']))}: {error['msg']}"
+                    for error in exc.errors(include_input=False, include_url=False)
+                )
+                raise PluginSettingsValidationError(message, [
+                    {"path": list(error["loc"]), "message": error["msg"]}
+                    for error in exc.errors(include_input=False, include_url=False)
+                ]) from exc
         self._reject_none_values(values)
         current = Settings.model_validate(settings.model_dump())
         current.plugins.settings[plugin_id] = values

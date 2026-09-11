@@ -14,6 +14,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 
+from pydantic import BaseModel
+
 from src.config.config import Plugins
 from src.plugins.context import PluginContext
 from src.plugins.contracts import (
@@ -79,6 +81,22 @@ def _import_plugin_package(plugin_dir: Path, plugin_id: str):
         _clear_plugin_modules(plugin_id)
         raise
     return module
+
+
+def load_plugin_settings_model(plugin_dir: Path) -> type[BaseModel] | None:
+    """读取包根声明的配置模型，不执行 register，也不校验当前配置。"""
+    manifest = load_manifest_from_file(plugin_dir)
+    if manifest.settings_model is None:
+        return None
+    validate_host_api_version(manifest.host_api_version)
+    enable_dependency_site_packages(plugin_dir.parent)
+    module = sys.modules.get(f"{PLUGIN_MODULE_NAMESPACE}.{manifest.plugin_id}")
+    if module is None:
+        module = _import_plugin_package(plugin_dir, manifest.plugin_id)
+    model = getattr(module, manifest.settings_model, None)
+    if not isinstance(model, type) or not issubclass(model, BaseModel):
+        raise TypeError("settings_model 必须指向包根导出的 Pydantic 配置类")
+    return model
 
 
 def _freeze_settings(value: Any) -> Any:
