@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.scheduler.contracts import JobDefinition
 
-HOST_API_VERSION = 7
+HOST_API_VERSION = 8
 MIN_SUPPORTED_HOST_API_VERSION = 4
 
 
@@ -59,7 +59,7 @@ class PluginRegistration(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
-    plugin_id: str = Field(min_length=1)
+    plugin_id: str = Field(min_length=1, max_length=64)
     display_name: str = Field(min_length=1)
     version: str = Field(min_length=1)
     host_api_version: int = HOST_API_VERSION

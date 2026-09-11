@@ -6,6 +6,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from src.metadata._providers.models import (
@@ -102,6 +103,88 @@ class MoviePage:
 
 
 @dataclass(frozen=True)
+class MovieQueryFilters:
+    """影片游标查询的公开筛选参数；值域由宿主 facade 校验。"""
+
+    search: str | None = None
+    actor_id: int | None = None
+    tag_ids: tuple[int, ...] = ()
+    tag_match: str = "or"
+    year: int | None = None
+    subscribed: bool | None = None
+    playable: bool | None = None
+    status: str = "all"
+    collection_type: str = "all"
+    series_id: int | None = None
+    director_name: str | None = None
+    maker_name: str | None = None
+    number_source: str = "all"
+    heat_min: int | None = None
+    heat_max: int | None = None
+    blacklisted: bool = False
+
+
+@dataclass(frozen=True)
+class PluginSubscription:
+    """插件可见的订阅影片状态快照。"""
+
+    movie_id: int
+    movie_number: str
+    title: str
+    status: str
+    subscribed_at: datetime | None
+    is_fresh: bool
+    attempt_count: int
+    attempt_limit: int
+    last_searched_at: datetime | None
+    last_error: str | None
+    import_status: str | None
+    dead_download_task_count: int
+    media_count: int
+
+
+@dataclass(frozen=True)
+class PluginSubscriptionPage:
+    items: tuple[PluginSubscription, ...]
+    page: int
+    page_size: int
+    total: int
+
+
+@dataclass(frozen=True)
+class PluginSubscriptionStatusCounts:
+    counts: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class PluginNotification:
+    """插件创建的用户通知快照。"""
+
+    notification_id: int
+    category: str
+    title: str
+    content: str
+    event_type: str | None
+    dedupe_key: str | None
+    resource_type: str | None
+    resource_id: int | None
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class PluginCollection:
+    """插件拥有的影片、时刻或片段合集。"""
+
+    collection_type: str
+    collection_id: int
+    key: str
+    name: str
+    description: str
+    member_count: int
+
+
+@dataclass(frozen=True)
 class PluginMediaSnapshot:
     """插件可见的单条 JAV 媒体快照；不暴露 provider 的 storage_ref。"""
 
@@ -175,12 +258,18 @@ __all__ = [
     "JavdbMovieDetail",
     "JavdbMovieTag",
     "MoviePage",
+    "MovieQueryFilters",
     "MovieSnapshot",
+    "PluginCollection",
     "PluginDownloadCandidate",
     "PluginDownloadResult",
     "PluginDownloadTarget",
     "PluginMediaPresence",
     "PluginMediaSnapshot",
+    "PluginNotification",
+    "PluginSubscription",
+    "PluginSubscriptionPage",
+    "PluginSubscriptionStatusCounts",
     "SubtitleAsset",
     "SubtitleContent",
     "SubtitleImportResult",

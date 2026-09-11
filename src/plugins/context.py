@@ -18,12 +18,18 @@ from src.plugins.types import (
     ActorPage,
     ActorSnapshot,
     MoviePage,
+    MovieQueryFilters,
     MovieSnapshot,
+    PluginCollection,
     PluginDownloadCandidate,
     PluginDownloadResult,
     PluginDownloadTarget,
     PluginMediaPresence,
     PluginMediaSnapshot,
+    PluginNotification,
+    PluginSubscription,
+    PluginSubscriptionPage,
+    PluginSubscriptionStatusCounts,
     SubtitleAsset,
     SubtitleContent,
     TagSnapshot,
@@ -174,6 +180,106 @@ class MovieApi:
         return MoviePage(
             items=tuple(self._to_snapshots(page_rows)),
             next_cursor=page_rows[-1].id if has_more else None,
+        )
+
+    @staticmethod
+    def _coerce_query_filters(
+        filters: MovieQueryFilters | Mapping[str, Any] | None,
+    ) -> MovieQueryFilters:
+        if filters is None:
+            return MovieQueryFilters()
+        if isinstance(filters, MovieQueryFilters):
+            return filters
+        if isinstance(filters, Mapping):
+            values = dict(filters)
+            tag_ids = values.get("tag_ids", ())
+            values["tag_ids"] = () if tag_ids is None else tuple(tag_ids)
+            return MovieQueryFilters(**values)
+        raise TypeError("filters 必须是 MovieQueryFilters、Mapping 或 None")
+
+    def query(
+        self,
+        filters: MovieQueryFilters | Mapping[str, Any] | None = None,
+        *,
+        after_id: int = 0,
+        limit: int = 500,
+    ) -> MoviePage:
+        """按宿主影片筛选逻辑游标查询，返回不可变快照。"""
+        if type(after_id) is not int or after_id < 0:
+            raise ValueError("after_id 必须是非负整数")
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("limit 必须在 1 到 1000 之间")
+
+        query_filters = self._coerce_query_filters(filters)
+        from src.model import Movie
+        from src.schema.catalog.movies import (
+            MovieCollectionType,
+            MovieListStatus,
+            MovieNumberSource,
+            TagMatchMode,
+        )
+        from src.service.catalog.movie_service import MovieService
+
+        try:
+            tag_match = TagMatchMode(query_filters.tag_match)
+            status = MovieListStatus(query_filters.status)
+            collection_type = MovieCollectionType(query_filters.collection_type)
+            number_source = MovieNumberSource(query_filters.number_source)
+        except ValueError as exc:
+            raise ValueError(f"影片查询筛选值无效: {exc}") from exc
+
+        if query_filters.status != "all" and (
+            query_filters.subscribed is not None or query_filters.playable is not None
+        ):
+            raise ValueError("status 不能与 subscribed/playable 同时使用")
+        if query_filters.subscribed is not None:
+            if type(query_filters.subscribed) is not bool:
+                raise ValueError("subscribed 必须是布尔值")
+            status = (
+                MovieListStatus.SUBSCRIBED
+                if query_filters.subscribed
+                else MovieListStatus.UNSUBSCRIBED
+            )
+        elif query_filters.playable is True:
+            status = MovieListStatus.PLAYABLE
+        if query_filters.playable is not None and type(query_filters.playable) is not bool:
+            raise ValueError("playable 必须是布尔值")
+
+        query = MovieService.movie_list_query(
+            actor_id=query_filters.actor_id,
+            tag_ids=list(query_filters.tag_ids) or None,
+            tag_match=tag_match,
+            year=query_filters.year,
+            status=status,
+            collection_type=collection_type,
+            series_id=query_filters.series_id,
+            director_name=query_filters.director_name,
+            maker_name=query_filters.maker_name,
+            number_source=number_source,
+            heat_min=query_filters.heat_min,
+            heat_max=query_filters.heat_max,
+            blacklisted=query_filters.blacklisted,
+        )
+        search = (query_filters.search or "").strip()
+        if search:
+            keyword = f"%{search}%"
+            query = query.where((Movie.movie_number ** keyword) | (Movie.title ** keyword))
+        if query_filters.playable is not None and (
+            query_filters.subscribed is not None or query_filters.playable is False
+        ):
+            playable_expression = MovieService._playable_exists_expression()
+            query = query.where(
+                playable_expression
+                if query_filters.playable
+                else ~playable_expression
+            )
+
+        # movie_list_query 默认按展示字段排序；插件查询使用 id 游标，重设为稳定的 id 顺序。
+        rows = list(query.where(Movie.id > after_id).order_by(Movie.id).limit(limit + 1))
+        page_rows = rows[:limit]
+        return MoviePage(
+            items=tuple(self._to_snapshots(page_rows)),
+            next_cursor=page_rows[-1].id if len(rows) > limit else None,
         )
 
     def patch(
@@ -473,6 +579,364 @@ class PluginDownloadService:
         return PluginDownloadResult(task_id=response.task.id, created=response.created)
 
 
+class SubscriptionApi:
+    """``context.subscriptions``：订阅意图与宿主计算出的处理状态。"""
+
+    @staticmethod
+    def _to_snapshot(item) -> PluginSubscription:
+        return PluginSubscription(
+            movie_id=item.movie_id,
+            movie_number=item.movie_number,
+            title=item.title,
+            status=item.status.value if hasattr(item.status, "value") else str(item.status),
+            subscribed_at=item.subscribed_at,
+            is_fresh=item.is_fresh,
+            attempt_count=item.attempt_count,
+            attempt_limit=item.attempt_limit,
+            last_searched_at=item.last_searched_at,
+            last_error=item.last_error,
+            import_status=item.import_status,
+            dead_download_task_count=item.dead_download_task_count,
+            media_count=item.media_count,
+        )
+
+    def list(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+        status: str = "all",
+        sort: str = "subscribed_at:desc",
+        search: str | None = None,
+    ) -> PluginSubscriptionPage:
+        from src.schema.catalog.subscriptions import (
+            MovieSubscriptionSort,
+            MovieSubscriptionStatus,
+        )
+        from src.service.catalog.movie_subscription_service import (
+            MovieSubscriptionService,
+        )
+
+        try:
+            parsed_status = MovieSubscriptionStatus(status)
+            parsed_sort = MovieSubscriptionSort(sort)
+        except ValueError as exc:
+            raise ValueError(f"订阅筛选值无效: {exc}") from exc
+        page_resource = MovieSubscriptionService.list_subscriptions(
+            page=page,
+            page_size=page_size,
+            status=parsed_status,
+            sort=parsed_sort,
+            search=search,
+        )
+        return PluginSubscriptionPage(
+            items=tuple(self._to_snapshot(item) for item in page_resource.items),
+            page=page_resource.page,
+            page_size=page_resource.page_size,
+            total=page_resource.total,
+        )
+
+    def count_by_status(self) -> PluginSubscriptionStatusCounts:
+        from src.service.catalog.movie_subscription_service import (
+            MovieSubscriptionService,
+        )
+
+        resource = MovieSubscriptionService.count_by_status()
+        return PluginSubscriptionStatusCounts(
+            counts=MappingProxyType(resource.model_dump()),
+        )
+
+    def get(self, movie_id: int) -> PluginSubscription | None:
+        if type(movie_id) is not int or movie_id <= 0:
+            raise ValueError("movie_id 必须为正整数")
+        from src.service.catalog.movie_subscription_service import (
+            MovieSubscriptionService,
+        )
+
+        resource = MovieSubscriptionService.get_subscription(movie_id)
+        return self._to_snapshot(resource) if resource is not None else None
+
+    def subscribe(self, movie_number: str) -> None:
+        from src.service.catalog.movie_service import MovieService
+
+        MovieService.set_subscription(movie_number, True)
+
+    def unsubscribe(self, movie_number: str) -> None:
+        from src.service.catalog.movie_service import MovieService
+
+        MovieService.unsubscribe_movie(movie_number)
+
+    def reset_search(self, movie_ids: Collection[int] | None = None) -> int:
+        from src.service.catalog.movie_subscription_search_state_service import (
+            MovieSubscriptionSearchStateService,
+        )
+
+        if movie_ids is None:
+            return MovieSubscriptionSearchStateService.reset()
+        ids = tuple(dict.fromkeys(movie_ids))
+        for movie_id in ids:
+            if type(movie_id) is not int or movie_id <= 0:
+                raise ValueError("movie_ids 必须是正整数")
+        if not ids:
+            return 0
+        return MovieSubscriptionSearchStateService.reset(list(ids))
+
+
+class NotificationApi:
+    """``context.notifications``：创建插件通知并按插件隔离幂等键。"""
+
+    def __init__(self, plugin_id: str):
+        self._plugin_id = plugin_id
+
+    def _dedupe_key(self, key: str | None) -> str | None:
+        if key is None:
+            return None
+        if not isinstance(key, str):
+            raise TypeError("dedupe_key 必须是字符串")
+        normalized = key.strip()
+        if not normalized:
+            raise ValueError("dedupe_key 不能为空")
+        namespaced = f"plugin:{self._plugin_id}:{normalized}"
+        if len(namespaced) > 255:
+            raise ValueError("dedupe_key 过长")
+        return namespaced
+
+    def _to_snapshot(self, resource) -> PluginNotification:
+        dedupe_key = resource.dedupe_key
+        prefix = f"plugin:{self._plugin_id}:"
+        if dedupe_key is not None and dedupe_key.startswith(prefix):
+            dedupe_key = dedupe_key[len(prefix) :]
+        return PluginNotification(
+            notification_id=resource.id,
+            category=resource.category,
+            title=resource.title,
+            content=resource.content,
+            event_type=resource.event_type,
+            dedupe_key=dedupe_key,
+            resource_type=resource.resource_type,
+            resource_id=resource.resource_id,
+            created_at=resource.created_at,
+            updated_at=resource.updated_at,
+        )
+
+    def _draft(
+        self,
+        *,
+        category: str,
+        title: str,
+        content: str,
+        event_type: str | None = None,
+        dedupe_key: str | None = None,
+        resource_type: str | None = None,
+        resource_id: int | None = None,
+        related_task_run_id: int | None = None,
+        related_resource_type: str | None = None,
+        related_resource_id: int | None = None,
+    ):
+        from src.service.system.activity.notifications import NotificationDraft
+
+        return NotificationDraft(
+            category=category,
+            title=title,
+            content=content,
+            event_type=event_type,
+            dedupe_key=self._dedupe_key(dedupe_key),
+            resource_type=resource_type,
+            resource_id=resource_id,
+            related_task_run_id=related_task_run_id,
+            related_resource_type=related_resource_type,
+            related_resource_id=related_resource_id,
+        )
+
+    def create(
+        self,
+        *,
+        category: str,
+        title: str,
+        content: str,
+        event_type: str | None = None,
+        dedupe_key: str | None = None,
+        resource_type: str | None = None,
+        resource_id: int | None = None,
+        related_task_run_id: int | None = None,
+        related_resource_type: str | None = None,
+        related_resource_id: int | None = None,
+    ) -> PluginNotification:
+        from src.service.system.activity.notifications import NotificationService
+
+        resource = NotificationService.create(
+            self._draft(
+                category=category,
+                title=title,
+                content=content,
+                event_type=event_type,
+                dedupe_key=dedupe_key,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                related_task_run_id=related_task_run_id,
+                related_resource_type=related_resource_type,
+                related_resource_id=related_resource_id,
+            )
+        )
+        return self._to_snapshot(resource)
+
+    def create_once(
+        self,
+        *,
+        category: str,
+        title: str,
+        content: str,
+        dedupe_key: str,
+        event_type: str | None = None,
+        resource_type: str | None = None,
+        resource_id: int | None = None,
+        related_task_run_id: int | None = None,
+        related_resource_type: str | None = None,
+        related_resource_id: int | None = None,
+    ) -> PluginNotification:
+        from src.service.system.activity.notifications import NotificationService
+
+        resource = NotificationService.create_once(
+            self._draft(
+                category=category,
+                title=title,
+                content=content,
+                event_type=event_type,
+                dedupe_key=dedupe_key,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                related_task_run_id=related_task_run_id,
+                related_resource_type=related_resource_type,
+                related_resource_id=related_resource_id,
+            )
+        )
+        return self._to_snapshot(resource)
+
+    def resolve(self, dedupe_key: str) -> int:
+        from src.service.system.activity.notifications import NotificationService
+
+        namespaced_key = self._dedupe_key(dedupe_key)
+        if namespaced_key is None:
+            raise ValueError("dedupe_key 不能为空")
+        return NotificationService.release_notification_dedupe_key(
+            namespaced_key
+        )
+
+
+class CollectionApi:
+    """``context.collections``：插件按 key 管理自己创建的三类合集。"""
+
+    def __init__(self, plugin_id: str):
+        self._plugin_id = plugin_id
+
+    @staticmethod
+    def _to_collection(collection_type: str, collection) -> PluginCollection:
+        from src.model import MomentCollectionItem, PlaylistMovie
+
+        if collection_type == "playlist":
+            member_count = PlaylistMovie.select().where(
+                PlaylistMovie.playlist == collection.id
+            ).count()
+        elif collection_type == "moment":
+            member_count = MomentCollectionItem.select().where(
+                MomentCollectionItem.collection == collection.id
+            ).count()
+        else:
+            from src.service.collections.clip_collection_service import (
+                ClipCollectionService,
+            )
+
+            member_count = ClipCollectionService._collection_counts([collection.id]).get(
+                collection.id, 0
+            )
+        return PluginCollection(
+            collection_type=collection_type,
+            collection_id=collection.id,
+            key=collection.plugin_key,
+            name=collection.name,
+            description=collection.description,
+            member_count=member_count,
+        )
+
+    def ensure_playlist(
+        self, key: str, name: str, description: str | None = None
+    ) -> PluginCollection:
+        from src.service.collections.plugin_collection_service import (
+            PluginCollectionService,
+        )
+
+        return self._to_collection(
+            "playlist",
+            PluginCollectionService.ensure_playlist(
+                self._plugin_id, key, name, description
+            ),
+        )
+
+    def set_playlist_movies(self, key: str, movie_numbers) -> PluginCollection:
+        from src.service.collections.plugin_collection_service import (
+            PluginCollectionService,
+        )
+
+        return self._to_collection(
+            "playlist",
+            PluginCollectionService.set_playlist_movies(
+                self._plugin_id, key, movie_numbers
+            ),
+        )
+
+    def ensure_moment(
+        self, key: str, name: str, description: str | None = None
+    ) -> PluginCollection:
+        from src.service.collections.plugin_collection_service import (
+            PluginCollectionService,
+        )
+
+        return self._to_collection(
+            "moment",
+            PluginCollectionService.ensure_moment(
+                self._plugin_id, key, name, description
+            ),
+        )
+
+    def set_moment_points(self, key: str, point_ids) -> PluginCollection:
+        from src.service.collections.plugin_collection_service import (
+            PluginCollectionService,
+        )
+
+        return self._to_collection(
+            "moment",
+            PluginCollectionService.set_moment_points(
+                self._plugin_id, key, point_ids
+            ),
+        )
+
+    def ensure_clip(
+        self, key: str, name: str, description: str | None = None
+    ) -> PluginCollection:
+        from src.service.collections.plugin_collection_service import (
+            PluginCollectionService,
+        )
+
+        return self._to_collection(
+            "clip",
+            PluginCollectionService.ensure_clip(
+                self._plugin_id, key, name, description
+            ),
+        )
+
+    def set_clip_clips(self, key: str, clip_ids) -> PluginCollection:
+        from src.service.collections.plugin_collection_service import (
+            PluginCollectionService,
+        )
+
+        return self._to_collection(
+            "clip",
+            PluginCollectionService.set_clip_clips(
+                self._plugin_id, key, clip_ids
+            ),
+        )
+
+
 @dataclass(frozen=True, init=False)
 class PluginContext:
     """插件上下文：配置只读、数据目录归插件所有、宿主能力按方法暴露。"""
@@ -514,6 +978,21 @@ class PluginContext:
     def downloads(self) -> PluginDownloadService:
         """按目标下载器搜索并提交下载候选。"""
         return PluginDownloadService()
+
+    @property
+    def subscriptions(self) -> SubscriptionApi:
+        """订阅影片的状态查询与受控状态操作。"""
+        return SubscriptionApi()
+
+    @property
+    def notifications(self) -> NotificationApi:
+        """创建用户可见通知；dedupe key 自动带插件命名空间。"""
+        return NotificationApi(self.plugin_id)
+
+    @property
+    def collections(self) -> CollectionApi:
+        """管理插件自己按 key 创建的影片、时刻和片段合集。"""
+        return CollectionApi(self.plugin_id)
 
     @property
     def subtitles(self) -> SubtitleApi:

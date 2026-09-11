@@ -405,6 +405,25 @@ def test_host_api_version_range_enforced():
         )
 
 
+def test_plugin_id_length_matches_storage_contract():
+    from src.plugins.manifest import PluginManifest
+
+    plugin_id = "a" + ("b" * 64)
+    with pytest.raises(ValidationError):
+        PluginRegistration(
+            plugin_id=plugin_id,
+            display_name="x",
+            version="1.0.0",
+        )
+    with pytest.raises(ValidationError):
+        PluginManifest(
+            plugin_id=plugin_id,
+            display_name="x",
+            version="1.0.0",
+            host_api_version=HOST_API_VERSION,
+        )
+
+
 def test_manifest_host_api_version_range_enforced(tmp_path):
     """manifest 是版本唯一声明入口：声明越界直接拒绝加载（register 默认值会漂移）。"""
     import json

@@ -25,6 +25,7 @@ PLUGIN_MOVIE_METADATA_MIGRATION_NAME = "20260905_02_add_plugin_movie_metadata"
 DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME = "20260908_01_add_download_resource_history"
 MOMENT_COLLECTIONS_MIGRATION_NAME = "20260910_01_add_moment_collections"
 ACTOR_LOCAL_PROFILE_MIGRATION_NAME = "20260910_02_add_actor_local_profile"
+PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME = "20260912_01_add_plugin_collection_ownership"
 
 
 @dataclass(frozen=True)

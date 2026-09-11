@@ -32,6 +32,7 @@ from src.start.migrations.runner import (
     MOMENT_COLLECTIONS_MIGRATION_NAME,
     MOVIE_BLACKLIST_MIGRATION_NAME,
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
+    PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
     PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
     MigrationExecution,
     MigrationRunSummary,
@@ -111,6 +112,7 @@ def test_current_migrations_are_discoverable_in_order():
         DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME,
         MOMENT_COLLECTIONS_MIGRATION_NAME,
         ACTOR_LOCAL_PROFILE_MIGRATION_NAME,
+        PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
     ]
 
 
@@ -127,6 +129,22 @@ def test_plugin_metadata_migration_preserves_movies_and_allows_multiple_null_ids
     for number in ("NEW-001", "NEW-002"):
         Movie.create(movie_number=number, javdb_id=None, title="Plugin", metadata_source={"plugin_id": "test"})
     assert Movie.select().where(Movie.javdb_id.is_null()).count() == 2
+
+
+def test_plugin_collection_ownership_migration_adds_columns_without_losing_rows(clean_db):
+    clean_db.create_tables(TEST_MODELS)
+    existing = Playlist.create(name="existing-plugin-migration")
+    for table in ("playlist", "moment_collection", "clip_collection"):
+        _drop_columns(clean_db, table, ("owner_plugin_id", "plugin_key"))
+
+    migration = _load_migration_module(
+        Path(f"{PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME}.py")
+    )
+    migration.migrate(clean_db)
+
+    for table in ("playlist", "moment_collection", "clip_collection"):
+        assert {"owner_plugin_id", "plugin_key"} <= _column_names(clean_db, table)
+    assert Playlist.get_by_id(existing.id).name == "existing-plugin-migration"
 
 
 def test_run_pending_migrations_rejects_v0421_base(clean_db):
@@ -182,6 +200,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME, applied=True),
         MigrationExecution(name=MOMENT_COLLECTIONS_MIGRATION_NAME, applied=True),
         MigrationExecution(name=ACTOR_LOCAL_PROFILE_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -198,6 +217,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME,
         MOMENT_COLLECTIONS_MIGRATION_NAME,
         ACTOR_LOCAL_PROFILE_MIGRATION_NAME,
+        PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
     ]
 
 
@@ -350,7 +370,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 13
+    assert summary.applied_count == 14
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

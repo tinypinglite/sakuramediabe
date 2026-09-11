@@ -17,9 +17,13 @@ class Playlist(TimestampedMixin, BaseModel):
     kind = peewee.CharField(max_length=64, default=PLAYLIST_KIND_CUSTOM, index=True)
     name = peewee.CharField(max_length=255, unique=True)
     description = peewee.TextField(default="")
+    # 插件列表用稳定 key 管理自己的资源；宿主/用户创建的列表保持 NULL。
+    owner_plugin_id = peewee.CharField(max_length=64, null=True)
+    plugin_key = peewee.CharField(max_length=128, null=True)
 
     class Meta:
         table_name = "playlist"
+        indexes = (("owner_plugin_id", "plugin_key"), True),
 
 
 class PlaylistMovie(TimestampedMixin, BaseModel):

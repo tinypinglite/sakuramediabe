@@ -10,9 +10,12 @@ class ClipCollection(TimestampedMixin, BaseModel):
 
     name = peewee.CharField(max_length=255, unique=True)
     description = peewee.TextField(default="")
+    owner_plugin_id = peewee.CharField(max_length=64, null=True)
+    plugin_key = peewee.CharField(max_length=128, null=True)
 
     class Meta:
         table_name = "clip_collection"
+        indexes = (("owner_plugin_id", "plugin_key"), True),
 
 
 class ClipCollectionItem(TimestampedMixin, BaseModel):

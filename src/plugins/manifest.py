@@ -19,7 +19,7 @@ class PluginManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    plugin_id: str = Field(min_length=1)
+    plugin_id: str = Field(min_length=1, max_length=64)
     display_name: str = Field(min_length=1)
     version: str = Field(min_length=1)
     host_api_version: int = Field(ge=1)

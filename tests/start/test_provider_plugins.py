@@ -27,8 +27,8 @@ from src.plugins.provider_protocol import (
 )
 
 
-def test_media_provider_protocol_uses_host_api_v7():
-    assert HOST_API_VERSION == 7
+def test_plugin_protocol_uses_host_api_v8():
+    assert HOST_API_VERSION == 8
 
 
 def test_provider_operation_error_rejects_unknown_code():

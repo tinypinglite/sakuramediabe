@@ -194,6 +194,27 @@ class MovieSubscriptionService:
         )
 
     @classmethod
+    def get_subscription(
+        cls, movie_id: int
+    ) -> MovieSubscriptionListItemResource | None:
+        """按影片 id 精确读取订阅，避免把番号当作模糊搜索条件。"""
+        status_expression = cls._status_expression()
+        rows = list(
+            cls._base_query(Movie.id, status_expression.alias("status"))
+            .where(Movie.id == movie_id)
+            .limit(1)
+            .tuples()
+        )
+        if not rows:
+            return None
+        movie_id, status = rows[0]
+        return cls._build_items(
+            [movie_id],
+            status_by_movie_id={movie_id: status},
+            now=utc_now_for_db(),
+        )[0]
+
+    @classmethod
     def _build_items(
         cls,
         movie_ids: list[int],
