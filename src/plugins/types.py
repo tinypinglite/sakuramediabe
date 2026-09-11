@@ -101,6 +101,70 @@ class MoviePage:
     next_cursor: int | None
 
 
+@dataclass(frozen=True)
+class PluginMediaSnapshot:
+    """插件可见的单条 JAV 媒体快照；不暴露 provider 的 storage_ref。"""
+
+    media_id: int
+    movie_id: int
+    movie_number: str
+    library_id: int
+    library_name: str
+    provider_key: str
+    file_name: str
+    resolution: str | None
+    file_size_bytes: int
+    duration_seconds: int
+    valid: bool
+    video_info: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class PluginMediaPresence:
+    """一部影片在指定媒体库中的媒体存在性与明细。"""
+
+    has_any: bool
+    has_playable: bool
+    items: tuple[PluginMediaSnapshot, ...]
+
+
+@dataclass(frozen=True)
+class PluginDownloadTarget:
+    """插件可使用的下载器及其媒体库目标快照。"""
+
+    download_client_id: int
+    download_client_name: str
+    library_id: int
+    library_name: str
+    provider_key: str
+
+
+@dataclass(frozen=True)
+class PluginDownloadCandidate:
+    """绑定到一个下载器/媒体库的宿主下载候选。"""
+
+    source_uri: str
+    indexer_name: str
+    indexer_kind: str
+    download_client_id: int
+    download_client_name: str
+    library_id: int
+    library_name: str
+    provider_key: str
+    movie_number: str
+    title: str
+    size_bytes: int
+    seeders: int
+
+
+@dataclass(frozen=True)
+class PluginDownloadResult:
+    """宿主下载提交结果。"""
+
+    task_id: int
+    created: bool
+
+
 __all__ = [
     "ACTOR_SNAPSHOT_FIELDS",
     "MOVIE_SNAPSHOT_FIELDS",
@@ -112,6 +176,11 @@ __all__ = [
     "JavdbMovieTag",
     "MoviePage",
     "MovieSnapshot",
+    "PluginDownloadCandidate",
+    "PluginDownloadResult",
+    "PluginDownloadTarget",
+    "PluginMediaPresence",
+    "PluginMediaSnapshot",
     "SubtitleAsset",
     "SubtitleContent",
     "SubtitleImportResult",

@@ -7,8 +7,9 @@
 from datetime import date, datetime
 from enum import Enum
 
-from pydantic import field_validator
+from pydantic import computed_field, field_validator
 
+from src.common.media_import_status import describe_import_status
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
 
@@ -65,9 +66,17 @@ class MovieSubscriptionListItemResource(SchemaModel):
     attempt_limit: int = 0
     last_searched_at: datetime | None = None
     last_error: str | None = None
+    import_status: str | None = None
     # 该影片已判死的下载任务数：试过几个种子都失败了。
     dead_download_task_count: int = 0
     media_count: int = 0
+
+    @computed_field
+    @property
+    def import_status_label(self) -> str | None:
+        if not self.import_status:
+            return None
+        return describe_import_status(self.import_status)
 
     @field_validator("release_date", mode="before")
     @classmethod

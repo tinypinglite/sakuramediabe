@@ -21,6 +21,7 @@ class DownloadSearchService:
         *,
         movie_number: str,
         indexer_kind: str | None = None,
+        download_client_id: int | None = None,
     ) -> list[DownloadCandidateResource]:
         normalized_movie_number = validate_non_empty(
             movie_number,
@@ -32,6 +33,7 @@ class DownloadSearchService:
             candidates = self.torznab_client.search(
                 normalized_movie_number,
                 normalized_kind,
+                download_client_id=download_client_id,
                 continue_on_error=True,
             )
         except TorznabClientError as exc:

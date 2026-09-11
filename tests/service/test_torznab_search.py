@@ -127,6 +127,21 @@ def test_torznab_search_remains_strict_by_default(monkeypatch):
     assert http_client.calls == ["http://bad-indexer/api"]
 
 
+def test_torznab_search_can_target_one_bound_download_client(monkeypatch):
+    _patch_indexers(monkeypatch)
+    http_client = _FakeHttpClient()
+
+    candidates = TorznabClient(client=http_client).search(
+        "SSNI-001",
+        download_client_id=22,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].resolved_client_id == 22
+    assert candidates[0].download_clients[0].id == 22
+    assert http_client.calls == ["http://good-indexer/api"]
+
+
 def test_torznab_search_still_reports_when_all_indexers_fail(monkeypatch):
     _patch_indexers(monkeypatch)
     http_client = _FakeHttpClient(

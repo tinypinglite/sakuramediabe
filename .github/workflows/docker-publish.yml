@@ -107,5 +107,5 @@ jobs:
             org.opencontainers.image.version=${{ github.event.release.tag_name }}
           build-args: |
             SAKURAMEDIA_BACKEND_VERSION=${{ github.event.release.tag_name }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:buildcache,mode=max

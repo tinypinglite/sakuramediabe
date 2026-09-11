@@ -215,6 +215,7 @@ class MovieSubscriptionService:
         # media_exists_expression 用的是精确相等，这里的计数必须同样精确匹配才和状态判定一致。
         media_counts = count_by_owner(Media, Media.movie, movie_numbers)
         failed_task_counts = cls._count_failed_download_tasks(movie_numbers)
+        import_status_by_movie = cls._latest_import_status(movie_numbers)
         attempt_limit = MovieSubscriptionSearchStateService.stale_attempt_limit()
         items: list[MovieSubscriptionListItemResource] = []
         for movie in ordered_movies:
@@ -232,6 +233,7 @@ class MovieSubscriptionService:
                     attempt_limit=attempt_limit,
                     last_searched_at=movie.subscription_search_last_attempted_at,
                     last_error=movie.subscription_search_last_error,
+                    import_status=import_status_by_movie.get(movie.movie_number),
                     dead_download_task_count=failed_task_counts.get(
                         movie.movie_number, 0
                     ),
@@ -250,6 +252,31 @@ class MovieSubscriptionService:
             DownloadTask.state == "failed",
         )
         return {number: counts_by_key.get(number, 0) for number in movie_numbers}
+
+    @staticmethod
+    def _latest_import_status(movie_numbers: list[str]) -> dict[str, str]:
+        """返回每部订阅片最新活跃下载任务的导入状态。"""
+        if not movie_numbers:
+            return {}
+        statuses: dict[str, str] = {}
+        tasks = (
+            DownloadTask.select(DownloadTask.movie, DownloadTask.import_status)
+            .where(
+                DownloadTask.movie.in_(movie_numbers),
+                DownloadTask.state.in_(
+                    ("queued", "downloading", "completed")
+                ),
+            )
+            .order_by(
+                DownloadTask.movie,
+                DownloadTask.created_at.desc(),
+                DownloadTask.id.desc(),
+            )
+            .tuples()
+        )
+        for movie_number, import_status in tasks:
+            statuses.setdefault(movie_number, import_status)
+        return statuses
 
     @staticmethod
     def _load_cover_images(movies: list[Movie]) -> dict[int, ImageResource]:

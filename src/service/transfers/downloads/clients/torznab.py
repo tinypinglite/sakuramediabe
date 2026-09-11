@@ -75,6 +75,7 @@ class TorznabClient:
         movie_number: str,
         indexer_kind: str | None = None,
         *,
+        download_client_id: int | None = None,
         continue_on_error: bool = False,
     ) -> list[DownloadCandidateResource]:
         candidates: list[DownloadCandidateResource] = []
@@ -89,9 +90,16 @@ class TorznabClient:
             if normalized_kind and indexer.kind != normalized_kind:
                 continue
             download_clients = clients_by_indexer.get(indexer.id, [])
+            if download_client_id is not None:
+                download_clients = [
+                    client
+                    for client in download_clients
+                    if client.id == download_client_id
+                ]
             if not download_clients:
-                # 无绑定下载器的索引器仍参与搜索没有意义：候选无法提交，直接跳过。
-                logger.warning("Skip indexer without bound download clients name={}", indexer.name)
+                # 无绑定目标下载器的索引器仍参与搜索没有意义：候选无法提交，直接跳过。
+                if download_client_id is None:
+                    logger.warning("Skip indexer without bound download clients name={}", indexer.name)
                 continue
             resolved_client = resolve_preferred_client(download_clients)
             searched_indexer_count += 1

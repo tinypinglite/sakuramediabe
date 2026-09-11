@@ -17,6 +17,7 @@ from src.common.media_import_status import (
     IMPORT_STATUS_FAILED,
     IMPORT_STATUS_PENDING,
     IMPORT_STATUS_RUNNING,
+    IMPORT_STATUS_SKIPPED,
 )
 from src.model import (
     DownloadClient,
@@ -94,6 +95,22 @@ def test_finished_import_without_media_is_import_failed(client, import_status):
     )
 
     assert _status_of("ABP-001") == MovieSubscriptionStatus.IMPORT_FAILED.value
+
+
+def test_list_exposes_latest_import_status_label(client):
+    _subscribe("ABP-005")
+    _task(
+        client,
+        "ABP-005",
+        state="completed",
+        import_status=IMPORT_STATUS_SKIPPED,
+    )
+
+    page = MovieSubscriptionService.list_subscriptions(page=1, page_size=50)
+    item = next(item for item in page.items if item.movie_number == "ABP-005")
+
+    assert item.import_status == IMPORT_STATUS_SKIPPED
+    assert item.import_status_label == "已跳过：没有符合条件的媒体文件"
 
 
 @pytest.mark.parametrize(

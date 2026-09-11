@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -19,6 +19,11 @@ from src.plugins.types import (
     ActorSnapshot,
     MoviePage,
     MovieSnapshot,
+    PluginDownloadCandidate,
+    PluginDownloadResult,
+    PluginDownloadTarget,
+    PluginMediaPresence,
+    PluginMediaSnapshot,
     SubtitleAsset,
     SubtitleContent,
     TagSnapshot,
@@ -210,6 +215,264 @@ class SubtitleApi:
         return MovieSubtitleService.read_subtitle_content(movie_id, subtitle_id)
 
 
+class MediaApi:
+    """``context.media``：按影片读取只读媒体快照。"""
+
+    @staticmethod
+    def _validate_positive_id(value: int, field_name: str) -> None:
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"{field_name} 必须为正整数")
+
+    @staticmethod
+    def _to_snapshot(
+        media,
+        *,
+        movie_id: int,
+        movie_number: str,
+    ) -> PluginMediaSnapshot:
+        raw_video_info = media.video_info
+        video_info = (
+            MappingProxyType(dict(raw_video_info))
+            if isinstance(raw_video_info, Mapping)
+            else None
+        )
+        return PluginMediaSnapshot(
+            media_id=media.id,
+            movie_id=movie_id,
+            movie_number=movie_number,
+            library_id=media.library_id,
+            library_name=media.library.name,
+            provider_key=media.library.provider_key,
+            file_name=media.file_name,
+            resolution=media.resolution,
+            file_size_bytes=media.file_size_bytes,
+            duration_seconds=media.duration_seconds,
+            valid=media.valid,
+            video_info=video_info,
+        )
+
+    def list_for_movie(
+        self,
+        movie_id: int,
+        *,
+        library_id: int | None = None,
+    ) -> tuple[PluginMediaSnapshot, ...]:
+        """读取一部影片的全部媒体，可按媒体库过滤。"""
+        self._validate_positive_id(movie_id, "movie_id")
+        if library_id is not None:
+            self._validate_positive_id(library_id, "library_id")
+
+        from src.model import Media, MediaLibrary, Movie
+
+        movie = Movie.get_or_none(Movie.id == movie_id)
+        if movie is None:
+            return ()
+        query = (
+            Media.select(Media, MediaLibrary)
+            .join(MediaLibrary)
+            .where(Media.movie == movie.movie_number)
+            .order_by(Media.id.asc())
+        )
+        if library_id is not None:
+            query = query.where(Media.library == library_id)
+        return tuple(
+            self._to_snapshot(
+                media,
+                movie_id=movie.id,
+                movie_number=movie.movie_number,
+            )
+            for media in query
+        )
+
+    def presence_for_movies(
+        self,
+        movie_ids: Collection[int],
+        *,
+        library_id: int | None = None,
+    ) -> Mapping[int, PluginMediaPresence]:
+        """批量读取影片媒体存在性，避免插件逐部查询造成 N+1。"""
+        movie_ids = tuple(dict.fromkeys(movie_ids))
+        for movie_id in movie_ids:
+            self._validate_positive_id(movie_id, "movie_id")
+        if library_id is not None:
+            self._validate_positive_id(library_id, "library_id")
+        if not movie_ids:
+            return MappingProxyType({})
+
+        from src.model import Media, MediaLibrary, Movie
+
+        movies = list(
+            Movie.select(Movie.id, Movie.movie_number)
+            .where(Movie.id.in_(movie_ids))
+        )
+        movie_by_number = {movie.movie_number: movie for movie in movies}
+        items_by_movie_id: dict[int, list[PluginMediaSnapshot]] = {
+            movie.id: [] for movie in movies
+        }
+        if movie_by_number:
+            query = (
+                Media.select(Media, MediaLibrary)
+                .join(MediaLibrary)
+                .where(Media.movie.in_(tuple(movie_by_number)))
+                .order_by(Media.id.asc())
+            )
+            if library_id is not None:
+                query = query.where(Media.library == library_id)
+            for media in query:
+                movie = movie_by_number.get(media.movie_number)
+                if movie is None:
+                    continue
+                items_by_movie_id[movie.id].append(
+                    self._to_snapshot(
+                        media,
+                        movie_id=movie.id,
+                        movie_number=movie.movie_number,
+                    )
+                )
+
+        return MappingProxyType({
+            movie_id: PluginMediaPresence(
+                has_any=bool(items),
+                has_playable=any(item.valid for item in items),
+                items=tuple(items),
+            )
+            for movie_id, items in items_by_movie_id.items()
+        })
+
+
+class PluginDownloadService:
+    """``context.downloads``：按目标下载器调用宿主搜索与提交链路。"""
+
+    @staticmethod
+    def _validate_positive_id(value: int, field_name: str) -> None:
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"{field_name} 必须为正整数")
+
+    @staticmethod
+    def _to_target(client) -> PluginDownloadTarget:
+        return PluginDownloadTarget(
+            download_client_id=client.id,
+            download_client_name=client.name,
+            library_id=client.library_id,
+            library_name=client.library.name,
+            provider_key=client.library.provider_key,
+        )
+
+    @classmethod
+    def _to_candidate(cls, raw_candidate, client) -> PluginDownloadCandidate:
+        if raw_candidate.resolved_client_id != client.id:
+            from src.api.exception.errors import ApiError
+
+            raise ApiError(
+                500,
+                "plugin_download_candidate_target_mismatch",
+                "宿主搜索候选的目标下载器不一致",
+            )
+        target = cls._to_target(client)
+        return PluginDownloadCandidate(
+            source_uri=raw_candidate.source_uri,
+            indexer_name=raw_candidate.indexer_name,
+            indexer_kind=raw_candidate.indexer_kind,
+            download_client_id=target.download_client_id,
+            download_client_name=target.download_client_name,
+            library_id=target.library_id,
+            library_name=target.library_name,
+            provider_key=target.provider_key,
+            movie_number=raw_candidate.movie_number,
+            title=raw_candidate.title,
+            size_bytes=raw_candidate.size_bytes,
+            seeders=raw_candidate.seeders,
+        )
+
+    def get_target(self, download_client_id: int) -> PluginDownloadTarget:
+        """读取下载器当前关联的媒体库目标。"""
+        self._validate_positive_id(download_client_id, "download_client_id")
+        from src.service.transfers.downloads.common import require_client
+
+        return self._to_target(require_client(download_client_id))
+
+    def search_candidates(
+        self,
+        *,
+        movie_number: str,
+        download_client_id: int,
+        indexer_kind: str | None = None,
+    ) -> tuple[PluginDownloadCandidate, ...]:
+        """只搜索绑定到目标下载器的索引器，并固定候选投递目标。"""
+        self._validate_positive_id(download_client_id, "download_client_id")
+        from src.service.transfers.downloads.common import require_client
+        from src.service.transfers.downloads.search_service import DownloadSearchService
+
+        client = require_client(download_client_id)
+        raw_candidates = DownloadSearchService().search_candidates(
+            movie_number=movie_number,
+            indexer_kind=indexer_kind,
+            download_client_id=client.id,
+        )
+        return tuple(self._to_candidate(candidate, client) for candidate in raw_candidates)
+
+    def submit(
+        self,
+        *,
+        movie_number: str,
+        candidate: PluginDownloadCandidate,
+    ) -> PluginDownloadResult:
+        """提交宿主生成的候选，并拒绝已变更的下载目标。"""
+        if not isinstance(candidate, PluginDownloadCandidate):
+            raise TypeError("candidate 必须是 PluginDownloadCandidate")
+
+        from src.api.exception.errors import ApiError
+        from src.service.transfers.downloads.common import (
+            require_client,
+            validate_non_empty,
+        )
+
+        normalized_movie_number = validate_non_empty(
+            movie_number,
+            "invalid_download_request_movie_number",
+            "movie_number cannot be empty",
+        ).upper()
+        from src.common.movie_numbers import normalize_movie_number
+
+        if normalize_movie_number(candidate.movie_number) != normalize_movie_number(movie_number):
+            raise ApiError(
+                422,
+                "plugin_download_candidate_movie_mismatch",
+                "下载候选与影片番号不匹配",
+            )
+
+        client = require_client(candidate.download_client_id)
+        if (
+            client.library_id != candidate.library_id
+            or client.library.provider_key != candidate.provider_key
+        ):
+            raise ApiError(
+                409,
+                "plugin_download_candidate_stale",
+                "下载候选的媒体库或提供方已发生变化",
+            )
+
+        from src.schema.transfers.downloads import DownloadRequestCreateRequest
+        from src.service.transfers.downloads.request_service import (
+            DownloadRequestService,
+        )
+
+        response = DownloadRequestService().create_request(
+            DownloadRequestCreateRequest(
+                client_id=client.id,
+                movie_number=normalized_movie_number,
+                candidate={
+                    "source_uri": candidate.source_uri,
+                    "indexer_name": candidate.indexer_name,
+                    "title": candidate.title,
+                    "size_bytes": candidate.size_bytes,
+                    "seeders": candidate.seeders,
+                },
+            )
+        )
+        return PluginDownloadResult(task_id=response.task.id, created=response.created)
+
+
 @dataclass(frozen=True, init=False)
 class PluginContext:
     """插件上下文：配置只读、数据目录归插件所有、宿主能力按方法暴露。"""
@@ -241,6 +504,16 @@ class PluginContext:
     def movies(self) -> MovieApi:
         """影片只读快照与受保护字段写入出口（v2-lite 契约 v2）。"""
         return MovieApi(self.plugin_id)
+
+    @property
+    def media(self) -> MediaApi:
+        """媒体只读快照与按媒体库的存在性查询。"""
+        return MediaApi()
+
+    @property
+    def downloads(self) -> PluginDownloadService:
+        """按目标下载器搜索并提交下载候选。"""
+        return PluginDownloadService()
 
     @property
     def subtitles(self) -> SubtitleApi:
