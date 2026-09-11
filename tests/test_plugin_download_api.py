@@ -154,3 +154,65 @@ def test_submit_rejects_stale_library_target(test_db, tmp_path, monkeypatch):
     assert caught.value.status_code == 409
     assert caught.value.code == "plugin_download_candidate_stale"
     assert called is False
+
+
+def test_list_targets_returns_all_configured_clients(test_db, tmp_path):
+    downloads = PluginContext("download_demo", {}, tmp_path).downloads
+    assert downloads.list_targets() == ()
+    first = _client("first")
+    second = _client("second")
+    assert downloads.list_targets() == (
+        downloads.get_target(first.id),
+        downloads.get_target(second.id),
+    )
+
+
+def test_search_without_client_preserves_each_host_target(test_db, tmp_path, monkeypatch):
+    first = _client("first")
+    second = _client("second")
+    calls = []
+
+    def fake_search(self, **kwargs):
+        calls.append(kwargs)
+        return [_raw_candidate(second), _raw_candidate(first), _raw_candidate(second)]
+
+    monkeypatch.setattr(DownloadSearchService, "search_candidates", fake_search)
+    candidates = PluginContext("download_demo", {}, tmp_path).downloads.search_candidates(
+        movie_number="ABC-001",
+    )
+    assert [(item.download_client_id, item.library_id) for item in candidates] == [
+        (second.id, second.library_id),
+        (first.id, first.library_id),
+        (second.id, second.library_id),
+    ]
+    assert calls == [{
+        "movie_number": "ABC-001", "indexer_kind": None, "download_client_id": None,
+    }]
+
+
+def test_search_without_client_returns_empty_results(tmp_path, monkeypatch):
+    monkeypatch.setattr(DownloadSearchService, "search_candidates", lambda self, **kwargs: [])
+    assert PluginContext("download_demo", {}, tmp_path).downloads.search_candidates(
+        movie_number="ABC-001",
+    ) == ()
+
+
+@pytest.mark.parametrize("client_id", [0, -1, True, "1"])
+def test_search_rejects_invalid_explicit_client_id(tmp_path, client_id):
+    with pytest.raises(ValueError, match="download_client_id"):
+        PluginContext("download_demo", {}, tmp_path).downloads.search_candidates(
+            movie_number="ABC-001", download_client_id=client_id,
+        )
+
+
+def test_search_rejects_host_target_mismatch(test_db, tmp_path, monkeypatch):
+    first = _client("first")
+    second = _client("second")
+    monkeypatch.setattr(
+        DownloadSearchService, "search_candidates", lambda self, **kwargs: [_raw_candidate(second)],
+    )
+    with pytest.raises(ApiError) as caught:
+        PluginContext("download_demo", {}, tmp_path).downloads.search_candidates(
+            movie_number="ABC-001", download_client_id=first.id,
+        )
+    assert caught.value.code == "plugin_download_candidate_target_mismatch"

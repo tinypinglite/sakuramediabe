@@ -149,3 +149,15 @@
 - 本规范不追求 HATEOAS
 - 本规范不提供旧接口迁移映射
 - 本规范不以当前实现代码为约束
+
+## 插件下载接口
+
+Host API 7 新增 `context.downloads.list_targets()`，按下载器 ID 升序返回全部已配置
+下载器的只读 `PluginDownloadTarget`（ID、名称、媒体库 ID/名称、provider key），
+无下载器时返回空 tuple，不暴露连接配置或凭据。列表顺序不表示默认路由优先级。
+
+`context.downloads.search_candidates(movie_number=..., download_client_id=None)`
+省略下载器 ID 时沿用宿主路由：搜索有下载器绑定的索引器，每个索引器使用其绑定顺序
+中的首个下载器。显式指定 ID 时仍只搜索绑定到该下载器的索引器。
+每条候选保留自己的下载器和媒体库目标，提交时继续校验目标是否发生变化。
+Host API 版本保持为 7；使用新增能力需要安装包含这些接口的后端版本，旧版插件的显式 ID 调用保持兼容。

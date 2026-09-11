@@ -490,6 +490,17 @@ class PluginDownloadService:
             seeders=raw_candidate.seeders,
         )
 
+    def list_targets(self) -> tuple[PluginDownloadTarget, ...]:
+        """按 ID 升序列出已配置下载器及媒体库目标，不返回连接配置。"""
+        from src.model import DownloadClient, MediaLibrary
+
+        clients = (
+            DownloadClient.select(DownloadClient, MediaLibrary)
+            .join(MediaLibrary)
+            .order_by(DownloadClient.id.asc())
+        )
+        return tuple(self._to_target(client) for client in clients)
+
     def get_target(self, download_client_id: int) -> PluginDownloadTarget:
         """读取下载器当前关联的媒体库目标。"""
         self._validate_positive_id(download_client_id, "download_client_id")
@@ -501,21 +512,29 @@ class PluginDownloadService:
         self,
         *,
         movie_number: str,
-        download_client_id: int,
+        download_client_id: int | None = None,
         indexer_kind: str | None = None,
     ) -> tuple[PluginDownloadCandidate, ...]:
-        """只搜索绑定到目标下载器的索引器，并固定候选投递目标。"""
-        self._validate_positive_id(download_client_id, "download_client_id")
+        """可限定下载器；省略时沿用宿主索引器绑定路由，固定每条候选的目标。"""
+        if download_client_id is not None:
+            self._validate_positive_id(download_client_id, "download_client_id")
         from src.service.transfers.downloads.common import require_client
         from src.service.transfers.downloads.search_service import DownloadSearchService
 
-        client = require_client(download_client_id)
+        client = require_client(download_client_id) if download_client_id is not None else None
         raw_candidates = DownloadSearchService().search_candidates(
             movie_number=movie_number,
             indexer_kind=indexer_kind,
-            download_client_id=client.id,
+            download_client_id=download_client_id,
         )
-        return tuple(self._to_candidate(candidate, client) for candidate in raw_candidates)
+        clients = {client.id: client} if client is not None else {}
+        candidates = []
+        for candidate in raw_candidates:
+            target_id = client.id if client is not None else candidate.resolved_client_id
+            if target_id not in clients:
+                clients[target_id] = require_client(target_id)
+            candidates.append(self._to_candidate(candidate, clients[target_id]))
+        return tuple(candidates)
 
     def submit(
         self,
