@@ -157,9 +157,13 @@ def list_duplicate_media_groups(
 def list_multi_version_movies(
     page: int = 1,
     page_size: int = 20,
+    include_vr: bool = Query(False, description="包含番号含 VR 或拥有 VR 标签的影片"),
+    include_fc2: bool = Query(False, description="包含番号以 FC2 开头的影片"),
     current_user=Depends(get_current_user),
 ):
-    return MediaService.list_multi_version_movies(page=page, page_size=page_size)
+    return MediaService.list_multi_version_movies(
+        page=page, page_size=page_size, include_vr=include_vr, include_fc2=include_fc2,
+    )
 
 
 def _parse_merged_media_ids(raw: str | None) -> tuple[int, ...]:

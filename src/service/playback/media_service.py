@@ -24,6 +24,8 @@ from src.model import (
     MediaThumbnail,
     Movie,
     MovieActor,
+    MovieTag,
+    Tag,
     VideoCollection,
     VideoCollectionItem,
     VideoItem,
@@ -291,14 +293,27 @@ class MediaService:
     @classmethod
     def list_multi_version_movies(
         cls, *, page: int = 1, page_size: int = 20,
+        include_vr: bool = False, include_fc2: bool = False,
     ) -> PageResponse[MultiVersionMovieResource]:
         validate_page(page, page_size, error_code="invalid_media_filter")
         groups = (
             Media.select(Media.movie)
-            .where(Media.movie.is_null(False), ~Media.movie.contains("VR"))
+            .where(Media.movie.is_null(False))
             .group_by(Media.movie)
             .having(peewee.fn.COUNT(Media.id) > 1)
         )
+        if not include_vr:
+            vr_tagged_movies = (
+                Movie.select(Movie.movie_number)
+                .join(MovieTag)
+                .join(Tag)
+                .where(peewee.fn.LOWER(Tag.name) == "vr")
+            )
+            groups = groups.where(
+                ~(Media.movie.contains("VR") | Media.movie.in_(vr_tagged_movies))
+            )
+        if not include_fc2:
+            groups = groups.where(~Media.movie.startswith("FC2"))
         total = groups.count()
         movie_numbers = [
             number for (number,) in (
