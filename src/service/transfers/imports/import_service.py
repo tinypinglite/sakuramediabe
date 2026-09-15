@@ -19,11 +19,14 @@ from src.common.media_formats import (
     normalize_media_resolution,
 )
 from src.common.media_import_status import (
+    FAILURE_REASON_ALREADY_INDEXED_PATH,
+    FAILURE_REASON_FILE_TOO_SMALL,
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED,
     FAILURE_REASON_MEDIA_IMPORT_FAILED,
     FAILURE_REASON_METADATA_FETCH_FAILED,
     FAILURE_REASON_METADATA_UPSERT_FAILED,
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
+    FAILURE_REASON_UNSUPPORTED_FORMAT,
     make_failure_item,
 )
 from src.common.movie_numbers import (
@@ -267,6 +270,18 @@ class MediaImportService:
                     if identity in existing_identities
                 }
                 skipped_count += len(duplicate_paths)
+                for source in scanned_files:
+                    if source.relative_path not in duplicate_paths:
+                        continue
+                    failure_items.append(
+                        self._make_failure_item(
+                            source,
+                            reason=FAILURE_REASON_ALREADY_INDEXED_PATH,
+                            library_id=library_id,
+                            media_kind=media_kind,
+                            source_disposition=source_disposition,
+                        )
+                    )
                 scanned_files = tuple(
                     source
                     for source in scanned_files
@@ -283,9 +298,9 @@ class MediaImportService:
             text="媒体提供方扫描完成",
             summary_patch={
                 "imported_count": 0,
-                "skipped_count": 0,
+                "skipped_count": skipped_count,
                 "failed_count": 0,
-                "failed_files": [],
+                "failed_files": list(failure_items),
             },
         )
 
@@ -309,9 +324,27 @@ class MediaImportService:
                 if not is_supported_video_file_name(source.name):
                     if not self._is_srt(source):
                         skipped_count += 1
+                        failure_items.append(
+                            self._make_failure_item(
+                                source,
+                                reason=FAILURE_REASON_UNSUPPORTED_FORMAT,
+                                library_id=library_id,
+                                media_kind=media_kind,
+                                source_disposition=source_disposition,
+                            )
+                        )
                     continue
                 if media_kind == "jav" and source.size_bytes < minimum_video_file_size:
                     skipped_count += 1
+                    failure_items.append(
+                        self._make_failure_item(
+                            source,
+                            reason=FAILURE_REASON_FILE_TOO_SMALL,
+                            library_id=library_id,
+                            media_kind=media_kind,
+                            source_disposition=source_disposition,
+                        )
+                    )
                     continue
                 movie_number = parse_movie_number_from_text(f"{source.name} {source.relative_path}")
                 if media_kind == "jav" and not movie_number:

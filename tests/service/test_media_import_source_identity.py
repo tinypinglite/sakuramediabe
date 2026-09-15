@@ -66,6 +66,10 @@ def test_import_skips_existing_provider_source_identity_before_staging(test_db):
     assert result.skipped_count == 1
     assert result.failed_count == 0
     assert Media.select().count() == 1
+    assert [item["reason"] for item in result.failed_files] == [
+        "already_indexed_path"
+    ]
+    assert result.failed_files[0]["kind"] == "skipped"
 
 
 def test_import_keeps_existing_behavior_when_provider_lacks_source_identity(test_db):

@@ -1,5 +1,8 @@
 from types import SimpleNamespace
 
+import pytest
+
+from src.api.exception.errors import ApiError
 from src.model import BackgroundTaskRun, MediaLibrary
 from src.schema.transfers.media_import import ImportMetadataSearchResponse
 from src.service.transfers.shared.import_task_service import ImportTaskService
@@ -53,6 +56,24 @@ def test_failed_items_are_readable_without_exposing_provider_source_ref(test_db)
     assert payload["id"] == "failure-1"
     assert payload["can_manual_search"] is True
     assert "source_ref" not in payload
+
+
+def test_skipped_items_are_listed_but_not_searchable(test_db):
+    library = MediaLibrary.create(
+        name="skipped-items-library", provider_key="test", provider_config={}
+    )
+    task, item = _import_task(library.id)
+    item.update({"reason": "file_too_small", "kind": "skipped"})
+    task.result_summary = {"failed_files": [item]}
+    task.save(only=[BackgroundTaskRun.result_summary])
+
+    resources = ImportTaskService.list_failed_items(task.id)
+
+    assert len(resources) == 1
+    assert resources[0].can_manual_search is False
+    with pytest.raises(ApiError) as exc_info:
+        ImportTaskService.search_failed_item(task.id, item["id"], "ABC-001")
+    assert exc_info.value.code == "failed_item_search_unavailable"
 
 
 def test_failed_item_search_uses_only_the_requested_number(test_db, monkeypatch):

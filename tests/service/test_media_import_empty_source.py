@@ -77,6 +77,12 @@ def test_provider_import_skips_small_and_non_video_files(monkeypatch):
     assert result.imported_count == 0
     assert result.skipped_count == 3
     assert result.failed_count == 0
+    assert [item["reason"] for item in result.failed_files] == [
+        "file_too_small",
+        "unsupported_format",
+        "unsupported_format",
+    ]
+    assert all(item["kind"] == "skipped" for item in result.failed_files)
 
 
 def test_provider_import_persists_retryable_failed_video_item(test_db, monkeypatch):
