@@ -24,6 +24,32 @@ class MediaThumbnailGenerationState(str, Enum):
     SUCCEEDED = "succeeded"
 
 
+class MediaThumbnailResetRequest(SchemaModel):
+    media_ids: list[int] = Field(min_length=1, max_length=1000)
+
+    @field_validator("media_ids", mode="before")
+    @classmethod
+    def reject_boolean_media_ids(cls, value):
+        if isinstance(value, (list, tuple)) and any(
+            isinstance(item, bool) for item in value
+        ):
+            raise ValueError("media_ids 必须全部为正整数")
+        return value
+
+    @field_validator("media_ids")
+    @classmethod
+    def validate_media_ids(cls, value: list[int]) -> list[int]:
+        if any(item <= 0 for item in value):
+            raise ValueError("media_ids 必须全部为正整数")
+        if len(set(value)) != len(value):
+            raise ValueError("media_ids 不可重复")
+        return value
+
+
+class MediaThumbnailResetResponse(SchemaModel):
+    reset_count: int
+
+
 class MediaProgressUpdateRequest(SchemaModel):
     position_seconds: int = Field(ge=0)
 

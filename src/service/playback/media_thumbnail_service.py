@@ -10,5 +10,6 @@ class MediaThumbnailService:
     count_pending_media = MediaThumbnailTaskService.count_pending_media
     count_retry_wait_media = MediaThumbnailTaskService.count_retry_wait_media
     count_terminal_failed_media = MediaThumbnailTaskService.count_terminal_failed_media
+    reset_terminal_media = MediaThumbnailTaskService.reset_terminal_media
     generate_pending_thumbnails = MediaThumbnailTaskService.generate_pending_thumbnails
     list_media_thumbnails = ThumbnailArtifactService.list_media_thumbnails

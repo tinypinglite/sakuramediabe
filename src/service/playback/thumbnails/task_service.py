@@ -124,6 +124,25 @@ class MediaThumbnailTaskService:
     def count_terminal_failed_media(cls) -> int:
         return cls._count_state(Media.THUMBNAIL_STATE_TERMINAL)
 
+    @classmethod
+    def reset_terminal_media(cls, media_ids: list[int]) -> int:
+        ensure_database_ready()
+        return Media.update(
+            thumbnail_generation_state=Media.THUMBNAIL_STATE_PENDING,
+            thumbnail_attempt_count=0,
+            thumbnail_deferred_count=0,
+            thumbnail_next_retry_at=None,
+            thumbnail_last_error_code=None,
+            thumbnail_last_error=None,
+            thumbnail_terminal_at=None,
+            updated_at=utc_now_for_db(),
+        ).where(
+            Media.id.in_(media_ids),
+            Media.valid == True,
+            Media.thumbnail_generation_state == Media.THUMBNAIL_STATE_TERMINAL,
+            cls._missing_thumbnail_condition(),
+        ).execute()
+
     @staticmethod
     def minimum_acceptable_count(expected_count: int) -> int:
         return max(1, int(expected_count * 0.85))

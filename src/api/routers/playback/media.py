@@ -36,10 +36,12 @@ from src.schema.playback.media import (
     MediaProgressResource,
     MediaProgressUpdateRequest,
     MediaThumbnailGenerationState,
+    MediaThumbnailResetRequest,
+    MediaThumbnailResetResponse,
     MediaThumbnailResource,
     MultiVersionMovieResource,
 )
-from src.service.playback import MediaService
+from src.service.playback import MediaService, MediaThumbnailService
 from src.service.playback.provider_helpers import library_handle_for, media_handle_for
 
 router = APIRouter(
@@ -126,6 +128,19 @@ def list_media(
         sort=sort,
         page=page,
         page_size=page_size,
+    )
+
+
+@router.post(
+    "/thumbnail-generation/reset",
+    response_model=MediaThumbnailResetResponse,
+)
+def reset_terminal_media_thumbnails(
+    payload: MediaThumbnailResetRequest,
+    current_user=Depends(get_current_user),
+):
+    return MediaThumbnailResetResponse(
+        reset_count=MediaThumbnailService.reset_terminal_media(payload.media_ids),
     )
 
 
