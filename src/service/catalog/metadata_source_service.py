@@ -58,6 +58,20 @@ class MetadataSourceService:
             if extension.key == METADATA_SOURCE_EXTENSION_KEY
         )
 
+    @classmethod
+    def enabled_plugin_sources(cls):
+        """按宿主配置顺序返回当前启用且已注册的元数据插件。"""
+        sources = {plugin_id: (name, source) for plugin_id, name, source in cls.sources}
+        return tuple(
+            (plugin_id, *sources[plugin_id])
+            for plugin_id in settings.plugins.enabled
+            if plugin_id in sources
+        )
+
+    @classmethod
+    def is_plugin_enabled(cls, plugin_id: str) -> bool:
+        return any(current_id == plugin_id for current_id, _, _ in cls.enabled_plugin_sources())
+
     @staticmethod
     def _delivery_paths(detail: PluginMovieMetadata, root: Path) -> Iterator[Path]:
         request_dir = None
@@ -86,6 +100,68 @@ class MetadataSourceService:
                 pass
 
     @classmethod
+    def _load_plugin(cls, plugin_id: str, movie_number: str):
+        source_entry = next(
+            (
+                (name, source)
+                for current_id, name, source in cls.enabled_plugin_sources()
+                if current_id == plugin_id
+            ),
+            None,
+        )
+        if source_entry is None:
+            raise MetadataSourceError(f"元数据插件未启用或未注册: {plugin_id}")
+        name, source = source_entry
+        paths: set[Path] = set()
+        try:
+            result = source.fetch_movie(movie_number)
+            if result is None:
+                raise MetadataNotFoundError("movie", movie_number)
+            detail = PluginMovieMetadata.model_validate(result)
+            root = (
+                Path(settings.plugins.root_dir)
+                / plugin_id
+                / "data"
+                / "metadata-tmp"
+            )
+            root.resolve().relative_to(
+                (Path(settings.plugins.root_dir) / plugin_id).resolve()
+            )
+            paths.update(cls._delivery_paths(detail, root))
+            if normalize_movie_number(detail.movie_number) != normalize_movie_number(
+                movie_number
+            ):
+                raise ValueError("插件返回的番号与请求不匹配")
+            for path in paths:
+                with PillowImage.open(path) as image:
+                    image.load()
+        except MetadataNotFoundError:
+            cls._cleanup_delivery(paths)
+            raise
+        except Exception as exc:
+            cls._cleanup_delivery(paths)
+            logger.warning("元数据插件失败 plugin={} detail={}", plugin_id, exc)
+            raise MetadataSourceError(
+                f"{plugin_id}: 元数据查询或交付校验失败 ({type(exc).__name__})"
+            ) from exc
+        return detail, {
+            "plugin_id": plugin_id,
+            "display_name": name,
+            "source_id": detail.source_id,
+            "source_url": detail.source_url,
+        }, paths
+
+    @classmethod
+    @contextmanager
+    def fetch_plugin(cls, plugin_id: str, movie_number: str):
+        """只调用指定插件，并在调用方消费完结果后清理插件交付文件。"""
+        detail, source, paths = cls._load_plugin(plugin_id, movie_number)
+        try:
+            yield detail, source
+        finally:
+            cls._cleanup_delivery(paths)
+
+    @classmethod
     @contextmanager
     def fetch(cls, movie_number: str, provider):
         try:
@@ -98,49 +174,16 @@ class MetadataSourceService:
 
         failures = []
         # enabled 是宿主有序配置，同时确保已停用的插件不再被调用。
-        sources = {plugin_id: (name, source) for plugin_id, name, source in cls.sources}
-        for plugin_id in settings.plugins.enabled:
-            if plugin_id not in sources:
-                continue
-            name, source = sources[plugin_id]
-            paths: set[Path] = set()
+        for plugin_id, _name, _source in cls.enabled_plugin_sources():
             try:
-                result = source.fetch_movie(movie_number)
-                if result is None:
-                    continue
-                detail = PluginMovieMetadata.model_validate(result)
-                root = (
-                    Path(settings.plugins.root_dir)
-                    / plugin_id
-                    / "data"
-                    / "metadata-tmp"
-                )
-                root.resolve().relative_to((Path(settings.plugins.root_dir) / plugin_id).resolve())
-                paths.update(cls._delivery_paths(detail, root))
-                if normalize_movie_number(
-                    detail.movie_number
-                ) != normalize_movie_number(movie_number):
-                    raise ValueError("插件返回的番号与请求不匹配")
-                for path in paths:
-                    with PillowImage.open(path) as image:
-                        image.load()
-            except Exception as exc:
-                cls._cleanup_delivery(paths)
-                failures.append(
-                    f"{plugin_id}: 元数据查询或交付校验失败 ({type(exc).__name__})"
-                )
-                logger.warning("元数据插件失败 plugin={} detail={}", plugin_id, exc)
+                detail, source, paths = cls._load_plugin(plugin_id, movie_number)
+            except MetadataNotFoundError:
+                continue
+            except MetadataSourceError as exc:
+                failures.append(str(exc))
                 continue
             try:
-                yield (
-                    detail,
-                    {
-                        "plugin_id": plugin_id,
-                        "display_name": name,
-                        "source_id": detail.source_id,
-                        "source_url": detail.source_url,
-                    },
-                )
+                yield detail, source
             finally:
                 cls._cleanup_delivery(paths)
             return

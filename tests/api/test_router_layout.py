@@ -94,16 +94,25 @@ def test_create_app_registers_videos_routes():
     assert "/video-imports" not in paths
 
 
-def test_create_app_registers_only_unified_media_import_route():
+def test_create_app_registers_unified_media_import_routes():
     route_methods = {
         (getattr(route, "path", None), method)
         for route in create_app().routes
         for method in getattr(route, "methods", set())
     }
 
-    assert ("/imports", "POST") in route_methods
+    import_routes = {
+        (path, method)
+        for path, method in route_methods
+        if path == "/imports" or (path or "").startswith("/imports/")
+    }
+    assert import_routes == {
+        ("/imports", "POST"),
+        ("/imports/{task_run_id}/failed-items", "GET"),
+        ("/imports/{task_run_id}/failed-items/{item_id}/search", "POST"),
+        ("/imports/{task_run_id}/failed-items/{item_id}/retry", "POST"),
+    }
     assert ("/subtitle-imports", "POST") not in route_methods
-    assert not any((path or "").startswith("/imports/") for path, _ in route_methods)
 
 
 def test_create_app_registers_media_storage_transfer_route():

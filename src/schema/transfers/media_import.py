@@ -52,6 +52,73 @@ class ImportResult(SchemaModel):
     failed_count: int = 0
     new_playable_movies: list[dict[str, object]] = Field(default_factory=list)
     created_video_ids: list[int] = Field(default_factory=list)
+    # 失败文件随任务结果保存，供用户查看和发起人工元数据匹配后的重试。
+    # source_ref 等宿主内部字段只留在 summary 中，失败项资源模型不暴露。
+    failed_files: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ImportFailedItemResource(SchemaModel):
+    id: str
+    relative_path: str
+    size_bytes: int
+    is_video: bool
+    reason: str
+    detail: str = ""
+    kind: str
+    state: Literal["pending", "queued", "resolved"] = "pending"
+    retry_task_run_id: int | None = None
+    resolved_movie_id: int | None = None
+    resolved_media_id: int | None = None
+    last_retry_error: str | None = None
+    can_manual_search: bool = False
+
+
+class ImportMetadataCandidateResource(SchemaModel):
+    candidate_id: str
+    source: Literal["javdb", "plugin"]
+    source_name: str
+    source_id: str | None = None
+    javdb_id: str | None = None
+    movie_number: str
+    title: str
+    cover_url: str | None = None
+    release_date: str | None = None
+    duration_minutes: int
+
+
+class ImportMetadataSourceErrorResource(SchemaModel):
+    source: str
+    source_name: str
+    reason: str
+    detail: str
+
+
+class ImportMetadataSearchRequest(SchemaModel):
+    movie_number: str = Field(min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_movie_number(self) -> "ImportMetadataSearchRequest":
+        self.movie_number = self.movie_number.strip()
+        if not self.movie_number:
+            raise ValueError("movie_number cannot be blank")
+        return self
+
+
+class ImportMetadataSearchResponse(SchemaModel):
+    movie_number: str
+    candidates: list[ImportMetadataCandidateResource] = Field(default_factory=list)
+    source_errors: list[ImportMetadataSourceErrorResource] = Field(default_factory=list)
+
+
+class ImportFailedItemRetryRequest(SchemaModel):
+    candidate_id: str = Field(min_length=1, max_length=1024)
+
+    @model_validator(mode="after")
+    def validate_candidate_id(self) -> "ImportFailedItemRetryRequest":
+        self.candidate_id = self.candidate_id.strip()
+        if not self.candidate_id:
+            raise ValueError("candidate_id cannot be blank")
+        return self
 
 
 class ImportAcceptedResponse(SchemaModel):

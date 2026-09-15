@@ -21,6 +21,10 @@ class ActivityCleanupService:
     """
 
     def cleanup(self) -> dict[str, int]:
+        from src.service.catalog.movie_metadata_search_service import (
+            MovieMetadataSearchService,
+        )
+
         scheduler_settings = settings.scheduler
         deleted_task_runs = self._cleanup_task_runs(
             scheduler_settings.activity_task_run_retention_per_key
@@ -28,9 +32,11 @@ class ActivityCleanupService:
         deleted_notifications = self._cleanup_notifications(
             scheduler_settings.activity_notification_read_retention_days
         )
+        deleted_metadata_search_assets = MovieMetadataSearchService.cleanup_search_assets()
         stats = {
             "deleted_task_runs": deleted_task_runs,
             "deleted_notifications": deleted_notifications,
+            "deleted_metadata_search_assets": deleted_metadata_search_assets,
         }
         logger.info("Activity record cleanup finished: {}", stats)
         return stats

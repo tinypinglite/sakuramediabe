@@ -79,6 +79,38 @@ def test_provider_import_skips_small_and_non_video_files(monkeypatch):
     assert result.failed_count == 0
 
 
+def test_provider_import_persists_retryable_failed_video_item(test_db, monkeypatch):
+    source = ImportFile(
+        source_ref={"id": "opaque-file"},
+        name="release-without-number.mp4",
+        relative_path="release/release-without-number.mp4",
+        size_bytes=100,
+        is_video=True,
+    )
+
+    class Storage:
+        def scan_import_source(self, *, source_ref):
+            assert source_ref == {"id": "directory"}
+            return (source,)
+
+        def stage_import_file(self, **_kwargs):
+            raise AssertionError("a file without a movie number must not be staged")
+
+    monkeypatch.setattr(settings.media, "allowed_min_video_file_size", 0)
+    library = MediaLibrary.create(
+        name="failed-item-library", provider_key="test", provider_config={}
+    )
+
+    result = MediaImportService(
+        provider=Storage(), catalog_import_service=object()
+    ).import_from_source({"id": "directory"}, library.id, media_kind="jav")
+
+    assert result.failed_count == 1
+    assert result.failed_files[0]["source_ref"] == {"id": "opaque-file"}
+    assert result.failed_files[0]["relative_path"] == source.relative_path
+    assert result.failed_files[0]["reason"] == "movie_number_not_found"
+
+
 def test_video_import_allows_small_file_and_generates_cover_after_finalizing(monkeypatch):
     events: list[str] = []
     source = ImportFile(
@@ -209,6 +241,8 @@ def test_import_sidecar_subtitles_matches_same_directory_and_movie_number(monkey
         imported_subtitle_paths=set(),
         source_disposition="delete_after_commit",
         failure_items=[],
+        library_id=1,
+        media_kind="jav",
     )
 
     assert failures == 0
