@@ -43,6 +43,8 @@ class MediaFileHashBackfillService:
             "skipped_media": 0,
         }
         storage_by_library: dict[int, Any] = {}
+        logger.info("Media file hash backfill started missing_media={}", len(media_ids))
+        step = max(len(media_ids) // 20, 1)
 
         def emit_progress(completed: int) -> None:
             reporter.emit(
@@ -58,6 +60,15 @@ class MediaFileHashBackfillService:
             )
 
         for completed, media_id in enumerate(media_ids, start=1):
+            if completed == 1 or completed % step == 0:
+                logger.info(
+                    "Media file hash backfill progress completed={}/{} updated={} skipped={} failed={}",
+                    completed,
+                    len(media_ids),
+                    stats["updated_media"],
+                    stats["skipped_media"],
+                    stats["failed_media"],
+                )
             try:
                 with media_operation_lock(MEDIA_LOCK, media_id):
                     media = (

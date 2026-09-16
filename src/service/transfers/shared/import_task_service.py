@@ -263,10 +263,20 @@ class ImportTaskService:
     @classmethod
     def execute(cls, reporter, params: dict) -> dict:
         if params.get("mode") == "retry_failed_file":
+            logger.info("Library import started mode=retry_failed_file")
             result = cls._execute_failed_item_retry(reporter, params)
         elif "download_tasks" in params:
+            logger.info(
+                "Library import started mode=batch download_tasks={}",
+                len(params["download_tasks"]),
+            )
             result = cls._execute_batch(reporter, params)
         else:
+            logger.info(
+                "Library import started mode=single download_task_id={} library_id={}",
+                params.get("download_task_id"),
+                params.get("library_id"),
+            )
             result = cls._execute_single(
                 reporter, params, progress_callback=reporter.progress_callback
             )
@@ -298,6 +308,7 @@ class ImportTaskService:
         created_video_ids = []
         failed_files = []
         reporter.emit(current=0, total=total, text=f"待处理下载任务 {total} 个")
+        step = max(total // 20, 1)
         for item in batch_items:
             task_id = int(item["download_task_id"])
             try:
@@ -329,6 +340,15 @@ class ImportTaskService:
                     total=total,
                     text=f"已处理下载任务 {processed_count}/{total}",
                 )
+                if processed_count == 1 or processed_count % step == 0:
+                    logger.info(
+                        "Library import progress processed={}/{} imported={} failed={} failed_tasks={}",
+                        processed_count,
+                        total,
+                        imported_count,
+                        failed_count,
+                        failed_task_count,
+                    )
         return {
             "download_task_count": total,
             "processed_download_task_count": processed_count,
@@ -409,6 +429,12 @@ class ImportTaskService:
         if not isinstance(task_run_id, int):
             raise TypeError("import_task_run_id_missing")
         target_movie_number = params.get("target_movie_number")
+        logger.info(
+            "Library import item started download_task_id={} library_id={} media_kind={}",
+            download_task_id,
+            request.library_id,
+            request.media_kind,
+        )
         try:
             from src.service.transfers.imports.import_service import MediaImportService
 

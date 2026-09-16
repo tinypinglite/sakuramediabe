@@ -317,6 +317,9 @@ class DailyRecommendationService:
 
             scored.append(_ScoredRecommendation(movie, float(score), reason_codes, signal_scores))
             if progress_callback is not None and index % progress_stride == 0:
+                logger.info(
+                    "Daily recommendation scoring {}/{}", index, len(movies)
+                )
                 emit_progress(
                     progress_callback,
                     current=index,
@@ -352,6 +355,11 @@ class DailyRecommendationService:
         safe_limit = max(int(limit), 0)
         emit_progress(progress_callback, current=0, total=0, text="每日推荐快照生成 · 正在读取候选影片")
         movies = cls._load_candidate_movies()
+        logger.info(
+            "Daily recommendation started snapshot_date={} candidate_movies={}",
+            snapshot_date.isoformat(),
+            len(movies),
+        )
         emit_progress(
             progress_callback,
             current=0,

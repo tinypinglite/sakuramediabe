@@ -185,6 +185,12 @@ class MediaTransferTaskService:
                     cls._storage_for(target_library),
                 )
                 cls._require_capabilities(source_storage, target_storage)
+                logger.info(
+                    "Media storage transfer started source_library_id={} target_library_id={} media_count={}",
+                    source_id,
+                    request.target_library_id,
+                    len(request.media_ids),
+                )
                 for index, media_id in enumerate(request.media_ids):
                     reason = "media_unavailable"
                     with media_operation_lock(MEDIA_LOCK, media_id):
@@ -275,6 +281,12 @@ class MediaTransferTaskService:
         except Exception as exc:
             if isinstance(exc, ApiError) and exc.status_code == 409:
                 reason = "media_busy"
+            # 只记 reason，不落 provider 异常细节，避免凭据进入日志。
+            logger.warning(
+                "Media storage transfer failed task_run_id={} reason={}",
+                task_id,
+                reason,
+            )
             try:
                 cls._record_failure(task_id, reason)
                 reporter.summary = BackgroundTaskRun.get_by_id(task_id).result_summary

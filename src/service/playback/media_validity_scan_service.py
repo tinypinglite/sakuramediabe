@@ -84,6 +84,8 @@ class MediaValidityScanService:
             "failed_libraries": 0,
         }
         completed = 0
+        logger.info("Media validity scan started total_media={}", total_media)
+        step = max(total_media // 20, 1)
 
         def emit_progress(completed_count: int) -> None:
             reporter.emit(
@@ -98,6 +100,16 @@ class MediaValidityScanService:
                 ),
                 summary_patch=stats,
             )
+            if completed_count == 1 or completed_count % step == 0:
+                logger.info(
+                    "Media validity scan progress completed={}/{} updated={} invalidated={} revived={} failed={}",
+                    completed_count,
+                    total_media,
+                    stats["updated_media"],
+                    stats["invalidated_media"],
+                    stats["revived_media"],
+                    stats["failed_media"],
+                )
 
         for library in MediaLibrary.select().order_by(MediaLibrary.id):
             try:

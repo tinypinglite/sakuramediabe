@@ -414,6 +414,8 @@ class MediaThumbnailTaskService:
             current=len(entries), total=len(entries),
             text=f"阶段 1/2 · 查找待处理媒体 · 查询完成 · 待处理 {len(entries)} 部",
         )
+        logger.info("Media thumbnail generation started pending_media={}", len(entries))
+        step = max(len(entries) // 20, 1)
         stats: dict[str, Any] = {
             "pending_media": len(entries),
             "successful_media": 0,
@@ -448,6 +450,15 @@ class MediaThumbnailTaskService:
 
         emit_progress(0, "开始处理" if entries else "任务完成 · 无待处理媒体")
         for completed, (media_id, lane) in enumerate(entries, start=1):
+            if completed == 1 or completed % step == 0:
+                logger.info(
+                    "Media thumbnail generation progress completed={}/{} successful={} deferred={} failed={}",
+                    completed,
+                    len(entries),
+                    stats["successful_media"],
+                    stats["deferred_media"] + stats["backend_deferred_media"],
+                    stats["retryable_failed_media"] + stats["terminal_failed_media"],
+                )
             if lane in paused_lanes:
                 stats["backend_deferred_media"] += 1
                 emit_progress(completed, f"媒体 {media_id} 所属媒体库暂不可用，已延后")

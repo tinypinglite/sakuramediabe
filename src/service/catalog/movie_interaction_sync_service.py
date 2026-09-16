@@ -94,6 +94,8 @@ class MovieInteractionSyncService:
             "failed_movie_ids": [],
         }
         total = len(candidate_ids)
+        logger.info("Movie interaction sync started candidate_movies={}", total)
+        step = max(total // 20, 1)
 
         def progress_text(completed: int, *, action: str | None = None) -> str:
             fragments = ["影片互动数同步"]
@@ -150,4 +152,12 @@ class MovieInteractionSyncService:
                     text=progress_text(current),
                     summary_patch=stats,
                 )
+                if current == 1 or current % step == 0:
+                    logger.info(
+                        "Movie interaction sync progress completed={}/{} succeeded={} failed={}",
+                        current,
+                        total,
+                        stats["succeeded_movies"],
+                        stats["failed_movies"],
+                    )
         return stats

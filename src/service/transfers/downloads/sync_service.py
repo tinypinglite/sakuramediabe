@@ -38,6 +38,12 @@ class DownloadSyncService:
         try:
             remote_tasks = tuple(self._provider(client).list_tasks())
         except ProviderOperationError as exc:
+            logger.warning(
+                "Download task sync provider error client_id={} code={} detail={}",
+                client_id,
+                exc.code,
+                exc.safe_message,
+            )
             raise self._provider_error(exc) from exc
         except Exception as exc:
             logger.exception("Download task sync failed client_id={} detail={}", client_id, exc)
@@ -128,18 +134,30 @@ class DownloadSyncService:
             .where(DownloadTask.state.in_(self._SYNCABLE_STATES))
             .distinct()
         )
-        for client in (
+        clients = list(
             DownloadClient.select()
             .where(DownloadClient.id.in_(active_client_ids))
             .order_by(DownloadClient.id.asc())
-        ):
+        )
+        logger.info("Download task sync started clients={}", len(clients))
+        for client in clients:
             summary["total_clients"] += 1
             try:
                 result = self.sync_client(client.id)
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "Download task sync failed client_id={} detail={}", client.id, exc
+                )
                 summary["failed_count"] += 1
                 summary["failed_client_ids"].append(client.id)
                 continue
+            logger.info(
+                "Download task sync client finished client_id={} scanned={} updated={} removed={}",
+                client.id,
+                result.scanned_count,
+                result.updated_count,
+                result.removed_count,
+            )
             for key in (
                 "scanned_count",
                 "created_count",
@@ -161,10 +179,21 @@ class DownloadSyncService:
             & (DownloadTask.movie.is_null(False))
         ).order_by(DownloadTask.id.asc()):
             tasks_by_library.setdefault(task.client.library_id, []).append(task)
-        for tasks in tasks_by_library.values():
+        logger.info(
+            "Download task auto import started pending_tasks={} libraries={} recovered={}",
+            sum(len(tasks) for tasks in tasks_by_library.values()),
+            len(tasks_by_library),
+            recovered_count,
+        )
+        for library_id, tasks in tasks_by_library.items():
             try:
                 ImportTaskService.enqueue_batch(tasks)
                 queued_count += len(tasks)
+                logger.info(
+                    "Download task auto import enqueued library_id={} tasks={}",
+                    library_id,
+                    len(tasks),
+                )
             except ApiError as exc:
                 logger.warning(
                     "Skip auto import task_ids={} code={} detail={}",

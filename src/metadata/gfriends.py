@@ -90,6 +90,7 @@ class GfriendsActorImageResolver(MetadataRequestClient):
                     "force": force,
                 }
 
+            logger.info("GFriends filetree refresh started force={}", force)
             try:
                 payload = self.request_json("GET", self.filetree_url)
             except Exception as exc:

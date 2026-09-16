@@ -313,6 +313,14 @@ class MediaImportService:
         subtitle_sources = tuple(source for source in scanned_files if self._is_srt(source))
         operation_namespace = operation_namespace or f"import:{uuid4().hex}"
         total = len(scanned_files)
+        logger.info(
+            "Media import scan finished library_id={} media_kind={} scanned_files={} skipped={}",
+            library_id,
+            media_kind,
+            total,
+            skipped_count,
+        )
+        step = max(total // 20, 1)
         emit_progress(
             progress_callback,
             event="scan_complete",
@@ -341,6 +349,15 @@ class MediaImportService:
         }
         with self.metadata_import_batch(sorted(metadata_numbers)) as metadata_futures:
             for index, source in enumerate(scanned_files, start=1):
+                if index == 1 or index % step == 0:
+                    logger.info(
+                        "Media import progress processed={}/{} imported={} skipped={} failed={}",
+                        index,
+                        total,
+                        imported_count,
+                        skipped_count,
+                        failed_count,
+                    )
                 staged: StagedMedia | None = None
                 video: VideoItem | None = None
                 media: Media | None = None

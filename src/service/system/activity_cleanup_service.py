@@ -26,6 +26,11 @@ class ActivityCleanupService:
         )
 
         scheduler_settings = settings.scheduler
+        logger.info(
+            "Activity record cleanup started task_run_retention_per_key={} notification_retention_days={}",
+            scheduler_settings.activity_task_run_retention_per_key,
+            scheduler_settings.activity_notification_read_retention_days,
+        )
         deleted_task_runs = self._cleanup_task_runs(
             scheduler_settings.activity_task_run_retention_per_key
         )

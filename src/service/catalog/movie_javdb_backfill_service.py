@@ -39,6 +39,8 @@ class MovieJavdbBackfillService:
             "not_found_movies": 0,
             "failed_movies": 0,
         }
+        logger.info("JavDB backfill started candidate_movies={}", len(ids))
+        step = max(len(ids) // 20, 1)
 
         def progress_text(completed: int, *, action: str | None = None) -> str:
             fragments = ["JavDB 补录"]
@@ -95,4 +97,13 @@ class MovieJavdbBackfillService:
                     text=progress_text(current),
                     summary_patch=stats,
                 )
+                if current == 1 or current % step == 0:
+                    logger.info(
+                        "JavDB backfill progress completed={}/{} succeeded={} not_found={} failed={}",
+                        current,
+                        len(ids),
+                        stats["succeeded_movies"],
+                        stats["not_found_movies"],
+                        stats["failed_movies"],
+                    )
         return stats

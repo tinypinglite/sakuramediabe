@@ -1,3 +1,4 @@
+from loguru import logger
 from peewee import fn
 
 from src.model import Movie
@@ -56,6 +57,11 @@ class MovieHeatService:
         database = get_database()
         with database.atomic():
             candidate_count = cls.build_candidate_count_query().scalar() or 0
+            logger.info(
+                "Movie heat update started formula_version={} candidate_movies={}",
+                cls.FORMULA_VERSION,
+                candidate_count,
+            )
             updated_count = cls.build_update_query().execute()
         return {
             "candidate_count": candidate_count,

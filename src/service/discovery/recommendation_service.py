@@ -194,6 +194,7 @@ class MovieRecommendationService:
         total_movies = int(
             Movie.select().where(Movie.is_collection == False).count()
         )
+        logger.info("Movie similarity recompute started total_movies={}", total_movies)
         actor_df = self._load_feature_document_frequencies(
             MovieActor, MovieActor.actor
         )
@@ -224,6 +225,12 @@ class MovieRecommendationService:
             self.store.upsert_sparse_points(collection_name, batch)
             stats["indexed_movies"] += len(batch)
             batch.clear()
+            if (stats["indexed_movies"] // INDEX_BATCH_SIZE) % 10 == 0:
+                logger.info(
+                    "Movie similarity recompute progress indexed={}/{}",
+                    stats["indexed_movies"],
+                    total_movies,
+                )
             emit_progress(
                 progress_callback,
                 current=stats["indexed_movies"],

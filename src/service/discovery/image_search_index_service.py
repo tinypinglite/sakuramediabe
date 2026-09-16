@@ -138,8 +138,11 @@ class ImageSearchIndexService:
                     " · 正在统计待处理图片"
                 ),
             )
-            emit_index_progress(self._pending_image_count())
+            pending_images = self._pending_image_count()
+            logger.info("Image search index started pending_images={}", pending_images)
+            emit_index_progress(pending_images)
             next_progress_at = time.monotonic() + 2
+            next_log_at = time.monotonic() + 30
 
         while True:
             thumbnails = self._pending_thumbnails(work_batch_size)
@@ -168,8 +171,17 @@ class ImageSearchIndexService:
                 progress_callback is not None
                 and time.monotonic() >= next_progress_at
             ):
-                emit_index_progress(self._pending_image_count())
+                progress_summary = emit_index_progress(self._pending_image_count())
                 next_progress_at = time.monotonic() + 2
+                if time.monotonic() >= next_log_at:
+                    logger.info(
+                        "Image search index progress processed={} succeeded={} failed={} pending={}",
+                        progress_summary["processed"],
+                        progress_summary["succeeded"],
+                        progress_summary["failed"],
+                        progress_summary["pending"],
+                    )
+                    next_log_at = time.monotonic() + 30
 
         remaining = self._pending_image_count()
         summary = emit_index_progress(remaining, completed=True)

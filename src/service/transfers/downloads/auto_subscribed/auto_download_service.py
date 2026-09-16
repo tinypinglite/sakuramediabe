@@ -115,6 +115,8 @@ class SubscribedMovieAutoDownloadService:
         candidate_ids = self._select_candidate_ids()
         shared = self._setup_run()
         total = len(candidate_ids)
+        logger.info("Auto download started candidate_movies={}", total)
+        step = max(total // 20, 1)
 
         def summary_patch() -> dict[str, int]:
             return {
@@ -162,6 +164,11 @@ class SubscribedMovieAutoDownloadService:
             except SubscriptionSearchError as exc:
                 MovieSubscriptionSearchStateService.mark_failed(movie, exc)
             except Exception as exc:
+                logger.warning(
+                    "Auto download failed movie_number={} detail={}",
+                    movie.movie_number,
+                    exc,
+                )
                 shared["failed_items"].append(
                     {"movie_number": movie.movie_number, "stage": "process", "detail": str(exc)}
                 )
@@ -177,6 +184,16 @@ class SubscribedMovieAutoDownloadService:
                 text=progress_text(current),
                 summary_patch=summary_patch(),
             )
+            if current == 1 or current % step == 0:
+                logger.info(
+                    "Auto download progress completed={}/{} submitted={} no_candidate={} skipped={} failed={}",
+                    current,
+                    total,
+                    shared["submitted_movies"],
+                    shared["no_candidate_movies"],
+                    shared["skipped_movies"],
+                    len(shared["failed_items"]),
+                )
         return {
             "candidate_movies": len(candidate_ids),
             "searched_movies": shared["searched_movies"],
