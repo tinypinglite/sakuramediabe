@@ -55,6 +55,14 @@ class ImportTaskService:
         params = request.model_dump()
         params["download_task_id"] = download_task_id
         try:
+            download_task = (
+                DownloadTask.get_by_id(download_task_id)
+                if download_task_id is not None
+                else None
+            )
+            if download_task is not None:
+                # 下载任务导入只认准该任务的目标番号，资源包里的其它番号一律忽略。
+                params["target_movie_number"] = download_task.movie
             with get_database().atomic():
                 task_run = ActivityService.create_task_run(
                     task_key=cls.TASK_KEY,
@@ -63,8 +71,7 @@ class ImportTaskService:
                     mutex_key=mutex_key,
                     params=params,
                 )
-                if download_task_id is not None:
-                    download_task = DownloadTask.get_by_id(download_task_id)
+                if download_task is not None:
                     download_task.import_status = IMPORT_STATUS_RUNNING
                     download_task.import_task_run = task_run
                     download_task.save(
@@ -117,6 +124,8 @@ class ImportTaskService:
                 {
                     "download_task_id": int(task.id),
                     **request.model_dump(),
+                    # 下载任务导入只认准该任务的目标番号，资源包里的其它番号一律忽略。
+                    "target_movie_number": task.movie,
                 }
             )
         params = {
@@ -399,6 +408,7 @@ class ImportTaskService:
         task_run_id = getattr(reporter, "task_run_id", None)
         if not isinstance(task_run_id, int):
             raise TypeError("import_task_run_id_missing")
+        target_movie_number = params.get("target_movie_number")
         try:
             from src.service.transfers.imports.import_service import MediaImportService
 
@@ -410,6 +420,7 @@ class ImportTaskService:
                 collection_id=request.collection_id,
                 progress_callback=progress_callback,
                 operation_namespace=operation_namespace or f"task:{task_run_id}",
+                target_movie_number=target_movie_number,
             )
         except Exception:
             cls._set_download_status(download_task_id, IMPORT_STATUS_FAILED)

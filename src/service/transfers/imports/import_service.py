@@ -30,6 +30,7 @@ from src.common.media_import_status import (
     make_failure_item,
 )
 from src.common.movie_numbers import (
+    normalize_movie_number,
     parse_movie_number_from_text,
     subtitle_matches_movie_number,
 )
@@ -175,6 +176,7 @@ class MediaImportService:
         collection_id: int | None = None,
         progress_callback: ImportProgressCallback | None = None,
         operation_namespace: str | None = None,
+        target_movie_number: str | None = None,
     ) -> ImportResult:
         if not isinstance(source_ref, dict) or not source_ref:
             raise ApiError(422, "invalid_import_source", "source_ref must be an object")
@@ -202,6 +204,27 @@ class MediaImportService:
             raise ApiError(502, "provider_scan_failed", "媒体提供方扫描失败") from exc
         for source in scanned_files:
             self._validate_import_file(source)
+        if target_movie_number:
+            # 下载任务导入只认准目标番号：资源包里解析出的其它番号（合集/捆绑）一律忽略，
+            # 避免把用户没有订阅的影片建库并强制订阅。解析不出番号的文件保持原有处理。
+            target_key = normalize_movie_number(target_movie_number)
+            kept_sources: list[ImportFile] = []
+            for source in scanned_files:
+                parsed = parse_movie_number_from_text(
+                    f"{source.name} {source.relative_path}"
+                )
+                if parsed and normalize_movie_number(parsed) != target_key:
+                    logger.info(
+                        "Import source ignored; movie number differs from target "
+                        "library_id={} source={} parsed={} target={}",
+                        library_id,
+                        source.name,
+                        parsed,
+                        target_key,
+                    )
+                    continue
+                kept_sources.append(source)
+            scanned_files = tuple(kept_sources)
         from src.config.config import settings
 
         minimum_video_file_size = settings.media.allowed_min_video_file_size
