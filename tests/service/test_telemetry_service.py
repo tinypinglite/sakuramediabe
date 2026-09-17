@@ -30,6 +30,8 @@ def test_report_posts_heartbeat(monkeypatch):
         "cpu_architecture": "amd64",
         "managed_media_file_count": 0,
         "managed_media_total_bytes": 0,
+        "cpu_model": "AMD Ryzen 7 5800X 8-Core Processor",
+        "memory_total_bytes": 34359738368,
     }
     sent = []
 
@@ -90,6 +92,10 @@ def test_build_payload_reports_only_valid_managed_media(test_db, monkeypatch):
     )
     monkeypatch.setattr("src.service.system.telemetry_service.platform.system", lambda: "Linux")
     monkeypatch.setattr("src.service.system.telemetry_service.platform.machine", lambda: "aarch64")
+    monkeypatch.setattr(
+        TelemetryService, "_cpu_model", lambda: "AMD Ryzen 7 5800X 8-Core Processor"
+    )
+    monkeypatch.setattr(TelemetryService, "_memory_total_bytes", lambda: 34359738368)
 
     assert TelemetryService._build_payload() == {
         "schema_version": 2,
@@ -100,6 +106,8 @@ def test_build_payload_reports_only_valid_managed_media(test_db, monkeypatch):
         "cpu_architecture": "aarch64",
         "managed_media_file_count": 1,
         "managed_media_total_bytes": 100,
+        "cpu_model": "AMD Ryzen 7 5800X 8-Core Processor",
+        "memory_total_bytes": 34359738368,
     }
 
 

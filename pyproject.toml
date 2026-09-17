@@ -30,6 +30,7 @@ dependencies = [
     "tomli>=2.0.1,<3.0.0; python_version < '3.11'",
     "psycopg2-binary>=2.9.10,<3.0.0",
     "httpx>=0.28.1,<0.29.0",
+    "psutil>=5.9,<8",
     "qbittorrent-api>=2026.8.1",
     # libtorrent 2.1.x has no wheel for the macOS 12 Intel development image;
     # 2.0.9 exposes the same torrent_info/info_hash API used by the plugin.
