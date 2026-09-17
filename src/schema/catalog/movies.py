@@ -117,7 +117,7 @@ class MovieMediaProgressResource(SchemaModel):
 
 class MovieMediaPointResource(SchemaModel):
     point_id: int
-    thumbnail_id: int
+    thumbnail_id: int | None
     offset_seconds: int
     image: ImageResource
 

@@ -5,9 +5,7 @@ from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import require_by_id, validate_page
 from src.model import (
     Image,
-    Media,
     MediaPoint,
-    MediaThumbnail,
     MomentCollection,
     MomentCollectionItem,
 )
@@ -78,14 +76,9 @@ class MomentCollectionService:
             MomentCollectionItem.select(
                 MomentCollectionItem,
                 MediaPoint,
-                Media,
-                MediaThumbnail,
                 Image,
             )
             .join(MediaPoint)
-            .join(Media)
-            .switch(MediaPoint)
-            .join(MediaThumbnail)
             .join(Image)
             .where(MomentCollectionItem.collection.in_(collection_ids))
         )
@@ -112,12 +105,9 @@ class MomentCollectionService:
             MomentCollectionItem.select(
                 MomentCollectionItem,
                 MediaPoint,
-                MediaThumbnail,
                 Image,
             )
             .join(MediaPoint)
-            .switch(MediaPoint)
-            .join(MediaThumbnail)
             .join(Image)
             .where(MomentCollectionItem.collection.in_(collection_ids))
             .distinct(MomentCollectionItem.collection)
@@ -129,7 +119,7 @@ class MomentCollectionService:
         )
         return {
             item.collection_id: ImageResource.from_attributes_model(
-                item.point.thumbnail.image
+                item.point.image
             )
             for item in items
         }
@@ -244,11 +234,11 @@ class MomentCollectionService:
             MomentCollectionPointItemResource(
                 point_id=item.point_id,
                 media_id=item.point.media_id,
-                movie_number=item.point.media.movie_number,
-                video_item_id=item.point.media.video_item_id,
+                movie_number=item.point.movie_number,
+                video_item_id=item.point.video_item_id,
                 thumbnail_id=item.point.thumbnail_id,
                 offset_seconds=item.point.offset_seconds,
-                image=ImageResource.from_attributes_model(item.point.thumbnail.image),
+                image=ImageResource.from_attributes_model(item.point.image),
                 created_at=item.point.created_at,
                 position=item.position,
             )

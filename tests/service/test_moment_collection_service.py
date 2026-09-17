@@ -22,7 +22,8 @@ def _create_point(index: int) -> MediaPoint:
     )
     thumbnail = MediaThumbnail.create(media=media, image=image, offset=index * 10)
     return MediaPoint.create(
-        media=media, thumbnail=thumbnail, offset_seconds=index * 10
+        media=media, thumbnail=thumbnail, image=image, movie_number=media.movie_number,
+        video_item_id=media.video_item_id, offset_seconds=index * 10
     )
 
 

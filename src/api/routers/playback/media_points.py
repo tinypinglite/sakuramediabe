@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.collections.moments import MomentCollectionSummary
@@ -11,6 +11,12 @@ router = APIRouter(
     tags=["media"],
     dependencies=[Depends(db_deps)],
 )
+
+
+@router.delete("/media-points/{point_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_media_point(point_id: int, current_user=Depends(get_current_user)):
+    MediaService.delete_point_by_id(point_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/media-points", response_model=PageResponse[MediaPointListItemResource])

@@ -107,12 +107,17 @@ class MediaProgress(TimestampedMixin, BaseModel):
 
 
 class MediaPoint(TimestampedMixin, BaseModel):
-    media = peewee.ForeignKeyField(Media, backref="points", on_delete="CASCADE")
+    media = peewee.ForeignKeyField(Media, null=True, backref="points", on_delete="SET NULL")
     thumbnail = peewee.ForeignKeyField(
         MediaThumbnail,
+        null=True,
         backref="points",
-        on_delete="CASCADE",
+        on_delete="SET NULL",
     )
+    image = peewee.ForeignKeyField(Image, backref="media_points", on_delete="RESTRICT")
+    # 来源快照不建外键，删除影片或普通视频后仍保留时刻的展示和分类信息。
+    movie_number = peewee.CharField(max_length=64, null=True)
+    video_item_id = peewee.IntegerField(null=True)
     offset_seconds = peewee.IntegerField(index=True)
 
     class Meta:

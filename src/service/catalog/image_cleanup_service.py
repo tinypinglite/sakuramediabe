@@ -9,6 +9,7 @@ from src.config.config import settings
 from src.model import (
     Actor,
     Image,
+    MediaPoint,
     MediaThumbnail,
     Movie,
     MoviePlotImage,
@@ -55,6 +56,8 @@ class ImageCleanupService:
                 and MoviePlotImage.select(MoviePlotImage.id).where(MoviePlotImage.image == image).exists(),
                 database.table_exists(MediaThumbnail._meta.table_name)
                 and MediaThumbnail.select(MediaThumbnail.id).where(MediaThumbnail.image == image).exists(),
+                database.table_exists(MediaPoint._meta.table_name)
+                and MediaPoint.select(MediaPoint.id).where(MediaPoint.image == image).exists(),
                 database.table_exists(VideoItem._meta.table_name)
                 and VideoItem.select(VideoItem.id).where(VideoItem.cover_image == image).exists(),
             )

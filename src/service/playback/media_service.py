@@ -101,17 +101,14 @@ class MediaService:
             media_id=point.media_id,
             thumbnail_id=point.thumbnail_id,
             offset_seconds=point.offset_seconds,
-            image=ImageResource.from_attributes_model(point.thumbnail.image),
+            image=ImageResource.from_attributes_model(point.image),
             created_at=point.created_at,
         )
 
     @staticmethod
-    def _point_query_with_thumbnail():
+    def _point_query_with_image():
         return (
-            MediaPoint.select(MediaPoint, MediaThumbnail, Image)
-            .join(MediaThumbnail)
-            .switch(MediaThumbnail)
-            .join(Image)
+            MediaPoint.select(MediaPoint, Image).join(Image)
         )
 
     @staticmethod
@@ -458,25 +455,15 @@ class MediaService:
         cls._validate_media_point_page(page, page_size)
         start = (page - 1) * page_size
         order_by = cls._resolve_media_point_sort(sort)
-        kind_filter = cls._media_point_kind_filter(kind)
-        # total 与分页查询套用同一 kind 过滤，需 join Media 才能按归属筛。
-        total_query = MediaPoint.select().join(Media)
-        if kind_filter is not None:
-            total_query = total_query.where(kind_filter)
-        total = total_query.count()
-        points_query = (
-            MediaPoint.select(MediaPoint, Media, Movie, MediaThumbnail, Image)
-            .join(Media)
-            .switch(Media)
-            # 非 JAV 媒体没有 movie，改为 LEFT OUTER JOIN 让两类时刻都能列出。
-            .join(Movie, peewee.JOIN.LEFT_OUTER, on=(Media.movie == Movie.movie_number))
-            .switch(MediaPoint)
-            .join(MediaThumbnail)
-            .switch(MediaThumbnail)
-            .join(Image)
-        )
+        kind_filter = None
+        if kind == MediaPointKind.JAV:
+            kind_filter = MediaPoint.movie_number.is_null(False)
+        elif kind == MediaPointKind.VIDEO:
+            kind_filter = MediaPoint.video_item_id.is_null(False)
+        points_query = cls._point_query_with_image()
         if kind_filter is not None:
             points_query = points_query.where(kind_filter)
+        total = points_query.count()
         points = list(
             points_query
             .order_by(*order_by)
@@ -487,11 +474,11 @@ class MediaService:
             MediaPointListItemResource(
                 point_id=point.id,
                 media_id=point.media_id,
-                movie_number=point.media.movie_number,
-                video_item_id=point.media.video_item_id,
+                movie_number=point.movie_number,
+                video_item_id=point.video_item_id,
                 thumbnail_id=point.thumbnail_id,
                 offset_seconds=point.offset_seconds,
-                image=ImageResource.from_attributes_model(point.thumbnail.image),
+                image=ImageResource.from_attributes_model(point.image),
                 created_at=point.created_at,
             )
             for point in points
@@ -507,7 +494,7 @@ class MediaService:
     def list_points(cls, media_id: int) -> list[MediaPointResource]:
         cls._require_media(media_id)
         points = (
-            cls._point_query_with_thumbnail()
+            cls._point_query_with_image()
             .where(MediaPoint.media == media_id)
             .order_by(MediaPoint.id)
         )
@@ -532,22 +519,34 @@ class MediaService:
                 .first()
             )
             if point is not None:
-                point = cls._point_query_with_thumbnail().where(MediaPoint.id == point.id).get()
+                point = cls._point_query_with_image().where(MediaPoint.id == point.id).get()
                 return cls._to_media_point_resource(point), False
 
             point = MediaPoint.create(
                 media=media,
                 thumbnail=thumbnail,
+                image=thumbnail.image_id,
+                movie_number=media.movie_number,
+                video_item_id=media.video_item_id,
                 offset_seconds=thumbnail.offset,
             )
-            point = cls._point_query_with_thumbnail().where(MediaPoint.id == point.id).get()
+            point = cls._point_query_with_image().where(MediaPoint.id == point.id).get()
         return cls._to_media_point_resource(point), True
 
     @classmethod
     def delete_point(cls, media_id: int, point_id: int) -> None:
         cls._require_media(media_id)
         point = cls._require_media_point_for_media(media_id, point_id)
-        point.delete_instance()
+        cls.delete_point_by_id(point.id)
+
+    @classmethod
+    def delete_point_by_id(cls, point_id: int) -> None:
+        with get_database().atomic():
+            point = require_by_id(MediaPoint, point_id, "media_point")
+            image = point.image
+            point.delete_instance()
+            obsolete_paths = ImageCleanupService.delete_image_record_if_unused(image)
+        ImageCleanupService.delete_obsolete_image_files(obsolete_paths)
 
     @classmethod
     def update_progress(
@@ -619,7 +618,7 @@ class MediaService:
             thumbnail_image_ids = [thumbnail.image_id for thumbnail in thumbnails]
 
             with get_database().atomic():
-                # 依赖 DB 外键 CASCADE 自动清 MediaProgress / MediaPoint / MediaThumbnail。
+                # 清理播放进度和缩略图；时刻与切片仅置空来源引用。
                 Media.delete().where(Media.id == media.id).execute()
 
                 obsolete_image_paths: set[str] = set()

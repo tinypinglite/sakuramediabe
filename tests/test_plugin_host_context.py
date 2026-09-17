@@ -153,7 +153,8 @@ def test_plugin_collections_are_keyed_and_owned(test_db, tmp_path, monkeypatch):
     )
     media = Media.create(movie=first, library=library, file_name="ABP-020.mp4")
     thumbnail = MediaThumbnail.create(media=media, image=image, offset=0)
-    point = MediaPoint.create(media=media, thumbnail=thumbnail, offset_seconds=1)
+    point = MediaPoint.create(media=media, thumbnail=thumbnail, image=image, movie_number=media.movie_number,
+        video_item_id=media.video_item_id, offset_seconds=1)
     clip = MediaClip.create(
         media=media,
         movie_number=first.movie_number,

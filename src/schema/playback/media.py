@@ -84,8 +84,8 @@ class MediaPointCreateRequest(SchemaModel):
 
 class MediaPointResource(SchemaModel):
     point_id: int
-    media_id: int
-    thumbnail_id: int
+    media_id: int | None
+    thumbnail_id: int | None
     offset_seconds: int
     image: ImageResource
     created_at: datetime
@@ -93,11 +93,11 @@ class MediaPointResource(SchemaModel):
 
 class MediaPointListItemResource(SchemaModel):
     point_id: int
-    media_id: int
+    media_id: int | None
     # 非 JAV 媒体没有番号，改为可空并附带 video_item_id 供前端区分归属。
     movie_number: str | None = None
     video_item_id: int | None = None
-    thumbnail_id: int
+    thumbnail_id: int | None
     offset_seconds: int
     image: ImageResource
     created_at: datetime

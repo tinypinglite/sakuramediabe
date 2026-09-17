@@ -28,6 +28,7 @@ from src.start.migrations.runner import (
     IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
     IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
     MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
+    MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
     MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
     MOMENT_COLLECTIONS_MIGRATION_NAME,
     MOVIE_BLACKLIST_MIGRATION_NAME,
@@ -113,6 +114,7 @@ def test_current_migrations_are_discoverable_in_order():
         MOMENT_COLLECTIONS_MIGRATION_NAME,
         ACTOR_LOCAL_PROFILE_MIGRATION_NAME,
         PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
+        MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
     ]
 
 
@@ -201,6 +203,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=MOMENT_COLLECTIONS_MIGRATION_NAME, applied=True),
         MigrationExecution(name=ACTOR_LOCAL_PROFILE_MIGRATION_NAME, applied=True),
         MigrationExecution(name=PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=MEDIA_POINT_PRESERVATION_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -218,6 +221,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MOMENT_COLLECTIONS_MIGRATION_NAME,
         ACTOR_LOCAL_PROFILE_MIGRATION_NAME,
         PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
+        MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
     ]
 
 
@@ -370,7 +374,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 14
+    assert summary.applied_count == 15
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -631,3 +635,63 @@ def test_migrate_command_runs_the_consolidated_migration(monkeypatch):
     assert f"applied: {CONSOLIDATED_MIGRATION_NAME}" in result.output
     assert "migrate finished: applied=1 skipped=0 total=1" in result.output
     assert events == [legacy_database, ready_database]
+
+
+@pytest.mark.parametrize('kind', ['jav', 'video'])
+def test_media_point_migration_preserves_old_points_and_collection_membership(clean_db, kind):
+    from src.model import (
+        Image,
+        MediaPoint,
+        MediaThumbnail,
+        MomentCollection,
+        MomentCollectionItem,
+        VideoItem,
+    )
+
+    clean_db.create_tables(TEST_MODELS)
+    library = MediaLibrary.create(name='migration', provider_key='demo', provider_config={})
+    owner = (
+        {'movie': Movie.create(movie_number='MIGRATE-001', title='JAV')}
+        if kind == 'jav' else {'video_item': VideoItem.create(title='Video')}
+    )
+    media = Media.create(library=library, file_name='source.mp4', **owner)
+    image = Image.create(origin='saved.webp', small='saved.webp', medium='saved.webp', large='saved.webp')
+    thumbnail = MediaThumbnail.create(media=media, image=image, offset=42)
+    # 用真正的旧字段和级联约束构造升级前的数据。
+    _drop_columns(clean_db, 'media_point', ('image_id', 'movie_number', 'video_item_id'))
+    clean_db.execute_sql('''
+        ALTER TABLE media_point
+            ALTER COLUMN media_id SET NOT NULL,
+            ALTER COLUMN thumbnail_id SET NOT NULL,
+            DROP CONSTRAINT media_point_media_id_fkey,
+            DROP CONSTRAINT media_point_thumbnail_id_fkey,
+            ADD CONSTRAINT media_point_media_id_fkey FOREIGN KEY (media_id) REFERENCES media(id) ON DELETE CASCADE,
+            ADD CONSTRAINT media_point_thumbnail_id_fkey FOREIGN KEY (thumbnail_id) REFERENCES media_thumbnail(id) ON DELETE CASCADE
+    ''')
+    created_at = datetime(2026, 1, 1, 12, 0)
+    point_id = clean_db.execute_sql(
+        'INSERT INTO media_point (media_id, thumbnail_id, offset_seconds, created_at, updated_at) '
+        'VALUES (%s, %s, 42, %s, %s) RETURNING id',
+        (media.id, thumbnail.id, created_at, created_at),
+    ).fetchone()[0]
+    collection = MomentCollection.create(name='old collection')
+    member = MomentCollectionItem.create(collection=collection, point=point_id, position=3)
+
+    migration = _load_migration_module(Path(f'{MEDIA_POINT_PRESERVATION_MIGRATION_NAME}.py'))
+    migration.migrate(clean_db)
+    point = MediaPoint.get_by_id(point_id)
+    assert point.image_id == image.id
+    assert point.movie_number == media.movie_number and point.video_item_id == media.video_item_id
+    assert point.offset_seconds == 42 and point.created_at == created_at
+    assert MomentCollectionItem.get_by_id(member.id).position == 3
+    Media.delete().where(Media.id == media.id).execute()
+    if kind == 'video':
+        owner['video_item'].delete_instance(recursive=True)
+    point = MediaPoint.get_by_id(point_id)
+    assert point.media_id is None and point.thumbnail_id is None
+    assert point.image_id == image.id
+    assert point.movie_number == media.movie_number and point.video_item_id == media.video_item_id
+    assert MomentCollectionItem.get_by_id(member.id).point_id == point_id
+    # 当前模型建表后的重复迁移也不能清空已经独立的时刻快照。
+    migration.migrate(clean_db)
+    assert MediaPoint.get_by_id(point_id).image_id == image.id

@@ -275,9 +275,7 @@ class VideoItemService:
         }
         points_by_media_id: dict[int, list[MovieMediaPointResource]] = {}
         point_query = (
-            MediaPoint.select(MediaPoint, MediaThumbnail, Image)
-            .join(MediaThumbnail)
-            .switch(MediaThumbnail)
+            MediaPoint.select(MediaPoint, Image)
             .join(Image)
             .where(MediaPoint.media.in_(media_ids))
             .order_by(MediaPoint.media, MediaPoint.id)
@@ -288,7 +286,7 @@ class VideoItemService:
                     point_id=point.id,
                     thumbnail_id=point.thumbnail_id,
                     offset_seconds=point.offset_seconds,
-                    image=ImageResource.from_attributes_model(point.thumbnail.image),
+                    image=ImageResource.from_attributes_model(point.image),
                 )
             )
         resources: list[MovieMediaResource] = []
