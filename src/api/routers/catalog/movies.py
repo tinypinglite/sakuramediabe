@@ -64,6 +64,7 @@ def list_movies(
     heat_max: int | None = Query(default=None, ge=0),
     resolution: str | None = Query(default=None),
     blacklisted: bool = False,
+    query: str | None = Query(default=None),
     page: int = 1,
     page_size: int = 20,
 ):
@@ -86,6 +87,7 @@ def list_movies(
         heat_max=heat_max,
         resolution=resolution,
         blacklisted=blacklisted,
+        query=query,
         page=page,
         page_size=page_size,
     )

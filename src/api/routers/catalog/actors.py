@@ -47,6 +47,7 @@ def list_actors(
     height_max: int | None = Query(default=None, ge=1),
     cups: str | None = None,
     sort: str | None = None,
+    query: str | None = None,
     page: int = 1,
     page_size: int = 20,
 ):
@@ -59,6 +60,7 @@ def list_actors(
         height_max=height_max,
         cups=_parse_cups(cups),
         sort=sort,
+        query=query,
         page=page,
         page_size=page_size,
     )

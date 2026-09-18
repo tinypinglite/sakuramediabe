@@ -5,17 +5,19 @@
 """
 
 import json
+import operator
 import shutil
 import tempfile
 from calendar import monthrange
 from collections.abc import Iterator, Sequence
 from datetime import date
+from functools import reduce
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
 from loguru import logger
-from peewee import JOIN, fn
+from peewee import JOIN, Case, fn
 from PIL import Image as PillowImage
 from PIL import ImageOps, UnidentifiedImageError
 
@@ -27,6 +29,7 @@ from src.common.service_helpers import (
     require_by_id,
     resolve_sort_expression,
 )
+from src.common.text_search import split_search_terms
 from src.metadata._providers.models import JavdbMovieActorResource
 from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError
@@ -121,8 +124,30 @@ class ActorService:
         }
 
     @classmethod
-    def _build_actor_list_sort(cls, sort: str | None) -> Sequence:
+    def _actor_search_score_expression(cls, search_terms: Sequence[str]):
+        """演员检索相关度：完整姓名 0、姓名前缀 1、姓名包含 2、别名包含 3。"""
+        term_scores = []
+        for term in search_terms:
+            term_scores.append(
+                Case(
+                    None,
+                    [
+                        (fn.UPPER(Actor.name) == term.upper(), 0),
+                        (Actor.name.startswith(term), 1),
+                        (Actor.name.contains(term), 2),
+                        (Actor.alias_name.contains(term), 3),
+                    ],
+                )
+            )
+        return reduce(operator.add, term_scores)
+
+    @classmethod
+    def _build_actor_list_sort(
+        cls, sort: str | None, search_terms: Sequence[str] = ()
+    ) -> Sequence:
         """解析演员列表排序表达式，并补充稳定的 id 次级排序。"""
+        if search_terms and (sort is None or not sort.strip()):
+            return [cls._actor_search_score_expression(search_terms), Actor.id.asc()]
 
         def _age_order(_field_name: str, direction: str) -> list:
             inverse_direction = "desc" if direction == "asc" else "asc"
@@ -194,6 +219,17 @@ class ActorService:
         return date(year, today.month, min(today.day, monthrange(year, today.month)[1]))
 
     @classmethod
+    def _actor_search_conditions(cls, search_terms: Sequence[str]):
+        """多词检索：词之间 AND，词内姓名/别名 OR。"""
+        return reduce(
+            operator.and_,
+            (
+                (Actor.name.contains(term)) | (Actor.alias_name.contains(term))
+                for term in search_terms
+            ),
+        )
+
+    @classmethod
     def _filtered_actors(
         cls,
         gender: ActorListGender = ActorListGender.ALL,
@@ -203,6 +239,7 @@ class ActorService:
         height_min: int | None = None,
         height_max: int | None = None,
         cups: Sequence[str] | None = None,
+        search_terms: Sequence[str] = (),
     ):
         """演员列表筛选统一收口到这里，保证 count 和 items 逻辑一致。"""
         if age_min is not None and age_max is not None and age_min > age_max:
@@ -239,6 +276,8 @@ class ActorService:
             query = query.where(Actor.height_cm <= height_max)
         if cups:
             query = query.where(cls._normalized_cup_expression().in_(cups))
+        if search_terms:
+            query = query.where(cls._actor_search_conditions(search_terms))
 
         return query
 
@@ -267,10 +306,12 @@ class ActorService:
         height_max: int | None = None,
         cups: Sequence[str] | None = None,
         sort: str | None = None,
+        query: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> PageResponse[ActorResource]:
         start = max(page - 1, 0) * page_size
+        search_terms = split_search_terms(query, error_code="invalid_actor_filter")
         filter_kwargs = {
             "gender": gender,
             "subscription_status": subscription_status,
@@ -279,11 +320,12 @@ class ActorService:
             "height_min": height_min,
             "height_max": height_max,
             "cups": cups,
+            "search_terms": search_terms,
         }
         total = cls._filtered_actors(**filter_kwargs).count()
         actors = list(
             cls._filtered_actors(**filter_kwargs)
-            .order_by(*cls._build_actor_list_sort(sort))
+            .order_by(*cls._build_actor_list_sort(sort, search_terms))
             .offset(start)
             .limit(page_size)
         )
