@@ -9,12 +9,18 @@ from src.schema.system.status import (
     StatusResource,
 )
 from src.service.discovery.image_search_reset_service import ImageSearchResetService
+from src.service.system.optional_services import capabilities
 from src.service.system.status_service import StatusService
 
 router = APIRouter(
     tags=["status"],
     dependencies=[Depends(db_deps), Depends(get_current_user)],
 )
+
+
+@router.get("/status/capabilities")
+def get_capabilities():
+    return capabilities()
 
 
 @router.get("/status", response_model=StatusResource)

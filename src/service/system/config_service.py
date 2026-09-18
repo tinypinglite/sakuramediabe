@@ -78,6 +78,8 @@ class ConfigService:
                 # 透传到子模型 validator，所以严格档必须在每个子模型上单独触发；触发一次即可让
                 # URL/proxy/cron 校验器进入 strict 分支并抛错，阻止把非法值写入磁盘。
                 cls._strict_validate_sections(merged)
+                if merged["image_search"]["enabled"] and not merged["qdrant"]["enabled"]:
+                    raise ApiError(422, "invalid_config_value", "启用图片与文字搜图需要先启用 Qdrant")
                 # 严格校验通过后，顶层组装走 BaseSettings 常规路径（宽松档，值已被上面严格过）。
                 new_settings = Settings.model_validate(merged)
             except ValidationError as exc:

@@ -183,6 +183,9 @@ def migrate():
 
     # 旧库必须先执行字段迁移，再按当前模型补齐新增表和索引。
     database = _connect_database_for_migration()
+    from src.config.config import initialize_optional_services
+
+    initialize_optional_services(existing_deployment="movie" in database.get_tables())
     before_create_summary = run_pending_migrations(database)
     database = _ensure_database_ready()
     after_create_summary = run_pending_migrations(database)
@@ -216,7 +219,7 @@ def migrate():
     help="Seconds between connection attempts.",
 )
 def wait_db(timeout_seconds: float, interval_seconds: float):
-    """落盘运行配置并等待 PostgreSQL 可连接"""
+    """等待 PostgreSQL 可连接，并按新旧部署落盘运行配置"""
     import time
 
     from peewee import OperationalError
@@ -224,7 +227,6 @@ def wait_db(timeout_seconds: float, interval_seconds: float):
     from src.config.config import ensure_runtime_config
     from src.model.base import create_database
 
-    ensure_runtime_config()
     deadline = time.monotonic() + timeout_seconds
     attempt = 0
     last_error: OperationalError | None = None
@@ -234,6 +236,11 @@ def wait_db(timeout_seconds: float, interval_seconds: float):
         try:
             database.connect()
             database.execute_sql("SELECT 1")
+            # 连上后再落盘配置：需要按库内是否已有业务表区分新旧部署，
+            # 旧库升级且配置丢失时可选服务开关要写为开启，避免能力静默关闭。
+            ensure_runtime_config(
+                existing_deployment="movie" in database.get_tables()
+            )
             database.close()
             click.echo(f"database is ready (attempt {attempt})")
             return

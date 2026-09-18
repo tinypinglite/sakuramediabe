@@ -1,4 +1,5 @@
 from src.api.exception.errors import ApiError
+from src.service.system.optional_services import require_image_search
 from src.service.system.task_queue_service import (
     TaskQueueConflictError,
     TaskQueueService,
@@ -8,6 +9,7 @@ from src.service.system.task_queue_service import (
 class ImageSearchResetService:
     @classmethod
     def reset(cls) -> dict[str, int]:
+        require_image_search()
         try:
             task_run = TaskQueueService.enqueue(
                 task_key="image_search_index",

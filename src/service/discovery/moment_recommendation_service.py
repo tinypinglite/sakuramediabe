@@ -40,6 +40,7 @@ from src.service.discovery.qdrant_thumbnail_store import (
     get_qdrant_thumbnail_store,
 )
 from src.service.discovery.recommendation_service import MovieRecommendationService
+from src.service.system.optional_services import image_search_enabled
 
 MOMENT_RECOMMENDATION_LIMIT = 300
 MOMENT_RECOMMENDATION_SEED_LIMIT = 30
@@ -203,6 +204,8 @@ class MomentRecommendationService:
         seeds: Sequence[_MomentSeed],
         candidates_by_thumbnail_id: dict[int, _MomentCandidate],
     ) -> int:
+        if not image_search_enabled():
+            return 0
         added_count = 0
         for seed in seeds:
             query_vector = self._infer_seed_vector(seed)

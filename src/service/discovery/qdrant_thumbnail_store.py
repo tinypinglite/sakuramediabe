@@ -7,6 +7,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 from src.config.config import settings
+from src.service.system.optional_services import image_search_enabled
 
 try:
     from qdrant_client import QdrantClient, models
@@ -68,6 +69,8 @@ class QdrantThumbnailStore:
             raise RuntimeError("qdrant-client is not installed. Please run `uv sync` first.")
 
     def _create_client(self, timeout_seconds: int):
+        if not image_search_enabled():
+            raise RuntimeError("图片与文字搜图未启用")
         self._ensure_dependency()
         return QdrantClient(
             url=self.url,

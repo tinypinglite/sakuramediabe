@@ -66,6 +66,7 @@ from src.service.playback.operation_locks import (
     media_operation_lock,
 )
 from src.service.playback.provider_helpers import media_handle_for
+from src.service.system.optional_services import image_search_enabled
 
 
 class MediaService:
@@ -629,7 +630,7 @@ class MediaService:
             ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
 
             # 仅 JAV 媒体缩略图会进向量库；非 JAV 缩略图落 SKIPPED 从不入库，跳过空删省一次远端往返。
-            if media.movie_number:
+            if media.movie_number and image_search_enabled():
                 try:
                     get_qdrant_thumbnail_store().delete_by_media_id(media.id)
                 except Exception as exc:

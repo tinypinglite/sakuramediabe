@@ -4,12 +4,14 @@ from src.config.config import Database, settings
 from src.start.commands import main
 
 
-def test_wait_db_bootstraps_runtime_config_before_database_check(monkeypatch):
+def test_wait_db_bootstraps_runtime_config_after_database_check(monkeypatch):
     events = []
 
     monkeypatch.setattr(
         "src.config.config.ensure_runtime_config",
-        lambda: events.append("config"),
+        lambda *, existing_deployment: events.append(
+            ("config", existing_deployment)
+        ),
     )
 
     class FakeDatabase:
@@ -18,6 +20,9 @@ def test_wait_db_bootstraps_runtime_config_before_database_check(monkeypatch):
 
         def execute_sql(self, query):
             events.append(query)
+
+        def get_tables(self):
+            return ["movie"]
 
         def close(self):
             events.append("close")
@@ -30,7 +35,7 @@ def test_wait_db_bootstraps_runtime_config_before_database_check(monkeypatch):
     result = CliRunner().invoke(main, ["wait-db", "--timeout", "0"])
 
     assert result.exit_code == 0, result.output
-    assert events == ["config", "create", "connect", "SELECT 1", "close"]
+    assert events == ["create", "connect", "SELECT 1", ("config", True), "close"]
 
 
 def test_wait_db_succeeds_when_database_is_reachable(test_db):

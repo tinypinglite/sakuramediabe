@@ -425,3 +425,10 @@ def normal_user():
         username="alice",
         password_hash=bcrypt.hashpw(b"password123", bcrypt.gensalt()).decode("utf-8"),
     )
+
+
+@pytest.fixture(autouse=True)
+def enabled_optional_services(monkeypatch):
+    """现有业务测试运行完整能力场景；关闭/迁移场景在各用例显式覆盖。"""
+    monkeypatch.setattr(settings.qdrant, "enabled", True)
+    monkeypatch.setattr(settings.image_search, "enabled", True)

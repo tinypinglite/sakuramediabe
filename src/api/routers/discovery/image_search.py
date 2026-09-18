@@ -22,11 +22,12 @@ from src.service.discovery import (
     get_movie_plot_image_search_service,
 )
 from src.service.discovery.image_search_input import normalize_image_search_query
+from src.service.system.optional_services import require_image_search
 
 router = APIRouter(
     prefix="/image-search",
     tags=["image-search"],
-    dependencies=[Depends(db_deps), Depends(get_current_user)],
+    dependencies=[Depends(db_deps), Depends(get_current_user), Depends(require_image_search)],
 )
 
 

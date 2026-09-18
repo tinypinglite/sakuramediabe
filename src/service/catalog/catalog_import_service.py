@@ -49,6 +49,7 @@ from src.service.catalog.movie_image_service import (
     ThinCoverResolution,
 )
 from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
+from src.service.system.optional_services import image_search_enabled
 
 # 兼容既有导入路径：ImageDownloadError 等类型历史上从本模块导出，且多处 `except ImageDownloadError`
 # 依赖同一个类对象，这里显式再导出保证类身份唯一。
@@ -474,7 +475,8 @@ class CatalogImportService:
                     get_qdrant_plot_image_store,
                 )
 
-                get_qdrant_plot_image_store().delete_by_plot_image_ids(old_plot_ids)
+                if image_search_enabled():
+                    get_qdrant_plot_image_store().delete_by_plot_image_ids(old_plot_ids)
         except Exception as exc:
             logger.warning(
                 "补录完成，旧图片或索引清理失败 movie={} detail={}", movie.id, exc
@@ -616,7 +618,8 @@ class CatalogImportService:
                         get_qdrant_plot_image_store,
                     )
 
-                    get_qdrant_plot_image_store().delete_by_plot_image_ids(old_plot_image_ids)
+                    if image_search_enabled():
+                        get_qdrant_plot_image_store().delete_by_plot_image_ids(old_plot_image_ids)
                 except Exception as exc:
                     logger.warning(
                         "Delete refreshed plot image vectors failed count={} detail={}",

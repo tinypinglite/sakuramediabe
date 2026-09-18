@@ -25,6 +25,7 @@ from src.scheduler.queue_tasks import (
 )
 from src.scheduler.registry import JOB_REGISTRY_BY_KEY
 from src.service.system import ActivityService
+from src.service.system.optional_services import job_disabled_reason
 from src.service.system.task_queue_service import (
     DEFAULT_LEASE_SECONDS,
     TaskQueueService,
@@ -110,6 +111,10 @@ class TaskWorker:
         queue_def = QUEUE_TASK_REGISTRY.get(task_run.task_key)
         job_def = JOB_REGISTRY_BY_KEY.get(task_run.task_key)
         definition = job_def or queue_def
+        reason = job_disabled_reason(task_run.task_key)
+        if reason:
+            ActivityService.complete_task_run(task_run.id, result_summary={"skipped": True, "reason": reason}, result_text=reason, notify_result=False)
+            return
         try:
             if definition is None:
                 raise JobExecutionError(f"task_key 未在注册表中: {task_run.task_key}")

@@ -27,6 +27,7 @@ from src.service.discovery.qdrant_movie_similarity_store import (
     QdrantMovieSimilarityStore,
     get_qdrant_movie_similarity_store,
 )
+from src.service.system.optional_services import movie_similarity_enabled
 
 SIM_WEIGHT_ACTOR = 0.6
 SIM_WEIGHT_TAG = 0.4
@@ -305,6 +306,8 @@ class MovieRecommendationService:
         *,
         limit: int = SIM_TOP_N,
     ) -> dict[int, list[MovieSimilaritySearchHit]]:
+        if not movie_similarity_enabled():
+            return {movie_id: [] for movie_id in source_movie_ids}
         return self.store.search_many(source_movie_ids, limit=limit)
 
     def list_similar(

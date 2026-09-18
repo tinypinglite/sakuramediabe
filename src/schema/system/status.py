@@ -77,6 +77,7 @@ class StatusImageSearchIndexSpaceSummary(SchemaModel):
 
 
 class StatusImageSearchResource(SchemaModel):
+    enabled: bool = True
     healthy: bool
     checked_at: datetime
     embedding_service: StatusEmbeddingServiceSummary

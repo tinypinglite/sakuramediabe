@@ -215,6 +215,7 @@ class Logging(BaseModel):
 
 
 class ImageSearch(BaseModel):
+    enabled: bool = False
     inference_base_url: str = DEFAULT_SIGLIP2_INFERENCE_URL
     # CPU 后端逐张推理，一批 16 张会串行跑满 16 次；30s 不足以覆盖，中途超时会让整批作废。
     inference_timeout_seconds: float = 120.0
@@ -235,6 +236,7 @@ class ImageSearch(BaseModel):
 
 
 class Qdrant(BaseModel):
+    enabled: bool = False
     url: str = "http://qdrant:6333"
     api_key: str = ""
 
@@ -405,12 +407,48 @@ def _ensure_auth_secrets() -> dict[str, str]:
     return updates
 
 
-def ensure_runtime_config() -> bool:
+def initialize_optional_services(*, existing_deployment: bool) -> None:
+    """为旧配置补写可选服务开关，只补缺失键，重复执行保留用户选择。
+
+    正常升级链路由 ``wait-db`` 的 ``ensure_runtime_config`` 落盘完整配置（含开关），
+    这里兜底绕过 wait-db 直接执行 migrate 的场景。
+    """
+    with settings_write_lock():
+        path = Path(Settings.model_config["toml_file"])
+        values = toml.load(path) if path.exists() else {}
+        if not values and not existing_deployment:
+            return
+        changed = False
+        for section in ("qdrant", "image_search"):
+            config = values.setdefault(section, {})
+            if "enabled" not in config:
+                config["enabled"] = existing_deployment
+                changed = True
+        if not changed:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as file:
+                temporary_path = Path(file.name)
+                file.write(toml.dumps(values))
+            if path.exists():
+                temporary_path.chmod(stat.S_IMODE(path.stat().st_mode))
+            temporary_path.replace(path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        for section in ("qdrant", "image_search"):
+            getattr(settings, section).enabled = values[section]["enabled"]
+
+
+def ensure_runtime_config(*, existing_deployment: bool = False) -> bool:
     """首次启动自举运行配置。
 
     - 始终先确保鉴权密钥就绪（secret_key 空/占位/旧硬编码、file_signature_secret 为空时生成随机值），
       并写回内存全局 settings。
-    - 目标 config.toml 缺失或为空时，写入一份含全部配置项默认值（含已生成密钥）的完整文件。
+    - 目标 config.toml 缺失或为空时，写入一份含全部配置项默认值（含已生成密钥）的完整文件；
+      旧库（``existing_deployment=True``）把可选服务开关写为开启，保持升级前能力。
     - 目标 config.toml 已有内容时，只补齐缺失的 [auth] 密钥。
     仅当确有写盘时返回 True，幂等。
     """
@@ -430,6 +468,10 @@ def ensure_runtime_config() -> bool:
         default_settings = Settings()
         default_settings.auth.secret_key = settings.auth.secret_key
         default_settings.auth.file_signature_secret = settings.auth.file_signature_secret
+        if existing_deployment:
+            # 旧库的配置丢失时不能落成默认关闭：否则用户升级后可选能力静默消失。
+            default_settings.qdrant.enabled = True
+            default_settings.image_search.enabled = True
         serializable_settings = _build_persistable_settings(default_settings)
         with open(settings_path, "w", encoding="utf-8") as file:
             file.write(toml.dumps(serializable_settings))

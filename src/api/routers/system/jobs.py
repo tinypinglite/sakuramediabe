@@ -9,6 +9,7 @@ from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.schema.system.activity import TaskRunResource
 from src.schema.system.jobs import JobMetadataResource, ManualJobTriggerResponse
 from src.service.system.activity import TaskRunConflictError
+from src.service.system.optional_services import job_disabled_reason
 from src.start.aps import get_job_cron_setting, resolve_job_cron_expr, submit_manual_job
 
 router = APIRouter(
@@ -32,6 +33,7 @@ def _latest_task_run_by_key() -> dict[str, BackgroundTaskRun]:
 
 
 def _build_job_metadata(job_def: JobDefinition, last_run: BackgroundTaskRun | None) -> JobMetadataResource:
+    disabled_reason = job_disabled_reason(job_def.task_key)
     return JobMetadataResource(
         task_key=job_def.task_key,
         log_name=job_def.log_name,
@@ -40,7 +42,8 @@ def _build_job_metadata(job_def: JobDefinition, last_run: BackgroundTaskRun | No
         plugin_id=job_def.plugin_id,
         cron_setting=get_job_cron_setting(job_def),
         cron_expr=resolve_job_cron_expr(job_def),
-        manual_trigger_allowed=job_def.manual_trigger_allowed,
+        disabled_reason=disabled_reason,
+        manual_trigger_allowed=job_def.manual_trigger_allowed and not disabled_reason,
         params_schema=(
             job_def.params_schema.model_json_schema()
             if job_def.params_schema is not None

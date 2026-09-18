@@ -602,7 +602,13 @@ def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(
 
 def test_migrate_command_runs_the_consolidated_migration(monkeypatch):
     events = []
-    legacy_database = object()
+    optional_service_calls = []
+
+    class FakeLegacyDatabase:
+        def get_tables(self):
+            return ["movie"]
+
+    legacy_database = FakeLegacyDatabase()
     ready_database = object()
 
     def fake_run_pending_migrations(database):
@@ -616,6 +622,9 @@ def test_migrate_command_runs_the_consolidated_migration(monkeypatch):
             ]
         )
 
+    def fake_initialize_optional_services(*, existing_deployment):
+        optional_service_calls.append(existing_deployment)
+
     monkeypatch.setattr(
         "src.start.commands._connect_database_for_migration",
         lambda: legacy_database,
@@ -628,6 +637,10 @@ def test_migrate_command_runs_the_consolidated_migration(monkeypatch):
         "src.start.migrations.run_pending_migrations",
         fake_run_pending_migrations,
     )
+    monkeypatch.setattr(
+        "src.config.config.initialize_optional_services",
+        fake_initialize_optional_services,
+    )
 
     result = CliRunner().invoke(main, ["migrate"])
 
@@ -635,6 +648,7 @@ def test_migrate_command_runs_the_consolidated_migration(monkeypatch):
     assert f"applied: {CONSOLIDATED_MIGRATION_NAME}" in result.output
     assert "migrate finished: applied=1 skipped=0 total=1" in result.output
     assert events == [legacy_database, ready_database]
+    assert optional_service_calls == [True]
 
 
 @pytest.mark.parametrize('kind', ['jav', 'video'])

@@ -42,6 +42,7 @@ from src.service.discovery.qdrant_thumbnail_store import (
     get_qdrant_thumbnail_store,
 )
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
+from src.service.system.optional_services import image_search_enabled
 
 
 class StatusService:
@@ -115,6 +116,19 @@ class StatusService:
 
     @classmethod
     def get_image_search_status(cls) -> StatusImageSearchResource:
+        if not image_search_enabled():
+            return StatusImageSearchResource(
+                enabled=False,
+                healthy=False,
+                checked_at=utc_now_for_db(),
+                embedding_service=StatusEmbeddingServiceSummary(healthy=False),
+                image_search_vector_store=StatusImageSearchVectorStoreSummary(
+                    healthy=False, url=settings.qdrant.url,
+                    collection_name=QdrantThumbnailStore.COLLECTION_NAME, exists=False,
+                ),
+                indexing=StatusImageSearchIndexingSummary(pending_thumbnails=0, failed_thumbnails=0),
+                index_space=StatusImageSearchIndexSpaceSummary(state="unavailable"),
+            )
         embedding_service = cls._probe_embedding_service()
         image_search_vector_store = cls._probe_image_search_vector_store()
         indexing = cls._indexing_status()
@@ -122,6 +136,7 @@ class StatusService:
             embedding_service.space_id if embedding_service.healthy else None
         )
         return StatusImageSearchResource(
+            enabled=True,
             healthy=bool(embedding_service.healthy and image_search_vector_store.healthy),
             checked_at=utc_now_for_db(),
             embedding_service=embedding_service,

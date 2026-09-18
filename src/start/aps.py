@@ -23,6 +23,11 @@ from src.scheduler.registry import JOB_REGISTRY, JOB_REGISTRY_BY_KEY
 from src.scheduler.worker import TaskWorker
 from src.service.system.activity import TaskRunConflictError
 from src.service.system.activity.task_catalog import TASK_NAME_REGISTRY
+from src.service.system.optional_services import (
+    job_disabled_reason,
+    movie_similarity_enabled,
+    require_job_enabled,
+)
 from src.service.system.task_queue_service import (
     BOOTSTRAP_QUEUE_TASK_KEYS,
     DEFAULT_LEASE_SECONDS,
@@ -123,6 +128,7 @@ def submit_manual_job(
     不再在当前进程起 daemon 线程执行——Web 进程只写队列，长任务不占请求线程。
     冲突时抛 ``TaskRunConflictError``；调用方负责把它映射为 HTTP 响应。
     """
+    require_job_enabled(job_def.task_key)
     ensure_database_ready()
     try:
         return TaskQueueService.enqueue(
@@ -311,6 +317,8 @@ def _bootstrap_gfriends_filetree_refresh(scheduler: BlockingScheduler) -> None:
 
 def _bootstrap_movie_similarity_index(scheduler: BlockingScheduler) -> None:
     """相似度 alias 缺失时立刻安排首次构建，不阻塞 APS 启动。"""
+    if not movie_similarity_enabled():
+        return
     try:
         from src.service.discovery.qdrant_movie_similarity_store import (
             MovieSimilarityIndexError,
@@ -342,7 +350,7 @@ def build_scheduler() -> BlockingScheduler:
         timezone=timezone,
     )
     for job_def in JOB_REGISTRY:
-        if job_def.manual_only:
+        if job_def.manual_only or job_disabled_reason(job_def.task_key):
             continue
         cron_expr = resolve_job_cron_expr(job_def)
         # cron 触发只入队（enqueue_scheduled_job），实际执行在 TaskWorker；
