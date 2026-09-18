@@ -127,11 +127,6 @@ def parse_movie_number(payload: MovieNumberParseRequest):
     return MovieService.parse_movie_number_query(payload.query)
 
 
-@router.get("/search/local", response_model=list[MovieListItemResource])
-def search_local_movies(movie_number: str = Query(..., min_length=1)):
-    return MovieService.search_local_movies(movie_number=movie_number)
-
-
 @router.get("/{movie_number}/collection-status", response_model=MovieCollectionStatusResource)
 def get_movie_collection_status(movie_number: str):
     return MovieService.get_movie_collection_status(movie_number)

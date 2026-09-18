@@ -124,8 +124,10 @@ def test_all_catalog_lists_return_consistent_media(media_movies):
         response = load().model_dump(mode="json")
         _assert_media_payload(response["items"], data)
         assert response["total"] == (2 if load == MovieService.list_latest_movies else 3)
+    local_search = MovieService.list_movies(query="MEDIA-000")
+    assert local_search.total == 1
     _assert_media_payload(
-        [item.model_dump(mode="json") for item in MovieService.search_local_movies("MEDIA-000")],
+        [item.model_dump(mode="json") for item in local_search.items],
         data,
     )
     playable = MovieService.list_movies(status=MovieListStatus.PLAYABLE)

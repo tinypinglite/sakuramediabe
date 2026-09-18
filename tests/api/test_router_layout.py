@@ -262,6 +262,7 @@ def test_create_app_does_not_register_removed_api_endpoints():
 
     removed_routes = {
         ("/actors/search/local", "GET"),
+        ("/movies/search/local", "GET"),
         ("/image-search/sessions/{session_id}", "GET"),
         ("/system/notifications/unread-count", "GET"),
         ("/actors/{actor_id}/movies", "GET"),

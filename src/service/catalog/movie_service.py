@@ -809,18 +809,8 @@ class MovieService:
         )
 
     @classmethod
-    def search_local_movies(cls, movie_number: str) -> list[MovieListItemResource]:
-        # 本地搜索只取最匹配的一条，职责是回答“库里有没有这个番号”。
-        movie = find_movie_by_number(movie_number)
-        if movie is None:
-            return []
-        movies = list(cls.movie_list_query().where(Movie.id == movie.id))
-        attach_movie_list_media(movies)
-        return MovieListItemResource.from_items(movies)
-
-    @classmethod
     def get_movie_collection_status(cls, movie_number: str) -> MovieCollectionStatusResource:
-        # 与本地搜索保持同一套匹配（find_movie_by_number），确保不同输入格式能命中同一影片。
+        # 用 find_movie_by_number 统一匹配大小写和分隔符写法，确保不同输入格式能命中同一影片。
         movie = find_movie_by_number(movie_number)
         if movie is None:
             raise ApiError(404, "movie_not_found", "影片不存在", {"movie_number": movie_number})
