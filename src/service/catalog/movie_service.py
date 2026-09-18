@@ -80,6 +80,7 @@ from src.service.catalog.movie_list_media_service import attach_movie_list_media
 from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
 from src.service.catalog.movie_resolution_service import resolution_exists_expression
 from src.service.collections import PlaylistService
+from src.service.discovery.ranking_service import RankingCatalogService
 from src.service.playback.provider_helpers import library_handle_for, media_handle_for
 
 
@@ -666,6 +667,7 @@ class MovieService:
         movie.media_count = len(movie.media_items)
         movie.merge_playback_candidates = MovieService._merge_playback_candidates(movie)
         movie.playlists = PlaylistService.list_movie_playlists(movie)
+        movie.rankings = RankingCatalogService.list_movie_rankings(movie.id)
         movie.can_play = any(media_item.valid for media_item in movie.media_items)
         return MovieDetailResource.from_attributes_model(movie)
 

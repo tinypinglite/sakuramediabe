@@ -140,6 +140,16 @@ class MovieMergedPlaybackResource(SchemaModel):
     play_url: str
 
 
+class MovieRankingResource(SchemaModel):
+    # 影片上榜记录；同一榜单的每个周期（日/周/月榜、TOP250 年份等）各占一条。
+    source_key: str
+    source_name: str
+    board_key: str
+    board_name: str
+    period: str
+    rank: int
+
+
 class MovieDetailResource(MovieListItemResource):
     actors: list[MovieActorResource]
     tags: list[TagResource]
@@ -152,6 +162,7 @@ class MovieDetailResource(MovieListItemResource):
         default_factory=list
     )
     playlists: list[PlaylistSummaryResource] = Field(default_factory=list)
+    rankings: list[MovieRankingResource] = Field(default_factory=list)
 
 
 class MovieNumberParseRequest(SchemaModel):

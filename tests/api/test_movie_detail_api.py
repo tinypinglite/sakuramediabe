@@ -1,9 +1,14 @@
 from types import SimpleNamespace
 
-from src.model import Media, MediaLibrary, Movie
+from src.model import Media, MediaLibrary, Movie, RankingItem
 from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
     ProviderOperationError,
+)
+from src.service.discovery import ranking_service
+from src.service.discovery.ranking_service import (
+    RankingBoardDefinition,
+    RankingSourceDefinition,
 )
 
 
@@ -39,6 +44,61 @@ def test_movie_detail_exposes_media_playback_deliveries(
     assert response.json()["media_items"][0]["library_name"] == "detail-library"
     assert response.json()["media_items"][0]["media_id"] == media.id
     assert response.json()["media_items"][0]["playback_deliveries"] == ["proxy", "redirect"]
+
+
+def test_movie_detail_exposes_ranking_placements(client, account_user, monkeypatch):
+    movie = Movie.create(movie_number="RANK-001", javdb_id="rank-1", title="rank")
+    for period, rank in (("weekly", 12), ("daily", 3)):
+        RankingItem.create(
+            source_key="javdb",
+            board_key="playback_all",
+            period=period,
+            rank=rank,
+            movie=movie,
+            movie_number=movie.movie_number,
+        )
+    RankingItem.create(
+        source_key="retired",
+        board_key="legacy",
+        period="",
+        rank=1,
+        movie=movie,
+        movie_number=movie.movie_number,
+    )
+    monkeypatch.setitem(
+        ranking_service.RANKING_SOURCES,
+        "javdb",
+        RankingSourceDefinition(
+            key="javdb",
+            name="JavDB",
+            boards=(RankingBoardDefinition(key="playback_all", name="热播"),),
+        ),
+    )
+
+    response = client.get(
+        f"/movies/{movie.movie_number}",
+        headers=_auth_headers(client, account_user),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rankings"] == [
+        {
+            "source_key": "javdb",
+            "source_name": "JavDB",
+            "board_key": "playback_all",
+            "board_name": "热播",
+            "period": "daily",
+            "rank": 3,
+        },
+        {
+            "source_key": "javdb",
+            "source_name": "JavDB",
+            "board_key": "playback_all",
+            "board_name": "热播",
+            "period": "weekly",
+            "rank": 12,
+        },
+    ]
 
 
 def test_movie_detail_exposes_merge_playback_candidate_for_supported_library(

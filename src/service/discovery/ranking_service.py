@@ -15,7 +15,7 @@ from src.common.service_helpers import (
 )
 from src.metadata.factory import build_javdb_provider
 from src.model import Movie, RankingItem, get_database
-from src.schema.catalog.movies import MovieListItemResource
+from src.schema.catalog.movies import MovieListItemResource, MovieRankingResource
 from src.schema.discovery import (
     RankedMovieListItemResource,
     RankingBoardItemsResource,
@@ -180,6 +180,39 @@ class RankingCatalogService:
         # 按 heat 排序需要 JOIN Movie，并补 rank 次级排序避免相同热度翻页错位
         heat_expression = Movie.heat.asc() if ascending else Movie.heat.desc()
         return [heat_expression, tie_breaker], True
+
+    @classmethod
+    def list_movie_rankings(cls, movie_id: int) -> list[MovieRankingResource]:
+        """返回影片当前的全部上榜记录；未注册来源/榜单的残留数据不对外暴露。"""
+        rows = list(
+            RankingItem.select()
+            .where(RankingItem.movie == movie_id)
+            .order_by(
+                RankingItem.source_key,
+                RankingItem.board_key,
+                RankingItem.period,
+                RankingItem.rank,
+            )
+        )
+        rankings: list[MovieRankingResource] = []
+        for row in rows:
+            source = RANKING_SOURCES.get(row.source_key)
+            if source is None:
+                continue
+            board = source.board_by_key(row.board_key)
+            if board is None:
+                continue
+            rankings.append(
+                MovieRankingResource(
+                    source_key=source.key,
+                    source_name=source.name,
+                    board_key=board.key,
+                    board_name=board.name,
+                    period=row.period,
+                    rank=row.rank,
+                )
+            )
+        return rankings
 
     @staticmethod
     def list_sources() -> list[RankingSourceResource]:
