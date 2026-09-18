@@ -1,34 +1,66 @@
 import os
 import time
+from datetime import date, datetime, timedelta
 
 from peewee import fn
 
-from src.common.runtime_time import utc_now_for_db
+from src.common.media_import_status import (
+    IMPORT_STATUS_COMPLETED,
+    IMPORT_STATUS_SKIPPED,
+    UNFINISHED_IMPORT_STATUSES,
+)
+from src.common.runtime_time import (
+    get_runtime_timezone,
+    runtime_now,
+    to_db_utc_naive,
+    to_runtime_local_naive,
+    utc_now_for_db,
+)
 from src.config.config import settings
 from src.metadata.factory import build_javdb_provider
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import (
+    SYSTEM_PLAYLIST_KINDS,
     Actor,
     BackgroundTaskRun,
+    ClipCollection,
+    ClipCollectionItem,
+    DownloadTask,
     Media,
     MediaLibrary,
+    MediaProgress,
     MediaThumbnail,
+    MomentCollection,
+    MomentCollectionItem,
     Movie,
+    Playlist,
+    PlaylistMovie,
+    VideoCollection,
+    VideoCollectionItem,
 )
 from src.schema.system.status import (
     StatusActorSummary,
+    StatusCollectionsSummary,
+    StatusCollectionSummary,
+    StatusDownloadTaskSummary,
     StatusEmbeddingServiceSummary,
     StatusImageSearchIndexingSummary,
     StatusImageSearchIndexSpaceSummary,
     StatusImageSearchResource,
     StatusImageSearchVectorStoreSummary,
+    StatusInsightsResource,
     StatusMediaFileSummary,
     StatusMediaLibrarySummary,
+    StatusMediaLibraryUsage,
     StatusMetadataProviderTestError,
     StatusMetadataProviderTestResource,
     StatusMovieSummary,
     StatusResource,
     StatusThumbnailSummary,
+    StatusWatchTrendBucket,
+    StatusWatchTrendGranularity,
+    StatusWatchTrendRange,
+    StatusWatchTrendResource,
 )
 from src.service.discovery.embedding_client import (
     EmbeddingClientError,
@@ -50,6 +82,22 @@ class StatusService:
     BACKEND_VERSION_ENV_KEY = "SAKURAMEDIA_BACKEND_VERSION"
     BACKEND_VERSION_DEFAULT = "dev-local"
     METADATA_PROVIDER_TEST_MOVIE_NUMBER = "SSNI-888"
+    # 下载任务六分类字段名，作为分桶结果的唯一真相源。
+    DOWNLOAD_TASK_BUCKETS = (
+        "downloading",
+        "importing",
+        "imported",
+        "import_failed",
+        "skipped",
+        "download_failed",
+    )
+    # 观看趋势按天分桶的范围与桶数（含今天）；其余范围（1y/all）按月。
+    WATCH_TREND_DAY_COUNTS = {
+        StatusWatchTrendRange.LAST_7_DAYS: 7,
+        StatusWatchTrendRange.LAST_30_DAYS: 30,
+        StatusWatchTrendRange.LAST_90_DAYS: 90,
+    }
+    WATCH_TREND_LAST_YEAR_MONTHS = 12
 
     @classmethod
     def get_status(cls) -> StatusResource:
@@ -103,6 +151,233 @@ class StatusService:
                 retry_wait_media=int(retry_wait_thumbnail_media),
                 terminal_failed_media=int(terminal_thumbnail_media),
                 total=int(thumbnail_total),
+            ),
+        )
+
+    @classmethod
+    def get_insights(cls) -> StatusInsightsResource:
+        return StatusInsightsResource(
+            download_tasks=cls._download_task_summary(),
+            media_libraries=cls._media_library_usages(),
+            collections=cls._collection_summaries(),
+        )
+
+    @classmethod
+    def get_watch_trend(cls, range_value: StatusWatchTrendRange) -> StatusWatchTrendResource:
+        """按最后观看时间聚合观看分布；详见 StatusWatchTrendResource 的口径说明。"""
+        runtime_timezone = get_runtime_timezone()
+        today = runtime_now().date()
+        granularity = cls._watch_trend_granularity(range_value)
+        start_local_date = cls._watch_trend_start_date(range_value, today)
+        if range_value is StatusWatchTrendRange.ALL:
+            start_local_date = cls._earliest_watched_local_date()
+
+        bucket_movies: dict[str, set[str]] = {}
+        if start_local_date is not None:
+            window_start_utc = cls._local_day_start_utc(start_local_date, runtime_timezone)
+            # 上界取本地明天零点且不包含：半开区间，避免窗口外的脏时间戳进入计数。
+            window_end_utc = cls._local_day_start_utc(
+                today + timedelta(days=1), runtime_timezone
+            )
+            rows = (
+                MediaProgress.select(MediaProgress.last_watched_at, Media.movie)
+                .join(Media)
+                .where(
+                    cls._watched_progress_condition()
+                    & Media.movie.is_null(False)
+                    & (MediaProgress.last_watched_at >= window_start_utc)
+                    & (MediaProgress.last_watched_at < window_end_utc)
+                )
+                .tuples()
+            )
+            for watched_at, movie_number in rows:
+                period = cls._watch_trend_period(
+                    to_runtime_local_naive(watched_at), granularity
+                )
+                bucket_movies.setdefault(period, set()).add(movie_number)
+
+        buckets = [
+            StatusWatchTrendBucket(
+                period=period, count=len(bucket_movies.get(period, ()))
+            )
+            for period in cls._watch_trend_periods(start_local_date, today, granularity)
+        ]
+        return StatusWatchTrendResource(
+            range=range_value,
+            granularity=granularity,
+            watched_movie_count=len(
+                {number for numbers in bucket_movies.values() for number in numbers}
+            ),
+            buckets=buckets,
+        )
+
+    @staticmethod
+    def _watched_progress_condition():
+        # position_seconds > 0 即视为看过；last_watched_at 可空属历史形态，聚合前排除。
+        return (MediaProgress.position_seconds > 0) & MediaProgress.last_watched_at.is_null(False)
+
+    @staticmethod
+    def _local_day_start_utc(local_date: date, runtime_timezone) -> datetime:
+        # 用 datetime.min.time() 取当日 00:00，避免与模块级 time 模块同名。
+        return to_db_utc_naive(
+            datetime.combine(local_date, datetime.min.time()), assume_tz=runtime_timezone
+        )
+
+    @staticmethod
+    def _earliest_watched_local_date() -> date | None:
+        earliest = (
+            MediaProgress.select(fn.MIN(MediaProgress.last_watched_at))
+            .where(StatusService._watched_progress_condition())
+            .scalar()
+        )
+        if earliest is None:
+            return None
+        return to_runtime_local_naive(earliest).date()
+
+    @classmethod
+    def _watch_trend_granularity(
+        cls, range_value: StatusWatchTrendRange
+    ) -> StatusWatchTrendGranularity:
+        if range_value in cls.WATCH_TREND_DAY_COUNTS:
+            return StatusWatchTrendGranularity.DAY
+        return StatusWatchTrendGranularity.MONTH
+
+    @classmethod
+    def _watch_trend_start_date(
+        cls, range_value: StatusWatchTrendRange, today: date
+    ) -> date | None:
+        day_count = cls.WATCH_TREND_DAY_COUNTS.get(range_value)
+        if day_count is not None:
+            return today - timedelta(days=day_count - 1)
+        if range_value is StatusWatchTrendRange.LAST_YEAR:
+            return cls._shift_month(
+                date(today.year, today.month, 1), -(cls.WATCH_TREND_LAST_YEAR_MONTHS - 1)
+            )
+        # ALL 的起点由最早观看记录决定，无记录时返回空桶列表。
+        return None
+
+    @classmethod
+    def _watch_trend_periods(
+        cls,
+        start_local_date: date | None,
+        today: date,
+        granularity: StatusWatchTrendGranularity,
+    ) -> list[str]:
+        if start_local_date is None:
+            return []
+        if granularity is StatusWatchTrendGranularity.DAY:
+            periods = []
+            cursor = start_local_date
+            while cursor <= today:
+                periods.append(cursor.isoformat())
+                cursor += timedelta(days=1)
+            return periods
+        last_month = date(today.year, today.month, 1)
+        periods = []
+        cursor = date(start_local_date.year, start_local_date.month, 1)
+        while cursor <= last_month:
+            periods.append(cls._watch_trend_period(cursor, granularity))
+            cursor = cls._shift_month(cursor, 1)
+        return periods
+
+    @staticmethod
+    def _watch_trend_period(
+        local_time: date | datetime, granularity: StatusWatchTrendGranularity
+    ) -> str:
+        if granularity is StatusWatchTrendGranularity.DAY:
+            return local_time.date().isoformat()
+        return f"{local_time.year:04d}-{local_time.month:02d}"
+
+    @staticmethod
+    def _shift_month(source: date, months: int) -> date:
+        month_index = source.year * 12 + (source.month - 1) + months
+        return date(month_index // 12, month_index % 12 + 1, 1)
+
+    @classmethod
+    def _download_task_summary(cls) -> StatusDownloadTaskSummary:
+        rows = (
+            DownloadTask.select(
+                DownloadTask.state, DownloadTask.import_status, fn.COUNT(DownloadTask.id)
+            )
+            .group_by(DownloadTask.state, DownloadTask.import_status)
+            .tuples()
+        )
+        counts = {bucket: 0 for bucket in cls.DOWNLOAD_TASK_BUCKETS}
+        for state, import_status, total in rows:
+            counts[cls._download_task_bucket(state, import_status)] += int(total or 0)
+        return StatusDownloadTaskSummary(total=sum(counts.values()), **counts)
+
+    @staticmethod
+    def _download_task_bucket(state: str, import_status: str) -> str:
+        """把 state × import_status 折叠成用户视角分类。
+
+        未知取值统一向非终态桶靠（下载中 / 导入异常），保证总数不漏。
+        """
+        if state == "completed":
+            if import_status == IMPORT_STATUS_COMPLETED:
+                return "imported"
+            if import_status == IMPORT_STATUS_SKIPPED:
+                return "skipped"
+            if import_status in UNFINISHED_IMPORT_STATUSES:
+                return "importing"
+            return "import_failed"
+        if state == "failed":
+            return "download_failed"
+        return "downloading"
+
+    @staticmethod
+    def _media_library_usages() -> list[StatusMediaLibraryUsage]:
+        usage_rows = (
+            Media.select(
+                Media.library,
+                fn.COUNT(Media.id),
+                fn.COALESCE(fn.SUM(Media.file_size_bytes), 0),
+            )
+            .group_by(Media.library)
+            .tuples()
+        )
+        usage_by_library_id = {
+            int(library_id): (int(file_count or 0), int(total_size_bytes or 0))
+            for library_id, file_count, total_size_bytes in usage_rows
+        }
+        # 以媒体库表为基准，保证没有媒体的空库也出现在结果里。
+        return [
+            StatusMediaLibraryUsage(
+                library_id=library.id,
+                name=library.name,
+                provider_key=library.provider_key,
+                file_count=usage_by_library_id.get(library.id, (0, 0))[0],
+                total_size_bytes=usage_by_library_id.get(library.id, (0, 0))[1],
+            )
+            for library in MediaLibrary.select().order_by(MediaLibrary.id.asc())
+        ]
+
+    @staticmethod
+    def _collection_summaries() -> StatusCollectionsSummary:
+        system_playlist_kinds = tuple(SYSTEM_PLAYLIST_KINDS)
+        return StatusCollectionsSummary(
+            playlists=StatusCollectionSummary(
+                count=Playlist.select()
+                .where(Playlist.kind.not_in(system_playlist_kinds))
+                .count(),
+                item_count=(
+                    PlaylistMovie.select()
+                    .join(Playlist)
+                    .where(Playlist.kind.not_in(system_playlist_kinds))
+                    .count()
+                ),
+            ),
+            video_collections=StatusCollectionSummary(
+                count=VideoCollection.select().count(),
+                item_count=VideoCollectionItem.select().count(),
+            ),
+            clip_collections=StatusCollectionSummary(
+                count=ClipCollection.select().count(),
+                item_count=ClipCollectionItem.select().count(),
+            ),
+            moment_collections=StatusCollectionSummary(
+                count=MomentCollection.select().count(),
+                item_count=MomentCollectionItem.select().count(),
             ),
         )
 

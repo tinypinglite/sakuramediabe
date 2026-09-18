@@ -177,6 +177,8 @@ def test_create_app_registers_image_search_routes():
     assert "/system/task-runs" in paths
     assert "/system/task-runs/active" in paths
     assert "/system/events/stream" not in paths
+    assert "/status/insights" in paths
+    assert "/status/watch-trend" in paths
     assert "/status/metadata-providers/{provider}/test" in paths
     assert "/import-sources/browse" in paths
     assert "/imports" in paths

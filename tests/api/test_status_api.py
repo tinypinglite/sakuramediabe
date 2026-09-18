@@ -1,7 +1,23 @@
+from datetime import datetime, time, timedelta
+
 import pytest
 
+from src.common.runtime_time import runtime_now
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
-from src.model import Actor, BackgroundTaskRun, Media, MediaLibrary, Movie
+from src.model import (
+    PLAYLIST_KIND_RECENTLY_PLAYED,
+    Actor,
+    BackgroundTaskRun,
+    DownloadClient,
+    DownloadTask,
+    Media,
+    MediaLibrary,
+    MediaProgress,
+    Movie,
+    Playlist,
+    PlaylistMovie,
+    VideoItem,
+)
 from src.service.discovery.embedding_client import EmbeddingClientError
 from src.service.system.status_service import StatusService
 
@@ -28,6 +44,8 @@ def _create_movie(movie_number: str, javdb_id: str, **kwargs):
     "path",
     [
         "/status",
+        "/status/insights",
+        "/status/watch-trend",
         "/status/image-search",
         "/status/metadata-providers/javdb/test",
     ],
@@ -400,3 +418,93 @@ def test_metadata_provider_test_endpoint_rejects_invalid_provider(client, accoun
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_metadata_provider"
+
+
+def _watched_at(local_date):
+    # 测试统一锁定 TZ=UTC（conftest.fixed_runtime_timezone），本地中午即 DB naive UTC 中午。
+    return datetime.combine(local_date, time(12, 0))
+
+
+def test_status_insights_and_watch_trend_endpoints(client, account_user):
+    token = _login(client, username=account_user.username)
+    headers = {"Authorization": f"Bearer {token}"}
+    today = runtime_now().date()
+
+    # 空数据：insights 归零；watch-trend 补零成连续时间轴，all 无起点返回空桶。
+    empty = client.get("/status/insights", headers=headers).json()
+    assert empty["download_tasks"]["total"] == 0 and empty["media_libraries"] == []
+    trend = client.get("/status/watch-trend?range=7d", headers=headers).json()
+    assert [bucket["count"] for bucket in trend["buckets"]] == [0] * 7
+    assert client.get("/status/watch-trend?range=all", headers=headers).json()["buckets"] == []
+
+    library = MediaLibrary.create(name="Main", provider_key="test", provider_config={})
+    movie_a = _create_movie("ABC-001", "MovieA1")
+    movie_b = _create_movie("ABC-002", "MovieA2")
+    media_a = Media.create(movie=movie_a, library=library, file_name="a.mp4", file_size_bytes=100)
+    media_b = Media.create(movie=movie_b, library=library, file_name="b.mp4", file_size_bytes=200)
+    # 库容量口径含失效媒体。
+    Media.create(movie=movie_b, library=library, file_name="x.mp4", valid=False, file_size_bytes=300)
+
+    # 每个桶一个任务，锁死 state × import_status 到用户视角分类的折叠映射。
+    download_client = DownloadClient.create(name="qb", library=library, provider_config={})
+    for state, import_status in (
+        ("queued", "pending"), ("downloading", "running"), ("completed", "running"),
+        ("completed", "completed"), ("completed", "failed"), ("completed", "skipped"),
+        ("failed", "pending"),
+    ):
+        DownloadTask.create(
+            client=download_client, remote_id=f"{state}/{import_status}",
+            name=f"{state}/{import_status}", state=state, import_status=import_status,
+        )
+
+    # 系统「最近播放」的成员不计入用户合集统计。
+    PlaylistMovie.create(playlist=Playlist.create(name="收藏"), movie=movie_a)
+    PlaylistMovie.create(
+        playlist=Playlist.create(name="最近播放", kind=PLAYLIST_KIND_RECENTLY_PLAYED),
+        movie=movie_a,
+    )
+
+    # 同一影片同天两个媒体只算一次；position=0、非 JAV 视频、7d 窗口外都不计入。
+    def _watch(media, position_seconds, days_ago):
+        MediaProgress.create(
+            media=media, position_seconds=position_seconds,
+            last_watched_at=_watched_at(today - timedelta(days=days_ago)),
+        )
+
+    _watch(media_a, 120, 0)
+    _watch(Media.create(movie=movie_a, library=library, file_name="a-2.mp4"), 30, 0)
+    _watch(media_b, 60, 3)
+    _watch(Media.create(movie=movie_b, library=library, file_name="b-40d.mp4"), 60, 40)
+    _watch(Media.create(movie=movie_b, library=library, file_name="b-open.mp4"), 0, 0)
+    _watch(
+        Media.create(
+            video_item=VideoItem.create(title="vlog-1"), library=library, file_name="v.mp4"
+        ),
+        90, 0,
+    )
+
+    payload = client.get("/status/insights", headers=headers).json()
+    assert payload["download_tasks"] == {
+        "downloading": 2, "importing": 1, "imported": 1,
+        "import_failed": 1, "skipped": 1, "download_failed": 1, "total": 7,
+    }
+    assert payload["media_libraries"] == [{
+        "library_id": library.id, "name": "Main", "provider_key": "test",
+        "file_count": 7, "total_size_bytes": 600,
+    }]
+    assert payload["collections"]["playlists"] == {"count": 1, "item_count": 1}
+
+    expected = {(today - timedelta(days=offset)).isoformat(): 0 for offset in range(7)}
+    expected[today.isoformat()] = expected[(today - timedelta(days=3)).isoformat()] = 1
+
+    payload = client.get("/status/watch-trend?range=7d", headers=headers).json()
+    assert payload["granularity"] == "day" and payload["watched_movie_count"] == 2
+    assert {bucket["period"]: bucket["count"] for bucket in payload["buckets"]} == expected
+
+    # all 按月分桶，起点为最早观看记录所在月。
+    forty_days_ago = today - timedelta(days=40)
+    payload = client.get("/status/watch-trend?range=all", headers=headers).json()
+    assert payload["granularity"] == "month" and payload["watched_movie_count"] == 2
+    assert payload["buckets"][0]["period"] == (
+        f"{forty_days_ago.year:04d}-{forty_days_ago.month:02d}"
+    )

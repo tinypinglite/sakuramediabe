@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import Literal
 
 from pydantic import Field
@@ -110,3 +111,78 @@ class StatusMetadataProviderTestResource(SchemaModel):
     title: str | None = None
     actors_count: int | None = None
     tags_count: int | None = None
+
+
+class StatusWatchTrendRange(str, Enum):
+    """观看趋势时间范围；粒度随范围推导：7d/30d/90d 按天，1y/all 按月。"""
+
+    LAST_7_DAYS = "7d"
+    LAST_30_DAYS = "30d"
+    LAST_90_DAYS = "90d"
+    LAST_YEAR = "1y"
+    ALL = "all"
+
+
+class StatusWatchTrendGranularity(str, Enum):
+    DAY = "day"
+    MONTH = "month"
+
+
+class StatusWatchTrendBucket(SchemaModel):
+    # 天粒度 "YYYY-MM-DD"，月粒度 "YYYY-MM"；区间无观看记录时补零，保证时间轴连续。
+    period: str
+    count: int
+
+
+class StatusWatchTrendResource(SchemaModel):
+    """观看趋势。
+
+    数据源是每个媒体只保留最后一次的 ``MediaProgress.last_watched_at``，所以语义是
+    "最后观看时间落在各区间"的分布，不是完整观看历史，更早的记录已被覆盖。
+    只统计 JAV 影片；非 JAV 视频不参与。分桶按运行时本地时区。
+    """
+
+    range: StatusWatchTrendRange
+    granularity: StatusWatchTrendGranularity
+    watched_movie_count: int
+    buckets: list[StatusWatchTrendBucket]
+
+
+class StatusDownloadTaskSummary(SchemaModel):
+    """下载任务状态分布（当前任务快照，非历史累计）。六类互斥，合计恒等于 total。"""
+
+    downloading: int = 0
+    importing: int = 0
+    imported: int = 0
+    import_failed: int = 0
+    skipped: int = 0
+    download_failed: int = 0
+    total: int = 0
+
+
+class StatusMediaLibraryUsage(SchemaModel):
+    library_id: int
+    name: str
+    provider_key: str
+    # 与 /status 的 media_files 口径一致：含失效媒体，各库之和恒等于全局总数。
+    file_count: int
+    total_size_bytes: int
+
+
+class StatusCollectionSummary(SchemaModel):
+    count: int = 0
+    item_count: int = 0
+
+
+class StatusCollectionsSummary(SchemaModel):
+    # playlists 不含系统「最近播放」列表，它不是用户创建的资产。
+    playlists: StatusCollectionSummary
+    video_collections: StatusCollectionSummary
+    clip_collections: StatusCollectionSummary
+    moment_collections: StatusCollectionSummary
+
+
+class StatusInsightsResource(SchemaModel):
+    download_tasks: StatusDownloadTaskSummary
+    media_libraries: list[StatusMediaLibraryUsage]
+    collections: StatusCollectionsSummary
