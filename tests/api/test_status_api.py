@@ -1,4 +1,5 @@
 from datetime import datetime, time, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,10 @@ from src.model import (
     Playlist,
     PlaylistMovie,
     VideoItem,
+)
+from src.plugins.provider_protocol import (
+    MEDIA_PROVIDER_REGISTRY,
+    StorageSpaceUsage,
 )
 from src.service.discovery.embedding_client import EmbeddingClientError
 from src.service.system.status_service import StatusService
@@ -491,6 +496,7 @@ def test_status_insights_and_watch_trend_endpoints(client, account_user):
     assert payload["media_libraries"] == [{
         "library_id": library.id, "name": "Main", "provider_key": "test",
         "file_count": 7, "total_size_bytes": 600,
+        "space_total_bytes": None, "space_used_bytes": None, "space_free_bytes": None,
     }]
     assert payload["collections"]["playlists"] == {"count": 1, "item_count": 1}
 
@@ -508,3 +514,25 @@ def test_status_insights_and_watch_trend_endpoints(client, account_user):
     assert payload["buckets"][0]["period"] == (
         f"{forty_days_ago.year:04d}-{forty_days_ago.month:02d}"
     )
+
+
+def test_status_insights_reports_provider_storage_space(client, account_user, monkeypatch):
+    token = _login(client, username=account_user.username)
+    headers = {"Authorization": f"Bearer {token}"}
+    library = MediaLibrary.create(
+        name="Main", provider_key="demo", provider_config={}, account_key="space-api-account"
+    )
+    storage = SimpleNamespace(
+        get_space_usage=lambda: StorageSpaceUsage(
+            total_bytes=1000, used_bytes=750, free_bytes=250
+        )
+    )
+    monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _handle: storage)
+
+    payload = client.get("/status/insights", headers=headers).json()
+
+    assert payload["media_libraries"] == [{
+        "library_id": library.id, "name": "Main", "provider_key": "demo",
+        "file_count": 0, "total_size_bytes": 0,
+        "space_total_bytes": 1000, "space_used_bytes": 750, "space_free_bytes": 250,
+    }]

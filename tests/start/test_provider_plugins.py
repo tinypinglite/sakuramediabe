@@ -23,12 +23,14 @@ from src.plugins.provider_protocol import (
     PreparedLibrary,
     ProviderOperationError,
     RemoteDownloadTask,
+    StorageSpaceUsage,
     ThumbnailGeneration,
+    supports_space_usage,
 )
 
 
-def test_plugin_protocol_uses_host_api_v7():
-    assert HOST_API_VERSION == 7
+def test_plugin_protocol_uses_host_api_v8():
+    assert HOST_API_VERSION == 8
 
 
 def test_provider_operation_error_rejects_unknown_code():
@@ -80,6 +82,9 @@ class _Storage:
 
     def create_clip(self, *, media, start_offset_seconds, end_offset_seconds, workspace):
         return ClipArtifact(relative_path="clip.mp4")
+
+    def get_space_usage(self):
+        return StorageSpaceUsage(total_bytes=100, used_bytes=40, free_bytes=60)
 
 
 class _Bundle:
@@ -190,7 +195,9 @@ def test_media_provider_registry_builds_and_unloads_storage():
         provider_config={"cookie": "opaque"},
         account_key=None,
     )
-    assert isinstance(registry.storage_for(library=library), _Storage)
+    storage = registry.storage_for(library=library)
+    assert isinstance(storage, _Storage)
+    assert supports_space_usage(storage)
     assert bundle.calls == ["build_storage"]
     client = DownloadClientHandle(
         client_id=1,

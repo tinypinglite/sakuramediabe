@@ -463,6 +463,24 @@ class StorageVideoInfoProbeProvider(Protocol):
     def probe_video_info(self, *, media: MediaHandle) -> JsonObject | None: ...
 
 
+@dataclass(frozen=True)
+class StorageSpaceUsage:
+    """Provider-reported capacity of the storage backend behind one library.
+
+    115 等账号级存储返回的是整个账号的空间；本地磁盘返回的是挂载文件系统。
+    """
+
+    total_bytes: int | None = None
+    used_bytes: int | None = None
+    free_bytes: int | None = None
+
+
+class StorageSpaceProvider(Protocol):
+    """Optional capability for reporting the storage backend's capacity."""
+
+    def get_space_usage(self) -> StorageSpaceUsage: ...
+
+
 class DownloadComponent(Protocol):
     config_fields: tuple[ConfigField, ...]
 
@@ -560,6 +578,10 @@ def supports_media_transfer_target(
         callable(getattr(provider, name, None))
         for name in ("stage_transfer", "finalize_transfer", "abort_transfer")
     )
+
+
+def supports_space_usage(provider: object) -> TypeGuard[StorageSpaceProvider]:
+    return callable(getattr(provider, "get_space_usage", None))
 
 
 class ProviderUnavailableError(LookupError):
@@ -689,6 +711,8 @@ __all__ = [
     "StorageMergedPlaybackPreflightProvider",
     "StorageProvider",
     "StorageResolutionProbeProvider",
+    "StorageSpaceProvider",
+    "StorageSpaceUsage",
     "StorageVideoInfoProbeProvider",
     "ThumbnailArtifact",
     "ThumbnailGeneration",
@@ -696,4 +720,5 @@ __all__ = [
     "supports_media_transfer_source",
     "supports_media_transfer_source_cleanup",
     "supports_media_transfer_target",
+    "supports_space_usage",
 ]

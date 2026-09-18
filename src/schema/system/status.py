@@ -167,6 +167,10 @@ class StatusMediaLibraryUsage(SchemaModel):
     # 与 /status 的 media_files 口径一致：含失效媒体，各库之和恒等于全局总数。
     file_count: int
     total_size_bytes: int
+    # 存储端容量，来自 provider 可选能力 get_space_usage；null 表示不支持或查询失败。
+    space_total_bytes: int | None = None
+    space_used_bytes: int | None = None
+    space_free_bytes: int | None = None
 
 
 class StatusCollectionSummary(SchemaModel):

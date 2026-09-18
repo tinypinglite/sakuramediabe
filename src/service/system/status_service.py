@@ -73,6 +73,7 @@ from src.service.discovery.qdrant_thumbnail_store import (
     QdrantThumbnailStore,
     get_qdrant_thumbnail_store,
 )
+from src.service.playback.media_library_service import MediaLibraryService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.system.optional_services import image_search_enabled
 
@@ -341,16 +342,24 @@ class StatusService:
             for library_id, file_count, total_size_bytes in usage_rows
         }
         # 以媒体库表为基准，保证没有媒体的空库也出现在结果里。
-        return [
-            StatusMediaLibraryUsage(
-                library_id=library.id,
-                name=library.name,
-                provider_key=library.provider_key,
-                file_count=usage_by_library_id.get(library.id, (0, 0))[0],
-                total_size_bytes=usage_by_library_id.get(library.id, (0, 0))[1],
+        space_by_library_id = MediaLibraryService.storage_space_usages()
+        usages = []
+        for library in MediaLibrary.select().order_by(MediaLibrary.id.asc()):
+            file_count, total_size_bytes = usage_by_library_id.get(library.id, (0, 0))
+            space = space_by_library_id.get(library.id)
+            usages.append(
+                StatusMediaLibraryUsage(
+                    library_id=library.id,
+                    name=library.name,
+                    provider_key=library.provider_key,
+                    file_count=file_count,
+                    total_size_bytes=total_size_bytes,
+                    space_total_bytes=None if space is None else space.total_bytes,
+                    space_used_bytes=None if space is None else space.used_bytes,
+                    space_free_bytes=None if space is None else space.free_bytes,
+                )
             )
-            for library in MediaLibrary.select().order_by(MediaLibrary.id.asc())
-        ]
+        return usages
 
     @staticmethod
     def _collection_summaries() -> StatusCollectionsSummary:

@@ -1,5 +1,9 @@
+import threading
+import time
 from dataclasses import asdict
 from typing import Any
+
+from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import require_by_id
@@ -8,6 +12,8 @@ from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
     ProviderOperationError,
     ProviderUnavailableError,
+    StorageSpaceUsage,
+    supports_space_usage,
 )
 from src.schema.playback.media_libraries import (
     MediaLibraryCreateRequest,
@@ -19,6 +25,11 @@ from src.service.playback.operation_locks import (
     media_operation_lock,
 )
 from src.service.playback.provider_helpers import library_handle_for
+
+# 状态页每次打开都会查询容量，远程 provider 有网络成本，进程内短暂缓存。
+SPACE_USAGE_CACHE_TTL_SECONDS = 300
+_SPACE_USAGE_CACHE: dict[str, tuple[float, StorageSpaceUsage]] = {}
+_SPACE_USAGE_CACHE_LOCK = threading.Lock()
 
 
 class MediaLibraryService:
@@ -172,6 +183,57 @@ class MediaLibraryService:
         return [cls._resource(library) for library in libraries]
 
     @classmethod
+    def storage_space_usages(cls) -> dict[int, StorageSpaceUsage]:
+        """按库读取存储端容量；不支持的 provider 与查询失败都不出现在结果里。"""
+        usages: dict[int, StorageSpaceUsage] = {}
+        for library in MediaLibrary.select():
+            usage = cls._space_usage(library)
+            if usage is not None:
+                usages[library.id] = usage
+        return usages
+
+    @classmethod
+    def _space_usage(cls, library: MediaLibrary) -> StorageSpaceUsage | None:
+        cache_key = cls._space_cache_key(library)
+        now = time.monotonic()
+        with _SPACE_USAGE_CACHE_LOCK:
+            cached = _SPACE_USAGE_CACHE.get(cache_key)
+            if cached is not None and now - cached[0] < SPACE_USAGE_CACHE_TTL_SECONDS:
+                return cached[1]
+        try:
+            storage = MEDIA_PROVIDER_REGISTRY.storage_for(library_handle_for(library))
+            if not supports_space_usage(storage):
+                return None
+            usage = storage.get_space_usage()
+        except (ProviderOperationError, ProviderUnavailableError):
+            return None
+        except Exception as exc:
+            # 可选指标：插件侧任何异常都不应让 /status/insights 整体失败。
+            logger.warning(
+                "Storage space query failed library_id={} provider_key={} detail={}",
+                library.id,
+                library.provider_key,
+                exc,
+            )
+            return None
+        if not isinstance(usage, StorageSpaceUsage):
+            return None
+        with _SPACE_USAGE_CACHE_LOCK:
+            _SPACE_USAGE_CACHE[cache_key] = (time.monotonic(), usage)
+        return usage
+
+    @staticmethod
+    def _space_cache_key(library: MediaLibrary) -> str:
+        # 同一 115 账号可能挂多个库，按账号去重，避免重复远程查询。
+        scope = library.account_key or f"library:{library.id}"
+        return f"{library.provider_key}:{scope}"
+
+    @staticmethod
+    def _forget_space_usage(library: MediaLibrary) -> None:
+        with _SPACE_USAGE_CACHE_LOCK:
+            _SPACE_USAGE_CACHE.pop(MediaLibraryService._space_cache_key(library), None)
+
+    @classmethod
     def list_provider_catalog(cls) -> list[dict[str, Any]]:
         entries = []
         for bundle in MEDIA_PROVIDER_REGISTRY.list_bundles():
@@ -225,6 +287,7 @@ class MediaLibraryService:
             update_data = payload.model_dump(exclude_unset=True, by_alias=False)
             if not update_data:
                 raise ApiError(422, "empty_media_library_update", "At least one field must be provided")
+            cls._forget_space_usage(library)
             if "name" in update_data and update_data["name"] is not None:
                 name = cls._validate_name(update_data["name"])
                 if name != library.name:
@@ -240,6 +303,8 @@ class MediaLibraryService:
                 library.provider_config = provider_config
                 library.account_key = prepared.account_key
             library.save()
+            # provider_config/account_key 可能已变化，新旧缓存键都要失效。
+            cls._forget_space_usage(library)
             return cls._resource(library)
 
     @classmethod
@@ -256,6 +321,7 @@ class MediaLibraryService:
                     "Media library is still referenced",
                     {"library_id": library.id},
                 )
+            cls._forget_space_usage(library)
             library.delete_instance()
 
 
