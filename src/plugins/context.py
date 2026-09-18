@@ -841,6 +841,15 @@ class NotificationApi:
             namespaced_key
         )
 
+    def list(self, *, after_id: int = 0, limit: int = 100) -> tuple[PluginNotification, ...]:
+        """按通知 ID 升序增量读取宿主通知；只读，不改变已读状态。"""
+        from src.service.system.activity.notifications import NotificationService
+
+        resources = NotificationService.list_notifications_after(
+            after_id=after_id, limit=limit
+        )
+        return tuple(self._to_snapshot(resource) for resource in resources)
+
 
 class CollectionApi:
     """``context.collections``：插件按 key 管理自己创建的三类合集。"""

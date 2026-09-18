@@ -217,6 +217,23 @@ class NotificationService:
             page_size=page_size,
         )
 
+    @classmethod
+    def list_notifications_after(
+        cls, *, after_id: int = 0, limit: int = 100
+    ) -> list[NotificationResource]:
+        """按 ID 升序返回 ``after_id`` 之后的通知，供插件增量读取。"""
+        if after_id < 0:
+            raise ValueError("after_id 不能为负数")
+        if limit < 1 or limit > 100:
+            raise ValueError("limit 必须在 1 到 100 之间")
+        query = (
+            SystemNotification.select()
+            .where(SystemNotification.id > after_id)
+            .order_by(SystemNotification.id.asc())
+            .limit(limit)
+        )
+        return [cls.to_notification_resource(row) for row in query]
+
     @staticmethod
     def get_unread_count() -> int:
         return (
