@@ -15,6 +15,7 @@ from src.schema.transfers.downloads import (
     DownloadClientUpdateRequest,
     DownloadRequestCreateRequest,
     DownloadRequestCreateResponse,
+    DownloadTaskImportResponse,
     DownloadTaskResource,
     DownloadTasksQuery,
 )
@@ -122,3 +123,15 @@ def delete_download_task(
         )
     DownloadTaskService.delete_task(task_id, delete_files=delete_files)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/download-tasks/{task_id}/import",
+    response_model=DownloadTaskImportResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def trigger_download_task_import(
+    task_id: int,
+    current_user=Depends(get_current_user),
+):
+    return DownloadTaskService.trigger_import(task_id)

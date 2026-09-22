@@ -130,7 +130,7 @@ class DownloadTaskService:
             raise ApiError(
                 422,
                 "invalid_download_task_import",
-                "Only completed download tasks with a source reference can be imported",
+                "只有下载已完成且带导入来源的任务才能导入",
                 {"task_id": task_id},
             )
         importable_statuses = allowed_statuses or cls.DEFAULT_IMPORTABLE_STATUSES
@@ -138,7 +138,7 @@ class DownloadTaskService:
             raise ApiError(
                 409,
                 "download_task_import_conflict",
-                "Download task import is already running or completed",
+                "该任务的导入已完成或正在进行",
                 {"task_id": task_id, "import_status": task.import_status},
             )
         accepted = ImportTaskService.enqueue(

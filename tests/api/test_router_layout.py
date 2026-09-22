@@ -271,7 +271,6 @@ def test_create_app_does_not_register_removed_api_endpoints():
         # 缩略图不再保存可重置的资源状态。
         ("/system/resource-task-states/media_thumbnail_generation/reset", "POST"),
         ("/download-clients/{client_id}/sync", "POST"),
-        ("/download-tasks/{task_id}/import", "POST"),
     }
 
     assert route_methods.isdisjoint(removed_routes)
@@ -289,6 +288,7 @@ def test_create_app_registers_download_task_center_routes():
     assert ("/download-tasks", "GET") in route_methods
     assert ("/download-tasks/stream", "GET") not in route_methods
     assert ("/download-tasks/{task_id}", "DELETE") in route_methods
+    assert ("/download-tasks/{task_id}/import", "POST") in route_methods
 
 
 def test_create_app_runs_runtime_startup_jobs(monkeypatch):
