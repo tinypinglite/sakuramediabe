@@ -41,8 +41,8 @@ class DownloadRequestService:
             "invalid_download_request_candidate",
             "candidate title cannot be empty",
         )
-        display_name = movie_number
         info_hash = resolve_resource_hash(source_uri)
+        display_name = f"{movie_number}-{info_hash[:6]}"
         if DownloadResourceBlacklist.select().where(
             DownloadResourceBlacklist.info_hash == info_hash
         ).exists():
