@@ -231,7 +231,14 @@ class MovieSubscriptionService:
         ordered_movies = [
             movies[movie_id] for movie_id in movie_ids if movie_id in movies
         ]
-        cover_images = cls._load_cover_images(ordered_movies)
+        cover_images = cls._load_images(
+            {
+                image_id
+                for movie in ordered_movies
+                for image_id in (movie.cover_image_id, movie.thin_cover_image_id)
+                if image_id
+            }
+        )
         movie_numbers = [movie.movie_number for movie in ordered_movies]
         # media_exists_expression 用的是精确相等，这里的计数必须同样精确匹配才和状态判定一致。
         media_counts = count_by_owner(Media, Media.movie, movie_numbers)
@@ -246,6 +253,7 @@ class MovieSubscriptionService:
                     movie_number=movie.movie_number,
                     title=movie.title,
                     cover_image=cover_images.get(movie.cover_image_id),
+                    thin_cover_image=cover_images.get(movie.thin_cover_image_id),
                     release_date=movie.release_date,
                     subscribed_at=movie.subscribed_at,
                     status=status_by_movie_id[movie.id],
@@ -300,9 +308,8 @@ class MovieSubscriptionService:
         return statuses
 
     @staticmethod
-    def _load_cover_images(movies: list[Movie]) -> dict[int, ImageResource]:
-        """一次取齐当页封面，避免逐条访问 movie.cover_image 触发 N+1。"""
-        image_ids = {movie.cover_image_id for movie in movies if movie.cover_image_id}
+    def _load_images(image_ids: set[int]) -> dict[int, ImageResource]:
+        """一次取齐当页所需封面（宽图 + 窄图），避免逐条访问触发 N+1。"""
         if not image_ids:
             return {}
         return {

@@ -58,6 +58,8 @@ class MovieSubscriptionListItemResource(SchemaModel):
     movie_number: str
     title: str
     cover_image: ImageResource | None = None
+    # 窄版海报：移动端订阅行用窄图，桌面端用宽图（cover_image）。
+    thin_cover_image: ImageResource | None = None
     release_date: str | None = None
     subscribed_at: datetime | None = None
     status: MovieSubscriptionStatus
