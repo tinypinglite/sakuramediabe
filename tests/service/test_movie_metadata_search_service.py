@@ -7,6 +7,7 @@ from PIL import Image as PillowImage
 from src.api.exception.errors import ApiError
 from src.config.config import settings
 from src.metadata._providers.models import JavdbMovieDetail
+from src.metadata.provider import MetadataNotFoundError
 from src.model import Image, Movie
 from src.plugins.extensions.metadata import PluginMetadataSource, PluginMovieMetadata
 from src.service.catalog.metadata_source_service import MetadataSourceService
@@ -37,9 +38,7 @@ def _plugin_detail(path):
     )
 
 
-def test_manual_search_returns_javdb_and_all_enabled_plugin_candidates(
-    test_db, tmp_path, monkeypatch
-):
+def _prepare_search_environment(monkeypatch, tmp_path, javdb_search, calls):
     image_root = tmp_path / "assets"
     plugin_root = tmp_path / "plugins"
     plugin_cover = (
@@ -52,18 +51,13 @@ def test_manual_search_returns_javdb_and_all_enabled_plugin_candidates(
     )
     plugin_cover.parent.mkdir(parents=True)
     PillowImage.new("RGB", (30, 20), "red").save(plugin_cover)
-    calls = []
-
-    def javdb_search(number):
-        calls.append(("javdb", number))
-        return _javdb_detail()
 
     def successful_plugin(number):
         calls.append(("metadata_one", number))
         return _plugin_detail(plugin_cover)
 
-    def failed_plugin(_number):
-        calls.append(("metadata_two", _number))
+    def failed_plugin(number):
+        calls.append(("metadata_two", number))
         raise RuntimeError("plugin offline")
 
     monkeypatch.setattr(settings.media, "import_image_root_path", str(image_root))
@@ -108,6 +102,47 @@ def test_manual_search_returns_javdb_and_all_enabled_plugin_candidates(
         "src.service.catalog.movie_metadata_search_service.MovieImageService",
         FakeImageService,
     )
+    return image_root, plugin_cover
+
+
+def test_manual_search_skips_plugins_when_javdb_matches(test_db, tmp_path, monkeypatch):
+    calls = []
+
+    def javdb_search(number):
+        calls.append(("javdb", number))
+        return _javdb_detail()
+
+    image_root, plugin_cover = _prepare_search_environment(
+        monkeypatch, tmp_path, javdb_search, calls
+    )
+
+    response = MovieMetadataSearchService.search_by_number(" abc-001 ")
+
+    assert response.movie_number == "ABC-001"
+    assert calls == [("javdb", "ABC-001")]
+    assert [candidate.source for candidate in response.candidates] == ["javdb"]
+    assert response.candidates[0].cover_url.startswith("/files/images/metadata-search/")
+    assert response.source_errors == []
+    assert plugin_cover.exists()
+    assert Movie.select().count() == 0
+    assert Image.select().count() == 0
+
+    cached_files = list((image_root / "metadata-search").rglob("*"))
+    assert any(path.is_file() for path in cached_files)
+
+
+def test_manual_search_aggregates_plugins_when_javdb_not_found(
+    test_db, tmp_path, monkeypatch
+):
+    calls = []
+
+    def javdb_search(number):
+        calls.append(("javdb", number))
+        raise MetadataNotFoundError("movie", number)
+
+    image_root, plugin_cover = _prepare_search_environment(
+        monkeypatch, tmp_path, javdb_search, calls
+    )
 
     response = MovieMetadataSearchService.search_by_number(" abc-001 ")
 
@@ -117,12 +152,9 @@ def test_manual_search_returns_javdb_and_all_enabled_plugin_candidates(
         ("metadata_one", "ABC-001"),
         ("metadata_two", "ABC-001"),
     ]
-    assert [candidate.source for candidate in response.candidates] == [
-        "javdb",
-        "plugin",
-    ]
+    assert [candidate.source for candidate in response.candidates] == ["plugin"]
     assert response.candidates[0].cover_url.startswith("/files/images/metadata-search/")
-    assert response.candidates[1].source_id == "plugin-record-001"
+    assert response.candidates[0].source_id == "plugin-record-001"
     assert len(response.source_errors) == 1
     assert response.source_errors[0].source == "metadata_two"
     assert not plugin_cover.exists()

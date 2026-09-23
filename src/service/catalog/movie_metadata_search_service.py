@@ -49,6 +49,7 @@ class MovieMetadataSearchService:
         image_service = MovieImageService()
         candidates: list[ImportMetadataCandidateResource] = []
         source_errors: list[ImportMetadataSourceErrorResource] = []
+        detail = None
         try:
             provider = build_javdb_provider()
             try:
@@ -64,6 +65,7 @@ class MovieMetadataSearchService:
                         detail=str(exc),
                     )
                 )
+            # JavDB 命中即番号严格相等，视为权威来源，不再查询插件。
             if detail is not None:
                 candidates.append(
                     cls._javdb_candidate(
@@ -74,39 +76,39 @@ class MovieMetadataSearchService:
                         len(candidates),
                     )
                 )
-
-            for plugin_id, plugin_name, _source in MetadataSourceService.enabled_plugin_sources():
-                try:
-                    with MetadataSourceService.fetch_plugin(
-                        plugin_id, normalized_number
-                    ) as (plugin_detail, source):
-                        candidates.append(
-                            cls._plugin_candidate(
-                                plugin_id,
-                                plugin_detail,
-                                source,
-                                normalized_number,
-                                search_root,
-                                len(candidates),
+            else:
+                for plugin_id, plugin_name, _source in MetadataSourceService.enabled_plugin_sources():
+                    try:
+                        with MetadataSourceService.fetch_plugin(
+                            plugin_id, normalized_number
+                        ) as (plugin_detail, source):
+                            candidates.append(
+                                cls._plugin_candidate(
+                                    plugin_id,
+                                    plugin_detail,
+                                    source,
+                                    normalized_number,
+                                    search_root,
+                                    len(candidates),
+                                )
+                            )
+                    except MetadataNotFoundError:
+                        continue
+                    except Exception as exc:
+                        source_errors.append(
+                            ImportMetadataSourceErrorResource(
+                                source=plugin_id,
+                                source_name=plugin_name,
+                                reason=type(exc).__name__,
+                                detail=str(exc),
                             )
                         )
-                except MetadataNotFoundError:
-                    continue
-                except Exception as exc:
-                    source_errors.append(
-                        ImportMetadataSourceErrorResource(
-                            source=plugin_id,
-                            source_name=plugin_name,
-                            reason=type(exc).__name__,
-                            detail=str(exc),
+                        logger.warning(
+                            "Manual metadata search plugin failed plugin={} movie_number={} detail={}",
+                            plugin_id,
+                            normalized_number,
+                            exc,
                         )
-                    )
-                    logger.warning(
-                        "Manual metadata search plugin failed plugin={} movie_number={} detail={}",
-                        plugin_id,
-                        normalized_number,
-                        exc,
-                    )
         finally:
             image_service.http_client.close()
 
