@@ -10,6 +10,7 @@ from peewee import (
     TextField,
 )
 
+from src.common.perf import install_query_hooks
 from src.config.config import Database, DatabaseEngine
 
 database_proxy = DatabaseProxy()
@@ -30,7 +31,7 @@ def create_database(config: Database):
     port = parsed.port or 5432
     connect_options = dict(parse_qsl(parsed.query, keep_blank_values=True))
 
-    return PostgresqlDatabase(
+    database = PostgresqlDatabase(
         database_name,
         user=username,
         password=password,
@@ -38,6 +39,8 @@ def create_database(config: Database):
         port=port,
         **connect_options,
     )
+    install_query_hooks(database)
+    return database
 
 
 def init_database(config: Database):

@@ -13,6 +13,7 @@ from src.api.exception.exception import (
     http_exception_handler,
     validation_exception_handler,
 )
+from src.api.middleware.slow_requests import SlowRequestLoggingMiddleware
 from src.api.routers.catalog.actors import router as actors_router
 from src.api.routers.catalog.movies import router as movies_router
 from src.api.routers.catalog.subscriptions import router as movie_subscriptions_router
@@ -56,6 +57,7 @@ from src.api.routers.videos.collections import router as video_collections_route
 from src.api.routers.videos.items import router as videos_router
 from src.common.database import ensure_database_ready
 from src.common.logging import configure_logging
+from src.common.perf import slow_log_enabled
 from src.config.config import ensure_runtime_config, settings
 
 
@@ -85,6 +87,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # 开发用慢请求日志，默认关闭；SAKURAMEDIA_SLOW_LOG=1 时启用。
+    if slow_log_enabled():
+        app.add_middleware(SlowRequestLoggingMiddleware)
 
     app.include_router(actors_router)
     app.include_router(movies_router)

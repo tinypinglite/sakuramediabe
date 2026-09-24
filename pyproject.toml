@@ -10,7 +10,8 @@ dependencies = [
     "uvicorn>=0.22.0,<0.23.0",
     "loguru>=0.7.0,<0.8.0",
     "python-jose>=3.3.0,<4.0.0",
-    "peewee>=3.16.2,<4.0.0",
+    # 上限放开到 4.x：慢 SQL 钩子依赖 4.5+ 的 Database.query_hooks（见 src/common/perf.py）。
+    "peewee>=4.5.1,<5.0.0",
     "tqdm>=4.65.0,<5.0.0",
     "xmltodict>=0.13.0,<0.14.0",
     "python-multipart>=0.0.6,<0.0.7",
