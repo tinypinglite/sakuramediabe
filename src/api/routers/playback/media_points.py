@@ -26,10 +26,19 @@ def list_media_points(
     sort: str | None = Query(default=None),
     # 默认只返回 JAV 时刻，前端可按 video/all 切换查看非 JAV 或全部。
     kind: MediaPointKind = Query(default=MediaPointKind.JAV),
+    # 空格分词、词间 AND，命中番号（按 kind 决定是否参与）或视频标题。
+    keyword: str | None = Query(default=None),
+    # 排除该时刻合集已有成员，用于「仅未加入」选择器。
+    exclude_collection_id: int | None = Query(default=None, ge=1),
     current_user=Depends(get_current_user),
 ):
     return MediaService.list_media_points(
-        page=page, page_size=page_size, sort=sort, kind=kind
+        page=page,
+        page_size=page_size,
+        sort=sort,
+        kind=kind,
+        keyword=keyword,
+        exclude_collection_id=exclude_collection_id,
     )
 
 

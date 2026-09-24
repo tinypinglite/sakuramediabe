@@ -51,6 +51,10 @@ def list_media_clips(
     page_size: int = Query(default=20),
     sort: str | None = Query(default=None),
     movie_number: str | None = Query(default=None),
+    # 空格分词、词间 AND，命中番号或切片标题。
+    keyword: str | None = Query(default=None),
+    # 排除该切片合集已有成员，用于「仅未加入」选择器。
+    exclude_collection_id: int | None = Query(default=None, ge=1),
     current_user=Depends(get_current_user),
 ):
     return MediaClipService.list_media_clips(
@@ -58,6 +62,8 @@ def list_media_clips(
         page_size=page_size,
         sort=sort,
         movie_number=movie_number,
+        keyword=keyword,
+        exclude_collection_id=exclude_collection_id,
     )
 
 

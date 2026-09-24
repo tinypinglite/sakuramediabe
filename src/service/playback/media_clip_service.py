@@ -22,6 +22,7 @@ from src.common.service_helpers import (
     unlink_ignore_missing,
     validate_page,
 )
+from src.common.text_search import split_search_terms
 from src.config.config import settings
 from src.model import (
     ClipCollection,
@@ -52,6 +53,7 @@ from src.service.playback.operation_locks import (
     media_operation_lock,
 )
 from src.service.playback.provider_helpers import media_handle_for
+from src.service.playback.search_filters import keyword_conditions
 
 
 class MediaClipService:
@@ -386,6 +388,8 @@ class MediaClipService:
         page_size: int = 20,
         sort: str | None = None,
         movie_number: str | None = None,
+        keyword: str | None = None,
+        exclude_collection_id: int | None = None,
     ) -> PageResponse[MediaClipResource]:
         validate_page(page, page_size, error_code="invalid_media_clip_filter")
         order_by = cls._resolve_media_clip_sort(sort)
@@ -394,6 +398,23 @@ class MediaClipService:
         normalized_movie_number = (movie_number or "").strip()
         if normalized_movie_number:
             query = query.where(MediaClip.movie_number == normalized_movie_number)
+        for condition in keyword_conditions(
+            split_search_terms(
+                keyword, error_code="invalid_media_clip_filter"
+            ),
+            number_column=MediaClip.movie_number,
+            # title 的 .contains() 在 PostgreSQL 上是 ILIKE，无需再做大小写归一。
+            text_condition_builder=lambda term: [MediaClip.title.contains(term)],
+        ):
+            query = query.where(condition)
+        if exclude_collection_id is not None:
+            query = query.where(
+                MediaClip.id.not_in(
+                    ClipCollectionItem.select(ClipCollectionItem.clip).where(
+                        ClipCollectionItem.collection == exclude_collection_id
+                    )
+                )
+            )
         clips = cls.valid_clips(list(
             query
             .order_by(*order_by)

@@ -15,6 +15,7 @@ from src.common.service_helpers import (
     validate_page,
     with_movie_card_relations,
 )
+from src.common.text_search import split_search_terms
 from src.model import (
     Image,
     Media,
@@ -22,6 +23,7 @@ from src.model import (
     MediaPoint,
     MediaProgress,
     MediaThumbnail,
+    MomentCollectionItem,
     Movie,
     MovieActor,
     MovieTag,
@@ -66,7 +68,20 @@ from src.service.playback.operation_locks import (
     media_operation_lock,
 )
 from src.service.playback.provider_helpers import media_handle_for
+from src.service.playback.search_filters import keyword_conditions
 from src.service.system.optional_services import image_search_enabled
+
+
+def _video_title_conditions(term: str) -> list:
+    """视频时刻按视频标题匹配：MediaPoint 只存 video_item_id 快照，走子查询。
+
+    title 的 `.contains()` 在 PostgreSQL 上是 ILIKE，无需再做大小写归一。
+    """
+    return [
+        MediaPoint.video_item_id.in_(
+            VideoItem.select(VideoItem.id).where(VideoItem.title.contains(term))
+        )
+    ]
 
 
 class MediaService:
@@ -452,18 +467,43 @@ class MediaService:
         page_size: int = 20,
         sort: str | None = None,
         kind: MediaPointKind = MediaPointKind.JAV,
+        keyword: str | None = None,
+        exclude_collection_id: int | None = None,
     ) -> PageResponse[MediaPointListItemResource]:
         cls._validate_media_point_page(page, page_size)
         start = (page - 1) * page_size
         order_by = cls._resolve_media_point_sort(sort)
         kind_filter = None
+        number_column = None
+        text_condition_builder = None
         if kind == MediaPointKind.JAV:
             kind_filter = MediaPoint.movie_number.is_null(False)
+            number_column = MediaPoint.movie_number
         elif kind == MediaPointKind.VIDEO:
             kind_filter = MediaPoint.video_item_id.is_null(False)
+            text_condition_builder = _video_title_conditions
+        else:
+            number_column = MediaPoint.movie_number
+            text_condition_builder = _video_title_conditions
         points_query = cls._point_query_with_image()
         if kind_filter is not None:
             points_query = points_query.where(kind_filter)
+        for condition in keyword_conditions(
+            split_search_terms(
+                keyword, error_code="invalid_media_point_filter"
+            ),
+            number_column=number_column,
+            text_condition_builder=text_condition_builder,
+        ):
+            points_query = points_query.where(condition)
+        if exclude_collection_id is not None:
+            points_query = points_query.where(
+                MediaPoint.id.not_in(
+                    MomentCollectionItem.select(MomentCollectionItem.point).where(
+                        MomentCollectionItem.collection == exclude_collection_id
+                    )
+                )
+            )
         total = points_query.count()
         points = list(
             points_query
