@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from src.start.migrations.runner import (
     ACTOR_METADATA_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
     DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME,
+    DROP_MOVIE_EXTRA_MIGRATION_NAME,
     HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
     IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
     IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
@@ -115,6 +117,7 @@ def test_current_migrations_are_discoverable_in_order():
         ACTOR_LOCAL_PROFILE_MIGRATION_NAME,
         PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
         MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
+        DROP_MOVIE_EXTRA_MIGRATION_NAME,
     ]
 
 
@@ -204,6 +207,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=ACTOR_LOCAL_PROFILE_MIGRATION_NAME, applied=True),
         MigrationExecution(name=PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME, applied=True),
         MigrationExecution(name=MEDIA_POINT_PRESERVATION_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=DROP_MOVIE_EXTRA_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -222,6 +226,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         ACTOR_LOCAL_PROFILE_MIGRATION_NAME,
         PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
         MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
+        DROP_MOVIE_EXTRA_MIGRATION_NAME,
     ]
 
 
@@ -374,7 +379,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 15
+    assert summary.applied_count == 16
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -532,20 +537,32 @@ def test_local_profile_and_moment_collection_migrations_add_runtime_indexes(clea
     }
 
 
+def _set_movie_extra(database, movie_id: int, extra) -> None:
+    database.execute_sql(
+        "UPDATE movie SET extra = %s WHERE id = %s",
+        (
+            json.dumps(extra, ensure_ascii=False) if extra is not None else None,
+            movie_id,
+        ),
+    )
+
+
 def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(clean_db):
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
     clean_db.create_tables(TEST_MODELS)
+    # 当前模型已移除 extra 列；临时重建旧列，覆盖历史迁移读取旧 schema 的路径。
+    clean_db.execute_sql("ALTER TABLE movie ADD COLUMN IF NOT EXISTS extra TEXT")
 
     female = Actor.create(javdb_id="actor-female", name="female", gender=0)
     male = Actor.create(javdb_id="actor-male", name="male", gender=1)
     unknown = Actor.create(javdb_id="actor-unknown", name="unknown", gender=1)
     untouched = Actor.create(javdb_id="actor-untouched", name="untouched", gender=2)
 
-    Movie.create(
-        movie_number="OLD-001",
-        javdb_id="old-movie",
-        title="old",
-        extra={
+    old_movie = Movie.create(movie_number="OLD-001", javdb_id="old-movie", title="old")
+    _set_movie_extra(
+        clean_db,
+        old_movie.id,
+        {
             "data": {
                 "movie": {
                     "actors": [
@@ -556,11 +573,11 @@ def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(
             }
         },
     )
-    Movie.create(
-        movie_number="NEW-001",
-        javdb_id="new-movie",
-        title="new",
-        extra={
+    new_movie = Movie.create(movie_number="NEW-001", javdb_id="new-movie", title="new")
+    _set_movie_extra(
+        clean_db,
+        new_movie.id,
+        {
             "data": {
                 "movie": {
                     "actors": [
@@ -573,18 +590,14 @@ def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(
             }
         },
     )
-    Movie.create(
-        movie_number="EMPTY-001",
-        javdb_id="empty-movie",
-        title="empty",
-        extra={"data": {"movie": {"actors": "legacy-scalar"}}},
+    empty_movie = Movie.create(
+        movie_number="EMPTY-001", javdb_id="empty-movie", title="empty"
     )
-    Movie.create(
-        movie_number="NULL-001",
-        javdb_id="null-movie",
-        title="null",
-        extra=None,
+    _set_movie_extra(
+        clean_db, empty_movie.id, {"data": {"movie": {"actors": "legacy-scalar"}}}
     )
+    null_movie = Movie.create(movie_number="NULL-001", javdb_id="null-movie", title="null")
+    _set_movie_extra(clean_db, null_movie.id, None)
 
     migration = _load_migration_module(
         Path(
@@ -600,9 +613,38 @@ def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(
     assert Actor.get_by_id(untouched.id).gender == 2
 
 
+def test_actor_gender_backfill_migration_skips_when_extra_column_absent(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    actor = Actor.create(javdb_id="actor-guard", name="guard", gender=1)
+
+    migration = _load_migration_module(
+        Path(
+            "src/start/migrations/versions/"
+            "20260823_02_backfill_actor_gender_from_movie_extra.py"
+        )
+    )
+    migration.migrate(clean_db)
+
+    assert Actor.get_by_id(actor.id).gender == 1
+
+
+def test_drop_movie_extra_migration_removes_column(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    clean_db.execute_sql("ALTER TABLE movie ADD COLUMN IF NOT EXISTS extra TEXT")
+
+    _load_migration_module(Path(f"{DROP_MOVIE_EXTRA_MIGRATION_NAME}.py")).migrate(
+        clean_db
+    )
+
+    assert "extra" not in _column_names(clean_db, "movie")
+
+
 def test_migrate_command_runs_the_consolidated_migration(monkeypatch):
     events = []
     optional_service_calls = []
+    maintenance_calls = []
 
     class FakeLegacyDatabase:
         def get_tables(self):
@@ -641,6 +683,10 @@ def test_migrate_command_runs_the_consolidated_migration(monkeypatch):
         "src.config.config.initialize_optional_services",
         fake_initialize_optional_services,
     )
+    monkeypatch.setattr(
+        "src.start.maintenance.run_startup_maintenance",
+        lambda database: maintenance_calls.append(database),
+    )
 
     result = CliRunner().invoke(main, ["migrate"])
 
@@ -649,6 +695,7 @@ def test_migrate_command_runs_the_consolidated_migration(monkeypatch):
     assert "migrate finished: applied=1 skipped=0 total=1" in result.output
     assert events == [legacy_database, ready_database]
     assert optional_service_calls == [True]
+    assert maintenance_calls == [ready_database]
 
 
 @pytest.mark.parametrize('kind', ['jav', 'video'])

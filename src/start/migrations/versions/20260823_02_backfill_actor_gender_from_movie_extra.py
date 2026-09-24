@@ -7,6 +7,9 @@ name = "20260823_02_backfill_actor_gender_from_movie_extra"
 
 def migrate(database) -> None:
     """只使用影片详情中的明确性别，修复历史 Actor.gender。"""
+    # movie.extra 已被后续迁移删除；该迁移只服务旧库升级链，新 schema 下直接跳过。
+    if "extra" not in {column.name for column in database.get_columns("movie")}:
+        return
     database.execute_sql(
         """
         WITH actor_gender_candidates AS (

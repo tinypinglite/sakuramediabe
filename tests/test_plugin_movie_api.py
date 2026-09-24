@@ -28,12 +28,12 @@ def _create_movie(test_db, **overrides) -> Movie:
 
 
 def test_snapshot_contains_only_public_readonly_fields(test_db):
-    movie = _create_movie(test_db, extra={"secret": "x"}, heat=999)
+    movie = _create_movie(test_db, heat=999)
     snapshot = MovieApi._to_snapshot(movie)
 
     assert isinstance(snapshot, MovieSnapshot)
     assert set(snapshot.values) == set(MOVIE_SNAPSHOT_FIELDS)
-    # 新列（extra/heat 等）不会因默认行为意外暴露给插件。
+    # 新列（heat 等）不会因默认行为意外暴露给插件。
     assert "extra" not in snapshot.values
     assert "heat" not in snapshot.values
     assert "field_owners" not in snapshot.values

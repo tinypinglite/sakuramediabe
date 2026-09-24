@@ -179,6 +179,7 @@ def initdb():
 def migrate():
     """执行待应用的数据库迁移"""
     logger.info("CLI migrate start")
+    from src.start.maintenance import run_startup_maintenance
     from src.start.migrations import run_pending_migrations
 
     # 旧库必须先执行字段迁移，再按当前模型补齐新增表和索引。
@@ -189,6 +190,8 @@ def migrate():
     before_create_summary = run_pending_migrations(database)
     database = _ensure_database_ready()
     after_create_summary = run_pending_migrations(database)
+    # 迁移/建表后执行一次启动期维护：autovacuum 调参与删列后的空间回收（自动覆盖新装与存量库）。
+    run_startup_maintenance(database)
     summary = _merge_migration_summaries(before_create_summary, after_create_summary)
     for execution in summary.executed:
         status_text = "applied" if execution.applied else "skipped"

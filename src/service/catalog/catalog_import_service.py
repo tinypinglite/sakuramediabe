@@ -241,7 +241,6 @@ class CatalogImportService:
                     movie.subscribed_at = utc_now_for_db()
                 else:
                     movie.subscribed_at = None
-            movie.extra = detail.extra
             movie.title = detail.title
             movie.javdb_id = detail.javdb_id
             movie.movie_number = detail.movie_number
@@ -406,7 +405,6 @@ class CatalogImportService:
                 "watched_count": detail.watched_count,
                 "want_watch_count": detail.want_watch_count,
                 "comment_count": detail.comment_count,
-                "extra": detail.extra,
             }
             if detail.release_date:
                 values["release_date"] = detail.release_date
@@ -703,7 +701,6 @@ class CatalogImportService:
         movie.series = self._resolve_movie_series(detail.series_name)
         movie.maker_name = detail.maker_name
         movie.director_name = detail.director_name
-        movie.extra = detail.extra
         movie.javdb_id = detail.javdb_id
         movie.title = detail.title
         movie.cover_image = self.image_service.persist_refreshed_image_record(cover_task)
@@ -722,7 +719,6 @@ class CatalogImportService:
             "series",
             "maker_name",
             "director_name",
-            "extra",
             "javdb_id",
             "title",
             "cover_image",

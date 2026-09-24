@@ -1,7 +1,7 @@
 import peewee
 from peewee import SQL
 
-from src.model.base import BaseModel, CaseSensitiveCharField, JsonbField, JsonTextField
+from src.model.base import BaseModel, CaseSensitiveCharField, JsonbField
 from src.model.catalog.actors import Actor
 from src.model.catalog.images import Image
 from src.model.catalog.tags import Tag
@@ -95,7 +95,6 @@ class Movie(TimestampedMixin, BaseModel):
     subscription_search_error_code = peewee.CharField(max_length=64, null=True)
     subscription_search_last_error = peewee.TextField(null=True)
     subscription_search_last_error_at = peewee.DateTimeField(null=True)
-    extra = JsonTextField(null=True, default=None, verbose_name="额外元数据")
     # v2-lite 字段主权：字段 -> owner 映射（缺键代表自动宿主管理，host:manual 代表人工）；
     # mutation_revision 只表示受保护字段及其 owner 的版本，不是整条 Movie 的全局版本。
     # constraints 里的服务端 DEFAULT 与 v0.5.0 收敛迁移对齐，保证新库（initdb 渲染）
