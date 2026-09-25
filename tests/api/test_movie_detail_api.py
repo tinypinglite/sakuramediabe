@@ -211,3 +211,33 @@ def test_merged_playback_url_rejects_provider_preflight_failure(
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "provider_unsupported"
+
+
+def test_movie_detail_omits_play_url_for_invalid_media(client, account_user, monkeypatch):
+    library = MediaLibrary.create(
+        name="detail-validity-library", provider_key="demo", provider_config={}
+    )
+    movie = Movie.create(
+        movie_number="DETAIL-VALID-001", javdb_id="detail-valid-1", title="validity"
+    )
+    invalid_media = Media.create(
+        movie=movie, library=library, file_name="invalid.mp4", valid=False
+    )
+    valid_media = Media.create(movie=movie, library=library, file_name="valid.mp4")
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(playback_deliveries=("proxy",)),
+    )
+
+    response = client.get(
+        f"/movies/{movie.movie_number}",
+        headers=_auth_headers(client, account_user),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["can_play"] is True
+    media_by_id = {item["media_id"]: item for item in body["media_items"]}
+    assert media_by_id[invalid_media.id]["play_url"] == ""
+    assert media_by_id[valid_media.id]["play_url"] != ""

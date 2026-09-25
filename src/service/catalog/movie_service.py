@@ -551,8 +551,13 @@ class MovieService:
                 )
             media.points = points_by_media_id.get(media.id, [])
             bundle = MEDIA_PROVIDER_REGISTRY.require(media.library.provider_key)
-            media.play_url = build_signed_media_url(
-                media.id, delivery=bundle.playback_deliveries[0]
+            # 失效媒体不生成播放地址；条目仍返回，前端据空地址禁用播放。
+            media.play_url = (
+                build_signed_media_url(
+                    media.id, delivery=bundle.playback_deliveries[0]
+                )
+                if media.valid
+                else ""
             )
             media.library_name = media.library.name
             media.provider_key = media.library.provider_key

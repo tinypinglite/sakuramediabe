@@ -122,3 +122,78 @@ def test_video_update_rejects_thumbnail_from_another_video(client, account_user)
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "video_cover_thumbnail_not_found"
     assert VideoItem.get_by_id(video.id).cover_image_id is None
+
+
+def test_video_detail_marks_invalid_media_unplayable_and_prefers_valid_media(
+    client,
+    account_user,
+    monkeypatch,
+):
+    library = MediaLibrary.create(
+        name="video-validity-library", provider_key="pornbox", provider_config={}
+    )
+    video = VideoItem.create(title="mixed validity")
+    invalid_media = Media.create(
+        video_item=video,
+        library=library,
+        file_name="invalid.mp4",
+        duration_seconds=999,
+        valid=False,
+    )
+    valid_media = Media.create(
+        video_item=video,
+        library=library,
+        file_name="valid.mp4",
+        duration_seconds=60,
+    )
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(playback_deliveries=("proxy",)),
+    )
+
+    response = client.get(
+        f"/videos/{video.id}",
+        headers=_auth_headers(client, account_user),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["can_play"] is True
+    # 时长/封面比例取第一条有效媒体，而不是 id 更小的失效副本。
+    assert body["duration_seconds"] == 60
+    media_by_id = {item["media_id"]: item for item in body["media_items"]}
+    assert media_by_id[invalid_media.id]["valid"] is False
+    assert media_by_id[invalid_media.id]["play_url"] == ""
+    assert media_by_id[valid_media.id]["play_url"] != ""
+
+
+def test_video_detail_without_valid_media_has_no_play_url(client, account_user, monkeypatch):
+    library = MediaLibrary.create(
+        name="video-invalid-only-library", provider_key="pornbox", provider_config={}
+    )
+    video = VideoItem.create(title="all invalid")
+    invalid_media = Media.create(
+        video_item=video,
+        library=library,
+        file_name="invalid.mp4",
+        duration_seconds=999,
+        valid=False,
+    )
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(playback_deliveries=("proxy",)),
+    )
+
+    response = client.get(
+        f"/videos/{video.id}",
+        headers=_auth_headers(client, account_user),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["can_play"] is False
+    assert body["duration_seconds"] == 0
+    assert body["media_items"][0]["media_id"] == invalid_media.id
+    assert body["media_items"][0]["play_url"] == ""

@@ -37,6 +37,7 @@ from src.start.migrations.runner import (
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
     PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
     PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
+    REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
     MigrationExecution,
     MigrationRunSummary,
     _list_migration_modules,
@@ -118,6 +119,7 @@ def test_current_migrations_are_discoverable_in_order():
         PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
         MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
         DROP_MOVIE_EXTRA_MIGRATION_NAME,
+        REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
     ]
 
 
@@ -208,6 +210,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME, applied=True),
         MigrationExecution(name=MEDIA_POINT_PRESERVATION_MIGRATION_NAME, applied=True),
         MigrationExecution(name=DROP_MOVIE_EXTRA_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -227,6 +230,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
         MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
         DROP_MOVIE_EXTRA_MIGRATION_NAME,
+        REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
     ]
 
 
@@ -379,7 +383,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 16
+    assert summary.applied_count == 17
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -756,3 +760,38 @@ def test_media_point_migration_preserves_old_points_and_collection_membership(cl
     # 当前模型建表后的重复迁移也不能清空已经独立的时刻快照。
     migration.migrate(clean_db)
     assert MediaPoint.get_by_id(point_id).image_id == image.id
+
+
+def test_remove_orphan_video_items_migration_deletes_empty_videos_and_membership(clean_db):
+    from src.model import (
+        Image,
+        MediaPoint,
+        VideoCollection,
+        VideoCollectionItem,
+        VideoItem,
+    )
+
+    clean_db.create_tables(TEST_MODELS)
+    library = MediaLibrary.create(name='orphan-cleanup', provider_key='demo', provider_config={})
+    orphan = VideoItem.create(title='orphan video')
+    kept = VideoItem.create(title='kept video')
+    kept_media = Media.create(video_item=kept, library=library, file_name='kept.mp4')
+    collection = VideoCollection.create(name='mixed collection')
+    orphan_link = VideoCollectionItem.create(collection=collection, video_item=orphan, position=0)
+    kept_link = VideoCollectionItem.create(collection=collection, video_item=kept, position=1)
+    image = Image.create(origin='orphan.webp', small='orphan.webp', medium='orphan.webp', large='orphan.webp')
+    point = MediaPoint.create(image=image, video_item_id=orphan.id, offset_seconds=10)
+
+    migration = _load_migration_module(Path(f'{REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME}.py'))
+    migration.migrate(clean_db)
+
+    assert VideoItem.get_or_none(VideoItem.id == orphan.id) is None
+    assert not VideoCollectionItem.select().where(VideoCollectionItem.id == orphan_link.id).exists()
+    assert VideoItem.get_or_none(VideoItem.id == kept.id) is not None
+    assert Media.get_or_none(Media.id == kept_media.id) is not None
+    assert VideoCollectionItem.get_by_id(kept_link.id).video_item_id == kept.id
+    # 时刻是无外键的展示快照，不随条目删除。
+    assert MediaPoint.get_by_id(point.id).video_item_id == orphan.id
+    # 重复执行幂等：有效条目与成员不受影响。
+    migration.migrate(clean_db)
+    assert VideoCollectionItem.get_by_id(kept_link.id).video_item_id == kept.id

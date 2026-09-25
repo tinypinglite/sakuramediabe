@@ -62,15 +62,20 @@ class VideoItemService:
 
     @staticmethod
     def _first_media_alias():
-        """构造取「条目第一条媒体」的连接素材：每条目 MIN(Media.id) 分组子查询 + Media 别名。
+        """构造取「条目第一条有效媒体」的连接素材：每条目 MIN(Media.id) 分组子查询 + Media 别名。
 
         返回 (first_media 别名, first_media_id 子查询)，两者配合 LEFT JOIN 后，
-        first_media 即每个条目按 Media.id 升序的第一条媒体，其时长/大小同时供排序与展示。
+        first_media 即每个条目按 Media.id 升序的第一条有效媒体，其时长/大小同时供排序、
+        展示与播放地址生成；全部失效时 LEFT JOIN 落空，与 can_play=false 语义一致。
         """
-        first_media_id = Media.select(
-            Media.video_item.alias("owner_id"),
-            fn.MIN(Media.id).alias("first_media_id"),
-        ).group_by(Media.video_item)
+        first_media_id = (
+            Media.select(
+                Media.video_item.alias("owner_id"),
+                fn.MIN(Media.id).alias("first_media_id"),
+            )
+            .where(Media.valid == True)
+            .group_by(Media.video_item)
+        )
         return Media.alias(), first_media_id
 
     @classmethod
@@ -302,8 +307,13 @@ class VideoItemService:
             )
             media.points = points_by_media_id.get(media.id, [])
             bundle = MEDIA_PROVIDER_REGISTRY.require(media.library.provider_key)
-            media.play_url = build_signed_media_url(
-                media.id, delivery=bundle.playback_deliveries[0]
+            # 失效媒体不生成播放地址；条目仍返回，前端据空地址禁用播放。
+            media.play_url = (
+                build_signed_media_url(
+                    media.id, delivery=bundle.playback_deliveries[0]
+                )
+                if media.valid
+                else ""
             )
             media.provider_key = media.library.provider_key
             media.playback_deliveries = list(bundle.playback_deliveries)
@@ -316,8 +326,8 @@ class VideoItemService:
         media_items = cls._media_items(video)
         stats_media_count = len(media_items)
         can_play = any(media.valid for media in media_items)
-        # 时长/大小取第一条媒体（media_items 已按 Media.id 升序），无媒体时为 0。
-        first_media = media_items[0] if media_items else None
+        # 时长/大小/封面比例取第一条有效媒体（media_items 已按 Media.id 升序），无有效媒体时为 0。
+        first_media = next((media for media in media_items if media.valid), None)
         cover_width, cover_height = cls._parse_resolution(
             first_media.resolution if first_media else None
         )
@@ -413,7 +423,8 @@ class VideoItemService:
         # 复用媒体删除链路：清理文件、缩略图图片、向量与级联子表，而非简单置空可空外键。
         media_ids = [media.id for media in Media.select(Media.id).where(Media.video_item == video)]
         for media_id in media_ids:
-            MediaService.delete_media(media_id)
+            # 条目删除链路本身已在此收口，关闭媒体侧的条目同步避免递归。
+            MediaService.delete_media(media_id, sync_video_member=False)
         # 封面 Image 为该视频独有（generate_cover 新建），随视频一并清理图片行与磁盘文件，避免孤儿。
         cover_image = video.cover_image if video.cover_image_id is not None else None
         obsolete_image_paths: set[str] = set()

@@ -55,7 +55,7 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
         if kind == 'jav' else {'video_item': VideoItem.create(title='Video')}
     )
     media = Media.create(library=library, file_name='source.mp4', **owner)
-    # 同影片/视频仍有另一版本时，旧时刻也不能自动改绑。
+    # JAV 同影片仍有另一版本时旧时刻也不能自动改绑；非 JAV 条目删除会连其余媒体一并清理。
     other_media = Media.create(library=library, file_name='other.mp4', **owner)
     thumbnails = []
     for offset in (10, 20, 30):
@@ -100,7 +100,8 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
     )
     assert response.status_code == 204, response.text
     assert Media.get_or_none(Media.id == media.id) is None
-    assert bool(Media.get_or_none(Media.id == other_media.id)) is (not delete_video)
+    # 非 JAV 媒体删除会同步删除视频条目，同条目的其它媒体一并清理；JAV 只删这一条。
+    assert bool(Media.get_or_none(Media.id == other_media.id)) is (kind == 'jav')
     for point_id in point_ids:
         point = MediaPoint.get_by_id(point_id)
         assert point.media_id is None and point.thumbnail_id is None
@@ -121,7 +122,7 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
     # 媒体列表的分类查询仍基于 Media，不能被时刻快照筛选改坏。
     listing = client.get('/media', params={'kind': kind}, headers=headers)
     assert listing.status_code == 200, listing.text
-    assert listing.json()['total'] == (0 if delete_video else 1)
+    assert listing.json()['total'] == (0 if kind == 'video' else 1)
     summary = client.get(f'/moment-collections/{collection.id}', headers=headers)
     assert summary.status_code == 200, summary.text
     assert summary.json()['point_count'] == 2 and summary.json()['cover_image'] is not None
@@ -141,10 +142,9 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
         assert client.delete(f'/media-points/{point_id}', headers=headers).status_code == 204
     assert not MomentCollectionItem.select().where(MomentCollectionItem.collection == collection).exists()
     assert not (image_root / '20.webp').exists()
-    if kind == 'video' and not delete_video:
-        # 封面仍在引用，直到 VideoItem 也被删除才能清理。
-        assert (image_root / '10.webp').exists()
-        assert client.delete(f'/videos/{media.video_item_id}', headers=headers).status_code == 204
+    if kind == 'video':
+        # 视频条目随媒体/视频删除一并清理；封面 Image 被时刻引用，随时刻删除后回收。
+        assert VideoItem.get_or_none(VideoItem.id == media.video_item_id) is None
     assert not (image_root / '10.webp').exists()
     assert client.delete(f'/media-points/{point_ids[0]}', headers=headers).status_code == 404
     assert clip_path.is_file()

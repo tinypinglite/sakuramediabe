@@ -622,9 +622,16 @@ class MediaService:
         )
 
     @classmethod
-    def delete_media(cls, media_id: int) -> None:
+    def delete_media(cls, media_id: int, *, sync_video_member: bool = True) -> None:
         with media_operation_lock(MEDIA_LOCK, media_id):
             media = cls._require_media(media_id)
+            # 非 JAV 视频条目与媒体一一对应：删除媒体即删除条目，合集成员随外键级联清理。
+            # [sync_video_member] 仅供条目自身的删除链路关闭，避免递归回到这里。
+            if sync_video_member and media.video_item_id is not None:
+                from src.service.videos.video_item_service import VideoItemService
+
+                VideoItemService.delete_video(media.video_item_id)
+                return
             media_handle = media_handle_for(media)
             try:
                 storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
