@@ -26,6 +26,7 @@ from src.common.media_paths import media_image_root_path
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     build_ordered_expressions,
+    playable_exists_expression,
     require_by_id,
     resolve_sort_expression,
 )
@@ -101,6 +102,24 @@ class ActorService:
         )
 
     @staticmethod
+    def _playable_movie_count_expression():
+        """按 movie_actor 关联实时计算演员可播放影片数量。"""
+        return (
+            MovieActor.select(fn.COUNT(MovieActor.id))
+            .join(Movie, on=(MovieActor.movie == Movie.id))
+            .where(MovieActor.actor == Actor.id, playable_exists_expression())
+        )
+
+    @staticmethod
+    def _has_playable_movie_expression():
+        """演员是否存在可播放影片。"""
+        return fn.EXISTS(
+            MovieActor.select(MovieActor.id)
+            .join(Movie, on=(MovieActor.movie == Movie.id))
+            .where(MovieActor.actor == Actor.id, playable_exists_expression())
+        )
+
+    @staticmethod
     def _normalized_cup_expression():
         return fn.NULLIF(fn.UPPER(fn.BTRIM(Actor.cup)), "")
 
@@ -114,6 +133,7 @@ class ActorService:
             "subscribed_at": Actor.subscribed_at,
             "name": Actor.name,
             "movie_count": cls._movie_count_expression(),
+            "playable_movie_count": cls._playable_movie_count_expression(),
             "age": Actor.birthday,
             "height_cm": Actor.height_cm,
             "bust_cm": Actor.bust_cm,
@@ -239,6 +259,7 @@ class ActorService:
         height_min: int | None = None,
         height_max: int | None = None,
         cups: Sequence[str] | None = None,
+        has_playable_movies: bool = False,
         search_terms: Sequence[str] = (),
     ):
         """演员列表筛选统一收口到这里，保证 count 和 items 逻辑一致。"""
@@ -276,6 +297,8 @@ class ActorService:
             query = query.where(Actor.height_cm <= height_max)
         if cups:
             query = query.where(cls._normalized_cup_expression().in_(cups))
+        if has_playable_movies:
+            query = query.where(cls._has_playable_movie_expression())
         if search_terms:
             query = query.where(cls._actor_search_conditions(search_terms))
 
@@ -305,6 +328,7 @@ class ActorService:
         height_min: int | None = None,
         height_max: int | None = None,
         cups: Sequence[str] | None = None,
+        has_playable_movies: bool = False,
         sort: str | None = None,
         query: str | None = None,
         page: int = 1,
@@ -320,6 +344,7 @@ class ActorService:
             "height_min": height_min,
             "height_max": height_max,
             "cups": cups,
+            "has_playable_movies": has_playable_movies,
             "search_terms": search_terms,
         }
         total = cls._filtered_actors(**filter_kwargs).count()
