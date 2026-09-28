@@ -119,6 +119,30 @@ class VideoCollectionService:
         return VideoCollectionResource.from_collection(collection, item_count=0)
 
     @classmethod
+    def get_or_create_by_name(
+        cls, name: str, description: str | None = None
+    ) -> VideoCollection:
+        """按名称获取或创建合集；已存在的合集原样复用，不覆盖其名字与描述。"""
+        normalized = (name or "").strip()
+        if not normalized:
+            raise ValueError("合集名称不能为空")
+        if len(normalized) > 255:
+            raise ValueError("合集名称不能超过 255 个字符")
+        existing = VideoCollection.get_or_none(VideoCollection.name == normalized)
+        if existing is not None:
+            return existing
+        try:
+            return VideoCollection.create(
+                name=normalized, description=(description or "").strip()
+            )
+        except IntegrityError:
+            # 与并发创建竞争：唯一约束兜底后重查复用。
+            collection = VideoCollection.get_or_none(VideoCollection.name == normalized)
+            if collection is None:
+                raise
+            return collection
+
+    @classmethod
     def update_collection(
         cls, collection_id: int, payload: VideoCollectionUpdateRequest
     ) -> VideoCollectionResource:
@@ -313,6 +337,27 @@ class VideoCollectionService:
         )
         if deleted:
             cls._touch_collection(collection, utc_now_for_db())
+
+    @classmethod
+    def remove_items_by_video_ids(
+        cls, collection_id: int, video_ids: list[int]
+    ) -> None:
+        """按视频 id 批量移除合集成员；不是成员的静默跳过。"""
+        collection = cls._require_collection(collection_id)
+        normalized = list(dict.fromkeys(video_ids))
+        if not normalized:
+            return
+        with get_database().atomic():
+            deleted = (
+                VideoCollectionItem.delete()
+                .where(
+                    VideoCollectionItem.collection == collection,
+                    VideoCollectionItem.video_item.in_(normalized),
+                )
+                .execute()
+            )
+            if deleted:
+                cls._touch_collection(collection, utc_now_for_db())
 
     @classmethod
     def reorder_items(cls, collection_id: int, ordered_item_ids: list[int]) -> list[VideoCollectionItemResource]:

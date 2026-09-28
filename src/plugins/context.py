@@ -20,16 +20,23 @@ from src.plugins.types import (
     MoviePage,
     MovieQueryFilters,
     MovieSnapshot,
+    PluginBrowseEntry,
+    PluginBrowsePage,
     PluginCollection,
     PluginDownloadCandidate,
     PluginDownloadResult,
     PluginDownloadTarget,
+    PluginImportBatch,
+    PluginImportStatus,
+    PluginLibrary,
     PluginMediaPresence,
     PluginMediaSnapshot,
     PluginNotification,
     PluginSubscription,
     PluginSubscriptionPage,
     PluginSubscriptionStatusCounts,
+    PluginVideoPage,
+    PluginVideoSnapshot,
     SubtitleAsset,
     SubtitleContent,
     TagSnapshot,
@@ -319,6 +326,98 @@ class SubtitleApi:
         from src.service.catalog.movie_subtitle_service import MovieSubtitleService
 
         return MovieSubtitleService.read_subtitle_content(movie_id, subtitle_id)
+
+
+class VideoApi:
+    """``context.videos``：普通视频只读快照；写入只经 ``context.collections``。"""
+
+    @staticmethod
+    def _to_snapshots(videos) -> list[PluginVideoSnapshot]:
+        from peewee import fn
+
+        from src.common.media_formats import normalize_media_resolution
+        from src.model import Media, VideoCollectionItem
+        from src.service.videos.video_item_service import VideoItemService
+
+        if not videos:
+            return []
+        video_ids = [video.id for video in videos]
+        # 一页内批量聚合媒体统计、首条有效媒体与合集归属，避免逐个视频查询。
+        stats = VideoItemService._media_stats(video_ids)
+        first_media_ids = (
+            Media.select(fn.MIN(Media.id))
+            .where((Media.video_item.in_(video_ids)) & (Media.valid == True))
+            .group_by(Media.video_item)
+        )
+        first_medias = {
+            media.video_item_id: media
+            for media in Media.select().where(Media.id.in_(first_media_ids))
+        }
+        collection_ids: dict[int, list[int]] = {}
+        for link in (
+            VideoCollectionItem.select(
+                VideoCollectionItem.video_item, VideoCollectionItem.collection
+            )
+            .where(VideoCollectionItem.video_item.in_(video_ids))
+            .order_by(VideoCollectionItem.collection.asc())
+        ):
+            collection_ids.setdefault(link.video_item_id, []).append(link.collection_id)
+        snapshots = []
+        for video in videos:
+            media_count, has_playable = stats.get(video.id, (0, False))
+            first_media = first_medias.get(video.id)
+            snapshots.append(
+                PluginVideoSnapshot(
+                    video_id=video.id,
+                    title=video.title,
+                    summary=video.summary or "",
+                    release_date=video.release_date,
+                    media_count=media_count,
+                    has_playable=has_playable,
+                    duration_seconds=first_media.duration_seconds if first_media else 0,
+                    file_size_bytes=first_media.file_size_bytes if first_media else 0,
+                    resolution=(
+                        normalize_media_resolution(first_media.resolution)
+                        if first_media else None
+                    ),
+                    file_name=first_media.file_name if first_media else None,
+                    collection_ids=tuple(collection_ids.get(video.id, ())),
+                    created_at=video.created_at,
+                    updated_at=video.updated_at,
+                )
+            )
+        return snapshots
+
+    def get(self, video_id: int) -> PluginVideoSnapshot | None:
+        """按内部 id 读取视频快照；不存在返回 None。"""
+        from src.model import VideoItem
+
+        video = VideoItem.get_or_none(VideoItem.id == video_id)
+        if video is None:
+            return None
+        return self._to_snapshots([video])[0]
+
+    def list_page(self, *, after_id: int = 0, limit: int = 500) -> PluginVideoPage:
+        """按 VideoItem.id 游标分页遍历全部普通视频。"""
+        if after_id < 0:
+            raise ValueError("after_id 不能小于 0")
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit 必须在 1 到 1000 之间")
+
+        from src.model import VideoItem
+
+        rows = list(
+            VideoItem.select()
+            .where(VideoItem.id > after_id)
+            .order_by(VideoItem.id)
+            .limit(limit + 1)
+        )
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        return PluginVideoPage(
+            items=tuple(self._to_snapshots(page_rows)),
+            next_cursor=page_rows[-1].id if has_more else None,
+        )
 
 
 class MediaApi:
@@ -852,15 +951,28 @@ class NotificationApi:
 
 
 class CollectionApi:
-    """``context.collections``：插件按 key 管理自己创建的三类合集。"""
+    """``context.collections``：插件按 key 管理自己创建的三类合集，并可复用任意视频合集。"""
 
     def __init__(self, plugin_id: str):
         self._plugin_id = plugin_id
 
     @staticmethod
     def _to_collection(collection_type: str, collection) -> PluginCollection:
-        from src.model import MomentCollectionItem, PlaylistMovie
+        from src.model import MomentCollectionItem, PlaylistMovie, VideoCollectionItem
 
+        if collection_type == "video":
+            # 视频合集没有插件归属与 key：按名称复用，key 固定为空。
+            member_count = VideoCollectionItem.select().where(
+                VideoCollectionItem.collection == collection.id
+            ).count()
+            return PluginCollection(
+                collection_type="video",
+                collection_id=collection.id,
+                key="",
+                name=collection.name,
+                description=collection.description,
+                member_count=member_count,
+            )
         if collection_type == "playlist":
             member_count = PlaylistMovie.select().where(
                 PlaylistMovie.playlist == collection.id
@@ -964,6 +1076,244 @@ class CollectionApi:
             ),
         )
 
+    def ensure_video_collection(
+        self, name: str, description: str | None = None
+    ) -> PluginCollection:
+        """按名称获取或创建视频合集；已存在的同名合集原样复用，不覆盖其字段。"""
+        from src.service.videos.video_collection_service import (
+            VideoCollectionService,
+        )
+
+        return self._to_collection(
+            "video",
+            VideoCollectionService.get_or_create_by_name(name, description),
+        )
+
+    @staticmethod
+    def _resolve_video_collection(collection: int | str):
+        from src.api.exception.errors import ApiError
+        from src.model import VideoCollection
+
+        if isinstance(collection, bool) or not isinstance(collection, (int, str)):
+            raise TypeError("collection 必须是合集 id 或名称")
+        if isinstance(collection, int):
+            found = VideoCollection.get_or_none(VideoCollection.id == collection)
+        else:
+            name = collection.strip()
+            if not name:
+                raise ValueError("collection 名称不能为空")
+            found = VideoCollection.get_or_none(VideoCollection.name == name)
+        if found is None:
+            raise ApiError(
+                404,
+                "video_collection_not_found",
+                "视频合集不存在",
+                {"collection": collection},
+            )
+        return found
+
+    @staticmethod
+    def _normalize_video_ids(video_ids) -> list[int]:
+        normalized = list(dict.fromkeys(video_ids))
+        if not normalized:
+            raise ValueError("video_ids 不能为空")
+        for video_id in normalized:
+            if type(video_id) is not int or video_id <= 0:
+                raise ValueError("video_ids 必须只包含正整数")
+        return normalized
+
+    def add_video_items(
+        self, collection: int | str, video_ids
+    ) -> PluginCollection:
+        """把视频幂等加入指定合集；任一视频不存在时报 404。"""
+        from src.api.exception.errors import ApiError
+        from src.model import VideoItem
+        from src.service.videos.video_collection_service import (
+            VideoCollectionService,
+        )
+
+        target = self._resolve_video_collection(collection)
+        normalized = self._normalize_video_ids(video_ids)
+        existing = {
+            row.id
+            for row in VideoItem.select(VideoItem.id).where(
+                VideoItem.id.in_(normalized)
+            )
+        }
+        missing = [video_id for video_id in normalized if video_id not in existing]
+        if missing:
+            raise ApiError(
+                404,
+                "video_item_not_found",
+                "视频不存在",
+                {"video_ids": missing},
+            )
+        for video_id in normalized:
+            VideoCollectionService.add_item(target.id, video_id)
+        return self._to_collection("video", target)
+
+    def remove_video_items(
+        self, collection: int | str, video_ids
+    ) -> PluginCollection:
+        """把视频从合集移除；不存在的视频 id 静默跳过，幂等。"""
+        from src.service.videos.video_collection_service import (
+            VideoCollectionService,
+        )
+
+        target = self._resolve_video_collection(collection)
+        normalized = self._normalize_video_ids(video_ids)
+        VideoCollectionService.remove_items_by_video_ids(target.id, normalized)
+        return self._to_collection("video", target)
+
+
+class ImportApi:
+    """``context.imports``：浏览媒体库 provider 存储并按其发起导入。"""
+
+    def __init__(self, plugin_id: str):
+        self._plugin_id = plugin_id
+
+    @staticmethod
+    def _library(library: int | str):
+        from src.api.exception.errors import ApiError
+        from src.model import MediaLibrary
+
+        if isinstance(library, bool) or not isinstance(library, (int, str)):
+            raise TypeError("library 必须是媒体库 id 或名称")
+        if isinstance(library, int):
+            found = MediaLibrary.get_or_none(MediaLibrary.id == library)
+        else:
+            name = library.strip()
+            if not name:
+                raise ValueError("library 名称不能为空")
+            found = MediaLibrary.get_or_none(MediaLibrary.name == name)
+        if found is None:
+            raise ApiError(
+                404,
+                "media_library_not_found",
+                "媒体库不存在",
+                {"library": library},
+            )
+        return found
+
+    def list_libraries(self) -> tuple[PluginLibrary, ...]:
+        """列出全部媒体库身份；不包含 provider 配置与凭据。"""
+        from src.model import MediaLibrary
+
+        return tuple(
+            PluginLibrary(
+                library_id=row.id,
+                name=row.name,
+                provider_key=row.provider_key,
+            )
+            for row in MediaLibrary.select().order_by(MediaLibrary.id)
+        )
+
+    def browse(
+        self,
+        *,
+        library: int | str,
+        parent_ref: dict[str, Any] | None = None,
+        cursor: str | None = None,
+        limit: int = 50,
+    ) -> PluginBrowsePage:
+        """浏览目标媒体库的 provider 存储；返回的 source_ref 可直接用于 enqueue。"""
+        from src.schema.transfers.media_import import ImportBrowseRequest
+        from src.service.transfers.imports.provider_browse_service import (
+            ProviderBrowseService,
+        )
+
+        target = self._library(library)
+        response = ProviderBrowseService.browse(
+            ImportBrowseRequest(
+                library_id=target.id,
+                parent_ref=parent_ref,
+                cursor=cursor,
+                limit=limit,
+            )
+        )
+        return PluginBrowsePage(
+            entries=tuple(
+                PluginBrowseEntry(
+                    source_ref=dict(entry.source_ref),
+                    name=entry.name,
+                    entry_type=entry.entry_type,
+                    size_bytes=entry.size_bytes,
+                    modified_at=entry.modified_at,
+                    is_video=entry.is_video,
+                )
+                for entry in response.entries
+            ),
+            next_cursor=response.next_cursor,
+        )
+
+    def enqueue(
+        self,
+        *,
+        media_kind: str,
+        library: int | str,
+        source_ref: Mapping[str, Any],
+        collection_id: int | None = None,
+        source_disposition: str = "keep",
+    ) -> PluginImportBatch:
+        """按 provider 引用发起媒体库导入；导入复用宿主任务队列与媒体库互斥。"""
+        from src.schema.transfers.media_import import ImportRequest
+        from src.service.transfers.shared.import_task_service import ImportTaskService
+
+        target = self._library(library)
+        if not isinstance(source_ref, Mapping) or not source_ref:
+            raise ValueError("source_ref 必须是非空对象，且应来自 context.imports.browse")
+        request = ImportRequest(
+            media_kind=media_kind,
+            library_id=target.id,
+            source_ref=dict(source_ref),
+            source_disposition=source_disposition,
+            collection_id=collection_id,
+        )
+        accepted = ImportTaskService.enqueue(
+            request,
+            trigger_type="plugin",
+            plugin_id=self._plugin_id,
+        )
+        return PluginImportBatch(
+            task_run_id=accepted.task_run_id,
+            task_key=accepted.task_key,
+            state=accepted.state,
+        )
+
+    def get(self, task_run_id: int) -> PluginImportStatus | None:
+        """读取本插件发起的导入任务状态；不属于本插件或不存在时返回 None。"""
+        from src.model import BackgroundTaskRun
+        from src.service.transfers.shared.import_task_service import (
+            ImportTaskService,
+        )
+
+        task_run = BackgroundTaskRun.get_or_none(
+            (BackgroundTaskRun.id == task_run_id)
+            & (BackgroundTaskRun.task_key == ImportTaskService.TASK_KEY)
+        )
+        if task_run is None:
+            return None
+        params = task_run.params or {}
+        if params.get("plugin_id") != self._plugin_id:
+            return None
+        summary = task_run.result_summary or {}
+        return PluginImportStatus(
+            task_run_id=task_run.id,
+            state=task_run.state,
+            imported_count=int(summary.get("imported_count") or 0),
+            skipped_count=int(summary.get("skipped_count") or 0),
+            failed_count=int(summary.get("failed_count") or 0),
+            created_video_ids=tuple(
+                int(video_id) for video_id in summary.get("created_video_ids") or ()
+            ),
+            movie_ids=tuple(
+                int(item["id"])
+                for item in summary.get("new_playable_movies") or ()
+                if isinstance(item, dict) and item.get("id") is not None
+            ),
+            error_message=task_run.error_message,
+        )
+
 
 @dataclass(frozen=True, init=False)
 class PluginContext:
@@ -1006,6 +1356,16 @@ class PluginContext:
     def downloads(self) -> PluginDownloadService:
         """按目标下载器搜索并提交下载候选。"""
         return PluginDownloadService()
+
+    @property
+    def imports(self) -> ImportApi:
+        """浏览媒体库 provider 存储、发起导入并查询自己任务的结果。"""
+        return ImportApi(self.plugin_id)
+
+    @property
+    def videos(self) -> VideoApi:
+        """普通视频只读快照；合集成员管理见 ``context.collections``。"""
+        return VideoApi()
 
     @property
     def subscriptions(self) -> SubscriptionApi:

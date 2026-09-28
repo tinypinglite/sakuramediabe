@@ -17,7 +17,7 @@ from src.service.system.activity.filters import (
 from src.service.system.activity.notifications import NotificationService
 from src.service.system.activity.task_catalog import TASK_NAME_REGISTRY
 
-ALLOWED_TASK_TRIGGER_TYPES = {"scheduled", "manual", "startup", "internal"}
+ALLOWED_TASK_TRIGGER_TYPES = {"scheduled", "manual", "startup", "internal", "plugin"}
 ALLOWED_TASK_STATES = {"pending", "running", "completed", "failed"}
 ACTIVE_TASK_RUN_STATES = {"pending", "running"}
 TASK_RUN_SORT_FIELDS = {

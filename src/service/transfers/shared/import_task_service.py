@@ -49,11 +49,15 @@ class ImportTaskService:
         trigger_type: str = "manual",
         download_task_id: int | None = None,
         task_name: str | None = None,
+        plugin_id: str | None = None,
     ):
         request, library = cls._validated_request(request)
         mutex_key = library_import_mutex_key(library=library)
         params = request.model_dump()
         params["download_task_id"] = download_task_id
+        if plugin_id is not None:
+            # 归属标记只给插件门面回读自己的任务用，不参与导入语义。
+            params["plugin_id"] = plugin_id
         try:
             download_task = (
                 DownloadTask.get_by_id(download_task_id)

@@ -174,7 +174,7 @@ class PluginNotification:
 
 @dataclass(frozen=True)
 class PluginCollection:
-    """插件拥有的影片、时刻或片段合集。"""
+    """插件可见的影片、时刻、片段或视频合集；视频合集没有 key。"""
 
     collection_type: str
     collection_id: int
@@ -248,6 +248,85 @@ class PluginDownloadResult:
     created: bool
 
 
+@dataclass(frozen=True)
+class PluginLibrary:
+    """插件可见的媒体库身份；不暴露 provider 配置与凭据。"""
+
+    library_id: int
+    name: str
+    provider_key: str
+
+
+@dataclass(frozen=True)
+class PluginBrowseEntry:
+    """provider 存储中的一条浏览记录；source_ref 只由该媒体库的 provider 解释。"""
+
+    source_ref: Mapping[str, Any]
+    name: str
+    entry_type: str
+    size_bytes: int | None
+    modified_at: datetime | None
+    is_video: bool
+
+
+@dataclass(frozen=True)
+class PluginBrowsePage:
+    """按 provider 游标返回的一页浏览记录。"""
+
+    entries: tuple[PluginBrowseEntry, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True)
+class PluginImportBatch:
+    """插件发起的媒体库导入任务的受理结果。"""
+
+    task_run_id: int
+    task_key: str
+    state: str
+
+
+@dataclass(frozen=True)
+class PluginImportStatus:
+    """插件自己发起的媒体库导入任务的状态与结果摘要。"""
+
+    task_run_id: int
+    state: str
+    imported_count: int
+    skipped_count: int
+    failed_count: int
+    created_video_ids: tuple[int, ...]
+    movie_ids: tuple[int, ...]
+    error_message: str | None
+
+
+@dataclass(frozen=True)
+class PluginVideoSnapshot:
+    """普通视频条目的不可变快照；首条媒体字段取「第一条有效媒体」。"""
+
+    video_id: int
+    title: str
+    summary: str
+    release_date: datetime | None
+    media_count: int
+    has_playable: bool
+    duration_seconds: int
+    file_size_bytes: int
+    resolution: str | None
+    file_name: str | None
+    collection_ids: tuple[int, ...]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class PluginVideoPage:
+    """按 VideoItem.id 游标返回的一页视频快照。"""
+
+    items: tuple[PluginVideoSnapshot, ...]
+    next_cursor: int | None
+
+
 __all__ = [
     "ACTOR_SNAPSHOT_FIELDS",
     "MOVIE_SNAPSHOT_FIELDS",
@@ -260,16 +339,23 @@ __all__ = [
     "MoviePage",
     "MovieQueryFilters",
     "MovieSnapshot",
+    "PluginBrowseEntry",
+    "PluginBrowsePage",
     "PluginCollection",
     "PluginDownloadCandidate",
     "PluginDownloadResult",
     "PluginDownloadTarget",
+    "PluginImportBatch",
+    "PluginImportStatus",
+    "PluginLibrary",
     "PluginMediaPresence",
     "PluginMediaSnapshot",
     "PluginNotification",
     "PluginSubscription",
     "PluginSubscriptionPage",
     "PluginSubscriptionStatusCounts",
+    "PluginVideoPage",
+    "PluginVideoSnapshot",
     "SubtitleAsset",
     "SubtitleContent",
     "SubtitleImportResult",
