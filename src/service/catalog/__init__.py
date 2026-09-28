@@ -1,3 +1,4 @@
+from .actor_merge_service import ActorMergeService
 from .actor_service import ActorService
 from .catalog_import_service import CatalogImportService, ImageDownloadError
 from .movie_heat_service import MovieHeatService
@@ -12,6 +13,7 @@ from .subscribed_actor_movie_sync_service import SubscribedActorMovieSyncService
 from .tag_service import TagService
 
 __all__ = [
+    "ActorMergeService",
     "ActorService",
     "CatalogImportService",
     "ImageDownloadError",

@@ -21,7 +21,7 @@ class SubscribedActorMovieSyncService:
     def sync_subscribed_actor_movies(self, progress_callback=None) -> dict[str, int]:
         actors = list(
             Actor.select()
-            .where(Actor.is_subscribed == True)
+            .where(Actor.is_subscribed == True, Actor.merged_into.is_null())
             .order_by(Actor.id)
         )
         logger.info("Subscribed actor sync start actors={}", len(actors))
@@ -63,66 +63,75 @@ class SubscribedActorMovieSyncService:
 
     def _sync_actor(self, actor: Actor) -> dict[str, int]:
         mode = "full" if actor.subscribed_movies_full_synced_at is None else "incremental"
-        page = 1
+        merged_sources = list(
+            Actor.select(Actor.javdb_id, Actor.javdb_type)
+            .where(Actor.merged_into == actor.id)
+            .order_by(Actor.id)
+        )
+        targets = [(actor.javdb_id, actor.javdb_type)]
+        targets.extend((source.javdb_id, source.javdb_type) for source in merged_sources)
         imported_movies = 0
         stop_reason = "empty_page"
 
         logger.info(
-            "Subscribed actor sync actor start actor_id={} actor_javdb_id={} actor_name={} mode={}",
+            "Subscribed actor sync actor start actor_id={} actor_javdb_id={} actor_name={} mode={} javdb_id_count={}",
             actor.id,
             actor.javdb_id,
             actor.name,
             mode,
+            len(targets),
         )
 
-        while True:
-            movies = self.provider.get_actor_movies_by_javdb(
-                actor_javdb_id=actor.javdb_id,
-                actor_type=actor.javdb_type,
-                page=page,
-            )
-            if not movies:
-                break
-
-            should_stop = False
-            for movie_item in movies:
-                if mode == "incremental" and self._actor_movie_exists(actor.id, movie_item.javdb_id):
-                    stop_reason = "existing_actor_movie"
-                    should_stop = True
-                    logger.info(
-                        "Subscribed actor sync hit existing movie actor_id={} actor_javdb_id={} movie_javdb_id={}",
-                        actor.id,
-                        actor.javdb_id,
-                        movie_item.javdb_id,
-                    )
+        for actor_javdb_id, actor_type in targets:
+            page = 1
+            while True:
+                movies = self.provider.get_actor_movies_by_javdb(
+                    actor_javdb_id=actor_javdb_id,
+                    actor_type=actor_type,
+                    page=page,
+                )
+                if not movies:
                     break
 
-                try:
-                    # 单片导入失败按影片跳过，避免阻断该演员剩余影片和后续演员的同步。
-                    detail = self.provider.get_movie_by_javdb_id(movie_item.javdb_id)
-                    self.import_service.import_movie_if_missing(detail)
-                    imported_movies += 1
-                    logger.info(
-                        "Subscribed actor sync imported actor_id={} actor_javdb_id={} movie_javdb_id={} movie_number={}",
-                        actor.id,
-                        actor.javdb_id,
-                        detail.javdb_id,
-                        detail.movie_number,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Subscribed actor sync skipped failed movie actor_id={} actor_javdb_id={} movie_javdb_id={} detail={}",
-                        actor.id,
-                        actor.javdb_id,
-                        movie_item.javdb_id,
-                        exc,
-                    )
-                    continue
+                should_stop = False
+                for movie_item in movies:
+                    if mode == "incremental" and self._actor_movie_exists(actor.id, movie_item.javdb_id):
+                        stop_reason = "existing_actor_movie"
+                        should_stop = True
+                        logger.info(
+                            "Subscribed actor sync hit existing movie actor_id={} actor_javdb_id={} movie_javdb_id={}",
+                            actor.id,
+                            actor_javdb_id,
+                            movie_item.javdb_id,
+                        )
+                        break
 
-            if should_stop:
-                break
+                    try:
+                        # 单片导入失败按影片跳过，避免阻断该演员剩余影片和后续演员的同步。
+                        detail = self.provider.get_movie_by_javdb_id(movie_item.javdb_id)
+                        self.import_service.import_movie_if_missing(detail)
+                        imported_movies += 1
+                        logger.info(
+                            "Subscribed actor sync imported actor_id={} actor_javdb_id={} movie_javdb_id={} movie_number={}",
+                            actor.id,
+                            actor_javdb_id,
+                            detail.javdb_id,
+                            detail.movie_number,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Subscribed actor sync skipped failed movie actor_id={} actor_javdb_id={} movie_javdb_id={} detail={}",
+                            actor.id,
+                            actor_javdb_id,
+                            movie_item.javdb_id,
+                            exc,
+                        )
+                        continue
 
-            page += 1
+                if should_stop:
+                    break
+
+                page += 1
 
         synced_at = utc_now_for_db()
         actor.subscribed_movies_synced_at = synced_at

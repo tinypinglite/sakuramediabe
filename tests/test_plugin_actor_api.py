@@ -189,3 +189,19 @@ def test_cli_releases_actor_ownership(actors, monkeypatch):
     assert result.exit_code == 0, result.output
     assert actors.get(actor.id).owners == {}
     assert actors.get(actor.id).values["height_cm"] == 159
+
+
+def test_actor_api_resolves_merged_actor(actors, test_db):
+    from src.service.catalog.actor_merge_service import ActorMergeService
+
+    target = Actor.create(javdb_id="merged-target", name="新名")
+    source = Actor.create(javdb_id="merged-source", name="旧名")
+    ActorMergeService.merge_actors(target.id, [source.id])
+
+    snapshot = actors.get(source.id)
+    assert snapshot is not None
+    assert snapshot.actor_id == target.id
+    assert [item.actor_id for item in actors.list_page().items] == [target.id]
+
+    assert actors.patch(source.id, {"height_cm": 160}, snapshot.revision)
+    assert actors.get(target.id).values["height_cm"] == 160

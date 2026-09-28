@@ -768,3 +768,25 @@ def test_plugin_import_keeps_numeric_movies_separate(metadata_env, monkeypatch, 
     assert created and movie.id != existing.id
     assert movie.movie_number == number
     assert {row.movie_number for row in Movie.select()} == {number, other}
+
+
+def test_match_actors_ignores_merged_tombstones(test_db):
+    from src.model import get_database
+    from src.plugins.extensions.metadata import PluginMetadataActor
+
+    canonical = Actor.create(javdb_id="candidate-canonical", name="Canon")
+    tombstone = Actor.create(javdb_id="candidate-ghost", name="Ghost")
+    get_database().execute_sql(
+        "UPDATE actor SET merged_into_id = %s WHERE id = %s",
+        [canonical.id, tombstone.id],
+    )
+    provider = SimpleNamespace(search_actors=Mock(return_value=[]))
+
+    matched = MetadataSourceService.match_actors(
+        [PluginMetadataActor(name="Ghost")],
+        provider,
+        CatalogImportService(),
+    )
+
+    assert matched == []
+    provider.search_actors.assert_called_once_with("Ghost")

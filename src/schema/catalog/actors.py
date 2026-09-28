@@ -193,3 +193,14 @@ class ActorJavdbSearchRequest(SchemaModel):
         if not normalized:
             raise ValueError("actor_name cannot be blank")
         return normalized
+
+
+class ActorMergeRequest(SchemaModel):
+    source_actor_ids: list[int] = Field(min_length=1)
+
+    @field_validator("source_actor_ids")
+    @classmethod
+    def validate_source_actor_ids(cls, value: list[int]) -> list[int]:
+        if any(actor_id <= 0 for actor_id in value):
+            raise ValueError("source_actor_ids 必须是正整数")
+        return value

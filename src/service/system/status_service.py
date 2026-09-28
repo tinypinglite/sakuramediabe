@@ -102,10 +102,18 @@ class StatusService:
 
     @classmethod
     def get_status(cls) -> StatusResource:
-        female_total = Actor.select().where(Actor.gender == cls.FEMALE_GENDER).count()
+        female_total = (
+            Actor.select()
+            .where(Actor.gender == cls.FEMALE_GENDER, Actor.merged_into.is_null())
+            .count()
+        )
         female_subscribed = (
             Actor.select()
-            .where((Actor.gender == cls.FEMALE_GENDER) & (Actor.is_subscribed == True))
+            .where(
+                (Actor.gender == cls.FEMALE_GENDER)
+                & (Actor.is_subscribed == True)
+                & Actor.merged_into.is_null()
+            )
             .count()
         )
 

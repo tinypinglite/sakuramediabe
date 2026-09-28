@@ -22,6 +22,7 @@ from src.start.commands import main
 from src.start.migrations.runner import (
     ACTOR_GENDER_BACKFILL_MIGRATION_NAME,
     ACTOR_LOCAL_PROFILE_MIGRATION_NAME,
+    ACTOR_MERGED_INTO_MIGRATION_NAME,
     ACTOR_METADATA_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
     DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME,
@@ -120,6 +121,7 @@ def test_current_migrations_are_discoverable_in_order():
         MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
         DROP_MOVIE_EXTRA_MIGRATION_NAME,
         REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
+        ACTOR_MERGED_INTO_MIGRATION_NAME,
     ]
 
 
@@ -211,6 +213,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=MEDIA_POINT_PRESERVATION_MIGRATION_NAME, applied=True),
         MigrationExecution(name=DROP_MOVIE_EXTRA_MIGRATION_NAME, applied=True),
         MigrationExecution(name=REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=ACTOR_MERGED_INTO_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -231,6 +234,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
         DROP_MOVIE_EXTRA_MIGRATION_NAME,
         REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
+        ACTOR_MERGED_INTO_MIGRATION_NAME,
     ]
 
 
@@ -383,7 +387,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 17
+    assert summary.applied_count == 18
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

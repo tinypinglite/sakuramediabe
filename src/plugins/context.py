@@ -61,7 +61,7 @@ class ActorApi:
     def get(self, actor_id: int) -> ActorSnapshot | None:
         from src.model import Actor
 
-        actor = Actor.get_or_none(Actor.id == actor_id)
+        actor = Actor.resolve_canonical(actor_id)
         return self._to_snapshot(actor) if actor is not None else None
 
     def list_page(self, *, after_id: int = 0, limit: int = 500) -> ActorPage:
@@ -71,7 +71,12 @@ class ActorApi:
             raise ValueError("limit 必须在 1 到 1000 之间")
         from src.model import Actor
 
-        rows = list(Actor.select().where(Actor.id > after_id).order_by(Actor.id).limit(limit + 1))
+        rows = list(
+            Actor.select()
+            .where(Actor.id > after_id, Actor.merged_into.is_null())
+            .order_by(Actor.id)
+            .limit(limit + 1)
+        )
         page = rows[:limit]
         return ActorPage(
             items=tuple(self._to_snapshot(actor) for actor in page),
@@ -79,9 +84,15 @@ class ActorApi:
         )
 
     def patch(self, actor_id: int, fields: dict[str, Any], expected_revision: int) -> bool:
+        from src.model import Actor
         from src.service.catalog.actor_ownership_gateway import ActorOwnershipGateway
 
-        return ActorOwnershipGateway.patch_plugin(actor_id, self._plugin_id, fields, expected_revision)
+        canonical = Actor.resolve_canonical(actor_id)
+        if canonical is None:
+            return False
+        return ActorOwnershipGateway.patch_plugin(
+            canonical.id, self._plugin_id, fields, expected_revision
+        )
 
 
 class MovieApi:

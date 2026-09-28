@@ -17,6 +17,7 @@ from src.common.service_helpers import (
 )
 from src.common.text_search import split_search_terms
 from src.model import (
+    Actor,
     Image,
     Media,
     MediaLibrary,
@@ -276,8 +277,12 @@ class MediaService:
             # 两者不是同一标识符空间，须先转换成 movie_number 再筛 Media；
             # 用 IN 子查询而非 JOIN，避免多女优命中同一影片时主查询出现重复行，
             # 非 JAV 视频因 Media.movie 恒为 NULL 天然被排除，无需额外联动 kind。
+            # 子查询内联墓碑解析，避免每个 actor_id 一次额外查询。
+            canonical_actor_ids = Actor.select(
+                peewee.fn.COALESCE(Actor.merged_into, Actor.id)
+            ).where(Actor.id.in_(actor_ids))
             actor_movie_ids = MovieActor.select(MovieActor.movie).where(
-                MovieActor.actor.in_(actor_ids)
+                MovieActor.actor.in_(canonical_actor_ids)
             )
             movie_numbers = Movie.select(Movie.movie_number).where(
                 Movie.id.in_(actor_movie_ids)

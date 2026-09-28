@@ -9,13 +9,14 @@ from src.schema.catalog.actors import (
     ActorJavdbSearchRequest,
     ActorListGender,
     ActorListSubscriptionStatus,
+    ActorMergeRequest,
     ActorResource,
     ActorUpdateRequest,
     YearResource,
 )
 from src.schema.catalog.movies import TagResource
 from src.schema.common.pagination import PageResponse
-from src.service.catalog import ActorService
+from src.service.catalog import ActorMergeService, ActorService
 
 router = APIRouter(
     prefix="/actors",
@@ -108,6 +109,15 @@ def get_actor(actor_id: int):
 )
 def update_actor(actor_id: int, payload: ActorUpdateRequest):
     return ActorService.update_profile(actor_id, payload)
+
+
+@router.post(
+    "/{actor_id}/merge",
+    response_model=ActorDetailResource,
+    response_model_by_alias=False,
+)
+def merge_actor(actor_id: int, payload: ActorMergeRequest):
+    return ActorMergeService.merge_actors(actor_id, payload.source_actor_ids)
 
 
 @router.put(

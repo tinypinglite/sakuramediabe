@@ -136,7 +136,12 @@ class MovieService:
         if actor_id is None:
             filtered_query = query
         else:
-            movie_ids = MovieActor.select(MovieActor.movie).where(MovieActor.actor == actor_id)
+            canonical_actor_ids = Actor.select(
+                fn.COALESCE(Actor.merged_into, Actor.id)
+            ).where(Actor.id == actor_id)
+            movie_ids = MovieActor.select(MovieActor.movie).where(
+                MovieActor.actor.in_(canonical_actor_ids)
+            )
             filtered_query = query.where(Movie.id.in_(movie_ids))
 
         if tag_ids is not None:
@@ -222,7 +227,11 @@ class MovieService:
         return [
             actor.id
             for actor in Actor.select(Actor.id).where(
-                (Actor.name.contains(term)) | (Actor.alias_name.contains(term))
+                (
+                    (Actor.name.contains(term))
+                    | (Actor.alias_name.contains(term))
+                )
+                & Actor.merged_into.is_null()
             )
         ]
 

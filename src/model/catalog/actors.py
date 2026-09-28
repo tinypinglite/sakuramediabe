@@ -7,6 +7,34 @@ from src.model.base import BaseModel, CaseSensitiveCharField, JsonbField
 from src.model.catalog.images import Image
 from src.model.mixins import TimestampedMixin
 
+
+def split_actor_alias_name(alias_name: str) -> list[str]:
+    return [name.strip() for name in (alias_name or "").split("/") if name.strip()]
+
+
+def merge_actor_alias_name(
+    primary_name: str,
+    alias_names: list[str],
+    existing_alias_name: str,
+) -> str:
+    """按“主名 / 别名...”格式去重合并，主名始终排第一位。"""
+    merged_aliases: list[str] = []
+    seen_aliases: set[str] = set()
+    for candidate_name in [
+        primary_name,
+        *alias_names,
+        *split_actor_alias_name(existing_alias_name),
+    ]:
+        normalized_name = (candidate_name or "").strip()
+        if not normalized_name:
+            continue
+        dedupe_key = normalized_name.casefold()
+        if dedupe_key in seen_aliases:
+            continue
+        seen_aliases.add(dedupe_key)
+        merged_aliases.append(normalized_name)
+    return " / ".join(merged_aliases)
+
 ACTOR_FIELD_CODECS = {
     "gender": int,
     "birthday": date,
@@ -27,6 +55,7 @@ _GUARDED_FIELDS = PROTECTED_ACTOR_FIELDS | {
     "mutation_revision",
     "display_name_override",
     "profile_image_override",
+    "merged_into",
 }
 
 
@@ -34,6 +63,14 @@ class Actor(TimestampedMixin, BaseModel):
     javdb_id = CaseSensitiveCharField(max_length=64, unique=True, index=True, verbose_name="JavDB ID")
     name = peewee.CharField(index=True, verbose_name="演员名字")
     alias_name = peewee.TextField(default="", verbose_name="别名")
+    merged_into = peewee.ForeignKeyField(
+        "self",
+        null=True,
+        backref="merged_sources",
+        on_delete="SET NULL",
+        index=True,
+        verbose_name="合并至",
+    )
     profile_image = peewee.ForeignKeyField(
         Image,
         null=True,
@@ -96,6 +133,18 @@ class Actor(TimestampedMixin, BaseModel):
             cls._guard_fields(args[0])
         cls._guard_fields(kwargs)
         return super().update(*args, **kwargs)
+
+    @classmethod
+    def resolve_canonical(cls, actor_id: int) -> "Actor | None":
+        """沿墓碑指针解析到最终保留记录；未找到返回 None。"""
+        actor = cls.get_or_none(cls.id == actor_id)
+        seen_ids: set[int] = set()
+        while actor is not None and actor.merged_into_id is not None:
+            if actor.id in seen_ids:
+                break
+            seen_ids.add(actor.id)
+            actor = cls.get_or_none(cls.id == actor.merged_into_id)
+        return actor
 
     @property
     def age(self) -> int | None:

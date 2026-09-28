@@ -13,7 +13,8 @@ from src.metadata._providers.models import (
     JavdbMovieActorResource,
     JavdbMovieDetailResource,
 )
-from src.model import Actor, Movie
+from src.model import Actor, Movie, MovieActor
+from src.service.catalog.actor_merge_service import ActorMergeService
 from src.service.catalog.catalog_import_service import CatalogImportService
 
 
@@ -313,3 +314,56 @@ def test_update_movie_fields_rejects_fields_outside_whitelist(test_db):
 
     with pytest.raises(ValueError, match="fields 不能为空"):
         CatalogImportService().update_movie_fields(detail, ())
+
+
+def test_import_links_movie_to_canonical_when_actor_javdb_id_merged(test_db):
+    target = Actor.create(javdb_id="actor-canon", name="新名")
+    source = Actor.create(javdb_id="actor-old", name="旧名")
+    ActorMergeService.merge_actors(target.id, [source.id])
+    detail = _build_detail(
+        javdb_id="javdb-MERGED-001",
+        movie_number="MERGED-001",
+        title="JavDB标题",
+        summary="JavDB描述",
+        actors=[
+            JavdbMovieActorResource(
+                javdb_id="actor-old",
+                name="旧名",
+                alias_names=["旧别名"],
+            )
+        ],
+    )
+
+    movie, created = CatalogImportService().import_movie_if_missing(detail)
+
+    assert created is True
+    assert MovieActor.select().where(
+        MovieActor.movie == movie, MovieActor.actor == target
+    ).exists()
+    assert MovieActor.select().where(MovieActor.actor == source.id).count() == 0
+    refreshed = Actor.get_by_id(target.id)
+    assert refreshed.name == "新名"
+    assert "旧别名" in refreshed.alias_name
+
+
+def test_strict_refresh_keeps_canonical_identity_when_actor_javdb_id_merged(test_db):
+    target = Actor.create(javdb_id="actor-canon", name="新名")
+    source = Actor.create(javdb_id="actor-old", name="旧名")
+    ActorMergeService.merge_actors(target.id, [source.id])
+
+    refreshed = CatalogImportService()._refresh_actor_from_javdb_resource_strict(
+        actor_resource=JavdbMovieActorResource(
+            javdb_id="actor-old",
+            name="旧名",
+            alias_names=["旧别名"],
+        ),
+        profile_image_task=None,
+    )
+
+    actor, obsolete_paths = refreshed
+    assert actor.id == target.id
+    assert obsolete_paths == set()
+    updated = Actor.get_by_id(target.id)
+    assert updated.name == "新名"
+    assert "旧别名" in updated.alias_name
+    assert Actor.get_by_id(source.id).merged_into_id == target.id

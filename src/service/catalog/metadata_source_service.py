@@ -205,7 +205,9 @@ class MetadataSourceService:
                 condition |= fn.LOWER(Actor.alias_name).contains(name)
             candidates = {
                 item.javdb_id: item
-                for item in Actor.select().where(condition)
+                for item in Actor.select().where(
+                    condition, Actor.merged_into.is_null()
+                )
                 if names
                 & {
                     value.strip().casefold()
