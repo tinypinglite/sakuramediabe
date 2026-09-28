@@ -134,6 +134,34 @@ def test_list_actors_filters_profiles_and_sorts_nullable_values(
     ]
 
 
+def test_list_actors_returns_profile_fields_for_hover(
+    client, account_user, actors, monkeypatch
+):
+    young, _, _ = actors
+    monkeypatch.setattr(
+        "src.model.catalog.actors.utc_now_for_db",
+        lambda: datetime(2026, 9, 10),
+    )
+
+    response = client.get(
+        "/actors",
+        headers=_headers(client, account_user),
+        params={"query": "年轻"},
+    )
+
+    assert response.status_code == 200
+    item = response.json()["items"][0]
+    assert item["id"] == young.id
+    assert item["birthday"] == "2004-09-11"
+    assert item["age"] == 21
+    assert item["height_cm"] == 160
+    assert item["bust_cm"] == 82
+    assert item["waist_cm"] == 60
+    assert item["hips_cm"] == 90
+    assert item["cup"] == "B"
+    assert item["movie_count"] == 0
+
+
 def test_actor_filter_options_follow_scope_and_report_populated_values(
     client, account_user, actors
 ):

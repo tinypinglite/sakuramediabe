@@ -159,7 +159,16 @@ def test_detail_exposes_profile_and_computes_age(actors, monkeypatch, client, ac
     assert response.json()["age"] == 33
     listing = client.get("/actors", headers=headers)
     assert listing.status_code == 200
-    assert "birthday" not in listing.json()["items"][0]
+    item = listing.json()["items"][0]
+    assert item["birthday"] == "1993-08-16"
+    assert item["age"] == 33
+    assert item["height_cm"] == 159
+    assert item["bust_cm"] == 84
+    assert item["waist_cm"] == 58
+    assert item["hips_cm"] == 88
+    assert item["cup"] == "F"
+    assert "birthplace" not in item
+    assert "blood_type" not in item
 
 
 def test_actor_migration_preserves_rows_and_is_idempotent(clean_db):

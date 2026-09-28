@@ -50,6 +50,13 @@ class ActorResource(SchemaModel):
     is_subscribed: bool
     subscribed_at: datetime | None = None
     movie_count: int = 0
+    age: int | None = None
+    birthday: date | None = None
+    height_cm: int | None = None
+    bust_cm: int | None = None
+    waist_cm: int | None = None
+    hips_cm: int | None = None
+    cup: str | None = None
 
     @classmethod
     def from_actor(cls, actor):
@@ -58,13 +65,6 @@ class ActorResource(SchemaModel):
 
 class ActorDetailResource(ActorResource):
     gender: int = 0
-    birthday: date | None = None
-    age: int | None = None
-    height_cm: int | None = None
-    bust_cm: int | None = None
-    waist_cm: int | None = None
-    hips_cm: int | None = None
-    cup: str | None = None
     birthplace: str | None = None
     blood_type: str | None = None
     display_name_override: str | None = None
