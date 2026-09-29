@@ -14,6 +14,9 @@ MOVIE_SUBTITLES_SUBDIR = "subtitles"
 # 或与目录同级同名、不含压缩的 thumbnails.zip（条目名 = 文件名）。
 MEDIA_THUMBNAILS_SUBDIR = "thumbnails"
 MEDIA_THUMBNAILS_PACK_SUFFIX = ".zip"
+# 影片图片（封面/薄封面/剧情图）平铺在 movies/<shard>/<番号>/ 下，
+# 打包形态是同目录、不含压缩的 assets.zip（条目名 = 文件名）。
+MOVIE_ASSETS_PACK_NAME = "assets.zip"
 
 # 分片目录名取 sha1 十六进制前 2 位，固定 256 片；顶层 movies/ 的条目数从番号数降到常数 256。
 MOVIE_ASSET_SHARD_HEX_LENGTH = 2
@@ -67,19 +70,25 @@ def movie_subtitle_dir(movie_number: str) -> Path:
     return movie_asset_dir(movie_number) / MOVIE_SUBTITLES_SUBDIR
 
 
-def thumbnail_pack_relative_path(relative_path: str) -> PurePosixPath | None:
-    """时间轴缩略图对应包的库内相对路径；非缩略图路径返回 None。
+def image_pack_relative_path(relative_path: str) -> PurePosixPath | None:
+    """图片对应的包相对路径；非可打包路径返回 None。
 
-    约定：``<...>/media/<media_id>/thumbnails/<name>.webp`` 的包与目录同级同名，
-    即 ``<...>/media/<media_id>/thumbnails.zip``，条目名就是 ``<name>.webp``。
+    约定一：``<...>/media/<media_id>/thumbnails/<name>`` 的包与目录同级同名，
+    即 ``<...>/media/<media_id>/thumbnails.zip``，条目名就是 ``<name>``。
+    约定二：``movies/<shard>/<番号>/<name>``（目录深度固定 4）的包是同目录
+    ``assets.zip``；更深的子目录（如 subtitles/、media/.../thumbnails/）不匹配。
     只负责路径推导，不检查包是否存在。
     """
     normalized = PurePosixPath((relative_path or "").strip().replace("\\", "/"))
-    if not normalized.name or normalized.parent.name != MEDIA_THUMBNAILS_SUBDIR:
+    if not normalized.name:
         return None
-    return normalized.parent.with_name(
-        f"{normalized.parent.name}{MEDIA_THUMBNAILS_PACK_SUFFIX}"
-    )
+    if normalized.parent.name == MEDIA_THUMBNAILS_SUBDIR:
+        return normalized.parent.with_name(
+            f"{normalized.parent.name}{MEDIA_THUMBNAILS_PACK_SUFFIX}"
+        )
+    if len(normalized.parts) == 4 and normalized.parts[0] == MOVIE_ASSETS_SUBDIR:
+        return normalized.parent / MOVIE_ASSETS_PACK_NAME
+    return None
 
 
 # 统一字幕命名：``<番号>-<N>.<ext>``，N 从 1 递增；同一部影片内连续但不严格无洞。

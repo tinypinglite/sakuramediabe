@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from src.common.image_store import read_image_bytes, thumbnail_pack_path, write_pack
+from src.common.image_store import image_pack_path, read_image_bytes, write_pack
 from src.config.config import settings
 
 
@@ -16,12 +16,13 @@ def _use_image_root(monkeypatch, tmp_path: Path) -> Path:
 
 def test_read_image_bytes_reads_plain_file(monkeypatch, tmp_path):
     image_root = _use_image_root(monkeypatch, tmp_path)
-    target = image_root / "movies" / "aa" / "AAA-001" / "cover.jpg"
+    relative_path = "videos/302/cover/0.webp"
+    target = image_root / relative_path
     target.parent.mkdir(parents=True)
     target.write_bytes(b"cover-bytes")
 
-    assert thumbnail_pack_path("movies/aa/AAA-001/cover.jpg") is None
-    assert read_image_bytes("movies/aa/AAA-001/cover.jpg") == b"cover-bytes"
+    assert image_pack_path(relative_path) is None
+    assert read_image_bytes(relative_path) == b"cover-bytes"
 
 
 def test_read_image_bytes_prefers_pack_entry(monkeypatch, tmp_path):
@@ -34,7 +35,7 @@ def test_read_image_bytes_prefers_pack_entry(monkeypatch, tmp_path):
     with zipfile.ZipFile(pack_path, "w", zipfile.ZIP_STORED) as archive:
         archive.writestr("10.webp", b"packed-bytes")
 
-    assert thumbnail_pack_path(relative_path) == pack_path
+    assert image_pack_path(relative_path) == pack_path
     assert read_image_bytes(relative_path) == b"packed-bytes"
 
 
@@ -73,6 +74,25 @@ def test_read_image_bytes_corrupt_pack_falls_back_to_file(monkeypatch, tmp_path)
     (thumbnails_dir.with_name("thumbnails.zip")).write_bytes(b"not-a-zip")
 
     assert read_image_bytes(relative_path) == b"legacy-bytes"
+
+
+def test_movie_assets_pack_resolution_and_read(monkeypatch, tmp_path):
+    image_root = _use_image_root(monkeypatch, tmp_path)
+    relative_path = "movies/ab/AAA-001/cover.jpg"
+    movie_dir = image_root / "movies" / "ab" / "AAA-001"
+    movie_dir.mkdir(parents=True)
+    pack_path = movie_dir / "assets.zip"
+    with zipfile.ZipFile(pack_path, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("cover.jpg", b"packed-cover")
+
+    assert image_pack_path(relative_path) == pack_path
+    assert read_image_bytes(relative_path) == b"packed-cover"
+
+
+def test_subtitle_paths_have_no_pack(monkeypatch, tmp_path):
+    _use_image_root(monkeypatch, tmp_path)
+
+    assert image_pack_path("movies/ab/AAA-001/subtitles/AAA-001-1.srt") is None
 
 
 def test_write_pack_stores_entries_without_compression(tmp_path):

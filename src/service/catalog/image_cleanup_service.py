@@ -1,8 +1,8 @@
 """Image 记录与物理文件的清理公共工具。
 
 catalog 目录导入和媒体硬删除都需要这份逻辑，抽出来避免重复实现。
-缩略图可能存放在 ``thumbnails.zip`` 包中：包内条目按数据库引用决定保留或
-重建；未打包的旧布局维持逐个文件删除。
+缩略图可能存放在 ``thumbnails.zip``、影片图片可能存放在 ``assets.zip``：
+包内条目按数据库引用决定保留或重建；未打包的旧布局维持逐个文件删除。
 """
 
 import os
@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from loguru import logger
 
 from src.common.image_store import write_pack
-from src.common.media_paths import thumbnail_pack_relative_path
+from src.common.media_paths import MOVIE_ASSETS_PACK_NAME, image_pack_relative_path
 from src.config.config import settings
 from src.model import (
     Actor,
@@ -25,6 +25,7 @@ from src.model import (
     VideoItem,
     get_database,
 )
+from src.service.catalog.movie_asset_pack_service import MovieAssetPackService
 
 
 class ImageCleanupService:
@@ -81,14 +82,14 @@ class ImageCleanupService:
         for relative_path in sorted(relative_paths):
             if not relative_path:
                 continue
-            pack_relative = thumbnail_pack_relative_path(relative_path)
+            pack_relative = image_pack_relative_path(relative_path)
             if pack_relative is None:
                 cls._unlink_image_file(image_root / relative_path)
                 continue
             pack_members.setdefault(pack_relative, []).append(relative_path)
 
         for pack_relative, members in pack_members.items():
-            cls._delete_or_rebuild_thumbnail_pack(image_root, pack_relative, members)
+            cls._delete_or_rebuild_pack(image_root, pack_relative, members)
 
     @staticmethod
     def _unlink_image_file(target_path: Path) -> None:
@@ -98,7 +99,7 @@ class ImageCleanupService:
             return
 
     @classmethod
-    def _delete_or_rebuild_thumbnail_pack(
+    def _delete_or_rebuild_pack(
         cls, image_root: Path, pack_relative: PurePosixPath, members: list[str]
     ) -> None:
         pack_path = image_root / pack_relative
@@ -106,6 +107,11 @@ class ImageCleanupService:
             # 尚未打包的旧布局：维持逐个文件删除。
             for relative_path in members:
                 cls._unlink_image_file(image_root / relative_path)
+            return
+
+        if pack_relative.name == MOVIE_ASSETS_PACK_NAME:
+            # 影片图片包：以数据库活跃集为准重建；活跃集为空时由服务删除包。
+            MovieAssetPackService.rebuild_movie_asset_pack(pack_relative.parent)
             return
 
         thumbnails_prefix = f"{pack_relative.parent / pack_relative.stem}/"

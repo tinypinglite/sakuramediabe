@@ -126,14 +126,10 @@ def _prepare_images(tmp_path: Path, *, thumbnail_count: int, plot_count: int):
 
 
 def _patch_image_files(monkeypatch, paths: dict[str, Path]) -> None:
-    # 缩略图走 image_store 统一入口，剧情图仍走路径解析；两者都指向测试临时文件。
+    # 缩略图与剧情图现在都走 image_store 统一入口，指向测试临时文件。
     monkeypatch.setattr(
         "src.service.discovery.image_search_index_service.read_image_bytes",
         lambda origin: paths[origin].read_bytes(),
-    )
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_index_service.resolve_image_file_path",
-        lambda origin: paths[origin],
     )
 
 

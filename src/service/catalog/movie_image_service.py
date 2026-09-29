@@ -16,6 +16,7 @@ from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -26,6 +27,7 @@ from peewee import EXCLUDED
 from PIL import Image as PillowImage
 from PIL import UnidentifiedImageError
 
+from src.common.image_store import read_image_bytes
 from src.common.media_paths import (
     media_image_root_path,
     movie_asset_relative_dir,
@@ -144,37 +146,48 @@ class MovieImageService:
         return left_point, right_point
 
     @classmethod
-    def _split_image(cls, image_path: Path, output_image_path: Path, center_range: int = 100) -> bool:
+    def _split_image(cls, image_bytes: bytes, output_image_path: Path, center_range: int = 100) -> bool:
         try:
             import cv2
+            import numpy as np
         except ImportError:
-            logger.warning("Thin cover split skipped because cv2 is unavailable source={}", str(image_path))
+            logger.warning(
+                "Thin cover split skipped because cv2 is unavailable output={}",
+                str(output_image_path),
+            )
             return False
 
-        image = cv2.imread(str(image_path))
+        image = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)
         if image is None:
-            logger.warning("Thin cover split skipped because cover image cannot be read source={}", str(image_path))
+            logger.warning(
+                "Thin cover split skipped because cover image cannot be decoded output={}",
+                str(output_image_path),
+            )
             return False
         try:
             left_point, right_point = cls._detect_split_points(image, center_range=center_range)
         except Exception as exc:
-            logger.warning("Thin cover split point detection failed source={} detail={}", str(image_path), exc)
+            logger.warning(
+                "Thin cover split point detection failed output={} detail={}",
+                str(output_image_path),
+                exc,
+            )
             return False
         if left_point == -1 and right_point == -1:
-            logger.info("Thin cover split points not found source={}", str(image_path))
+            logger.info("Thin cover split points not found output={}", str(output_image_path))
             return False
         output_image_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_image_path), image[:, right_point:])
         return True
 
     @staticmethod
-    def _is_portrait_image(image_path: Path) -> bool:
+    def _is_portrait_image(image_bytes: bytes) -> bool:
         try:
-            with PillowImage.open(image_path) as image:
+            with PillowImage.open(BytesIO(image_bytes)) as image:
                 width, height = image.size
                 return width > 0 and height > width
-        except (FileNotFoundError, UnidentifiedImageError, OSError) as exc:
-            logger.warning("Thin cover portrait check failed image_path={} detail={}", str(image_path), exc)
+        except (UnidentifiedImageError, OSError) as exc:
+            logger.warning("Thin cover portrait check failed detail={}", exc)
             return False
 
     def _build_generated_thin_cover_task(self, movie_number: str, extension: str) -> ImagePersistTask:
@@ -194,11 +207,11 @@ class MovieImageService:
     def _generate_thin_cover_task_from_cover(
         self,
         movie_number: str,
-        cover_path: Path,
+        cover_bytes: bytes,
         extension: str,
     ) -> ImagePersistTask | None:
         thin_cover_task = self._build_generated_thin_cover_task(movie_number, extension)
-        if self._split_image(cover_path, thin_cover_task.absolute_path):
+        if self._split_image(cover_bytes, thin_cover_task.absolute_path):
             return thin_cover_task
         try:
             thin_cover_task.absolute_path.unlink()
@@ -209,7 +222,7 @@ class MovieImageService:
     def _generate_prepared_thin_cover_from_cover(
         self,
         movie_number: str,
-        cover_path: Path,
+        cover_bytes: bytes,
         extension: str,
         temp_root: Path,
     ) -> tuple[ImagePersistTask, PreparedImageFile] | None:
@@ -219,7 +232,7 @@ class MovieImageService:
             temp_path=temp_root / thin_cover_task.relative_path,
             temp_root=temp_root,
         )
-        if self._split_image(cover_path, prepared_file.temp_path):
+        if self._split_image(cover_bytes, prepared_file.temp_path):
             return thin_cover_task, prepared_file
         try:
             prepared_file.temp_path.unlink()
@@ -227,10 +240,10 @@ class MovieImageService:
             pass
         return None
 
-    def _select_portrait_plot_index(self, plot_items: list[tuple[int, Path]]) -> int | None:
+    def _select_portrait_plot_index(self, plot_items: list[tuple[int, bytes]]) -> int | None:
         # 业务约定只允许前两张剧情图参与竖封面回退，后续剧情图不再参与判定。
-        for plot_index, plot_path in plot_items[:2]:
-            if self._is_portrait_image(plot_path):
+        for plot_index, plot_bytes in plot_items[:2]:
+            if self._is_portrait_image(plot_bytes):
                 return plot_index
         return None
 
@@ -243,14 +256,14 @@ class MovieImageService:
         if cover_task is not None and cover_task.absolute_path.exists():
             thin_cover_task = self._generate_thin_cover_task_from_cover(
                 movie_number,
-                cover_task.absolute_path,
+                cover_task.absolute_path.read_bytes(),
                 Path(cover_task.relative_path).suffix,
             )
             if thin_cover_task is not None:
                 return ThinCoverResolution(generated_task=thin_cover_task)
         selected_plot_index = self._select_portrait_plot_index(
             [
-                (int(plot_task.plot_index), plot_task.absolute_path)
+                (int(plot_task.plot_index), plot_task.absolute_path.read_bytes())
                 for plot_task in plot_tasks
                 if plot_task.plot_index is not None and plot_task.absolute_path.exists()
             ]
@@ -270,7 +283,7 @@ class MovieImageService:
             if prepared_cover is not None:
                 generated = self._generate_prepared_thin_cover_from_cover(
                     movie_number,
-                    prepared_cover.temp_path,
+                    prepared_cover.temp_path.read_bytes(),
                     Path(cover_task.relative_path).suffix,
                     prepared_cover.temp_root,
                 )
@@ -282,7 +295,7 @@ class MovieImageService:
                     )
         selected_plot_index = self._select_portrait_plot_index(
             [
-                (int(plot_task.plot_index), prepared_by_relative_path[plot_task.relative_path].temp_path)
+                (int(plot_task.plot_index), prepared_by_relative_path[plot_task.relative_path].temp_path.read_bytes())
                 for plot_task in plot_tasks
                 if plot_task.plot_index is not None and plot_task.relative_path in prepared_by_relative_path
             ]
@@ -296,21 +309,27 @@ class MovieImageService:
     ) -> ThinCoverResolution:
         cover_image = movie.cover_image
         if cover_image is not None:
-            cover_path = media_image_root_path() / cover_image.origin
-            thin_cover_task = self._generate_thin_cover_task_from_cover(
-                movie.movie_number,
-                cover_path,
-                Path(cover_image.origin).suffix,
-            )
-            if thin_cover_task is not None:
-                return ThinCoverResolution(generated_task=thin_cover_task)
-        selected_plot_index = self._select_portrait_plot_index(
-            [
-                (plot_index, media_image_root_path() / plot_link.image.origin)
-                for plot_index, plot_link in enumerate(plot_links)
-            ]
+            try:
+                cover_bytes = read_image_bytes(cover_image.origin)
+            except FileNotFoundError:
+                cover_bytes = None
+            if cover_bytes is not None:
+                thin_cover_task = self._generate_thin_cover_task_from_cover(
+                    movie.movie_number,
+                    cover_bytes,
+                    Path(cover_image.origin).suffix,
+                )
+                if thin_cover_task is not None:
+                    return ThinCoverResolution(generated_task=thin_cover_task)
+        plot_items: list[tuple[int, bytes]] = []
+        for plot_index, plot_link in enumerate(plot_links):
+            try:
+                plot_items.append((plot_index, read_image_bytes(plot_link.image.origin)))
+            except FileNotFoundError:
+                continue
+        return ThinCoverResolution(
+            selected_plot_index=self._select_portrait_plot_index(plot_items)
         )
-        return ThinCoverResolution(selected_plot_index=selected_plot_index)
 
     def resolve_persisted_thin_cover_image(
         self,

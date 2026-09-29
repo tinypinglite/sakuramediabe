@@ -17,6 +17,7 @@ from loguru import logger
 from peewee import IntegrityError
 
 from src.common import normalize_movie_number
+from src.common.media_paths import movie_asset_relative_dir, normalize_asset_dir_name
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import find_movie_by_number
 from src.metadata._providers.models import (
@@ -41,6 +42,7 @@ from src.service.catalog.actor_ownership_gateway import (
     JAVDB_ACTOR_FIELD_OWNER,
     ActorOwnershipGateway,
 )
+from src.service.catalog.movie_asset_pack_service import MovieAssetPackService
 from src.service.catalog.movie_heat_service import MovieHeatService
 from src.service.catalog.movie_image_service import (
     ImageDownloadError,
@@ -80,6 +82,11 @@ class CatalogImportService:
     @staticmethod
     def _resolve_movie_series(series_name: str | None) -> MovieSeries | None:
         return Movie.resolve_series(series_name)
+
+    @staticmethod
+    def _movie_asset_dir(movie: Movie):
+        """影片图片目录（movies/<shard>/<番号>）的相对路径。"""
+        return movie_asset_relative_dir(normalize_asset_dir_name(movie.movie_number))
 
     def _apply_thin_cover_resolution(
         self,
@@ -276,6 +283,7 @@ class CatalogImportService:
             )
 
         self.image_service.delete_obsolete_image_files(obsolete_paths)
+        MovieAssetPackService.rebuild_movie_asset_pack(self._movie_asset_dir(movie))
         MovieHeatService.update_single_movie_heat(movie.id)
         logger.info(
             "Catalog import finished movie_id={} movie_number={}",
@@ -340,6 +348,7 @@ class CatalogImportService:
                 if existing is None:
                     raise
                 return existing, False
+        MovieAssetPackService.rebuild_movie_asset_pack(self._movie_asset_dir(movie))
         return movie, True
 
 
@@ -453,6 +462,7 @@ class CatalogImportService:
             logger.warning(
                 "补录完成，旧图片或索引清理失败 movie={} detail={}", movie.id, exc
             )
+        MovieAssetPackService.rebuild_movie_asset_pack(self._movie_asset_dir(movie))
         return Movie.get_by_id(movie.id)
 
     # ③ 允许更新的字段白名单 -> detail 取值器；heat 是推导列不允许直接写，
@@ -598,8 +608,10 @@ class CatalogImportService:
                         len(old_plot_image_ids),
                         exc,
                     )
+            MovieAssetPackService.remove_movie_asset_pack(self._movie_asset_dir(persisted_movie))
             self.image_service.finalize_prepared_image_files(prepared_files)
             self.image_service.delete_obsolete_image_files(obsolete_paths - new_relative_paths)
+            MovieAssetPackService.rebuild_movie_asset_pack(self._movie_asset_dir(persisted_movie))
             finalized = True
             logger.info(
                 "Catalog strict metadata refresh finished movie_id={} movie_number={}",
@@ -861,6 +873,7 @@ class CatalogImportService:
                 )
             )
         self.image_service.delete_obsolete_image_files(obsolete_paths)
+        MovieAssetPackService.rebuild_movie_asset_pack(self._movie_asset_dir(movie))
         refreshed_movie = Movie.get_by_id(movie.id)
         return refreshed_movie.thin_cover_image_id is not None
 

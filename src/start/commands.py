@@ -16,9 +16,6 @@ from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import init_database
 from src.plugins.manager import PluginManager
 from src.service.catalog import MovieThinCoverBackfillService
-from src.service.playback.media_thumbnail_pack_backfill_service import (
-    MediaThumbnailPackBackfillService,
-)
 from src.service.system import TaskRunConflictError
 from src.service.system.plugin_removal_service import PluginRemovalService
 from src.start.initdb import create_tables
@@ -628,28 +625,6 @@ def backfill_movie_thin_cover_images():
         f"updated_movies={stats['updated_movies']} "
         f"skipped_movies={stats['skipped_movies']} "
         f"failed_movies={stats['failed_movies']}"
-    )
-
-
-@main.command(name="unpack-media-thumbnail-packs")
-@click.option("--media-id", type=int, default=None, help="只还原指定媒体；缺省还原全部")
-def unpack_media_thumbnail_packs(media_id: int | None):
-    logger.info("CLI unpack-media-thumbnail-packs start media_id={}", media_id)
-    _ensure_database_ready()
-    stats = MediaThumbnailPackBackfillService.unpack(media_id=media_id)
-    logger.info(
-        "CLI unpack-media-thumbnail-packs finished candidate_media={} unpacked_media={} skipped_busy={} failed_media={}",
-        stats["candidate_media"],
-        stats["unpacked_media"],
-        stats["skipped_busy"],
-        stats["failed_media"],
-    )
-    click.echo(
-        "media thumbnail packs unpack finished: "
-        f"candidate_media={stats['candidate_media']} "
-        f"unpacked_media={stats['unpacked_media']} "
-        f"skipped_busy={stats['skipped_busy']} "
-        f"failed_media={stats['failed_media']}"
     )
 
 

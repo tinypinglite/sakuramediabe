@@ -112,19 +112,3 @@ def test_backfill_keeps_legacy_files_when_pack_incomplete(
     assert stats["incomplete_media"] == 1
     assert (thumbnails_dir / "10.webp").is_file()
     assert (thumbnails_dir / "20.webp").is_file()
-
-
-def test_unpack_restores_files_and_removes_pack(test_db, monkeypatch, tmp_path):
-    media, thumbnails_dir, _ = _prepare_media(tmp_path, monkeypatch)
-    reporter, _ = _reporter()
-    MediaThumbnailPackBackfillService.backfill(reporter=reporter)
-    pack_path = thumbnails_dir.with_name("thumbnails.zip")
-    assert pack_path.is_file()
-
-    stats = MediaThumbnailPackBackfillService.unpack(media_id=media.id)
-
-    assert stats["unpacked_media"] == 1
-    assert stats["failed_media"] == 0
-    assert not pack_path.exists()
-    assert (thumbnails_dir / "10.webp").read_bytes() == b"thumb-10"
-    assert (thumbnails_dir / "20.webp").read_bytes() == b"thumb-20"

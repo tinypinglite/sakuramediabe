@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse, Response
 
 from src.api.routers._utils import require_existing_file, require_signed_params
 from src.common import resolve_image_file_path, verify_image_signature
-from src.common.image_store import read_image_bytes, thumbnail_pack_path
+from src.common.image_store import image_pack_path, read_image_bytes
 
 router = APIRouter(prefix="/files/images", tags=["files"])
 
@@ -23,7 +23,7 @@ def get_image_file(
     require_signed_params(expires, signature)
 
     normalized_path = verify_image_signature(file_path, expires, signature)
-    pack_path = thumbnail_pack_path(normalized_path)
+    pack_path = image_pack_path(normalized_path)
     if pack_path is not None and pack_path.is_file():
         # 缩略图已打包：直接从包内取条目；条目缺失且单文件也不在时按 404 处理。
         try:

@@ -13,12 +13,12 @@ from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 from src.common.file_signatures import resolve_image_file_path
-from src.common.media_paths import media_image_root_path, thumbnail_pack_relative_path
+from src.common.media_paths import image_pack_relative_path, media_image_root_path
 
 
-def thumbnail_pack_path(relative_path: str) -> Path | None:
-    """图片对应的缩略图包绝对路径；非缩略图路径返回 None（不检查是否存在）。"""
-    pack_relative = thumbnail_pack_relative_path(relative_path)
+def image_pack_path(relative_path: str) -> Path | None:
+    """图片对应的包绝对路径；非可打包路径返回 None（不检查是否存在）。"""
+    pack_relative = image_pack_relative_path(relative_path)
     if pack_relative is None:
         return None
     return media_image_root_path() / pack_relative
@@ -26,7 +26,7 @@ def thumbnail_pack_path(relative_path: str) -> Path | None:
 
 def read_image_bytes(relative_path: str) -> bytes:
     """读取图片字节：包条目优先，缺失时回退单文件，均不存在抛 FileNotFoundError。"""
-    pack_path = thumbnail_pack_path(relative_path)
+    pack_path = image_pack_path(relative_path)
     if pack_path is not None and pack_path.is_file():
         entry_name = PurePosixPath(relative_path.replace("\\", "/")).name
         try:

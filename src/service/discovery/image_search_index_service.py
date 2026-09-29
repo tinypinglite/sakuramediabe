@@ -3,7 +3,6 @@ from collections.abc import Sequence
 
 from loguru import logger
 
-from src.common import resolve_image_file_path
 from src.common.image_store import read_image_bytes
 from src.common.service_helpers import emit_progress
 from src.config.config import settings
@@ -365,7 +364,7 @@ class ImageSearchIndexService:
                 try:
                     payloads.append(
                         self._normalize_image_payload(
-                            resolve_image_file_path(plot_image.image.origin).read_bytes()
+                            read_image_bytes(plot_image.image.origin)
                         )
                     )
                 except FileNotFoundError:

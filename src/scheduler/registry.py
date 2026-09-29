@@ -17,6 +17,9 @@ from src.service.catalog import (
     SubscribedActorMovieSyncService,
 )
 from src.service.catalog.metadata_source_service import MetadataSourceService
+from src.service.catalog.movie_asset_pack_backfill_service import (
+    MovieAssetPackBackfillService,
+)
 from src.service.catalog.movie_javdb_backfill_service import MovieJavdbBackfillService
 from src.service.catalog.movie_subscription_search_state_service import (
     MovieSubscriptionSearchStateService,
@@ -167,6 +170,16 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="媒体缩略图打包回填（存量单文件 → thumbnails.zip）",
         manual_only=True,
         handler=lambda reporter, _params: MediaThumbnailPackBackfillService.backfill(
+            reporter=reporter,
+        ),
+    ),
+    JobDefinition(
+        task_key=MovieAssetPackBackfillService.TASK_KEY,
+        log_name="movie-asset-pack-backfill",
+        cli_name="backfill-movie-asset-packs",
+        cli_help="影片图片打包回填（封面/薄封面/剧情图 → assets.zip）",
+        manual_only=True,
+        handler=lambda reporter, _params: MovieAssetPackBackfillService.backfill(
             reporter=reporter,
         ),
     ),

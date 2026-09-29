@@ -1,8 +1,8 @@
-"""媒体缩略图打包/还原的手动维护服务。
+"""媒体缩略图打包回填的手动维护服务。
 
 存量 media 的缩略图是 ``thumbnails/<offset>.webp`` 单文件；本服务把它们回填成
-``thumbnails.zip``（ZIP_STORED 容器，条目名 = 文件名），或反向还原回单文件。
-回填以数据库为准，缺文件时整条 media 跳过，不做静默丢弃。
+``thumbnails.zip``（ZIP_STORED 容器，条目名 = 文件名）。回填以数据库为准，
+缺文件时整条 media 跳过，不做静默丢弃。
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any
 from loguru import logger
 
 from src.common.image_store import write_pack
-from src.common.media_paths import media_image_root_path, thumbnail_pack_relative_path
+from src.common.media_paths import image_pack_relative_path, media_image_root_path
 from src.model import Image, MediaThumbnail
 from src.service.playback.operation_locks import (
     MEDIA_LOCK,
@@ -26,7 +26,7 @@ from src.service.playback.operation_locks import (
 
 
 class MediaThumbnailPackBackfillService:
-    """把存量单文件缩略图回填为包（手动任务），并提供应急还原。"""
+    """把存量单文件缩略图回填为包（手动任务）。"""
 
     TASK_KEY = "media_thumbnail_pack_backfill"
 
@@ -94,7 +94,7 @@ class MediaThumbnailPackBackfillService:
         image_root = media_image_root_path()
         origins = [origin for _, origin in rows]
         thumbnails_dir = image_root / PurePosixPath(origins[0]).parent
-        pack_relative = thumbnail_pack_relative_path(origins[0])
+        pack_relative = image_pack_relative_path(origins[0])
         if pack_relative is None:
             raise ValueError("thumbnail_pack_path_unexpected")
         pack_path = image_root / pack_relative
@@ -213,63 +213,4 @@ class MediaThumbnailPackBackfillService:
                     exc,
                 )
             emit_progress(completed)
-        return stats
-
-    @classmethod
-    def _unpack_media(cls, media_id: int) -> bool:
-        rows = cls._media_thumbnail_rows(media_id)
-        if not rows:
-            return False
-        image_root = media_image_root_path()
-        origins = [origin for _, origin in rows]
-        thumbnails_dir = image_root / PurePosixPath(origins[0]).parent
-        pack_relative = thumbnail_pack_relative_path(origins[0])
-        if pack_relative is None:
-            raise ValueError("thumbnail_pack_path_unexpected")
-        pack_path = image_root / pack_relative
-        if not pack_path.is_file():
-            return False
-
-        thumbnails_dir.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(pack_path) as archive:
-            for origin in origins:
-                entry_name = PurePosixPath(origin).name
-                # 防 zip-slip：包内条目只允许是纯文件名。
-                if (
-                    not entry_name
-                    or entry_name in (".", "..")
-                    or "/" in entry_name
-                    or "\\" in entry_name
-                ):
-                    raise ValueError(f"thumbnail pack entry invalid: {entry_name!r}")
-                (thumbnails_dir / entry_name).write_bytes(archive.read(entry_name))
-        pack_path.unlink()
-        return True
-
-    @classmethod
-    def unpack(cls, *, media_id: int | None = None) -> dict[str, int]:
-        media_ids = [media_id] if media_id is not None else cls._candidate_media_ids()
-        stats: dict[str, int] = {
-            "candidate_media": len(media_ids),
-            "unpacked_media": 0,
-            "skipped_busy": 0,
-            "failed_media": 0,
-        }
-        for current_media_id in media_ids:
-            try:
-                with media_operation_lock(MEDIA_LOCK, current_media_id):
-                    unpacked = cls._unpack_media(current_media_id)
-            except MediaOperationBusy:
-                stats["skipped_busy"] += 1
-                continue
-            except Exception as exc:
-                stats["failed_media"] += 1
-                logger.warning(
-                    "Unpack thumbnail pack failed media_id={} detail={}",
-                    current_media_id,
-                    exc,
-                )
-                continue
-            if unpacked:
-                stats["unpacked_media"] += 1
         return stats
