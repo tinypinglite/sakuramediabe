@@ -115,12 +115,7 @@ def test_actor_profile_image_upload_and_clear_restore_source_image(
     client, account_user, monkeypatch, tmp_path
 ):
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "assets"))
-    source_image = Image.create(
-        origin="actors/source.webp",
-        small="actors/source.webp",
-        medium="actors/source.webp",
-        large="actors/source.webp",
-    )
+    source_image = Image.create(origin="actors/source.webp")
     actor = Actor.create(
         javdb_id="actor-avatar",
         name="演员",

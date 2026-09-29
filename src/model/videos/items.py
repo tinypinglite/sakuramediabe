@@ -23,11 +23,5 @@ class VideoItem(TimestampedMixin, BaseModel):
         self.title = (self.title or "").strip()
         return super().save(*args, **kwargs)
 
-    @property
-    def cover_url(self) -> str | None:
-        if self.cover_image_id and self.cover_image:
-            return self.cover_image.medium
-        return None
-
     class Meta:
         table_name = "video_item"

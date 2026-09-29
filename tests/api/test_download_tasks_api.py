@@ -94,21 +94,11 @@ def test_download_tasks_ignores_body_as_filter(client, account_user):
     assert response.json()["total"] == 3
 
 
-def test_download_tasks_returns_movie_cover_variants(client, account_user):
+def test_download_tasks_returns_movie_cover_image(client, account_user):
     token = _login(client, account_user.username)
     _seed_tasks()
-    cover = Image.create(
-        origin="/files/images/cover.jpg",
-        small="/files/images/cover-small.jpg",
-        medium="/files/images/cover-medium.jpg",
-        large="/files/images/cover-large.jpg",
-    )
-    thin_cover = Image.create(
-        origin="/files/images/thin-cover.jpg",
-        small="/files/images/thin-cover-small.jpg",
-        medium="/files/images/thin-cover-medium.jpg",
-        large="/files/images/thin-cover-large.jpg",
-    )
+    cover = Image.create(origin="/files/images/cover.jpg")
+    thin_cover = Image.create(origin="/files/images/thin-cover.jpg")
     Movie.create(
         movie_number="ABP-001",
         javdb_id="download-task-abp-001",
@@ -126,8 +116,8 @@ def test_download_tasks_returns_movie_cover_variants(client, account_user):
     assert response.status_code == 200, response.text
     item = response.json()["items"][0]
     assert item["movie_title"] == "下载任务影片"
-    assert item["movie_cover"]["large"] == "/files/images/cover-large.jpg"
-    assert item["movie_thin_cover"]["large"] == "/files/images/thin-cover-large.jpg"
+    assert item["movie_cover"]["origin"] == "/files/images/cover.jpg"
+    assert item["movie_thin_cover"]["origin"] == "/files/images/thin-cover.jpg"
 
 
 def _seed_importable_task(

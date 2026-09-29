@@ -63,20 +63,10 @@ def test_video_update_replaces_cover_with_its_thumbnail(
     library = MediaLibrary.create(
         name="video-cover-library", provider_key="pornbox", provider_config={}
     )
-    old_image = Image.create(
-        origin="videos/auto-cover.webp",
-        small="videos/auto-cover.webp",
-        medium="videos/auto-cover.webp",
-        large="videos/auto-cover.webp",
-    )
+    old_image = Image.create(origin="videos/auto-cover.webp")
     video = VideoItem.create(title="cover video", cover_image=old_image)
     media = Media.create(video_item=video, library=library, file_name="cover.mp4")
-    image = Image.create(
-        origin="videos/cover-thumbnail.webp",
-        small="videos/cover-thumbnail.webp",
-        medium="videos/cover-thumbnail.webp",
-        large="videos/cover-thumbnail.webp",
-    )
+    image = Image.create(origin="videos/cover-thumbnail.webp")
     thumbnail = MediaThumbnail.create(media=media, image=image, offset=20)
     monkeypatch.setattr(
         MEDIA_PROVIDER_REGISTRY,
@@ -105,12 +95,7 @@ def test_video_update_rejects_thumbnail_from_another_video(client, account_user)
     video = VideoItem.create(title="cover owner")
     other_video = VideoItem.create(title="other video")
     media = Media.create(video_item=other_video, library=library, file_name="other.mp4")
-    image = Image.create(
-        origin="videos/other-thumbnail.webp",
-        small="videos/other-thumbnail.webp",
-        medium="videos/other-thumbnail.webp",
-        large="videos/other-thumbnail.webp",
-    )
+    image = Image.create(origin="videos/other-thumbnail.webp")
     thumbnail = MediaThumbnail.create(media=media, image=image, offset=10)
 
     response = client.patch(

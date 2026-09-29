@@ -22,22 +22,15 @@ class ActorListSubscriptionStatus(str, Enum):
 class ImageResource(SchemaModel):
     id: int
     origin: str
-    small: str
-    medium: str
-    large: str
 
-    @staticmethod
-    def _sign_image_path(value: str) -> str:
-        if value.startswith("/files/images/"):
-            return value
-        return build_signed_image_url(value)
-
-    @field_validator("origin", "small", "medium", "large")
+    @field_validator("origin")
     @classmethod
     def sign_image_path(cls, value: str) -> str:
         if not value:
             return value
-        return cls._sign_image_path(value)
+        if value.startswith("/files/images/"):
+            return value
+        return build_signed_image_url(value)
 
 
 class ActorResource(SchemaModel):

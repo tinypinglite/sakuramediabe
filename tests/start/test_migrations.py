@@ -26,6 +26,7 @@ from src.start.migrations.runner import (
     ACTOR_METADATA_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
     DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME,
+    DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
     DROP_MOVIE_EXTRA_MIGRATION_NAME,
     HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
     IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
@@ -122,6 +123,7 @@ def test_current_migrations_are_discoverable_in_order():
         DROP_MOVIE_EXTRA_MIGRATION_NAME,
         REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
         ACTOR_MERGED_INTO_MIGRATION_NAME,
+        DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
     ]
 
 
@@ -214,6 +216,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=DROP_MOVIE_EXTRA_MIGRATION_NAME, applied=True),
         MigrationExecution(name=REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME, applied=True),
         MigrationExecution(name=ACTOR_MERGED_INTO_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -235,6 +238,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         DROP_MOVIE_EXTRA_MIGRATION_NAME,
         REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
         ACTOR_MERGED_INTO_MIGRATION_NAME,
+        DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
     ]
 
 
@@ -387,7 +391,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 18
+    assert summary.applied_count == 19
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -649,6 +653,21 @@ def test_drop_movie_extra_migration_removes_column(clean_db):
     assert "extra" not in _column_names(clean_db, "movie")
 
 
+def test_drop_image_derived_sizes_migration_removes_columns(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    for column_name in ("small", "medium", "large"):
+        clean_db.execute_sql(
+            f'ALTER TABLE image ADD COLUMN IF NOT EXISTS "{column_name}" VARCHAR(255) NOT NULL DEFAULT \'\''
+        )
+
+    _load_migration_module(Path(f"{DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME}.py")).migrate(
+        clean_db
+    )
+
+    assert not {"small", "medium", "large"} & _column_names(clean_db, "image")
+
+
 def test_migrate_command_runs_the_consolidated_migration(monkeypatch):
     events = []
     optional_service_calls = []
@@ -724,7 +743,7 @@ def test_media_point_migration_preserves_old_points_and_collection_membership(cl
         if kind == 'jav' else {'video_item': VideoItem.create(title='Video')}
     )
     media = Media.create(library=library, file_name='source.mp4', **owner)
-    image = Image.create(origin='saved.webp', small='saved.webp', medium='saved.webp', large='saved.webp')
+    image = Image.create(origin='saved.webp')
     thumbnail = MediaThumbnail.create(media=media, image=image, offset=42)
     # 用真正的旧字段和级联约束构造升级前的数据。
     _drop_columns(clean_db, 'media_point', ('image_id', 'movie_number', 'video_item_id'))
@@ -783,7 +802,7 @@ def test_remove_orphan_video_items_migration_deletes_empty_videos_and_membership
     collection = VideoCollection.create(name='mixed collection')
     orphan_link = VideoCollectionItem.create(collection=collection, video_item=orphan, position=0)
     kept_link = VideoCollectionItem.create(collection=collection, video_item=kept, position=1)
-    image = Image.create(origin='orphan.webp', small='orphan.webp', medium='orphan.webp', large='orphan.webp')
+    image = Image.create(origin='orphan.webp')
     point = MediaPoint.create(image=image, video_item_id=orphan.id, offset_seconds=10)
 
     migration = _load_migration_module(Path(f'{REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME}.py'))

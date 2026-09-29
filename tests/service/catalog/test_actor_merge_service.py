@@ -18,7 +18,7 @@ def _create_movie(number: str) -> Movie:
 
 
 def _create_image(path: str) -> Image:
-    return Image.create(origin=path, small=path, medium=path, large=path)
+    return Image.create(origin=path)
 
 
 def test_merge_moves_movie_links_and_dedupes_shared_movies(test_db):

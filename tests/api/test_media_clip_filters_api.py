@@ -37,12 +37,7 @@ def _create_clip(
         title=title or movie_number,
     )
     media = Media.create(movie=movie, library=library, file_name=f"clip-api-{index}.mp4")
-    Image.create(
-        origin=f"clip-filter-api-{index}.webp",
-        small=f"clip-filter-api-{index}.webp",
-        medium=f"clip-filter-api-{index}.webp",
-        large=f"clip-filter-api-{index}.webp",
-    )
+    Image.create(origin=f"clip-filter-api-{index}.webp")
     payload = b"valid clip"
     relative_path = f"{movie_number}/{index}.mp4"
     clip_path = tmp_path / relative_path

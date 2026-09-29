@@ -9,7 +9,10 @@ from __future__ import annotations
 from loguru import logger
 
 from src.model import SchemaMigration
-from src.start.migrations.runner import DROP_MOVIE_EXTRA_MIGRATION_NAME
+from src.start.migrations.runner import (
+    DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
+    DROP_MOVIE_EXTRA_MIGRATION_NAME,
+)
 
 # 高频更新表的 autovacuum 阈值：默认 20% 在大表上要攒几十万死元组才会清理，
 # 可见性映射长期不新鲜，index-only scan 与反连接都要回堆取可见性。
@@ -27,12 +30,15 @@ _AUTOVACUUM_SETTINGS = {
 }
 
 # 一次性完成的维护动作记在 schema_migration 台账里，以迁移名加后缀命名，避免与迁移名冲突。
-_COMPACT_MOVIE_MARKER = f"{DROP_MOVIE_EXTRA_MIGRATION_NAME}:compacted"
+_DROP_COLUMN_COMPACTIONS = (
+    (DROP_MOVIE_EXTRA_MIGRATION_NAME, "movie"),
+    (DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME, "image"),
+)
 
 
 def run_startup_maintenance(database) -> None:
     """迁移/建表之后的维护入口；单步失败只告警，不阻断服务启动。"""
-    for step in (ensure_autovacuum_settings, compact_movie_if_needed):
+    for step in (ensure_autovacuum_settings, compact_dropped_column_tables):
         try:
             step(database)
         except Exception as exc:
@@ -62,29 +68,34 @@ def ensure_autovacuum_settings(database) -> None:
         )
 
 
-def compact_movie_if_needed(database) -> None:
-    """删列后的一次性表重写，回收 dropped 属性占用的空间。
+def compact_dropped_column_tables(database) -> None:
+    """删列后的一次性表重写，逐表回收 dropped 属性占用的空间。
 
     ``VACUUM FULL`` 重写后 dropped 属性条目仍保留在系统目录里，无法据此判断是否已重写，
-    因此用 ``schema_migration`` 台账记录一次性的完成标记；失败时不落标记，下次启动重试。
+    因此用 ``schema_migration`` 台账记录每张表一次性的完成标记；失败时不落标记，下次启动重试。
     """
-    if not _drop_movie_extra_applied(database):
-        return
-    if _ledger_entry_exists(database, _COMPACT_MOVIE_MARKER):
-        return
-    logger.info(
-        "Compacting movie table to reclaim dropped column storage; "
-        "this may take a few minutes on large libraries",
-    )
-    try:
-        database.execute_sql("VACUUM (FULL, ANALYZE) movie")
-    except Exception as exc:
-        logger.warning(
-            "movie table compaction failed; will retry on next startup: {}", exc
+    for migration_name, table_name in _DROP_COLUMN_COMPACTIONS:
+        if not _ledger_entry_exists(database, migration_name):
+            continue
+        marker = f"{migration_name}:compacted"
+        if _ledger_entry_exists(database, marker):
+            continue
+        logger.info(
+            "Compacting {} table to reclaim dropped column storage; "
+            "this may take a few minutes on large libraries",
+            table_name,
         )
-        return
-    _record_ledger_entry(database, _COMPACT_MOVIE_MARKER)
-    logger.info("movie table compaction finished")
+        try:
+            database.execute_sql(f"VACUUM (FULL, ANALYZE) {table_name}")
+        except Exception as exc:
+            logger.warning(
+                "{} table compaction failed; will retry on next startup: {}",
+                table_name,
+                exc,
+            )
+            continue
+        _record_ledger_entry(database, marker)
+        logger.info("{} table compaction finished", table_name)
 
 
 def _current_reloptions(database, table_name: str) -> dict[str, str]:
@@ -98,10 +109,6 @@ def _current_reloptions(database, table_name: str) -> dict[str, str]:
         key, _, value = item.partition("=")
         options[key] = value
     return options
-
-
-def _drop_movie_extra_applied(database) -> bool:
-    return _ledger_entry_exists(database, DROP_MOVIE_EXTRA_MIGRATION_NAME)
 
 
 def _ledger_entry_exists(database, entry_name: str) -> bool:

@@ -14,12 +14,7 @@ def _create_point(index: int) -> MediaPoint:
         title=f"Moment collection {index}",
     )
     media = Media.create(movie=movie, library=library, file_name=f"moment-{index}.mp4")
-    image = Image.create(
-        origin=f"origin-{index}",
-        small=f"small-{index}",
-        medium=f"medium-{index}",
-        large=f"large-{index}",
-    )
+    image = Image.create(origin=f"origin-{index}")
     thumbnail = MediaThumbnail.create(media=media, image=image, offset=index * 10)
     return MediaPoint.create(
         media=media, thumbnail=thumbnail, image=image, movie_number=media.movie_number,

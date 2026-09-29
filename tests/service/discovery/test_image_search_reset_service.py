@@ -22,12 +22,7 @@ def _prepare_image_search_data():
     library = MediaLibrary.create(
         name="reset-library", provider_key="test", provider_config={}
     )
-    image = Image.create(
-        origin="movies/reset.jpg",
-        small="movies/reset.jpg",
-        medium="movies/reset.jpg",
-        large="movies/reset.jpg",
-    )
+    image = Image.create(origin="movies/reset.jpg")
     media = Media.create(movie=movie, library=library, file_name="reset.mp4")
     thumbnail = MediaThumbnail.create(
         media=media,

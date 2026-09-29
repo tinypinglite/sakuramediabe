@@ -172,12 +172,5 @@ class Actor(TimestampedMixin, BaseModel):
     def has_profile_image_override(self) -> bool:
         return bool(self.profile_image_override_id)
 
-    @property
-    def avatar_url(self) -> str | None:
-        image = self.effective_profile_image
-        if image is not None:
-            return image.medium
-        return None
-
     class Meta:
         table_name = "actor"

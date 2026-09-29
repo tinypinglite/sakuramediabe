@@ -27,12 +27,7 @@ def _library() -> MediaLibrary:
 
 
 def _create_point(media: Media, index: int) -> MediaPoint:
-    image = Image.create(
-        origin=f"point-filter-api-{index}.webp",
-        small=f"point-filter-api-{index}.webp",
-        medium=f"point-filter-api-{index}.webp",
-        large=f"point-filter-api-{index}.webp",
-    )
+    image = Image.create(origin=f"point-filter-api-{index}.webp")
     thumbnail = MediaThumbnail.create(media=media, image=image, offset=index * 10)
     return MediaPoint.create(
         media=media,

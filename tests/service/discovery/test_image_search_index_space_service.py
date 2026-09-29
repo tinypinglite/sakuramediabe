@@ -75,12 +75,7 @@ def test_legacy_completed_index_without_space_state_requires_rebuild(test_db):
         javdb_id="space-1",
         title="space",
     )
-    image = Image.create(
-        origin="movies/space.jpg",
-        small="movies/space.jpg",
-        medium="movies/space.jpg",
-        large="movies/space.jpg",
-    )
+    image = Image.create(origin="movies/space.jpg")
     MoviePlotImage.create(
         movie=movie,
         image=image,

@@ -90,7 +90,7 @@ class _Embedder:
 
 
 def _create_image(origin: str) -> Image:
-    return Image.create(origin=origin, small=origin, medium=origin, large=origin)
+    return Image.create(origin=origin)
 
 
 def _prepare_images(tmp_path: Path, *, thumbnail_count: int, plot_count: int):
@@ -125,6 +125,18 @@ def _prepare_images(tmp_path: Path, *, thumbnail_count: int, plot_count: int):
     return thumbnails, plot_images, paths
 
 
+def _patch_image_files(monkeypatch, paths: dict[str, Path]) -> None:
+    # 缩略图走 image_store 统一入口，剧情图仍走路径解析；两者都指向测试临时文件。
+    monkeypatch.setattr(
+        "src.service.discovery.image_search_index_service.read_image_bytes",
+        lambda origin: paths[origin].read_bytes(),
+    )
+    monkeypatch.setattr(
+        "src.service.discovery.image_search_index_service.resolve_image_file_path",
+        lambda origin: paths[origin],
+    )
+
+
 def test_pending_queries_apply_work_batch_limit(monkeypatch):
     thumbnail_query = _PendingQuery([1, 2, 3])
     plot_query = _PendingQuery([1, 2, 3])
@@ -149,10 +161,7 @@ def test_index_task_drains_both_queues_in_bounded_round_robin_batches(
     thumbnails, plot_images, paths = _prepare_images(
         tmp_path, thumbnail_count=3, plot_count=3
     )
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_index_service.resolve_image_file_path",
-        lambda origin: paths[origin],
-    )
+    _patch_image_files(monkeypatch, paths)
     monkeypatch.setattr(
         "src.config.config.settings.image_search.index_upsert_batch_size", 2
     )
@@ -223,10 +232,7 @@ def test_reset_task_clears_vectors_then_reindexes_current_space(
         query_vector=[0.1],
         expires_at=utc_now_for_db(),
     )
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_index_service.resolve_image_file_path",
-        lambda origin: paths[origin],
-    )
+    _patch_image_files(monkeypatch, paths)
     trace: list[str] = []
     thumbnail_store = _Store("thumbnail", trace)
     plot_store = _Store("plot", trace)
@@ -277,10 +283,7 @@ def test_batch_rejection_falls_back_to_single_images_and_only_fails_bad_image(
         paths[thumbnails[1].image.origin], format="JPEG"
     )
     bad_payload = paths[thumbnails[1].image.origin].read_bytes()
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_index_service.resolve_image_file_path",
-        lambda origin: paths[origin],
-    )
+    _patch_image_files(monkeypatch, paths)
     monkeypatch.setattr(
         "src.config.config.settings.image_search.inference_batch_size", 2
     )
@@ -315,10 +318,7 @@ def test_batch_rejection_falls_back_to_single_images_and_only_fails_bad_image(
 
 def test_qdrant_failure_leaves_batch_pending(test_db, monkeypatch, tmp_path):
     thumbnails, _, paths = _prepare_images(tmp_path, thumbnail_count=1, plot_count=0)
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_index_service.resolve_image_file_path",
-        lambda origin: paths[origin],
-    )
+    _patch_image_files(monkeypatch, paths)
 
     class _FailingStore(_Store):
         def upsert_records(self, records) -> None:
@@ -344,10 +344,7 @@ def test_index_task_blocks_mismatched_space_before_writing(
 ):
     thumbnails, _, paths = _prepare_images(tmp_path, thumbnail_count=1, plot_count=0)
     ImageSearchIndexState.create(id=1, indexed_space_id="siglip2-previous")
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_index_service.resolve_image_file_path",
-        lambda origin: paths[origin],
-    )
+    _patch_image_files(monkeypatch, paths)
     thumbnail_store = _Store("thumbnail")
 
     with pytest.raises(ImageSearchIndexRebuildRequiredError):
@@ -369,10 +366,7 @@ def test_png_images_are_normalized_before_embedding(test_db, monkeypatch, tmp_pa
     PillowImage.new("RGBA", (12, 8), (30, 120, 30, 180)).save(
         paths[thumbnails[0].image.origin], format="PNG"
     )
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_index_service.resolve_image_file_path",
-        lambda origin: paths[origin],
-    )
+    _patch_image_files(monkeypatch, paths)
     embedder = _Embedder()
 
     stats = ImageSearchIndexService(
@@ -389,10 +383,7 @@ def test_png_images_are_normalized_before_embedding(test_db, monkeypatch, tmp_pa
 def test_invalid_image_is_marked_failed(test_db, monkeypatch, tmp_path):
     thumbnails, _, paths = _prepare_images(tmp_path, thumbnail_count=1, plot_count=0)
     paths[thumbnails[0].image.origin].write_bytes(b"not-an-image")
-    monkeypatch.setattr(
-        "src.service.discovery.image_search_index_service.resolve_image_file_path",
-        lambda origin: paths[origin],
-    )
+    _patch_image_files(monkeypatch, paths)
 
     stats = ImageSearchIndexService(
         store=_Store("thumbnail"),

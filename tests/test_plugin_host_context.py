@@ -145,12 +145,7 @@ def test_plugin_collections_are_keyed_and_owned(test_db, tmp_path, monkeypatch):
         provider_key="local",
         provider_config={},
     )
-    image = Image.create(
-        origin="collection-cover.jpg",
-        small="collection-cover-small.jpg",
-        medium="collection-cover-medium.jpg",
-        large="collection-cover-large.jpg",
-    )
+    image = Image.create(origin="collection-cover.jpg")
     media = Media.create(movie=first, library=library, file_name="ABP-020.mp4")
     thumbnail = MediaThumbnail.create(media=media, image=image, offset=0)
     point = MediaPoint.create(media=media, thumbnail=thumbnail, image=image, movie_number=media.movie_number,

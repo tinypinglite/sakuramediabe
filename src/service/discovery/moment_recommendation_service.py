@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from loguru import logger
 
-from src.common import resolve_image_file_path
+from src.common.image_store import read_image_bytes
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     emit_progress,
@@ -165,10 +165,9 @@ class MomentRecommendationService:
     @staticmethod
     def _read_seed_image_bytes(seed: _MomentSeed) -> bytes | None:
         try:
-            image_path = resolve_image_file_path(seed.thumbnail.image.origin)
-            if not image_path.exists() or not image_path.is_file():
-                return None
-            return image_path.read_bytes()
+            return read_image_bytes(seed.thumbnail.image.origin)
+        except FileNotFoundError:
+            return None
         except Exception as exc:
             logger.warning("Moment recommendation seed image skipped point_id={} detail={}", seed.point.id, exc)
             return None

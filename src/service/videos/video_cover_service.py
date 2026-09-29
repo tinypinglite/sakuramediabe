@@ -80,12 +80,7 @@ class VideoCoverService:
             image_root = media_image_root_path()
             relative_path = cover_path.relative_to(image_root).as_posix()
             with get_database().atomic():
-                image = Image.create(
-                    origin=relative_path,
-                    small=relative_path,
-                    medium=relative_path,
-                    large=relative_path,
-                )
+                image = Image.create(origin=relative_path)
                 video.cover_image = image
                 video.save()
         except Exception as exc:

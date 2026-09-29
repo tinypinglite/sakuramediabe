@@ -147,7 +147,7 @@ def execute(run):
 
 def test_move_preserves_original_id_and_related_assets(move):
     media = move.media
-    image = Image.create(origin="a", small="b", medium="c", large="d")
+    image = Image.create(origin="a")
     thumbnail = MediaThumbnail.create(media=media, image=image, offset=10)
     point = MediaPoint.create(media=media, thumbnail=thumbnail, image=image, movie_number=media.movie_number,
         video_item_id=media.video_item_id, offset_seconds=10)

@@ -681,7 +681,7 @@ class MovieImageService:
         )
 
     def _upsert_image_record(self, relative_path: str) -> Image:
-        """确保同一路径只存在一条 Image 记录，并把 small/medium/large 统一到该路径。"""
+        """确保同一路径只存在一条 Image 记录。"""
         return self._upsert_image_records([relative_path])[relative_path]
 
     @staticmethod
@@ -691,7 +691,7 @@ class MovieImageService:
         单条 ``INSERT ... ON CONFLICT (origin) DO UPDATE ... RETURNING`` 覆盖全部路径：
         - 相比逐行 ``get_or_none`` + ``create``，往返次数从 2N 降到 1；
         - ``DO UPDATE`` 而非 ``DO NOTHING``，既保证冲突行也出现在 RETURNING 结果里，
-          又顺带把 small/medium/large 归一到 origin，与原逐行实现语义一致；
+          又顺带刷新 ``updated_at``；
         - 单语句天然规避原实现 get_or_none 与 create 之间的并发窗口（唯一约束冲突）。
         """
         unique_paths = list(dict.fromkeys(path for path in relative_paths if path))
@@ -702,9 +702,6 @@ class MovieImageService:
         rows = [
             {
                 Image.origin: path,
-                Image.small: path,
-                Image.medium: path,
-                Image.large: path,
                 Image.created_at: now,
                 Image.updated_at: now,
             }
@@ -714,12 +711,7 @@ class MovieImageService:
             Image.insert_many(rows)
             .on_conflict(
                 conflict_target=[Image.origin],
-                update={
-                    Image.small: EXCLUDED.small,
-                    Image.medium: EXCLUDED.medium,
-                    Image.large: EXCLUDED.large,
-                    Image.updated_at: EXCLUDED.updated_at,
-                },
+                update={Image.updated_at: EXCLUDED.updated_at},
             )
             .returning(Image)
         )

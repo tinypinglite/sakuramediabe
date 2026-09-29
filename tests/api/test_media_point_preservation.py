@@ -61,7 +61,7 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
     for offset in (10, 20, 30):
         path = image_root / f'{offset}.webp'
         PILImage.new('RGB', (20, 20), 'blue').save(path)
-        image = Image.create(origin=path.name, small=path.name, medium=path.name, large=path.name)
+        image = Image.create(origin=path.name)
         thumbnails.append(MediaThumbnail.create(media=media, image=image, offset=offset))
     point_ids = []
     for thumbnail in thumbnails[:2]:
@@ -160,12 +160,12 @@ def test_replacing_video_cover_keeps_image_referenced_by_orphan_point(
     )
     old_path = tmp_path / 'old.webp'
     PILImage.new('RGB', (20, 20), 'blue').save(old_path)
-    old_image = Image.create(origin=old_path.name, small=old_path.name, medium=old_path.name, large=old_path.name)
+    old_image = Image.create(origin=old_path.name)
     video = VideoItem.create(title='video', cover_image=old_image)
     point = MediaPoint.create(image=old_image, video_item_id=video.id, offset_seconds=10)
     library = MediaLibrary.create(name='covers', provider_key='demo', provider_config={})
     media = Media.create(video_item=video, library=library, file_name='other.mp4')
-    new_image = Image.create(origin='new.webp', small='new.webp', medium='new.webp', large='new.webp')
+    new_image = Image.create(origin='new.webp')
     thumbnail = MediaThumbnail.create(media=media, image=new_image, offset=20)
     login = client.post('/auth/tokens', json={'username': account_user.username, 'password': 'password123'})
     headers = {'Authorization': f"Bearer {login.json()['access_token']}"}

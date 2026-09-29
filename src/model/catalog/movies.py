@@ -191,12 +191,6 @@ class Movie(TimestampedMixin, BaseModel):
             return None
         return series.name if series is not None else None
 
-    @property
-    def cover_url(self) -> str | None:
-        if self.cover_image_id and self.cover_image:
-            return self.cover_image.medium
-        return None
-
     class Meta:
         table_name = "movie"
         constraints = [

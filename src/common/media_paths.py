@@ -10,6 +10,11 @@ MOVIE_ASSETS_SUBDIR = "movies"
 MOVIE_MEDIA_SUBDIR = "media"
 MOVIE_SUBTITLES_SUBDIR = "subtitles"
 
+# 时间轴缩略图的存储形态：<...>/media/<media_id>/thumbnails/ 下的单文件，
+# 或与目录同级同名、不含压缩的 thumbnails.zip（条目名 = 文件名）。
+MEDIA_THUMBNAILS_SUBDIR = "thumbnails"
+MEDIA_THUMBNAILS_PACK_SUFFIX = ".zip"
+
 # 分片目录名取 sha1 十六进制前 2 位，固定 256 片；顶层 movies/ 的条目数从番号数降到常数 256。
 MOVIE_ASSET_SHARD_HEX_LENGTH = 2
 MOVIE_ASSET_SHARD_NAMES = frozenset(
@@ -60,6 +65,21 @@ def movie_subtitle_dir(movie_number: str) -> Path:
     provider 媒体与宿主字幕资产的字幕都落这里；媒体库内不再存放 .srt。
     """
     return movie_asset_dir(movie_number) / MOVIE_SUBTITLES_SUBDIR
+
+
+def thumbnail_pack_relative_path(relative_path: str) -> PurePosixPath | None:
+    """时间轴缩略图对应包的库内相对路径；非缩略图路径返回 None。
+
+    约定：``<...>/media/<media_id>/thumbnails/<name>.webp`` 的包与目录同级同名，
+    即 ``<...>/media/<media_id>/thumbnails.zip``，条目名就是 ``<name>.webp``。
+    只负责路径推导，不检查包是否存在。
+    """
+    normalized = PurePosixPath((relative_path or "").strip().replace("\\", "/"))
+    if not normalized.name or normalized.parent.name != MEDIA_THUMBNAILS_SUBDIR:
+        return None
+    return normalized.parent.with_name(
+        f"{normalized.parent.name}{MEDIA_THUMBNAILS_PACK_SUFFIX}"
+    )
 
 
 # 统一字幕命名：``<番号>-<N>.<ext>``，N 从 1 递增；同一部影片内连续但不严格无洞。

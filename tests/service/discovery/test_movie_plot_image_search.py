@@ -6,7 +6,7 @@ from src.service.discovery.qdrant_plot_image_store import PlotImageVectorSearchH
 
 
 def _create_plot_image(movie: Movie, origin: str) -> MoviePlotImage:
-    image = Image.create(origin=origin, small=origin, medium=origin, large=origin)
+    image = Image.create(origin=origin)
     return MoviePlotImage.create(movie=movie, image=image)
 
 

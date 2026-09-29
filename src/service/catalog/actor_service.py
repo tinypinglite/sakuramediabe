@@ -706,12 +706,7 @@ class ActorService:
             final_path.parent.mkdir(parents=True, exist_ok=True)
             temp_path.replace(final_path)
             with get_database().atomic():
-                image = Image.create(
-                    origin=relative_path.as_posix(),
-                    small=relative_path.as_posix(),
-                    medium=relative_path.as_posix(),
-                    large=relative_path.as_posix(),
-                )
+                image = Image.create(origin=relative_path.as_posix())
                 cursor = get_database().execute_sql(
                     """
                     UPDATE actor

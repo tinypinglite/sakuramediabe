@@ -32,6 +32,9 @@ from src.service.playback import (
     MediaThumbnailService,
     MediaValidityScanService,
 )
+from src.service.playback.media_thumbnail_pack_backfill_service import (
+    MediaThumbnailPackBackfillService,
+)
 from src.service.playback.media_video_info_backfill_service import (
     MediaVideoInfoBackfillService,
 )
@@ -154,6 +157,16 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次媒体缩略图生成",
         cron_setting="media_thumbnail_cron",
         handler=lambda reporter, _params: MediaThumbnailService.generate_pending_thumbnails(
+            reporter=reporter,
+        ),
+    ),
+    JobDefinition(
+        task_key=MediaThumbnailPackBackfillService.TASK_KEY,
+        log_name="media-thumbnail-pack-backfill",
+        cli_name="backfill-media-thumbnail-packs",
+        cli_help="媒体缩略图打包回填（存量单文件 → thumbnails.zip）",
+        manual_only=True,
+        handler=lambda reporter, _params: MediaThumbnailPackBackfillService.backfill(
             reporter=reporter,
         ),
     ),

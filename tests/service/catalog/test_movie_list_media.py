@@ -206,7 +206,7 @@ def test_moment_recommendations_include_all_media_for_the_movie(media_movies):
     )
 
     data = media_movies
-    image = Image.create(origin="thumb.jpg", small="thumb.jpg", medium="thumb.jpg", large="thumb.jpg")
+    image = Image.create(origin="thumb.jpg")
     thumbnail = MediaThumbnail.create(media=data.media[0], image=image, offset=30)
     MomentRecommendation.create(
         movie=data.movies[0], media=data.media[0], thumbnail=thumbnail,

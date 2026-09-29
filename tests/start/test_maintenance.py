@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from src.model import SchemaMigration
 from src.start.maintenance import (
-    compact_movie_if_needed,
+    compact_dropped_column_tables,
     ensure_autovacuum_settings,
     run_startup_maintenance,
 )
-from src.start.migrations.runner import DROP_MOVIE_EXTRA_MIGRATION_NAME
+from src.start.migrations.runner import (
+    DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
+    DROP_MOVIE_EXTRA_MIGRATION_NAME,
+)
 from tests.conftest import TEST_MODELS
 
-_COMPACTION_MARKER = f"{DROP_MOVIE_EXTRA_MIGRATION_NAME}:compacted"
+_MOVIE_COMPACTION_MARKER = f"{DROP_MOVIE_EXTRA_MIGRATION_NAME}:compacted"
+_IMAGE_COMPACTION_MARKER = f"{DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME}:compacted"
 
 
 def _reloptions(clean_db, table_name: str) -> dict[str, str]:
@@ -35,6 +39,11 @@ def _ledger_entries(clean_db) -> set[str]:
 def _record_drop_movie_extra(clean_db) -> None:
     with clean_db.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
         SchemaMigration.create(name=DROP_MOVIE_EXTRA_MIGRATION_NAME)
+
+
+def _record_drop_image_derived_sizes(clean_db) -> None:
+    with clean_db.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
+        SchemaMigration.create(name=DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME)
 
 
 def _spy_vacuum(monkeypatch, clean_db) -> list[str]:
@@ -70,16 +79,17 @@ def test_ensure_autovacuum_settings_applies_and_is_idempotent(clean_db):
     assert _reloptions(clean_db, "movie") == movie_options
 
 
-def test_compact_movie_requires_drop_migration_record(clean_db, monkeypatch):
+def test_compact_table_requires_drop_migration_record(clean_db, monkeypatch):
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
     clean_db.create_tables(TEST_MODELS)
 
     vacuum_calls = _spy_vacuum(monkeypatch, clean_db)
-    compact_movie_if_needed(clean_db)
+    compact_dropped_column_tables(clean_db)
 
     # 新装库或尚未执行删列迁移的库不重写。
     assert vacuum_calls == []
-    assert _COMPACTION_MARKER not in _ledger_entries(clean_db)
+    assert _MOVIE_COMPACTION_MARKER not in _ledger_entries(clean_db)
+    assert _IMAGE_COMPACTION_MARKER not in _ledger_entries(clean_db)
 
 
 def test_compact_movie_runs_once_and_records_marker(clean_db, monkeypatch):
@@ -88,11 +98,24 @@ def test_compact_movie_runs_once_and_records_marker(clean_db, monkeypatch):
     _record_drop_movie_extra(clean_db)
 
     vacuum_calls = _spy_vacuum(monkeypatch, clean_db)
-    compact_movie_if_needed(clean_db)
-    compact_movie_if_needed(clean_db)
+    compact_dropped_column_tables(clean_db)
+    compact_dropped_column_tables(clean_db)
 
     assert len(vacuum_calls) == 1
-    assert _COMPACTION_MARKER in _ledger_entries(clean_db)
+    assert _MOVIE_COMPACTION_MARKER in _ledger_entries(clean_db)
+
+
+def test_compact_image_runs_once_and_records_marker(clean_db, monkeypatch):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    _record_drop_image_derived_sizes(clean_db)
+
+    vacuum_calls = _spy_vacuum(monkeypatch, clean_db)
+    compact_dropped_column_tables(clean_db)
+    compact_dropped_column_tables(clean_db)
+
+    assert len(vacuum_calls) == 1
+    assert _IMAGE_COMPACTION_MARKER in _ledger_entries(clean_db)
 
 
 def test_run_startup_maintenance_retries_compaction_after_failure(clean_db, monkeypatch):
@@ -112,10 +135,10 @@ def test_run_startup_maintenance_retries_compaction_after_failure(clean_db, monk
 
     # 首次重写失败：只告警不阻断，也不落完成标记。
     run_startup_maintenance(clean_db)
-    assert _COMPACTION_MARKER not in _ledger_entries(clean_db)
+    assert _MOVIE_COMPACTION_MARKER not in _ledger_entries(clean_db)
     assert _reloptions(clean_db, "movie")["autovacuum_vacuum_scale_factor"] == "0.02"
 
     # 下次启动自动重试并成功。
     fail_state["fail"] = False
     run_startup_maintenance(clean_db)
-    assert _COMPACTION_MARKER in _ledger_entries(clean_db)
+    assert _MOVIE_COMPACTION_MARKER in _ledger_entries(clean_db)

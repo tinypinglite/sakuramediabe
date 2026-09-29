@@ -194,8 +194,8 @@ def test_create_tables_creates_moment_recommendation_unique_constraints(clean_db
         storage_ref={"id": "moment-2"},
         file_name="moment-2.mp4",
     )
-    first_image = Image.create(origin="a.webp", small="a.webp", medium="a.webp", large="a.webp")
-    second_image = Image.create(origin="b.webp", small="b.webp", medium="b.webp", large="b.webp")
+    first_image = Image.create(origin="a.webp")
+    second_image = Image.create(origin="b.webp")
     first_thumbnail = MediaThumbnail.create(media=first_media, image=first_image, offset=120)
     second_thumbnail = MediaThumbnail.create(media=second_media, image=second_image, offset=240)
     MomentRecommendation.create(

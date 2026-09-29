@@ -119,6 +119,7 @@ def test_builtin_jobs_accept_parameterless_async_trigger(client, account_user):
         "media_file_scan",
         "media_video_info_backfill",
         "media_thumbnail_generation",
+        "media_thumbnail_pack_backfill",
     )
     auth_headers = _auth_headers(client, account_user.username)
 
