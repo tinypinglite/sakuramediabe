@@ -14,12 +14,29 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from loguru import logger
+from peewee import SQL, NodeList, Value
 
 from src.common.image_store import write_pack
 from src.common.media_paths import MOVIE_ASSETS_PACK_NAME, media_image_root_path
 from src.model import Image
 
 MAX_REBUILD_ATTEMPTS = 3
+
+
+def _like_prefix_pattern(prefix: str):
+    """LIKE 前缀模式；目录名可能含 ``_``，按 peewee ``startswith`` 同款规则转义。"""
+    if any(char in prefix for char in ("_", "%", "\\")):
+        escaped = (
+            prefix.replace("\\", "\\\\").replace("_", "\\_").replace("%", "\\%")
+        )
+        return NodeList(
+            (
+                Value(f"{escaped}%", converter=False),
+                SQL("ESCAPE"),
+                Value("\\", converter=False),
+            )
+        )
+    return f"{prefix}%"
 
 
 class MovieAssetPackService:
@@ -80,10 +97,11 @@ class MovieAssetPackService:
     def live_origins(movie_dir: PurePosixPath) -> list[str]:
         """影片目录直接子文件的图片 origin；media/ 等子目录（时间轴缩略图）不参与打包。"""
         prefix = f"{movie_dir.as_posix()}/"
+        # 用大小写敏感 LIKE 命中 image_origin_pattern（peewee startswith 会生成 ILIKE）。
         return [
             origin
             for (origin,) in Image.select(Image.origin)
-            .where(Image.origin.startswith(prefix))
+            .where(Image.origin.like(_like_prefix_pattern(prefix)))
             .order_by(Image.origin.asc())
             .tuples()
             if origin.startswith(prefix) and "/" not in origin[len(prefix):]

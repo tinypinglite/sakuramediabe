@@ -361,6 +361,16 @@ def test_create_tables_creates_movie_number_upper_index(clean_db, monkeypatch):
     ).fetchone() is not None
 
 
+def test_create_tables_creates_image_origin_pattern_index(clean_db, monkeypatch):
+    """影片资产前缀查询依赖的 text_pattern_ops 索引：新库建表即有。"""
+    create_tables()
+
+    assert clean_db.execute_sql(
+        "SELECT 1 FROM pg_indexes WHERE indexname = 'image_origin_pattern'"
+        " AND schemaname = current_schema()"
+    ).fetchone() is not None
+
+
 def test_init_user_creates_single_account_once(clean_db, monkeypatch):
     monkeypatch.setattr("src.start.initdb.settings.auth.username", "account")
     monkeypatch.setattr("src.start.initdb.settings.auth.password", "account")

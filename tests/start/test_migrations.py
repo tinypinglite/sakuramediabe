@@ -29,6 +29,7 @@ from src.start.migrations.runner import (
     DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
     DROP_MOVIE_EXTRA_MIGRATION_NAME,
     HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
+    IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME,
     IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
     IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
     MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
@@ -124,6 +125,7 @@ def test_current_migrations_are_discoverable_in_order():
         REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
         ACTOR_MERGED_INTO_MIGRATION_NAME,
         DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
+        IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME,
     ]
 
 
@@ -217,6 +219,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME, applied=True),
         MigrationExecution(name=ACTOR_MERGED_INTO_MIGRATION_NAME, applied=True),
         MigrationExecution(name=DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -239,6 +242,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
         ACTOR_MERGED_INTO_MIGRATION_NAME,
         DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
+        IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME,
     ]
 
 
@@ -391,7 +395,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 19
+    assert summary.applied_count == 20
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -520,6 +524,20 @@ def test_media_import_source_identity_migration_adds_column_and_index(clean_db):
     assert "import_source_identity" in _column_names(clean_db, "media")
     assert "media_library_id_import_source_identity" in {
         index.name for index in clean_db.get_indexes("media")
+    }
+
+
+def test_image_origin_pattern_index_migration_creates_index(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    clean_db.execute_sql("DROP INDEX IF EXISTS image_origin_pattern")
+
+    _load_migration_module(
+        Path(f"{IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME}.py")
+    ).migrate(clean_db)
+
+    assert "image_origin_pattern" in {
+        index.name for index in clean_db.get_indexes("image")
     }
 
 
