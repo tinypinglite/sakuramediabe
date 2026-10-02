@@ -5,15 +5,26 @@ from urllib.parse import parse_qsl, urlparse
 from peewee import (
     CharField,
     DatabaseProxy,
+    InterfaceError,
     Model,
+    OperationalError,
     PostgresqlDatabase,
     TextField,
 )
+from playhouse.shortcuts import ReconnectMixin
 
 from src.common.perf import install_query_hooks
 from src.config.config import Database, DatabaseEngine
 
 database_proxy = DatabaseProxy()
+
+
+class ReconnectPostgresqlDatabase(ReconnectMixin, PostgresqlDatabase):
+    # 空字符串 = 匹配该异常类的所有错误（peewee 官方注释用法）。
+    reconnect_errors = (
+        (OperationalError, ""),
+        (InterfaceError, ""),
+    )
 
 
 def create_database(config: Database):
@@ -31,7 +42,7 @@ def create_database(config: Database):
     port = parsed.port or 5432
     connect_options = dict(parse_qsl(parsed.query, keep_blank_values=True))
 
-    database = PostgresqlDatabase(
+    database = ReconnectPostgresqlDatabase(
         database_name,
         user=username,
         password=password,
