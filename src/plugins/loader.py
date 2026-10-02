@@ -27,10 +27,14 @@ from src.plugins.dependencies import (
     dependency_failure_message,
     enable_dependency_site_packages,
 )
-from src.plugins.extensions import EXTENSION_VALIDATORS
+from src.plugins.extensions import EXTENSION_VALIDATORS, REPEATABLE_EXTENSION_KEYS
 from src.plugins.extensions.metadata import (
     METADATA_SOURCE_EXTENSION_KEY,
     METADATA_SOURCE_HOST_API_VERSION,
+)
+from src.plugins.extensions.ranking import (
+    RANKING_MULTI_SOURCE_HOST_API_VERSION,
+    RANKING_SOURCE_EXTENSION_KEY,
 )
 from src.plugins.manifest import MANIFEST_FILENAME, load_manifest_from_file
 from src.plugins.provider_protocol import refresh_media_provider_registry
@@ -141,14 +145,17 @@ def _validate_plugin_extensions(
     plugin_id: str,
     registration: PluginRegistration,
 ) -> None:
-    """扩展点声明通用校验：key 唯一、key 受宿主支持，并委托领域校验器。
+    """扩展点声明通用校验：key 受宿主支持、非重复扩展点 key 唯一，并委托领域校验器。
 
     这里不感知任何领域语义；data 的形状与约束由按 key 注册的校验器解释，
     失败统一走 PluginLoadError，保持坏插件隔离。
     """
     seen: set[str] = set()
     for extension in registration.extensions:
-        if extension.key in seen:
+        if (
+            extension.key in seen
+            and extension.key not in REPEATABLE_EXTENSION_KEYS
+        ):
             raise PluginLoadError(
                 plugin_id,
                 "validate_extensions",
@@ -261,6 +268,21 @@ def _load_plugin_dir(
     ):
         raise PluginLoadError(
             plugin_id, "validate_extensions", "元数据来源插件的 manifest 必须声明 Host API 6 或更高版本"
+        )
+    if (
+        sum(
+            1
+            for ext in registration.extensions
+            if ext.key == RANKING_SOURCE_EXTENSION_KEY
+        )
+        > 1
+        and manifest.host_api_version < RANKING_MULTI_SOURCE_HOST_API_VERSION
+    ):
+        raise PluginLoadError(
+            plugin_id,
+            "validate_extensions",
+            "声明多个排行榜来源的插件 manifest 必须声明 Host API "
+            f"{RANKING_MULTI_SOURCE_HOST_API_VERSION} 或更高版本",
         )
 
     jobs = _validate_plugin_jobs(

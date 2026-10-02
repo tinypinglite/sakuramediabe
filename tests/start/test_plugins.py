@@ -40,6 +40,7 @@ def _write_plugin_dir(
     plugin_id: str,
     *,
     version: str = "1.0.0",
+    host_api_version: int = HOST_API_VERSION,
     init_source: str = "",
 ) -> Path:
     pkg = base / plugin_id
@@ -50,7 +51,7 @@ def _write_plugin_dir(
                 "plugin_id": plugin_id,
                 "display_name": plugin_id,
                 "version": version,
-                "host_api_version": HOST_API_VERSION,
+                "host_api_version": host_api_version,
             },
             ensure_ascii=False,
         ),
@@ -605,21 +606,98 @@ def test_loader_rejects_unknown_extension_key(tmp_path):
     assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"
 
 
-def test_loader_rejects_duplicate_extension_key(tmp_path):
+_MULTI_RANKING_REGISTER_SOURCE = """\
+from src.plugins import (
+    HOST_API_VERSION,
+    RANKING_SOURCE_EXTENSION_KEY,
+    PluginContext,
+    PluginExtension,
+    PluginRankingBoard,
+    PluginRankingSource,
+    PluginRegistration,
+)
+
+
+def _source(source_key):
+    return PluginRankingSource(
+        source_key=source_key,
+        name=source_key,
+        boards=(
+            PluginRankingBoard(
+                key="hot",
+                name="hot",
+                supported_periods=("daily",),
+                fetch_numbers=lambda period: ["ABP-123"],
+            ),
+        ),
+    )
+
+
+def register(context: PluginContext) -> PluginRegistration:
+    return PluginRegistration(
+        plugin_id="multi_rank",
+        display_name="multi",
+        version="1.0.0",
+        host_api_version=HOST_API_VERSION,
+        extensions=tuple(
+            PluginExtension(key=RANKING_SOURCE_EXTENSION_KEY, data=_source(key))
+            for key in ("rank_a", "rank_b")
+        ),
+    )
+"""
+
+
+def test_loader_rejects_duplicate_single_value_extension_key(tmp_path):
     root = tmp_path / "root"
     source = (
         "from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, "
-        "PluginRegistration\n"
+        "PluginMetadataSource, PluginRegistration\n"
         "def register(context):\n"
+        "    data = PluginMetadataSource(fetch_movie=lambda number: None)\n"
         "    return PluginRegistration(plugin_id='bad_plugin', display_name='x', "
         "version='1.0.0', host_api_version=HOST_API_VERSION, "
-        "extensions=(PluginExtension(key='foo.bar', data={'x': 1}), "
-        "PluginExtension(key='foo.bar', data={'y': 2})))\n"
+        "extensions=(PluginExtension(key='catalog.metadata_source', data=data), "
+        "PluginExtension(key='catalog.metadata_source', data=data)))\n"
     )
     _write_plugin_dir(root, "bad_plugin", init_source=source)
 
     load_enabled_plugins(Plugins(enabled=["bad_plugin"]), root_dir=root)
     assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"
+
+
+def test_loader_accepts_multiple_ranking_sources(tmp_path):
+    root = tmp_path / "root"
+    _write_plugin_dir(
+        root, "multi_rank", init_source=_MULTI_RANKING_REGISTER_SOURCE
+    )
+
+    registrations = load_enabled_plugins(
+        Plugins(enabled=["multi_rank"]), root_dir=root
+    )
+
+    assert "multi_rank" not in PLUGIN_LOAD_ERRORS
+    assert [ext.key for ext in registrations[0].extensions] == [
+        RANKING_SOURCE_EXTENSION_KEY,
+        RANKING_SOURCE_EXTENSION_KEY,
+    ]
+
+
+def test_loader_requires_host_api_10_for_multiple_ranking_sources(tmp_path):
+    root = tmp_path / "root"
+    _write_plugin_dir(
+        root,
+        "multi_rank",
+        host_api_version=HOST_API_VERSION - 1,
+        init_source=_MULTI_RANKING_REGISTER_SOURCE,
+    )
+
+    load_enabled_plugins(Plugins(enabled=["multi_rank"]), root_dir=root)
+
+    assert PLUGIN_LOAD_ERRORS["multi_rank"]["stage"] == "validate_extensions"
+    assert (
+        f"Host API {HOST_API_VERSION}"
+        in PLUGIN_LOAD_ERRORS["multi_rank"]["message"]
+    )
 
 
 def test_loader_rejects_bad_ranking_extension_payload(tmp_path):
@@ -749,6 +827,48 @@ def test_apply_plugin_ranking_sources_merges_and_isolates_conflicts():
     assert PLUGIN_LOAD_ERRORS["rank_b"]["stage"] == "ranking_conflict"
 
     # 空插件集合恢复空注册表（排行榜不是默认功能）
+    apply_plugin_ranking_sources(())
+    assert RANKING_SOURCES == {}
+    assert RANKING_SOURCE_OWNERS == {}
+
+
+def test_apply_plugin_ranking_sources_accepts_multiple_sources_per_plugin():
+    def fetch(period):
+        return ["ABP-123"]
+
+    def build_source(source_key):
+        return PluginRankingSource(
+            source_key=source_key,
+            name=source_key.upper(),
+            boards=(
+                PluginRankingBoard(key="hot", name="hot", fetch_numbers=fetch),
+            ),
+        )
+
+    registration = PluginRegistration(
+        plugin_id="rank_multi",
+        display_name="multi",
+        version="1.0.0",
+        extensions=(
+            PluginExtension(
+                key=RANKING_SOURCE_EXTENSION_KEY,
+                data=build_source("aaa"),
+            ),
+            PluginExtension(
+                key=RANKING_SOURCE_EXTENSION_KEY,
+                data=build_source("bbb"),
+            ),
+        ),
+    )
+
+    rejected = apply_plugin_ranking_sources((registration,))
+
+    assert rejected == set()
+    assert set(RANKING_SOURCES) == {"aaa", "bbb"}
+    assert RANKING_SOURCE_OWNERS == {"aaa": "rank_multi", "bbb": "rank_multi"}
+    assert RANKING_SOURCES["bbb"].plugin_id == "rank_multi"
+    assert RANKING_SOURCES["bbb"].boards[0].fetch_numbers("daily") == ["ABP-123"]
+
     apply_plugin_ranking_sources(())
     assert RANKING_SOURCES == {}
     assert RANKING_SOURCE_OWNERS == {}

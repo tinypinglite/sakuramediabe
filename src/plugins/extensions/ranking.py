@@ -17,6 +17,8 @@ from src.plugins.contracts import PluginExtension
 
 # 排行榜来源扩展点 key；插件从 src.plugins 顶层导入。
 RANKING_SOURCE_EXTENSION_KEY = "discovery.ranking_source"
+# 同一插件声明多个来源要求的最低 Host API 版本（来源扩展点可重复声明）。
+RANKING_MULTI_SOURCE_HOST_API_VERSION = 10
 
 
 class PluginRankingBoard(BaseModel):

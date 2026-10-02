@@ -29,3 +29,8 @@ EXTENSION_VALIDATORS: dict[str, Callable[..., Any]] = {
     RANKING_SOURCE_EXTENSION_KEY: validate_ranking_extension,
     MEDIA_PROVIDER_EXTENSION_KEY: validate_media_provider_extension,
 }
+
+# 允许同一插件重复声明的扩展点；未列出的 key 仍要求插件内部唯一。
+REPEATABLE_EXTENSION_KEYS: frozenset[str] = frozenset(
+    {RANKING_SOURCE_EXTENSION_KEY}
+)

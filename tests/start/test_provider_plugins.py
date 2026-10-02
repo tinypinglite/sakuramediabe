@@ -29,8 +29,8 @@ from src.plugins.provider_protocol import (
 )
 
 
-def test_plugin_protocol_uses_host_api_v9():
-    assert HOST_API_VERSION == 9
+def test_plugin_protocol_uses_host_api_v10():
+    assert HOST_API_VERSION == 10
 
 
 def test_provider_operation_error_rejects_unknown_code():
