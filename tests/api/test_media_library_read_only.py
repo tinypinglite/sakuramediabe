@@ -61,3 +61,33 @@ def test_media_library_allows_multiple_libraries_for_one_provider_account(
     assert first.status_code == 201
     assert second.status_code == 201
     assert first.json()["account_key"] == second.json()["account_key"] == "same-account"
+
+
+def test_media_library_exposes_in_place_import_capability(
+    client, account_user, monkeypatch
+):
+    bundle = SimpleNamespace(
+        provider_key="demo",
+        library_config_fields=(),
+        prepare_library=lambda **_kwargs: PreparedLibrary(
+            provider_config={}, account_key=None
+        ),
+        supports_in_place_import=True,
+    )
+    monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "require", lambda _key: bundle)
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY, "_bundles", {"demo": ("demo_plugin", bundle)}
+    )
+    headers = _auth_headers(client, account_user)
+
+    created = client.post(
+        "/media-libraries",
+        json={"name": "in-place", "provider_key": "demo", "provider_config": {}},
+        headers=headers,
+    )
+    assert created.status_code == 201
+    assert created.json()["supports_in_place_import"] is True
+
+    response = client.get("/media-libraries", headers=headers)
+    assert response.status_code == 200
+    assert response.json()[0]["supports_in_place_import"] is True

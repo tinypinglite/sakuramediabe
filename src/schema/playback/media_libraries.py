@@ -31,6 +31,7 @@ class MediaLibraryResource(SchemaModel):
     provider_key: str
     provider_config: dict[str, Any]
     account_key: str | None = None
+    supports_in_place_import: bool = False
     created_at: datetime
     updated_at: datetime
 

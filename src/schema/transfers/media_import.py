@@ -36,7 +36,7 @@ class ImportRequest(SchemaModel):
     media_kind: Literal["jav", "video"]
     library_id: int = Field(gt=0)
     source_ref: dict[str, Any]
-    source_disposition: Literal["keep", "delete_after_commit"] = "keep"
+    source_disposition: Literal["keep", "delete_after_commit", "in_place"] = "keep"
     collection_id: int | None = Field(default=None, gt=0)
 
     @model_validator(mode="after")

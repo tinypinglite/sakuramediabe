@@ -69,6 +69,9 @@ class MediaLibraryService:
     @classmethod
     def _resource(cls, library: MediaLibrary) -> MediaLibraryResource:
         resource = MediaLibraryResource.from_model(library)
+        resource.supports_in_place_import = MEDIA_PROVIDER_REGISTRY.supports_in_place_import(
+            library.provider_key
+        )
         try:
             bundle = MEDIA_PROVIDER_REGISTRY.require(library.provider_key)
         except ProviderUnavailableError:

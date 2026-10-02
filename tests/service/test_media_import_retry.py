@@ -1,6 +1,9 @@
 from contextlib import nullcontext
 from types import SimpleNamespace
 
+import pytest
+
+from src.api.exception.errors import ApiError
 from src.model import Media, MediaLibrary, Movie
 from src.plugins.provider_protocol import ImportFile, StagedMedia
 from src.service.transfers.imports.import_service import MediaImportService
@@ -76,3 +79,32 @@ def test_retry_uses_persisted_file_ref_and_associates_media(test_db, monkeypatch
     )
     assert placement == "jav/ABC-001/ABC-001.mp4"
     assert operation_key == "retry-operation"
+
+
+def test_retry_in_place_requires_provider_capability(test_db):
+    library = MediaLibrary.create(
+        name="retry-in-place-library", provider_key="test", provider_config={}
+    )
+
+    class Storage:
+        pass
+
+    failure_item = {
+        "source_ref": {"file": "opaque-file"},
+        "name": "ABC-001.mp4",
+        "relative_path": "release/ABC-001.mp4",
+        "size_bytes": 100,
+        "is_video": True,
+        "media_kind": "jav",
+        "library_id": library.id,
+        "source_disposition": "in_place",
+    }
+
+    with pytest.raises(ApiError) as exc:
+        MediaImportService(provider=Storage(), catalog_import_service=object()).retry_failed_file(
+            failure_item,
+            "javdb:ABC-001:javdb-001",
+            operation_key="retry-in-place",
+        )
+
+    assert exc.value.code == "in_place_import_unsupported"

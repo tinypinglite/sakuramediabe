@@ -98,6 +98,11 @@ class MediaImportService:
         except ProviderOperationError as exc:
             raise self._provider_error(exc) from exc
 
+    def _supports_in_place_import(self, library: MediaLibrary, storage: Any) -> bool:
+        if self._provider_override is not None:
+            return bool(getattr(storage, "supports_in_place_import", False))
+        return MEDIA_PROVIDER_REGISTRY.supports_in_place_import(library.provider_key)
+
     def _metadata_max_workers(self, total_movies: int) -> int:
         from src.config.config import settings
 
@@ -180,7 +185,7 @@ class MediaImportService:
     ) -> ImportResult:
         if not isinstance(source_ref, dict) or not source_ref:
             raise ApiError(422, "invalid_import_source", "source_ref must be an object")
-        if source_disposition not in {"keep", "delete_after_commit"}:
+        if source_disposition not in {"keep", "delete_after_commit", "in_place"}:
             raise ApiError(422, "invalid_source_disposition", "无效的源处置方式")
         library = MediaLibrary.get_or_none(MediaLibrary.id == library_id)
         if library is None:
@@ -190,6 +195,10 @@ class MediaImportService:
         if media_kind == "jav" and collection_id is not None:
             raise ApiError(422, "invalid_collection", "jav import does not support collection_id")
         storage = self._storage(library)
+        if source_disposition == "in_place" and not self._supports_in_place_import(
+            library, storage
+        ):
+            raise ApiError(422, "in_place_import_unsupported", "该媒体库不支持原地导入")
         try:
             if progress_callback is not None and MEDIA_PROVIDER_REGISTRY.supports_scan_progress(library.provider_key):
                 scanned_files = tuple(storage.scan_import_source(
@@ -237,7 +246,7 @@ class MediaImportService:
         finalize_error: Exception | None = None
         import_source_identities: dict[str, str] = {}
         get_import_source_identity = getattr(storage, "get_import_source_identity", None)
-        if source_disposition == "keep" and callable(get_import_source_identity):
+        if source_disposition in {"keep", "in_place"} and callable(get_import_source_identity):
             for source in scanned_files:
                 if not is_supported_video_file_name(source.name):
                     continue
@@ -617,12 +626,16 @@ class MediaImportService:
         self._validate_import_file(source)
         library_id = int(failure_item["library_id"])
         source_disposition = failure_item.get("source_disposition", "keep")
-        if source_disposition not in {"keep", "delete_after_commit"}:
+        if source_disposition not in {"keep", "delete_after_commit", "in_place"}:
             raise ApiError(422, "invalid_source_disposition", "无效的源处置方式")
         library = MediaLibrary.get_or_none(MediaLibrary.id == library_id)
         if library is None:
             raise ApiError(404, "media_library_not_found", "媒体库不存在")
         storage = self._storage(library)
+        if source_disposition == "in_place" and not self._supports_in_place_import(
+            library, storage
+        ):
+            raise ApiError(422, "in_place_import_unsupported", "该媒体库不支持原地导入")
 
         from src.service.catalog.movie_metadata_search_service import (
             MovieMetadataSearchService,
@@ -684,7 +697,7 @@ class MediaImportService:
                 raise self._provider_error(exc) from exc
 
             get_import_source_identity = getattr(storage, "get_import_source_identity", None)
-            if source_disposition == "keep" and callable(get_import_source_identity):
+            if source_disposition in {"keep", "in_place"} and callable(get_import_source_identity):
                 try:
                     identity = get_import_source_identity(source=source)
                 except Exception:

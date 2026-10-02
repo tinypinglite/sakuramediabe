@@ -329,7 +329,7 @@ class StorageProvider(Protocol):
         *,
         source: ImportFile,
         placement: ImportPlacement,
-        source_disposition: Literal["keep", "delete_after_commit"],
+        source_disposition: Literal["keep", "delete_after_commit", "in_place"],
         operation_key: str,
     ) -> StagedMedia: ...
 
@@ -597,6 +597,12 @@ class MediaProviderRegistry:
 
     def supports_scan_progress(self, provider_key: str) -> bool:
         return self._host_api_versions.get(provider_key, 0) >= SCAN_PROGRESS_HOST_API_VERSION
+
+    def supports_in_place_import(self, provider_key: str) -> bool:
+        """Whether the active bundle opts into ``in_place`` import disposition."""
+        entry = self._bundles.get(provider_key)
+        bundle = entry[1] if entry is not None else None
+        return bool(getattr(bundle, "supports_in_place_import", False))
 
     def require(self, provider_key: str) -> MediaProviderBundle:
         entry = self._bundles.get(provider_key)
