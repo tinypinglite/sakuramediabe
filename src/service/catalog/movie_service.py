@@ -111,7 +111,7 @@ class MovieService:
         actor_id: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
-        year: int | None = None,
+        years: list[int] | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         series_id: int | None = None,
@@ -131,6 +131,14 @@ class MovieService:
                 "invalid_movie_filter",
                 "heat_min 不能大于 heat_max",
                 {"heat_min": heat_min, "heat_max": heat_max},
+            )
+        if years and any(year < 1 or year > 9998 for year in years):
+            # 年份区间上界需要构造 year + 1，datetime 年份上限为 9999。
+            raise ApiError(
+                422,
+                "invalid_movie_filter",
+                "year 超出可用范围",
+                {"year": years},
             )
         query = Movie.select().where(Movie.is_blacklisted == blacklisted)
         if actor_id is None:
@@ -159,12 +167,18 @@ class MovieService:
                 tagged_movie_ids = MovieTag.select(MovieTag.movie).where(MovieTag.tag.in_(tag_ids))
             filtered_query = filtered_query.where(Movie.id.in_(tagged_movie_ids))
 
-        if year is not None:
-            year_start = datetime(year, 1, 1)
-            year_end = datetime(year + 1, 1, 1)
+        if years:
+            # 多选年份为 OR：命中任一所选年份区间即可。保留范围比较，
+            # 不改成 DATE_PART(year)，避免失去 release_date 索引。
             filtered_query = filtered_query.where(
-                Movie.release_date >= year_start,
-                Movie.release_date < year_end,
+                reduce(
+                    operator.or_,
+                    (
+                        (Movie.release_date >= datetime(year, 1, 1))
+                        & (Movie.release_date < datetime(year + 1, 1, 1))
+                        for year in years
+                    ),
+                )
             )
 
         if status == MovieListStatus.SUBSCRIBED:
@@ -348,7 +362,7 @@ class MovieService:
         actor_id: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
-        year: int | None = None,
+        years: list[int] | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         sort: str | None = None,
@@ -369,7 +383,7 @@ class MovieService:
                 actor_id=actor_id,
                 tag_ids=tag_ids,
                 tag_match=tag_match,
-                year=year,
+                years=years,
                 status=status,
                 collection_type=collection_type,
                 series_id=series_id,
@@ -690,7 +704,7 @@ class MovieService:
         actor_id: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
-        year: int | None = None,
+        years: list[int] | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         number_source: MovieNumberSource = MovieNumberSource.ALL,
@@ -711,7 +725,7 @@ class MovieService:
             actor_id=actor_id,
             tag_ids=tag_ids,
             tag_match=tag_match,
-            year=year,
+            years=years,
             status=status,
             collection_type=collection_type,
             director_name=director_name,
@@ -728,7 +742,7 @@ class MovieService:
                 actor_id=actor_id,
                 tag_ids=tag_ids,
                 tag_match=tag_match,
-                year=year,
+                years=years,
                 status=status,
                 collection_type=collection_type,
                 sort=sort,

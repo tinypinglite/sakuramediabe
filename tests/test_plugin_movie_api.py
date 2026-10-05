@@ -89,6 +89,25 @@ def test_movies_find_by_numbers_preserves_numeric_separator(test_db):
     assert [snapshot.values["movie_number"] for snapshot in snapshots] == ["ABP-001"]
 
 
+def test_movies_query_filters_by_single_year(test_db):
+    from datetime import datetime
+
+    from src.plugins import MovieQueryFilters
+
+    _create_movie(test_db, release_date=datetime(2024, 5, 1))
+    _create_movie(
+        test_db,
+        javdb_id="javdb-2",
+        movie_number="ABP-002",
+        release_date=datetime(2023, 5, 1),
+    )
+    api = MovieApi("demo_plugin")
+
+    page = api.query(filters=MovieQueryFilters(year=2024))
+
+    assert [item.values["movie_number"] for item in page.items] == ["ABP-001"]
+
+
 def test_movies_list_page_walks_full_library_by_id_cursor(test_db):
     first = _create_movie(test_db, movie_number="ABP-001")
     second = _create_movie(

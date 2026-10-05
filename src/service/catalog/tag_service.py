@@ -77,7 +77,7 @@ class TagService:
     def list_tag_movies(
         cls,
         tag_id: int,
-        year: int | None = None,
+        years: list[int] | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         sort: str | None = None,
@@ -91,7 +91,7 @@ class TagService:
         cls.get_tag(tag_id)
         return MovieService.list_movies(
             tag_ids=[tag_id],
-            year=year,
+            years=years,
             status=status,
             collection_type=collection_type,
             sort=sort,

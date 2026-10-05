@@ -267,7 +267,7 @@ class MovieApi:
             actor_id=query_filters.actor_id,
             tag_ids=list(query_filters.tag_ids) or None,
             tag_match=tag_match,
-            year=query_filters.year,
+            years=[query_filters.year] if query_filters.year is not None else None,
             status=status,
             collection_type=collection_type,
             series_id=query_filters.series_id,

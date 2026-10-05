@@ -1,7 +1,10 @@
 
 from fastapi import APIRouter, Depends, Query
 
-from src.api.routers._utils import parse_optional_exact_text
+from src.api.routers._utils import (
+    parse_csv_positive_ints,
+    parse_optional_exact_text,
+)
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.catalog.movies import (
     MovieCollectionType,
@@ -35,7 +38,7 @@ def get_tag(tag_id: int):
 @router.get("/{tag_id}/movies", response_model=PageResponse[MovieListItemResource])
 def list_tag_movies(
     tag_id: int,
-    year: int | None = Query(default=None, ge=1),
+    year: str | None = Query(default=None),
     status: MovieListStatus = MovieListStatus.ALL,
     collection_type: MovieCollectionType = MovieCollectionType.ALL,
     sort: str | None = Query(default=None),
@@ -48,7 +51,7 @@ def list_tag_movies(
 ):
     return TagService.list_tag_movies(
         tag_id=tag_id,
-        year=year,
+        years=parse_csv_positive_ints(year, "year", error_code="invalid_movie_filter"),
         status=status,
         collection_type=collection_type,
         sort=sort,
