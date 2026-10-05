@@ -10,6 +10,7 @@ from src.model import (
     BackgroundTaskRun,
     DownloadClient,
     DownloadTask,
+    Image,
     Media,
     MediaLibrary,
     Movie,
@@ -40,6 +41,7 @@ from src.start.migrations.runner import (
     MOVIE_COLLECTION_OWNER_MIGRATION_NAME,
     PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
     PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
+    REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
     REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
     MigrationExecution,
     MigrationRunSummary,
@@ -126,6 +128,7 @@ def test_current_migrations_are_discoverable_in_order():
         ACTOR_MERGED_INTO_MIGRATION_NAME,
         DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
         IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME,
+        REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
     ]
 
 
@@ -220,6 +223,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=ACTOR_MERGED_INTO_MIGRATION_NAME, applied=True),
         MigrationExecution(name=DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME, applied=True),
         MigrationExecution(name=IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -243,6 +247,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         ACTOR_MERGED_INTO_MIGRATION_NAME,
         DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
         IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME,
+        REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
     ]
 
 
@@ -395,7 +400,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 20
+    assert summary.applied_count == 21
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -836,3 +841,93 @@ def test_remove_orphan_video_items_migration_deletes_empty_videos_and_membership
     # 重复执行幂等：有效条目与成员不受影响。
     migration.migrate(clean_db)
     assert VideoCollectionItem.get_by_id(kept_link.id).video_item_id == kept.id
+
+
+def test_remove_generated_thin_cover_migration_clears_only_skipped_movies(clean_db, monkeypatch, tmp_path):
+    import zipfile
+
+    from src.common.media_paths import (
+        movie_asset_relative_dir,
+        normalize_asset_dir_name,
+    )
+    from src.config.config import settings
+
+    clean_db.create_tables(TEST_MODELS)
+    image_root = tmp_path / "assets"
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(image_root))
+
+    def relative_dir(movie_number: str) -> str:
+        return movie_asset_relative_dir(normalize_asset_dir_name(movie_number)).as_posix()
+
+    def create_movie(movie_number: str, thin_name: str):
+        directory = relative_dir(movie_number)
+        cover = Image.create(origin=f"{directory}/cover.jpg")
+        thin = Image.create(origin=f"{directory}/{thin_name}")
+        movie = Movie.create(
+            movie_number=movie_number,
+            title=movie_number,
+            cover_image=cover,
+            thin_cover_image=thin,
+        )
+        return movie, thin
+
+    def write_pack(movie_number: str, entry_names: list[str]) -> Path:
+        directory = image_root / relative_dir(movie_number)
+        directory.mkdir(parents=True, exist_ok=True)
+        pack_path = directory / "assets.zip"
+        with zipfile.ZipFile(pack_path, "w", zipfile.ZIP_STORED) as archive:
+            for entry_name in entry_names:
+                archive.writestr(entry_name, f"bytes:{entry_name}".encode())
+        return pack_path
+
+    def pack_entries(pack_path: Path) -> list[str]:
+        with zipfile.ZipFile(pack_path) as archive:
+            return archive.namelist()
+
+    packed_movie, packed_thin = create_movie("FC2-4811064", "thin-cover.jpg")
+    packed_path = write_pack("FC2-4811064", ["cover.jpg", "thin-cover.jpg"])
+    loose_movie, loose_thin = create_movie("HEYZO-0733", "thin-cover.webp")
+    loose_dir = image_root / relative_dir("HEYZO-0733")
+    loose_dir.mkdir(parents=True, exist_ok=True)
+    (loose_dir / "cover.webp").write_bytes(b"cover")
+    (loose_dir / "thin-cover.webp").write_bytes(b"thin")
+    western_movie, western_thin = create_movie("blacked.16.12.16", "thin-cover.jpg")
+    western_path = write_pack("blacked.16.12.16", ["cover.jpg", "thin-cover.jpg"])
+    numeric_movie, numeric_thin = create_movie("051325_100", "thin-cover.jpg")
+    numeric_path = write_pack("051325_100", ["cover.jpg", "thin-cover.jpg"])
+    kept_movie, kept_thin = create_movie("SSIS-001", "thin-cover.jpg")
+    kept_path = write_pack("SSIS-001", ["cover.jpg", "thin-cover.jpg"])
+    plot_movie, plot_thin = create_movie("FC2-999999", "plot-0.jpg")
+
+    migration = _load_migration_module(
+        Path(f"{REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME}.py")
+    )
+    migration.migrate(clean_db)
+
+    for movie, thin in (
+        (packed_movie, packed_thin),
+        (loose_movie, loose_thin),
+        (western_movie, western_thin),
+        (numeric_movie, numeric_thin),
+    ):
+        assert Movie.get_by_id(movie.id).thin_cover_image_id is None
+        assert Image.get_or_none(Image.id == thin.id) is None
+
+    assert pack_entries(packed_path) == ["cover.jpg"]
+    assert not (loose_dir / "thin-cover.webp").exists()
+    assert (loose_dir / "cover.webp").exists()
+    assert pack_entries(western_path) == ["cover.jpg"]
+    assert pack_entries(numeric_path) == ["cover.jpg"]
+
+    assert Movie.get_by_id(kept_movie.id).thin_cover_image_id == kept_thin.id
+    assert Image.get_or_none(Image.id == kept_thin.id) is not None
+    assert sorted(pack_entries(kept_path)) == ["cover.jpg", "thin-cover.jpg"]
+
+    assert Movie.get_by_id(plot_movie.id).thin_cover_image_id == plot_thin.id
+    assert Image.get_or_none(Image.id == plot_thin.id) is not None
+
+    # 幂等：重跑不改变任何状态。
+    migration.migrate(clean_db)
+    assert Movie.get_by_id(packed_movie.id).thin_cover_image_id is None
+    assert Movie.get_by_id(kept_movie.id).thin_cover_image_id == kept_thin.id
+

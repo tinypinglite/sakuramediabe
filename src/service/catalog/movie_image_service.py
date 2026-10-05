@@ -9,6 +9,7 @@
 """
 
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -38,6 +39,20 @@ from src.common.service_helpers import backoff_delay
 from src.metadata._providers.models import JavdbMovieActorResource
 from src.model import Image, Movie, MoviePlotImage
 from src.service.catalog.image_cleanup_service import ImageCleanupService
+
+# 这些番号的封面都是单张横图（FC2 / HEYZO / 欧美流媒体日期命名 / 素人纯数字编号），
+# 不存在实体盘双页合订结构；按"合订封面书脊"裁出的右半只是普通切片，禁止生成薄封面。
+THIN_COVER_SKIP_NUMBER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^FC2-", re.IGNORECASE),
+    re.compile(r"^HEYZO-", re.IGNORECASE),
+    re.compile(r"^[a-z][a-z0-9]*\.\d{2,4}\.\d{2}\.\d{2}", re.IGNORECASE),
+    re.compile(r"^\d+[-_]\d+"),
+)
+
+
+def should_skip_thin_cover_crop(movie_number: str) -> bool:
+    number = (movie_number or "").strip()
+    return any(pattern.match(number) for pattern in THIN_COVER_SKIP_NUMBER_PATTERNS)
 
 
 class ImageDownloadError(Exception):
@@ -253,7 +268,11 @@ class MovieImageService:
         cover_task: ImagePersistTask | None,
         plot_tasks: list[ImagePersistTask],
     ) -> ThinCoverResolution:
-        if cover_task is not None and cover_task.absolute_path.exists():
+        if (
+            cover_task is not None
+            and cover_task.absolute_path.exists()
+            and not should_skip_thin_cover_crop(movie_number)
+        ):
             thin_cover_task = self._generate_thin_cover_task_from_cover(
                 movie_number,
                 cover_task.absolute_path.read_bytes(),
@@ -278,7 +297,7 @@ class MovieImageService:
         prepared_files: list[PreparedImageFile],
     ) -> ThinCoverResolution:
         prepared_by_relative_path = {prepared_file.image_task.relative_path: prepared_file for prepared_file in prepared_files}
-        if cover_task is not None:
+        if cover_task is not None and not should_skip_thin_cover_crop(movie_number):
             prepared_cover = prepared_by_relative_path.get(cover_task.relative_path)
             if prepared_cover is not None:
                 generated = self._generate_prepared_thin_cover_from_cover(
@@ -308,7 +327,7 @@ class MovieImageService:
         plot_links: list[MoviePlotImage],
     ) -> ThinCoverResolution:
         cover_image = movie.cover_image
-        if cover_image is not None:
+        if cover_image is not None and not should_skip_thin_cover_crop(movie.movie_number):
             try:
                 cover_bytes = read_image_bytes(cover_image.origin)
             except FileNotFoundError:
