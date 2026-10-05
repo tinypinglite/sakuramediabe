@@ -56,6 +56,21 @@ class TestParseMovieNumberFromText:
             == "FC2-1743979"
         )
 
+    def test_watermark_tag_does_not_become_number(self):
+        # hhb/hhb1/hhb2 是压制组水印，不能把 "_60fps" 前面的 hhb 当番号。
+        assert parse_movie_number_from_text("hhd800.com@midv00574hhb_60fps") == "MIDV-574"
+
+    def test_z_suffix_is_part_of_number(self):
+        # JavDB 里 IBW-478 与 IBW-478z 是两条记录，z 后缀属于番号本体。
+        assert parse_movie_number_from_text("SSIS-001Z.mp4") == "SSIS-001Z"
+        assert parse_movie_number_from_text("AOZ-313Z.mp4") == "AOZ-313Z"
+        assert parse_movie_number_from_text("IBW-478z.mp4") == "IBW-478Z"
+
+    def test_numeric_pair_allows_two_digit_part(self):
+        # 10musume 等系列的第二段可以是两位（010116_01），分隔符保持原样。
+        assert parse_movie_number_from_text("010116_01.mp4") == "010116_01"
+        assert parse_movie_number_from_text("020317-01-10musume-1080p.mp4") == "020317-01"
+
     def test_unparseable_returns_empty(self):
         assert parse_movie_number_from_text("random words") == ""
         assert parse_movie_number_from_text("") == ""

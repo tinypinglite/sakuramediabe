@@ -55,7 +55,7 @@ def test_worker_runs_business_recovery_immediately_after_task_failure(monkeypatc
     assert recovered == [{MediaTransferTaskService.TASK_KEY}]
 
 
-def test_worker_start_reconciles_interrupted_transfer_state_before_claiming(monkeypatch):
+def test_worker_start_reconciles_interrupted_transfer_state_before_claiming(monkeypatch, test_db):
     recovered: list[set[str]] = []
     started_threads: list[str] = []
 
