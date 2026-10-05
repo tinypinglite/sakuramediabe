@@ -26,6 +26,7 @@ from src.common.media_import_status import (
     FAILURE_REASON_METADATA_FETCH_FAILED,
     FAILURE_REASON_METADATA_UPSERT_FAILED,
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
+    FAILURE_REASON_TARGET_MOVIE_NUMBER_MISMATCH,
     FAILURE_REASON_UNSUPPORTED_FORMAT,
     make_failure_item,
 )
@@ -213,9 +214,14 @@ class MediaImportService:
             raise ApiError(502, "provider_scan_failed", "媒体提供方扫描失败") from exc
         for source in scanned_files:
             self._validate_import_file(source)
+        from src.config.config import settings
+
+        minimum_video_file_size = settings.media.allowed_min_video_file_size
+        failure_items: list[dict[str, Any]] = []
+        imported_count = skipped_count = failed_count = 0
         if target_movie_number:
             # 下载任务导入只认准目标番号：资源包里解析出的其它番号（合集/捆绑）一律忽略，
-            # 避免把用户没有订阅的影片建库并强制订阅。解析不出番号的文件保持原有处理。
+            # 避免把用户没有订阅的影片建库并强制订阅；解析不出番号的文件按目标番号导入。
             target_key = normalize_movie_number(target_movie_number)
             kept_sources: list[ImportFile] = []
             for source in scanned_files:
@@ -231,15 +237,24 @@ class MediaImportService:
                         parsed,
                         target_key,
                     )
+                    if (
+                        is_supported_video_file_name(source.name)
+                        and source.size_bytes >= minimum_video_file_size
+                    ):
+                        skipped_count += 1
+                        failure_items.append(
+                            self._make_failure_item(
+                                source,
+                                reason=FAILURE_REASON_TARGET_MOVIE_NUMBER_MISMATCH,
+                                detail=f"文件名解析为 {parsed}，与目标 {target_movie_number} 不一致",
+                                library_id=library_id,
+                                media_kind=media_kind,
+                                source_disposition=source_disposition,
+                            )
+                        )
                     continue
                 kept_sources.append(source)
             scanned_files = tuple(kept_sources)
-        from src.config.config import settings
-
-        minimum_video_file_size = settings.media.allowed_min_video_file_size
-
-        failure_items: list[dict[str, Any]] = []
-        imported_count = skipped_count = failed_count = 0
         created_video_ids: list[int] = []
         new_playable_movies: list[dict[str, object]] = []
         imported_subtitle_paths: set[str] = set()
@@ -354,6 +369,7 @@ class MediaImportService:
                 number := parse_movie_number_from_text(
                     f"{item.name} {item.relative_path}"
                 )
+                or target_movie_number
             )
         }
         with self.metadata_import_batch(sorted(metadata_numbers)) as metadata_futures:
@@ -396,6 +412,9 @@ class MediaImportService:
                     )
                     continue
                 movie_number = parse_movie_number_from_text(f"{source.name} {source.relative_path}")
+                if media_kind == "jav" and not movie_number and target_movie_number:
+                    # 目标番号是权威身份：启发式解析失败时直接采用，避免解析问题导致丢片。
+                    movie_number = target_movie_number
                 if media_kind == "jav" and not movie_number:
                     failed_count += 1
                     failure_items.append(

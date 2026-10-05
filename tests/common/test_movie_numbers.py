@@ -28,6 +28,34 @@ class TestParseMovieNumberFromText:
         # remove_disturb 先剥域名，站点水印不会被误识别成番号。
         assert parse_movie_number_from_text("hjd2048.com-0602meyd424") == "MEYD-424"
 
+    def test_letter_series_not_truncated_after_punctuation(self):
+        # 水印/域名残片后紧跟番号时，不能从第二个字母起截出假番号。
+        assert (
+            parse_movie_number_from_text(
+                "[4096社区 www.0621dz.cn[.NGOD-253 保健室のひと妻 徹夜の看病後に学生たちの逞しい身体に翻弄される 波多野結衣.mp4"
+            )
+            == "NGOD-253"
+        )
+        assert (
+            parse_movie_number_from_text(
+                "[4096社区 www.0621dz.cn].AOZ-314 一人暮らしの美人OLだけを狙った尾行押し込み鬼畜レ●プ映像.mp4"
+            )
+            == "AOZ-314"
+        )
+
+    def test_short_n_series_requires_left_boundary(self):
+        # N\d{4} 规则不能从更长字母串里截尾（adn00277 -> N0027）。
+        assert parse_movie_number_from_text("adn00277.mp4") == "ADN-277"
+        assert parse_movie_number_from_text("118chn00037hhb_000.mp4") == "CHN-037"
+        assert parse_movie_number_from_text("n0646.mp4") == "N0646"
+
+    def test_numeric_pair_requires_digit_boundaries(self):
+        # 下载目录名 FC2-1743979-463fb7 里的 1743979-463 是长数字串的尾段，不是素人番号。
+        assert (
+            parse_movie_number_from_text("FC2-1743979-463fb7/FC2-PPV-1743979 我和清纯的她约会了")
+            == "FC2-1743979"
+        )
+
     def test_unparseable_returns_empty(self):
         assert parse_movie_number_from_text("random words") == ""
         assert parse_movie_number_from_text("") == ""

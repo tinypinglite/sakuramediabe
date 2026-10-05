@@ -5,7 +5,7 @@ from re import Pattern
 MOVIE_NUMBER_PATTERNS: list[tuple[Pattern[str], str]] = [
     (re.compile(r"(DSVR)0(\d{3,4})", re.IGNORECASE), "-"),
     (re.compile(r"(XXX)-(AV)-(\d+)", re.IGNORECASE), "-"),
-    (re.compile(r"(N\d{4})", re.IGNORECASE), "-"),
+    (re.compile(r"(?<![a-zA-Z])(N\d{4})", re.IGNORECASE), "-"),
     (re.compile(r"(LAFB?D?)-(\d+)", re.IGNORECASE), "-"),
     (re.compile(r"(MISM)-(\d+)", re.IGNORECASE), "-"),
     (re.compile(r"(MKB?D?)-(S\d+)", re.IGNORECASE), "-"),
@@ -15,15 +15,15 @@ MOVIE_NUMBER_PATTERNS: list[tuple[Pattern[str], str]] = [
     (re.compile(r"(MCDV)-(\d+)", re.IGNORECASE), "-"),
     # 素人系数字番号：分隔符本身是片商标识（一本道 ``_`` / 加勒比 ``-``，同日番号是两部不同影片），
     # 捕获进组原样保留、拼接符为空串，绝不转写。
-    (re.compile(r"(\d{6})([-_])(\d{3})"), ""),
+    (re.compile(r"(?<!\d)(\d{6})([-_])(\d{3})(?!\d)"), ""),
     (re.compile(r"(FC2)PPV_(\d+)", re.IGNORECASE), "-"),
     (re.compile(r"(FC2)PPV-(\d+)", re.IGNORECASE), "-"),
     (re.compile(r"(FC2)-PPV-(\d+)", re.IGNORECASE), "-"),
     (re.compile(r"(FC2)-(\d+)", re.IGNORECASE), "-"),
     (re.compile(r"9([a-zA-Z]{3,5})(\d{2,3})"), "-"),
-    (re.compile(r"(?<!\.)([a-zA-Z]{2,6})00(\d{3})"), "-"),
-    (re.compile(r"(?<!\.)([a-zA-Z]{2,6})-(\d{3,5})"), "-"),
-    (re.compile(r"(?<!\.)([a-zA-Z]{2,6})(\d{3,5})"), "-"),
+    (re.compile(r"(?<![a-zA-Z])([a-zA-Z]{2,6})00(\d{3})"), "-"),
+    (re.compile(r"(?<![a-zA-Z])([a-zA-Z]{2,6})-(\d{3,5})"), "-"),
+    (re.compile(r"(?<![a-zA-Z])([a-zA-Z]{2,6})(\d{3,5})"), "-"),
     (re.compile(r"([a-zA-Z]{3,5}) (\d{2,6})"), "-"),
 ]
 
