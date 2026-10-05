@@ -189,3 +189,12 @@ class DownloadTaskImportResponse(SchemaModel):
     task_id: int
     task_run_id: int
     status: str
+
+
+class DownloadTaskFileResource(SchemaModel):
+    """下载任务源内的单个文件；宿主内部 source_ref 不对外暴露。"""
+
+    name: str
+    relative_path: str
+    size_bytes: int
+    is_video: bool

@@ -17,9 +17,14 @@ from src.model import (
     Movie,
 )
 from src.model.base import get_database
-from src.plugins.provider_protocol import ProviderOperationError
+from src.plugins.provider_protocol import (
+    MEDIA_PROVIDER_REGISTRY,
+    ProviderOperationError,
+    ProviderUnavailableError,
+)
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
+    DownloadTaskFileResource,
     DownloadTaskImportResponse,
     DownloadTaskResource,
 )
@@ -28,6 +33,7 @@ from src.service.transfers.downloads.common import (
     build_task_movie_filter,
     download_provider,
     is_download_complete,
+    library_handle_for,
     normalize_state_filters,
     require_task,
     resolve_task_sort,
@@ -157,6 +163,54 @@ class DownloadTaskService:
             task_run_id=accepted.task_run_id,
             status="accepted",
         )
+
+    @classmethod
+    def list_task_files(cls, task_id: int) -> list[DownloadTaskFileResource]:
+        """列出下载任务源内的文件；仅已完成且带来源引用的任务可查看。"""
+        task = require_task(task_id)
+        if task.completed_source_ref is None:
+            raise ApiError(
+                422,
+                "download_task_files_unavailable",
+                "该下载任务没有可查看的文件",
+                {"task_id": task.id},
+            )
+        library = task.client.library
+        try:
+            storage = MEDIA_PROVIDER_REGISTRY.storage_for(library_handle_for(library))
+        except ProviderUnavailableError as exc:
+            raise ApiError(
+                503,
+                "provider_not_installed",
+                "媒体提供方未安装",
+                {"provider_key": library.provider_key},
+            ) from exc
+        try:
+            scanned = tuple(
+                storage.scan_import_source(source_ref=task.completed_source_ref)
+            )
+        except ProviderOperationError as exc:
+            raise cls._provider_error(exc) from exc
+        except Exception as exc:
+            raise ApiError(
+                502,
+                "download_task_files_failed",
+                "下载任务文件读取失败",
+                {"task_id": task.id},
+            ) from exc
+        files = sorted(
+            scanned,
+            key=lambda item: (item.relative_path.casefold(), item.relative_path),
+        )
+        return [
+            DownloadTaskFileResource(
+                name=file.name,
+                relative_path=file.relative_path,
+                size_bytes=file.size_bytes,
+                is_video=file.is_video,
+            )
+            for file in files
+        ]
 
     @staticmethod
     def _provider_error(exc: ProviderOperationError) -> ApiError:

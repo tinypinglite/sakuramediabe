@@ -288,6 +288,7 @@ def test_create_app_registers_download_task_center_routes():
     assert ("/download-tasks", "GET") in route_methods
     assert ("/download-tasks/stream", "GET") not in route_methods
     assert ("/download-tasks/{task_id}", "DELETE") in route_methods
+    assert ("/download-tasks/{task_id}/files", "GET") in route_methods
     assert ("/download-tasks/{task_id}/import", "POST") in route_methods
 
 
