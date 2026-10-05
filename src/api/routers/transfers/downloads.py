@@ -15,6 +15,8 @@ from src.schema.transfers.downloads import (
     DownloadClientUpdateRequest,
     DownloadRequestCreateRequest,
     DownloadRequestCreateResponse,
+    DownloadTaskBatchImportRequest,
+    DownloadTaskBatchImportResponse,
     DownloadTaskFileResource,
     DownloadTaskImportResponse,
     DownloadTaskResource,
@@ -135,6 +137,18 @@ def list_download_task_files(
     current_user=Depends(get_current_user),
 ):
     return DownloadTaskService.list_task_files(task_id)
+
+
+@router.post(
+    "/download-tasks/imports",
+    response_model=DownloadTaskBatchImportResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def trigger_download_task_batch_import(
+    payload: DownloadTaskBatchImportRequest,
+    current_user=Depends(get_current_user),
+):
+    return DownloadTaskService.trigger_import_batch(payload.task_ids)
 
 
 @router.post(

@@ -24,22 +24,26 @@ from src.plugins.provider_protocol import (
 )
 from src.schema.common.pagination import PageResponse
 from src.schema.transfers.downloads import (
+    DownloadTaskBatchImportResponse,
     DownloadTaskFileResource,
     DownloadTaskImportResponse,
     DownloadTaskResource,
 )
 from src.schema.transfers.media_import import ImportRequest
+from src.service.system import ActivityService
 from src.service.transfers.downloads.common import (
     build_task_movie_filter,
     download_provider,
     is_download_complete,
     library_handle_for,
     normalize_state_filters,
+    require_library,
     require_task,
     resolve_task_sort,
 )
 from src.service.transfers.downloads.resource_hash import canonical_info_hash
 from src.service.transfers.shared.import_task_service import ImportTaskService
+from src.service.transfers.shared.write_mutex import library_import_mutex_key
 
 
 class DownloadTaskService:
@@ -162,6 +166,69 @@ class DownloadTaskService:
             task_id=task.id,
             task_run_id=accepted.task_run_id,
             status="accepted",
+        )
+
+    @classmethod
+    def trigger_import_batch(
+        cls,
+        task_ids: list[int],
+    ) -> DownloadTaskBatchImportResponse:
+        """批量重新导入：只接受已下载完成且导入失败/跳过的任务。
+
+        校验不通过的 id 进 skipped 清单；有效任务按媒体库分组，每个库入队一次
+        批量任务运行（同库导入互斥，任一库已有在跑任务则整体 409，不部分入队）。
+        """
+        retryable_statuses = {IMPORT_STATUS_FAILED, IMPORT_STATUS_SKIPPED}
+        normalized_ids = list(dict.fromkeys(task_ids))
+        tasks = list(
+            DownloadTask.select().where(DownloadTask.id.in_(normalized_ids))
+        )
+        tasks_by_id = {task.id: task for task in tasks}
+        skipped_task_ids: list[int] = []
+        retryable_tasks: list[DownloadTask] = []
+        for task_id in normalized_ids:
+            task = tasks_by_id.get(task_id)
+            if (
+                task is None
+                or not is_download_complete(task.state)
+                or task.completed_source_ref is None
+                or task.import_status not in retryable_statuses
+            ):
+                skipped_task_ids.append(task_id)
+                continue
+            retryable_tasks.append(task)
+        if not retryable_tasks:
+            return DownloadTaskBatchImportResponse(
+                accepted_count=0,
+                skipped_task_ids=skipped_task_ids,
+            )
+        tasks_by_library: dict[int, list[DownloadTask]] = {}
+        for task in retryable_tasks:
+            tasks_by_library.setdefault(task.client.library_id, []).append(task)
+        # 入队前统一预检互斥，避免跨库批量只入队一半。
+        for library_id in tasks_by_library:
+            library = require_library(library_id)
+            if (
+                ActivityService.find_task_run_by_mutex_key(
+                    library_import_mutex_key(library=library)
+                )
+                is not None
+            ):
+                raise ApiError(
+                    409,
+                    "import_task_conflict",
+                    "同一媒体库已有导入任务",
+                    {"library_id": library_id},
+                )
+        for library_tasks in tasks_by_library.values():
+            ImportTaskService.enqueue_batch(
+                library_tasks,
+                trigger_type="manual",
+                allowed_statuses=retryable_statuses,
+            )
+        return DownloadTaskBatchImportResponse(
+            accepted_count=len(retryable_tasks),
+            skipped_task_ids=skipped_task_ids,
         )
 
     @classmethod

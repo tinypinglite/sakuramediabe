@@ -191,6 +191,15 @@ class DownloadTaskImportResponse(SchemaModel):
     status: str
 
 
+class DownloadTaskBatchImportRequest(SchemaModel):
+    task_ids: list[int] = Field(min_length=1, max_length=100)
+
+
+class DownloadTaskBatchImportResponse(SchemaModel):
+    accepted_count: int
+    skipped_task_ids: list[int] = Field(default_factory=list)
+
+
 class DownloadTaskFileResource(SchemaModel):
     """下载任务源内的单个文件；宿主内部 source_ref 不对外暴露。"""
 

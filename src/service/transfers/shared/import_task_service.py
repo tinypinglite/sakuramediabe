@@ -107,12 +107,20 @@ class ImportTaskService:
         )
 
     @classmethod
-    def enqueue_batch(cls, download_tasks: list[DownloadTask]) -> None:
+    def enqueue_batch(
+        cls,
+        download_tasks: list[DownloadTask],
+        *,
+        trigger_type: str = "internal",
+        allowed_statuses: set[str] | None = None,
+    ) -> None:
         if not download_tasks:
             raise ValueError("download_tasks must not be empty")
         library_ids = {task.client.library_id for task in download_tasks}
         if len(library_ids) != 1:
             raise ValueError("download_tasks must belong to one media library")
+        if allowed_statuses is None:
+            allowed_statuses = {IMPORT_STATUS_PENDING}
         library = MediaLibrary.get_by_id(next(iter(library_ids)))
         if library.provider_key == "":
             raise ApiError(422, "invalid_media_library_provider", "媒体库缺少 provider_key")
@@ -137,12 +145,17 @@ class ImportTaskService:
             "library_id": library.id,
         }
         mutex_key = library_import_mutex_key(library=library)
+        task_name = (
+            f"下载任务重新导入（{len(batch_items)}个）"
+            if trigger_type == "manual"
+            else f"下载任务连续导入（{len(batch_items)}个）"
+        )
         try:
             with get_database().atomic():
                 task_run = ActivityService.create_task_run(
                     task_key=cls.TASK_KEY,
-                    task_name=f"下载任务连续导入（{len(batch_items)}个）",
-                    trigger_type="internal",
+                    task_name=task_name,
+                    trigger_type=trigger_type,
                     mutex_key=mutex_key,
                     params=params,
                 )
@@ -153,7 +166,7 @@ class ImportTaskService:
                     )
                     .where(
                         DownloadTask.id.in_([task.id for task in download_tasks]),
-                        DownloadTask.import_status == IMPORT_STATUS_PENDING,
+                        DownloadTask.import_status.in_(tuple(allowed_statuses)),
                     )
                     .execute()
                 )
