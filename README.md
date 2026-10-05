@@ -4,6 +4,10 @@ SakuraMediaBE 是 SakuraMedia 的服务端项目，负责提供媒体库管理�
 
 项目当前基于 Python 3.10、FastAPI、Peewee、Pydantic 2 和 APScheduler 构建，代码结构按 `api -> service -> model` 分层组织，面向单账号场景运行。
 
+## 致谢
+
+番号解析的实现与回归测试参考了以下开源项目，在此表示感谢：[JavSP](https://github.com/Yuukiy/JavSP)、[JavBoss](https://github.com/Solr159/JavBoss)、[Emby.Plugins.JavScraper](https://github.com/JavScraper/Emby.Plugins.JavScraper)、[JAVOneStop](https://github.com/ddd354/JAVOneStop)、[metatube-sdk-go](https://github.com/metatube-community/metatube-sdk-go)、[Movie_Data_Capture](https://github.com/mvdctop/Movie_Data_Capture)、[mdcz](https://github.com/ShotHeadman/mdcz)、[javinizer-go](https://github.com/javinizer/javinizer-go)。
+
 ## 风险声明
 
 * 本项目仅用于技术交流
