@@ -27,6 +27,17 @@ def _animated_gif_bytes() -> bytes:
     return output.getvalue()
 
 
+def _heic_bytes() -> bytes:
+    output = BytesIO()
+    PillowImage.new("RGB", (4, 3), (12, 34, 56)).save(output, format="HEIF")
+    return output.getvalue()
+
+
+def _truncated_heic_bytes() -> bytes:
+    heic = _heic_bytes()
+    return heic[: len(heic) // 2]
+
+
 def _assert_webp(image_bytes: bytes) -> None:
     with PillowImage.open(BytesIO(image_bytes)) as image:
         assert image.format == "WEBP"
@@ -68,11 +79,21 @@ def test_image_search_query_uses_first_frame_of_animated_gif():
         assert image.convert("RGB").getpixel((0, 0)) == (255, 0, 0)
 
 
+def test_image_search_query_converts_heic_to_webp():
+    with PillowImage.open(
+        BytesIO(normalize_image_search_query(_heic_bytes()))
+    ) as image:
+        assert image.format == "WEBP"
+        assert image.mode == "RGB"
+        assert image.size == (4, 3)
+
+
 @pytest.mark.parametrize(
     ("image_bytes", "message"),
     [
         (b"", "Uploaded file is empty"),
         (b"not an image", "uploaded image is invalid"),
+        (_truncated_heic_bytes(), "uploaded image is invalid"),
     ],
 )
 async def test_image_search_sessions_reject_empty_or_invalid_images(

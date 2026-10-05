@@ -1,7 +1,11 @@
 from io import BytesIO
 
+import pillow_heif
 from PIL import Image as PillowImage
 from PIL import ImageOps, UnidentifiedImageError
+
+# 让 Pillow 直接解码 iOS 相册上传的 HEIC/HEIF。
+pillow_heif.register_heif_opener()
 
 
 def normalize_image_search_query(image_bytes: bytes) -> bytes:

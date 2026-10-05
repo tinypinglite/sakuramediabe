@@ -24,7 +24,9 @@ dependencies = [
     # linux / arm64 仍会解析到 15.x。代码只用到 av.open / av.time_base，两个大版本行为一致。
     "av>=14.2.0,<16.0.0",
     "pydantic>=2.7.4,<3.0.0",
-    "pillow==10.4.0",
+    "pillow==12.3.0",
+    # 以图搜图需要解码 iOS 相册的 HEIC/HEIF；pillow-heif 1.x 要求 Pillow>=11.1。
+    "pillow-heif==1.8.0",
     "opencv-python-headless==4.10.0.84",
     "toml>=0.10.2,<0.11.0",
     # Python 3.10 下 pydantic-settings 读取 TOML 需要 tomli，避免 Docker 运行时缺依赖。
