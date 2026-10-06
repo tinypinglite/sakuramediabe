@@ -38,6 +38,12 @@ REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME = (
 WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME = (
     "20261007_01_widen_download_title_columns"
 )
+DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME = (
+    "20261007_02_add_download_task_remote_seen_at"
+)
+DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME = (
+    "20261007_03_add_download_submission_record_indexes"
+)
 
 
 @dataclass(frozen=True)

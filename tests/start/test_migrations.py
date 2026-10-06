@@ -28,6 +28,8 @@ from src.start.migrations.runner import (
     ACTOR_METADATA_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
     DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME,
+    DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
+    DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME,
     DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
     DROP_MOVIE_EXTRA_MIGRATION_NAME,
     HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME,
@@ -132,6 +134,8 @@ def test_current_migrations_are_discoverable_in_order():
         IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME,
         REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
         WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME,
+        DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME,
+        DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
     ]
 
 
@@ -228,6 +232,8 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME, applied=True),
         MigrationExecution(name=REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME, applied=True),
         MigrationExecution(name=WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -253,7 +259,80 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME,
         REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
         WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME,
+        DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME,
+        DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
     ]
+
+
+def test_download_task_remote_seen_migration_backfills_existing_rows(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    # 模拟加列之前的结构：删掉新列后写入一行存量任务。
+    _drop_columns(clean_db, "download_task", ("remote_seen_at",))
+    library = MediaLibrary.create(
+        name="remote-seen-migration",
+        provider_key="test",
+        provider_config={},
+    )
+    client = DownloadClient.create(
+        name="remote-seen-migration-client",
+        library=library,
+        provider_config={},
+    )
+    task = DownloadTask.create(
+        client=client,
+        remote_id="legacy",
+        name="legacy",
+        state="downloading",
+        progress=0,
+        import_status="pending",
+    )
+
+    migration = _load_migration_module(
+        Path(f"{DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME}.py")
+    )
+    migration.migrate(clean_db)
+    backfilled = DownloadTask.get_by_id(task.id)
+    assert backfilled.remote_seen_at is not None
+    assert "remote_seen_at" in _column_names(clean_db, "download_task")
+
+    # 幂等：重复执行不报错，也不覆盖已有的可见时间。
+    sentinel = datetime(2020, 1, 1)
+    DownloadTask.update(remote_seen_at=sentinel).where(
+        DownloadTask.id == task.id
+    ).execute()
+    migration.migrate(clean_db)
+    assert DownloadTask.get_by_id(task.id).remote_seen_at == sentinel
+
+
+def test_download_submission_indexes_migration_adds_query_indexes(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    # 模拟旧结构：提交历史表只有 task_id 索引。
+    for name in (
+        "downloadsubmissionrecord_client_id_remote_id",
+        "downloadsubmissionrecord_client_id_info_hash",
+        "downloadsubmissionrecord_updated_at",
+    ):
+        clean_db.execute_sql(f'DROP INDEX IF EXISTS "{name}"')
+
+    migration = _load_migration_module(
+        Path(f"{DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME}.py")
+    )
+    migration.migrate(clean_db)
+
+    columns = {
+        tuple(index.columns)
+        for index in clean_db.get_indexes("download_submission_record")
+    }
+    assert ("client_id", "remote_id") in columns
+    assert ("client_id", "info_hash") in columns
+    assert ("updated_at",) in columns
+
+    # 幂等：重复执行不报错，也不重复建索引。
+    before = len(clean_db.get_indexes("download_submission_record"))
+    migration.migrate(clean_db)
+    assert len(clean_db.get_indexes("download_submission_record")) == before
 
 
 def test_run_pending_migrations_rejects_current_schema_without_base_marker(clean_db):
@@ -462,7 +541,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 22
+    assert summary.applied_count == 24
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

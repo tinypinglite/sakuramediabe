@@ -1,11 +1,16 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
 
 from src.api.exception.errors import ApiError
-from src.model import DownloadClient, DownloadTask, MediaLibrary
+from src.model import (
+    DownloadClient,
+    DownloadSubmissionRecord,
+    DownloadTask,
+    MediaLibrary,
+)
 from src.plugins.provider_protocol import (
     ConfigField,
     ImportFile,
@@ -22,6 +27,7 @@ from src.service.transfers.downloads.client_config_service import DownloadClient
 from src.service.transfers.downloads.common import validate_remote_download_task
 from src.service.transfers.downloads.request_service import DownloadRequestService
 from src.service.transfers.downloads.sync_service import DownloadSyncService
+from src.service.transfers.downloads.task_service import DownloadTaskService
 from src.service.transfers.imports.import_service import MediaImportService
 
 
@@ -351,6 +357,340 @@ def test_download_sync_only_updates_movie_linked_tasks(test_db):
     assert result.created_count == 0
     assert result.updated_count == 1
     assert result.unchanged_count == 2
+
+
+def test_download_sync_readopts_orphan_task_from_submission_record(test_db):
+    library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    info_hash = "a" * 40
+    record = DownloadSubmissionRecord.create(
+        client_id=client.id,
+        movie_number="ABC-001",
+        indexer_name="indexer",
+        title="ABC-001 title",
+        source_uri=f"magnet:?xt=urn:btih:{info_hash}",
+        info_hash=info_hash,
+        state="submitted",
+        remote_id=info_hash,
+    )
+    remote_tasks = (
+        RemoteDownloadTask(
+            remote_id=info_hash,
+            name="ABC-001-aaaaaa",
+            state="downloading",
+            progress=0.25,
+            completed_source_ref=None,
+        ),
+    )
+
+    result = DownloadSyncService(
+        provider_factory=lambda _client: SimpleNamespace(list_tasks=lambda: remote_tasks)
+    ).sync_client(client.id)
+
+    task = DownloadTask.get_or_none(
+        (DownloadTask.client == client)
+        & (DownloadTask.remote_id == info_hash)
+    )
+    assert task is not None
+    assert task.movie == "ABC-001"
+    assert task.state == "downloading"
+    assert task.progress == 0.25
+    assert task.remote_seen_at is not None
+    assert result.created_count == 1
+    assert DownloadSubmissionRecord.get_by_id(record.id).task_id == task.id
+
+
+def test_download_sync_readoption_rebinds_all_dangling_submission_records(test_db):
+    library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    info_hash = "e" * 40
+    other_task = DownloadTask.create(
+        client=client,
+        movie="ABC-009",
+        remote_id="other-remote",
+        name="ABC-009-other",
+        state="downloading",
+        progress=0.1,
+        import_status="pending",
+    )
+    moved = DownloadSubmissionRecord.create(
+        client_id=client.id,
+        task_id=other_task.id,
+        movie_number="ABC-009",
+        indexer_name="indexer",
+        title="ABC-009 title",
+        source_uri=f"magnet:?xt=urn:btih:{info_hash}",
+        info_hash=info_hash,
+        state="submitted",
+        remote_id="other-remote",
+    )
+    stale = DownloadSubmissionRecord.create(
+        client_id=client.id,
+        task_id=999999,
+        movie_number="ABC-007",
+        indexer_name="indexer",
+        title="ABC-007 title",
+        source_uri=f"magnet:?xt=urn:btih:{info_hash}",
+        info_hash=info_hash,
+        state="submitted",
+        remote_id=info_hash,
+    )
+    latest = DownloadSubmissionRecord.create(
+        client_id=client.id,
+        movie_number="ABC-007",
+        indexer_name="indexer",
+        title="ABC-007 title",
+        source_uri=f"magnet:?xt=urn:btih:{info_hash}",
+        info_hash=info_hash,
+        state="submitted",
+        remote_id=info_hash,
+    )
+    remote_tasks = (
+        RemoteDownloadTask(
+            remote_id=info_hash,
+            name="ABC-007-eeeeee",
+            state="downloading",
+            progress=0.5,
+            completed_source_ref=None,
+        ),
+    )
+
+    result = DownloadSyncService(
+        provider_factory=lambda _client: SimpleNamespace(list_tasks=lambda: remote_tasks)
+    ).sync_client(client.id)
+
+    task = DownloadTask.get_or_none(
+        (DownloadTask.client == client) & (DownloadTask.remote_id == info_hash)
+    )
+    assert task is not None
+    assert result.created_count == 1
+    # 悬挂记录（task_id 为空 / 指向已失效任务）全部指回重建任务。
+    assert DownloadSubmissionRecord.get_by_id(latest.id).task_id == task.id
+    assert DownloadSubmissionRecord.get_by_id(stale.id).task_id == task.id
+    # 仍指向其他活跃任务的同 hash 记录不动。
+    assert DownloadSubmissionRecord.get_by_id(moved.id).task_id == other_task.id
+
+
+def test_download_sync_rejects_orphan_without_submitted_record(test_db):
+    library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    info_hash = "b" * 40
+    DownloadSubmissionRecord.create(
+        client_id=client.id,
+        movie_number="ABC-002",
+        indexer_name="indexer",
+        title="ABC-002 title",
+        source_uri=f"magnet:?xt=urn:btih:{info_hash}",
+        info_hash=info_hash,
+        state="failed",
+        remote_id=info_hash,
+    )
+    remote_tasks = (
+        RemoteDownloadTask(
+            remote_id=info_hash,
+            name="ABC-002-bbbbbb",
+            state="downloading",
+            progress=0.25,
+            completed_source_ref=None,
+        ),
+    )
+
+    result = DownloadSyncService(
+        provider_factory=lambda _client: SimpleNamespace(list_tasks=lambda: remote_tasks)
+    ).sync_client(client.id)
+
+    assert DownloadTask.get_or_none(DownloadTask.remote_id == info_hash) is None
+    assert result.created_count == 0
+    assert result.unchanged_count == 1
+
+
+def test_delete_task_tombstone_blocks_readoption(test_db, monkeypatch):
+    library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    info_hash = "c" * 40
+    task = DownloadTask.create(
+        client=client,
+        movie="ABC-005",
+        remote_id=info_hash,
+        name="ABC-005-cccccc",
+        state="downloading",
+        progress=0.1,
+        import_status="pending",
+    )
+    record = DownloadSubmissionRecord.create(
+        client_id=client.id,
+        task_id=task.id,
+        movie_number="ABC-005",
+        indexer_name="indexer",
+        title="ABC-005 title",
+        source_uri=f"magnet:?xt=urn:btih:{info_hash}",
+        info_hash=info_hash,
+        state="submitted",
+        remote_id=info_hash,
+    )
+    monkeypatch.setattr(
+        "src.service.transfers.downloads.task_service.download_provider",
+        lambda _client: SimpleNamespace(delete_task=lambda **_kwargs: None),
+    )
+
+    DownloadTaskService.delete_task(task.id, delete_files=False)
+
+    assert DownloadTask.get_or_none(DownloadTask.id == task.id) is None
+    assert DownloadSubmissionRecord.get_by_id(record.id).state == "deleted"
+
+    # 远端删除可见性延迟：任务仍在快照里，也不能被重认领复活。
+    remote_tasks = (
+        RemoteDownloadTask(
+            remote_id=info_hash,
+            name="ABC-005-cccccc",
+            state="downloading",
+            progress=0.1,
+            completed_source_ref=None,
+        ),
+    )
+    result = DownloadSyncService(
+        provider_factory=lambda _client: SimpleNamespace(list_tasks=lambda: remote_tasks)
+    ).sync_client(client.id)
+
+    assert result.created_count == 0
+    assert DownloadTask.get_or_none(DownloadTask.remote_id == info_hash) is None
+
+
+def test_sync_all_clients_readopts_orphans_without_active_tasks(test_db):
+    library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
+    orphan_client = DownloadClient.create(
+        name="orphan", library=library, provider_config={}
+    )
+    DownloadClient.create(name="idle", library=library, provider_config={})
+    info_hash = "d" * 40
+    DownloadSubmissionRecord.create(
+        client_id=orphan_client.id,
+        movie_number="ABC-006",
+        indexer_name="indexer",
+        title="ABC-006 title",
+        source_uri=f"magnet:?xt=urn:btih:{info_hash}",
+        info_hash=info_hash,
+        state="submitted",
+        remote_id=info_hash,
+    )
+    remote_tasks = (
+        RemoteDownloadTask(
+            remote_id=info_hash,
+            name="ABC-006-dddddd",
+            state="downloading",
+            progress=0.1,
+            completed_source_ref=None,
+        ),
+    )
+    queried_client_ids: list[int] = []
+
+    def provider(client):
+        queried_client_ids.append(client.id)
+        return SimpleNamespace(list_tasks=lambda: remote_tasks)
+
+    result = DownloadSyncService(provider_factory=provider).sync_all_clients()
+
+    assert queried_client_ids == [orphan_client.id]
+    assert result["created_count"] == 1
+    task = DownloadTask.get_or_none(DownloadTask.remote_id == info_hash)
+    assert task is not None
+    assert task.movie == "ABC-006"
+
+
+def test_download_sync_refreshes_remote_seen_at(test_db):
+    library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    task = DownloadTask.create(
+        client=client,
+        movie="ABC-003",
+        remote_id="known",
+        name="known",
+        state="queued",
+        progress=0,
+        import_status="pending",
+        remote_seen_at=datetime(2020, 1, 1),
+    )
+    remote_tasks = (
+        RemoteDownloadTask(
+            remote_id="known",
+            name="known",
+            state="downloading",
+            progress=0.5,
+            completed_source_ref=None,
+        ),
+    )
+
+    result = DownloadSyncService(
+        provider_factory=lambda _client: SimpleNamespace(list_tasks=lambda: remote_tasks)
+    ).sync_client(client.id)
+
+    refreshed = DownloadTask.get_by_id(task.id)
+    assert refreshed.remote_seen_at > datetime(2020, 1, 1)
+    assert result.updated_count == 1
+
+
+def test_prune_ghost_tasks_requires_confirmed_absence(test_db):
+    library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    now = datetime(2026, 10, 7, 12, 0, 0)
+
+    def make(remote_id, *, seen_at=None, created_at=None, **overrides):
+        values = {
+            "client": client,
+            "remote_id": remote_id,
+            "name": remote_id,
+            "state": "downloading",
+            "progress": 0,
+            "import_status": "pending",
+            "remote_seen_at": seen_at,
+            "created_at": created_at or now,
+        }
+        values.update(overrides)
+        return DownloadTask.create(**values)
+
+    keep_recent_seen = make("recent-seen", seen_at=now - timedelta(minutes=2))
+    prune_stale_seen = make("stale-seen", seen_at=now - timedelta(minutes=10))
+    keep_unseen_fresh = make("unseen-fresh", created_at=now - timedelta(minutes=5))
+    prune_unseen_old = make("unseen-old", created_at=now - timedelta(minutes=30))
+    keep_in_snapshot = make("in-snapshot", seen_at=now - timedelta(hours=2))
+    keep_running = make(
+        "running",
+        seen_at=now - timedelta(hours=2),
+        import_status="running",
+    )
+    keep_importable = make(
+        "importable",
+        seen_at=now - timedelta(hours=2),
+        state="completed",
+        progress=1,
+        completed_source_ref={"id": "source"},
+        import_status="failed",
+    )
+    keep_skipped = make(
+        "skipped",
+        seen_at=now - timedelta(hours=2),
+        state="completed",
+        progress=1,
+        completed_source_ref={"id": "source"},
+        import_status="skipped",
+    )
+
+    removed = DownloadSyncService._prune_ghost_tasks(
+        client.id, {"in-snapshot"}, now=now
+    )
+
+    assert removed == 2
+    assert DownloadTask.get_or_none(DownloadTask.id == prune_stale_seen.id) is None
+    assert DownloadTask.get_or_none(DownloadTask.id == prune_unseen_old.id) is None
+    for kept in (
+        keep_recent_seen,
+        keep_unseen_fresh,
+        keep_in_snapshot,
+        keep_running,
+        keep_importable,
+        keep_skipped,
+    ):
+        assert DownloadTask.get_or_none(DownloadTask.id == kept.id) is not None
 
 
 def test_auto_import_skips_unbound_completed_tasks(test_db, monkeypatch):

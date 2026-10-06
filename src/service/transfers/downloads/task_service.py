@@ -98,15 +98,25 @@ class DownloadTaskService:
                 "Cannot delete a download task while importing media",
                 {"task_id": task.id},
             )
+        # 规范 hash 用于失败资源拉黑与删除墓碑匹配；remote_id 若是非 BT 的 opaque
+        # 标识，拿不到规范 hash 时仅按 remote_id 匹配。失败/跳过的任务删除前必须
+        # 拉黑资源，hash 无法规范化时保持原有语义：拒绝删除，不碰远端。
+        record = (
+            DownloadSubmissionRecord.select()
+            .where(DownloadSubmissionRecord.task_id == task.id)
+            .order_by(DownloadSubmissionRecord.id.desc())
+            .first()
+        )
         info_hash = None
         if task.import_status in {IMPORT_STATUS_FAILED, IMPORT_STATUS_SKIPPED}:
-            record = (
-                DownloadSubmissionRecord.select()
-                .where(DownloadSubmissionRecord.task_id == task.id)
-                .order_by(DownloadSubmissionRecord.id.desc())
-                .first()
-            )
             info_hash = canonical_info_hash(record.info_hash if record else task.remote_id)
+        else:
+            try:
+                info_hash = canonical_info_hash(
+                    record.info_hash if record else task.remote_id
+                )
+            except ApiError:
+                info_hash = None
         try:
             download_provider(task.client).delete_task(
                 remote_id=task.remote_id,
@@ -122,8 +132,23 @@ class DownloadTaskService:
             "remote_id": task.remote_id,
         }
         with get_database().atomic():
-            if info_hash is not None:
+            if info_hash is not None and task.import_status in {
+                IMPORT_STATUS_FAILED,
+                IMPORT_STATUS_SKIPPED,
+            }:
                 DownloadResourceBlacklist.insert(info_hash=info_hash).on_conflict_ignore().execute()
+            # 删除墓碑：宿主主动删除后，同步的重认领不得再把它恢复回来。
+            # 匹配同一资源的所有历史提交记录，避免旧的重复提交记录绕过墓碑。
+            tombstone = DownloadSubmissionRecord.remote_id == task.remote_id
+            if info_hash is not None:
+                tombstone = tombstone | (
+                    DownloadSubmissionRecord.info_hash == info_hash
+                )
+            DownloadSubmissionRecord.update(state="deleted").where(
+                (DownloadSubmissionRecord.client_id == task.client_id)
+                & (DownloadSubmissionRecord.state == "submitted")
+                & tombstone
+            ).execute()
             task.delete_instance()
         return removed
 
