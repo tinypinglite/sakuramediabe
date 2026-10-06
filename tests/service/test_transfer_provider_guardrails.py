@@ -294,6 +294,7 @@ def test_empty_download_snapshot_does_not_remove_ghost_tasks(test_db):
 def test_download_sync_only_updates_movie_linked_tasks(test_db):
     library = MediaLibrary.create(name="library", provider_key="demo", provider_config={})
     client = DownloadClient.create(name="client", library=library, provider_config={})
+    long_remote_name = "long-" + "n" * 400
     known_task = DownloadTask.create(
         client=client,
         movie="ABC-001",
@@ -314,7 +315,7 @@ def test_download_sync_only_updates_movie_linked_tasks(test_db):
     remote_tasks = (
         RemoteDownloadTask(
             remote_id="known",
-            name="new-name",
+            name=long_remote_name,
             state="downloading",
             progress=0.5,
             completed_source_ref=None,
@@ -340,7 +341,7 @@ def test_download_sync_only_updates_movie_linked_tasks(test_db):
     ).sync_client(client.id)
 
     known_task = DownloadTask.get_by_id(known_task.id)
-    assert known_task.name == "new-name"
+    assert known_task.name == long_remote_name
     assert known_task.state == "downloading"
     assert known_task.progress == 0.5
     external_task = DownloadTask.get_by_id(external_task.id)

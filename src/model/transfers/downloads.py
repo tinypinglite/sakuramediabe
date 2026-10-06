@@ -65,7 +65,8 @@ class DownloadTask(TimestampedMixin, BaseModel):
     # 影片番号不是 provider 身份，只是宿主业务投影，允许任务早于影片入库。
     movie = peewee.CharField(max_length=255, null=True, column_name="movie_number", index=True)
     remote_id = peewee.CharField(max_length=255)
-    name = peewee.CharField(max_length=255)
+    # 115 等 provider 同步回来的离线任务名来自原始种子标题，长度不可控。
+    name = peewee.TextField()
     state = peewee.CharField(max_length=32, default="queued", index=True)
     progress = peewee.FloatField(default=0)
     # completed_source_ref 的结构由同 bundle 的 storage provider 定义。
@@ -91,7 +92,8 @@ class DownloadSubmissionRecord(TimestampedMixin, BaseModel):
     task_id = peewee.IntegerField(null=True, index=True)
     movie_number = peewee.CharField(max_length=255)
     indexer_name = peewee.CharField(max_length=255)
-    title = peewee.CharField(max_length=255)
+    # 索引器返回的种子标题没有长度上限，不能按 varchar(255) 截断入库。
+    title = peewee.TextField()
     source_uri = peewee.TextField()
     info_hash = peewee.CharField(max_length=40)
     state = peewee.CharField(max_length=32, default="submitting")

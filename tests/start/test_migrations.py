@@ -9,6 +9,7 @@ from src.model import (
     Actor,
     BackgroundTaskRun,
     DownloadClient,
+    DownloadSubmissionRecord,
     DownloadTask,
     Image,
     Media,
@@ -43,6 +44,7 @@ from src.start.migrations.runner import (
     PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
     REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
     REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
+    WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME,
     MigrationExecution,
     MigrationRunSummary,
     _list_migration_modules,
@@ -129,6 +131,7 @@ def test_current_migrations_are_discoverable_in_order():
         DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
         IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME,
         REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
+        WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME,
     ]
 
 
@@ -224,6 +227,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME, applied=True),
         MigrationExecution(name=IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME, applied=True),
         MigrationExecution(name=REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -248,6 +252,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME,
         IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME,
         REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
+        WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME,
     ]
 
 
@@ -257,6 +262,63 @@ def test_run_pending_migrations_rejects_current_schema_without_base_marker(clean
 
     with pytest.raises(ValueError, match="unsupported_migration_source"):
         run_pending_migrations(clean_db)
+
+
+def test_widen_download_title_migration_allows_long_titles(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    # 模拟旧结构：两列仍是 varchar(255)，超过 255 字符的种子标题无法入库。
+    clean_db.execute_sql(
+        "ALTER TABLE download_submission_record ALTER COLUMN title TYPE VARCHAR(255)"
+    )
+    clean_db.execute_sql(
+        "ALTER TABLE download_task ALTER COLUMN name TYPE VARCHAR(255)"
+    )
+    # 模拟用户已按 issue 临时方案自行把 title 改成 text，迁移应跳过该列。
+    clean_db.execute_sql(
+        "ALTER TABLE download_submission_record ALTER COLUMN title TYPE TEXT"
+    )
+    long_title = "T" * 321
+
+    migration = _load_migration_module(
+        Path(f"{WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME}.py")
+    )
+    migration.migrate(clean_db)
+
+    record = DownloadSubmissionRecord.create(
+        client_id=1,
+        movie_number="TEST-001",
+        indexer_name="indexer",
+        title=long_title,
+        source_uri=f"magnet:?xt=urn:btih:{'0' * 40}",
+        info_hash="0" * 40,
+    )
+    library = MediaLibrary.create(
+        name="widen-download-title",
+        provider_key="test",
+        provider_config={},
+    )
+    client = DownloadClient.create(
+        name="widen-download-title-client",
+        library=library,
+        provider_config={},
+    )
+    task = DownloadTask.create(
+        client=client,
+        movie="TEST-001",
+        remote_id="widen-download-title-remote",
+        name=long_title,
+        state="queued",
+        progress=0,
+        import_status="pending",
+    )
+    assert DownloadSubmissionRecord.get_by_id(record.id).title == long_title
+    assert DownloadTask.get_by_id(task.id).name == long_title
+
+    # 用户已自行改成 text 的库：重跑不报错、数据保留。
+    migration.migrate(clean_db)
+    assert DownloadSubmissionRecord.get_by_id(record.id).title == long_title
+    assert DownloadTask.get_by_id(task.id).name == long_title
 
 
 def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_memory(clean_db):
@@ -400,7 +462,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 21
+    assert summary.applied_count == 22
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

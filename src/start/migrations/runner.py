@@ -35,6 +35,9 @@ IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME = "20261001_01_add_image_origin_patter
 REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME = (
     "20261006_01_remove_generated_thin_cover_for_skipped_movies"
 )
+WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME = (
+    "20261007_01_widen_download_title_columns"
+)
 
 
 @dataclass(frozen=True)

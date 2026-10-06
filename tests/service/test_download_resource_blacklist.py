@@ -323,6 +323,17 @@ def test_submission_uses_movie_number_and_hash_prefix_as_download_folder_name(do
     assert DownloadSubmissionRecord.get().title == payload.candidate.title
 
 
+def test_submission_accepts_title_longer_than_legacy_varchar_limit(downloads):
+    _client, provider = downloads
+    payload = _payload()
+    payload.candidate.title = "TEST-001 " + "x" * 400
+
+    DownloadRequestService().create_request(payload)
+
+    assert provider.submit.call_count == 1
+    assert DownloadSubmissionRecord.get().title == payload.candidate.title
+
+
 def test_submission_failure_is_recorded(downloads):
     _client, provider = downloads
     provider.submit.side_effect = ProviderOperationError(
