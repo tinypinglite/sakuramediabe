@@ -13,6 +13,7 @@ from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import require_by_id, validate_page
 from src.model import ClipCollection, ClipCollectionItem, MediaClip
 from src.model.base import get_database
+from src.schema.catalog.actors import ImageResource
 from src.schema.collections.clips import (
     ClipCollectionClipItemResource,
     ClipCollectionCreateRequest,
@@ -79,32 +80,48 @@ class ClipCollectionService:
         return [item for item in items if item.clip_id in valid_clip_ids]
 
     @classmethod
-    def _collection_counts(cls, collection_ids: list[int]) -> dict[int, int]:
+    def _collection_overviews(
+        cls, collection_ids: list[int]
+    ) -> tuple[dict[int, int], dict[int, ImageResource | None]]:
+        """一次取所有合集的成员计数与封面，供列表/详情页避免逐合集查询（N+1）。
+
+        成员只加载一遍；封面取每个合集按 position/id 最前的有效片段的区间首帧。
+        """
+        items = cls._valid_collection_items(collection_ids)
         counts: dict[int, int] = {}
-        for item in cls._valid_collection_items(collection_ids):
+        first_items: dict[int, ClipCollectionItem] = {}
+        for item in items:
             counts[item.collection_id] = counts.get(item.collection_id, 0) + 1
-        return counts
-
-    @classmethod
-    def _collection_cover(cls, collection_id: int):
-        """合集封面取按 position 排在最前的片段的封面。"""
-        items = cls._valid_collection_items([collection_id])
-        items.sort(key=lambda item: (item.position, item.id))
-        first_item = items[0] if items else None
-        if first_item is None:
-            return None
-        return MediaClipService.load_cover_map([first_item.clip]).get(
-            (first_item.clip.media_id, first_item.clip.start_offset_seconds)
+            current = first_items.get(item.collection_id)
+            if current is None or (item.position, item.id) < (
+                current.position,
+                current.id,
+            ):
+                first_items[item.collection_id] = item
+        cover_map = MediaClipService.load_cover_map(
+            [item.clip for item in first_items.values()]
         )
+        covers = {
+            collection_id: cover_map.get(
+                (item.clip.media_id, item.clip.start_offset_seconds)
+            )
+            for collection_id, item in first_items.items()
+        }
+        return counts, covers
 
     @classmethod
-    def _to_resource(cls, collection: ClipCollection, clip_count: int) -> ClipCollectionResource:
+    def _to_resource(
+        cls,
+        collection: ClipCollection,
+        clip_count: int,
+        cover_image: ImageResource | None = None,
+    ) -> ClipCollectionResource:
         return ClipCollectionResource(
             id=collection.id,
             name=collection.name,
             description=collection.description,
             clip_count=clip_count,
-            cover_image=cls._collection_cover(collection.id) if clip_count else None,
+            cover_image=cover_image if clip_count else None,
             created_at=collection.created_at,
             updated_at=collection.updated_at,
         )
@@ -116,8 +133,17 @@ class ClipCollectionService:
                 ClipCollection.updated_at.desc(), ClipCollection.id.desc()
             )
         )
-        counts = cls._collection_counts([collection.id for collection in collections])
-        return [cls._to_resource(collection, counts.get(collection.id, 0)) for collection in collections]
+        counts, covers = cls._collection_overviews(
+            [collection.id for collection in collections]
+        )
+        return [
+            cls._to_resource(
+                collection,
+                counts.get(collection.id, 0),
+                covers.get(collection.id),
+            )
+            for collection in collections
+        ]
 
     @classmethod
     def create_collection(cls, payload: ClipCollectionCreateRequest) -> ClipCollectionResource:
@@ -130,8 +156,10 @@ class ClipCollectionService:
     @classmethod
     def get_collection(cls, collection_id: int) -> ClipCollectionResource:
         collection = cls._require_collection(collection_id)
-        counts = cls._collection_counts([collection.id])
-        return cls._to_resource(collection, counts.get(collection.id, 0))
+        counts, covers = cls._collection_overviews([collection.id])
+        return cls._to_resource(
+            collection, counts.get(collection.id, 0), covers.get(collection.id)
+        )
 
     @classmethod
     def update_collection(
@@ -152,8 +180,7 @@ class ClipCollectionService:
 
         collection.updated_at = utc_now_for_db()
         collection.save()
-        counts = cls._collection_counts([collection.id])
-        return cls._to_resource(collection, counts.get(collection.id, 0))
+        return cls.get_collection(collection.id)
 
     @classmethod
     def delete_collection(cls, collection_id: int) -> None:

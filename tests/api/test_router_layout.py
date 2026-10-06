@@ -91,6 +91,7 @@ def test_create_app_registers_videos_routes():
     assert "/video-collections/{collection_id}/items" in paths
     assert "/video-collections/{collection_id}/items/{item_id}" in paths
     assert "/video-collections/{collection_id}/items/reorder" in paths
+    assert "/video-collections/{collection_id}/videos/{video_item_id}" in paths
     assert "/video-imports" not in paths
 
 

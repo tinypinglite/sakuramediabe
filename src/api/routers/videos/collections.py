@@ -75,6 +75,13 @@ def remove_collection_item(collection_id: int, item_id: int):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.delete("/{collection_id}/videos/{video_item_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_collection_video(collection_id: int, video_item_id: int):
+    """按视频 id 移出合集；加入合集弹窗做勾选切换时用，无需成员行 id。幂等。"""
+    VideoCollectionService.remove_items_by_video_ids(collection_id, [video_item_id])
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.post("/{collection_id}/items/reorder", response_model=list[VideoCollectionItemResource])
 def reorder_collection_items(collection_id: int, payload: VideoCollectionReorderRequest):
     return VideoCollectionService.reorder_items(collection_id, payload.ordered_item_ids)

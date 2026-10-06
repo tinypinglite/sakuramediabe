@@ -33,7 +33,6 @@ from src.service.videos.video_item_service import VideoItemService
 
 class VideoCollectionService:
     @staticmethod
-    @staticmethod
     def _require_collection(collection_id: int) -> VideoCollection:
         return require_by_id(
             VideoCollection,
@@ -80,6 +79,37 @@ class VideoCollectionService:
         return ImageResource.from_attributes_model(first_item.video_item.cover_image)
 
     @staticmethod
+    def _collection_covers(collection_ids: list[int]) -> dict[int, ImageResource]:
+        """批量取各合集封面：每个合集按 position/id 最前的成员，单条 DISTINCT ON 查询。
+
+        列表页逐合集查封面是 N+1（合集上千时一次请求打上千条 SQL）；这里合并成
+        一条查询，取「排在最前的成员」的封面，与单合集路径 `_collection_cover`
+        语义一致（最前成员无封面时该合集无封面）。
+        """
+        if not collection_ids:
+            return {}
+        first_items = (
+            VideoCollectionItem.select(VideoCollectionItem.collection, VideoItem, Image)
+            .join(VideoItem)
+            .join(Image, JOIN.LEFT_OUTER, on=(VideoItem.cover_image == Image.id))
+            .where(VideoCollectionItem.collection.in_(collection_ids))
+            .order_by(
+                VideoCollectionItem.collection.asc(),
+                VideoCollectionItem.position.asc(),
+                VideoCollectionItem.id.asc(),
+            )
+            .distinct(VideoCollectionItem.collection)
+        )
+        covers: dict[int, ImageResource] = {}
+        for first_item in first_items:
+            if first_item.video_item.cover_image_id is None:
+                continue
+            covers[first_item.collection_id] = ImageResource.from_attributes_model(
+                first_item.video_item.cover_image
+            )
+        return covers
+
+    @staticmethod
     def _touch_collection(collection: VideoCollection, touched_at: datetime) -> None:
         collection.updated_at = touched_at
         collection.save(only=[VideoCollection.updated_at])
@@ -91,12 +121,14 @@ class VideoCollectionService:
                 VideoCollection.updated_at.desc(), VideoCollection.id.desc()
             )
         )
-        counts = cls._item_counts([collection.id for collection in collections])
+        collection_ids = [collection.id for collection in collections]
+        counts = cls._item_counts(collection_ids)
+        covers = cls._collection_covers(collection_ids)
         return [
             VideoCollectionResource.from_collection(
                 collection,
                 item_count=counts.get(collection.id, 0),
-                cover_image=cls._collection_cover(collection.id) if counts.get(collection.id, 0) else None,
+                cover_image=covers.get(collection.id),
             )
             for collection in collections
         ]
