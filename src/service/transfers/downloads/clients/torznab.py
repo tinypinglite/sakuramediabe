@@ -6,6 +6,7 @@ import xmltodict
 from loguru import logger
 
 from src.common.movie_numbers import normalize_movie_number
+from src.config.config import settings
 from src.model import DownloadClient, Indexer, IndexerDownloadClient
 from src.schema.transfers.downloads import (
     DownloadCandidateClientResource,
@@ -68,7 +69,10 @@ class TorznabClient:
         *,
         client: httpx.Client | None = None,
     ):
-        self.client = client or httpx.Client(timeout=30.0, trust_env=False)
+        self.client = client or httpx.Client(
+            timeout=settings.downloads.torznab_timeout_seconds,
+            trust_env=False,
+        )
 
     def search(
         self,

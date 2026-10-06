@@ -208,6 +208,8 @@ class Downloads(BaseModel):
     # 新片持续查询，老片连续未找到达到上限后进入 exhausted，等待用户显式重开。
     subscription_search_fresh_days: int = Field(default=90, ge=1)
     subscription_search_stale_attempt_limit: int = Field(default=3, ge=1)
+    # Torznab 单次搜索请求超时时间
+    torznab_timeout_seconds: float = Field(default=60.0, gt=0)
 
 
 class Logging(BaseModel):

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
+from src.config.config import settings
 from src.model import Indexer
 from src.service.transfers.downloads.clients.torznab import (
     TorznabClient,
@@ -185,3 +186,13 @@ def test_torznab_search_strips_html_from_candidate_title(monkeypatch):
     )
 
     assert candidates[0].title == "SSNI-001 uncensored 1080p & remux"
+
+
+def test_torznab_client_default_uses_configured_timeout(monkeypatch):
+    monkeypatch.setattr(settings.downloads, "torznab_timeout_seconds", 75.0)
+
+    client = TorznabClient()
+    try:
+        assert client.client.timeout.read == 75.0
+    finally:
+        client.client.close()
