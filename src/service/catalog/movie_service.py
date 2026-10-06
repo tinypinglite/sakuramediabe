@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from functools import reduce
 
-from peewee import JOIN, Case, fn
+from peewee import JOIN, SQL, Case, fn
 
 from src.api.exception.errors import ApiError
 from src.common import (
@@ -92,6 +92,8 @@ class MovieService:
     SUBSCRIPTION_SKIP_HAS_MEDIA = "has_media"
     SUBSCRIPTION_SKIP_BLACKLISTED = "blacklisted"
 
+    FEMALE_GENDER = 1
+
     MOVIE_LIST_NULLABLE_SORT_FIELDS = {"release_date", "subscribed_at"}
     MOVIE_LIST_SORT_FIELD_MAP = {
         "release_date": Movie.release_date,
@@ -109,6 +111,8 @@ class MovieService:
     def _filtered_movies(
         cls,
         actor_id: int | None = None,
+        actor_age_min: int | None = None,
+        actor_age_max: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
         years: list[int] | None = None,
@@ -132,6 +136,29 @@ class MovieService:
                 "heat_min 不能大于 heat_max",
                 {"heat_min": heat_min, "heat_max": heat_max},
             )
+        if (
+            actor_age_min is not None
+            and actor_age_max is not None
+            and actor_age_min > actor_age_max
+        ):
+            raise ApiError(
+                422,
+                "invalid_movie_filter",
+                "actor_age_min 不能大于 actor_age_max",
+                {"actor_age_min": actor_age_min, "actor_age_max": actor_age_max},
+            )
+        if any(
+            age is not None and (age < 0 or age > 200)
+            for age in (actor_age_min, actor_age_max)
+        ):
+            # make_interval 的年份参数是 int4，超大值会回绕或让日期越界；
+            # 200 岁已远超可用数据范围，直接按非法输入拒绝。
+            raise ApiError(
+                422,
+                "invalid_movie_filter",
+                "actor_age 超出可用范围",
+                {"actor_age_min": actor_age_min, "actor_age_max": actor_age_max},
+            )
         if years and any(year < 1 or year > 9998 for year in years):
             # 年份区间上界需要构造 year + 1，datetime 年份上限为 9999。
             raise ApiError(
@@ -151,6 +178,39 @@ class MovieService:
                 MovieActor.actor.in_(canonical_actor_ids)
             )
             filtered_query = query.where(Movie.id.in_(movie_ids))
+
+        if actor_age_min is not None or actor_age_max is not None:
+            # 出演年龄口径：最老女优在影片发行日（近似拍摄时间）的周岁。
+            # 最老年龄 ≥ min ⟺ MIN(生日) ≤ 发行日 - min 年；最老年龄 ≤ max
+            # ⟺ 全部参与计算的女优 ≤ max ⟺ MIN(生日) > 发行日 - (max+1) 年。
+            # make_interval 的闰日钳制与 Actor.age 的 Python 计算口径一致；
+            # 缺生日或发行日的影片无法计算，筛选生效时排除。
+            age_having_conditions = []
+            if actor_age_min is not None:
+                min_cutoff = SQL("make_interval(years => %s)", [actor_age_min])
+                age_having_conditions.append(
+                    fn.MIN(Actor.birthday) <= (Movie.release_date - min_cutoff)
+                )
+            if actor_age_max is not None:
+                max_cutoff = SQL("make_interval(years => %s)", [actor_age_max + 1])
+                age_having_conditions.append(
+                    fn.MIN(Actor.birthday) > (Movie.release_date - max_cutoff)
+                )
+            oldest_actress_movie_ids = (
+                MovieActor.select(Movie.id)
+                .join(Movie, on=(MovieActor.movie == Movie.id))
+                .join(Actor, on=(MovieActor.actor == Actor.id))
+                .where(
+                    Actor.gender == cls.FEMALE_GENDER,
+                    Actor.birthday.is_null(False),
+                    Movie.release_date.is_null(False),
+                )
+                .group_by(Movie.id)
+                .having(*age_having_conditions)
+            )
+            filtered_query = filtered_query.where(
+                Movie.id.in_(oldest_actress_movie_ids)
+            )
 
         if tag_ids is not None:
             # 标签筛选走子查询，避免主查询 join 后出现重复影片和 total 偏差。
@@ -360,6 +420,8 @@ class MovieService:
     def movie_list_query(
         cls,
         actor_id: int | None = None,
+        actor_age_min: int | None = None,
+        actor_age_max: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
         years: list[int] | None = None,
@@ -381,6 +443,8 @@ class MovieService:
         query, _thin_cover_alias = with_movie_card_relations(
             cls._filtered_movies(
                 actor_id=actor_id,
+                actor_age_min=actor_age_min,
+                actor_age_max=actor_age_max,
                 tag_ids=tag_ids,
                 tag_match=tag_match,
                 years=years,
@@ -702,6 +766,8 @@ class MovieService:
     @staticmethod
     def list_movies(
         actor_id: int | None = None,
+        actor_age_min: int | None = None,
+        actor_age_max: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
         years: list[int] | None = None,
@@ -723,6 +789,8 @@ class MovieService:
         search_terms = split_search_terms(query, error_code="invalid_movie_filter")
         total = MovieService._filtered_movies(
             actor_id=actor_id,
+            actor_age_min=actor_age_min,
+            actor_age_max=actor_age_max,
             tag_ids=tag_ids,
             tag_match=tag_match,
             years=years,
@@ -740,6 +808,8 @@ class MovieService:
         movies = list(
             MovieService.movie_list_query(
                 actor_id=actor_id,
+                actor_age_min=actor_age_min,
+                actor_age_max=actor_age_max,
                 tag_ids=tag_ids,
                 tag_match=tag_match,
                 years=years,
