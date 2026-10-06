@@ -7,6 +7,7 @@ from src.model import (
     RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
     RECENTLY_PLAYED_PLAYLIST_NAME,
     Actor,
+    ApiKey,
     BackgroundTaskRun,
     ClipCollection,
     ClipCollectionItem,
@@ -57,6 +58,7 @@ def create_tables():
         [
             User,
             UserRefreshToken,
+            ApiKey,
             Image,
             Tag,
             Actor,

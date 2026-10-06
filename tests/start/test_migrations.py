@@ -26,6 +26,7 @@ from src.start.migrations.runner import (
     ACTOR_LOCAL_PROFILE_MIGRATION_NAME,
     ACTOR_MERGED_INTO_MIGRATION_NAME,
     ACTOR_METADATA_MIGRATION_NAME,
+    API_KEYS_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
     DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME,
     DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
@@ -136,6 +137,7 @@ def test_current_migrations_are_discoverable_in_order():
         WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME,
         DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME,
         DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
+        API_KEYS_MIGRATION_NAME,
     ]
 
 
@@ -234,6 +236,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME, applied=True),
         MigrationExecution(name=DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME, applied=True),
         MigrationExecution(name=DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=API_KEYS_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -261,6 +264,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME,
         DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME,
         DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
+        API_KEYS_MIGRATION_NAME,
     ]
 
 
@@ -541,7 +545,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 24
+    assert summary.applied_count == 25
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -711,6 +715,19 @@ def test_local_profile_and_moment_collection_migrations_add_runtime_indexes(clea
     assert "actor_profile_image_override_id" in {
         index.name for index in clean_db.get_indexes("actor")
     }
+
+
+def test_api_keys_migration_creates_table(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    clean_db.execute_sql("DROP TABLE api_keys")
+
+    _load_migration_module(Path(f"{API_KEYS_MIGRATION_NAME}.py")).migrate(clean_db)
+
+    assert clean_db.table_exists("api_keys")
+    assert {"name", "key_hint", "key_hash", "last_used_at"} <= _column_names(
+        clean_db, "api_keys"
+    )
 
 
 def _set_movie_extra(database, movie_id: int, extra) -> None:

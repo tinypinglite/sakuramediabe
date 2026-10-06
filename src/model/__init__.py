@@ -45,6 +45,7 @@ from .playback import (
     MediaThumbnail,
 )
 from .system import (
+    ApiKey,
     BackgroundTaskRun,
     SchemaMigration,
     SystemNotification,
@@ -72,6 +73,7 @@ __all__ = [
     "RECENTLY_PLAYED_PLAYLIST_NAME",
     "SYSTEM_PLAYLIST_KINDS",
     "Actor",
+    "ApiKey",
     "BackgroundTaskRun",
     "BaseModel",
     "ClipCollection",

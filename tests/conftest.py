@@ -19,6 +19,7 @@ from src.common.file_signatures import (
 from src.config.config import Database, settings
 from src.model import (
     Actor,
+    ApiKey,
     BackgroundTaskRun,
     ClipCollection,
     ClipCollectionItem,
@@ -72,6 +73,7 @@ TEST_FILE_SIGNATURE_EXPIRES = -(
 TEST_MODELS = [
     User,
     UserRefreshToken,
+    ApiKey,
     Image,
     Tag,
     Actor,

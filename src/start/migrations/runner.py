@@ -44,6 +44,7 @@ DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME = (
 DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME = (
     "20261007_03_add_download_submission_record_indexes"
 )
+API_KEYS_MIGRATION_NAME = "20261007_05_add_api_keys"
 
 
 @dataclass(frozen=True)
