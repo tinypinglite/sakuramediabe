@@ -997,7 +997,7 @@ class CollectionApi:
                 ClipCollectionService,
             )
 
-            member_count = ClipCollectionService._collection_counts([collection.id]).get(
+            member_count = ClipCollectionService._collection_overviews([collection.id])[0].get(
                 collection.id, 0
             )
         return PluginCollection(
