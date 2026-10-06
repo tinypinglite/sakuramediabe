@@ -211,11 +211,19 @@ class VideoItemService:
         *,
         query: str | None = None,
         sort: str | None = None,
+        uncollected: bool = False,
         page: int = 1,
         page_size: int = 20,
     ) -> PageResponse[VideoItemListItemResource]:
         validate_page(page, page_size, error_code="invalid_video_filter")
         base_query = cls._filtered_query(query=query)
+        if uncollected:
+            # 只保留不属于任何视频合集的条目；id 非空，NOT IN 无 NULL 语义坑。
+            base_query = base_query.where(
+                VideoItem.id.not_in(
+                    VideoCollectionItem.select(VideoCollectionItem.video_item)
+                )
+            )
         total = base_query.count()
         first_media, first_media_id = cls._first_media_alias()
         order_by = cls._build_video_order(

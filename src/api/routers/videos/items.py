@@ -21,12 +21,14 @@ router = APIRouter(
 def list_videos(
     query: str | None = Query(default=None),
     sort: str | None = Query(default=None),
+    uncollected: bool = Query(default=False),
     page: int = 1,
     page_size: int = 20,
 ):
     return VideoItemService.list_videos(
         query=query,
         sort=sort,
+        uncollected=uncollected,
         page=page,
         page_size=page_size,
     )
