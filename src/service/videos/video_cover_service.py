@@ -11,10 +11,19 @@ from typing import Any
 
 from loguru import logger
 
-try:
-    import av
-except ImportError:  # pragma: no cover - 由运行环境决定，测试不依赖
-    av = None
+av = None
+
+
+def _load_av():
+    """延迟导入 PyAV：仅生成封面用到，避免 API 进程启动即常驻约 18MB。"""
+    global av
+    if av is None:
+        try:
+            import av as pyav
+        except ImportError:  # pragma: no cover - 由运行环境决定，测试不依赖
+            return None
+        av = pyav
+    return av
 
 from src.common.media_paths import media_image_root_path
 from src.model import Image, VideoItem, get_database
@@ -37,7 +46,7 @@ class VideoCoverService:
     @classmethod
     def generate_cover(cls, video: VideoItem, video_source: Any) -> Image | None:
         """从本地路径或 seekable file-like 读取第 0 帧；失败返回 None。"""
-        if av is None:
+        if _load_av() is None:
             logger.warning("Video cover skipped because pyav is unavailable video_id={}", video.id)
             return None
 

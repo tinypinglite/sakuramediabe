@@ -7,11 +7,22 @@ from typing import Any
 
 from src.config.config import settings
 
-try:
-    from qdrant_client import QdrantClient, models
-except ImportError:  # pragma: no cover - 依赖缺失时由运行期错误明确暴露。
-    QdrantClient = None
-    models = None
+QdrantClient = None
+models = None
+
+
+def _load_qdrant_module() -> None:
+    """延迟导入 qdrant-client：仅实际访问向量库时才需要，避免 API 进程启动即常驻约 30MB。"""
+    global QdrantClient, models
+    if QdrantClient is not None:
+        return
+    try:
+        from qdrant_client import QdrantClient as client_class
+        from qdrant_client import models as qdrant_models
+    except ImportError:  # pragma: no cover - 依赖缺失时由运行期错误明确暴露。
+        return
+    QdrantClient = client_class
+    models = qdrant_models
 
 
 class MovieSimilarityIndexError(RuntimeError):
@@ -45,6 +56,7 @@ class QdrantMovieSimilarityStore:
         api_key: str | None = None,
         client: Any | None = None,
     ) -> None:
+        _load_qdrant_module()
         self.url = (url or settings.qdrant.url).rstrip("/")
         self.api_key = api_key if api_key is not None else settings.qdrant.api_key
         self._client = client

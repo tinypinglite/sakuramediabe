@@ -9,13 +9,33 @@ from pydantic import BaseModel
 from src.config.config import settings
 from src.service.system.optional_services import image_search_enabled
 
-try:
-    from qdrant_client import QdrantClient, models
-    from qdrant_client.http.exceptions import ResponseHandlingException
-except ImportError:  # pragma: no cover - exercised when dependency is missing at runtime.
-    QdrantClient = None
-    models = None
-    ResponseHandlingException = ()
+QdrantClient = None
+models = None
+ResponseHandlingException = ()
+
+
+def _load_qdrant_module() -> None:
+    """延迟导入 qdrant-client：仅实际访问向量库时才需要，避免 API 进程启动即常驻约 30MB。"""
+    global QdrantClient, models, ResponseHandlingException
+    if QdrantClient is not None:
+        return
+    try:
+        from qdrant_client import QdrantClient as client_class
+        from qdrant_client import models as qdrant_models
+        from qdrant_client.http.exceptions import (
+            ResponseHandlingException as response_handling_exception,
+        )
+    except ImportError:  # pragma: no cover - exercised when dependency is missing at runtime.
+        return
+    QdrantClient = client_class
+    models = qdrant_models
+    ResponseHandlingException = response_handling_exception
+
+
+def _qdrant_models():
+    """返回延迟导入后的 qdrant_client.models，供子类在实例方法内引用。"""
+    _load_qdrant_module()
+    return models
 
 
 class ThumbnailVectorRecord(BaseModel):
@@ -57,6 +77,7 @@ class QdrantThumbnailStore:
         api_key: str | None = None,
         client: Any | None = None,
     ) -> None:
+        _load_qdrant_module()
         self.url = (url or settings.qdrant.url).rstrip("/")
         self.collection_name = self.COLLECTION_NAME
         self.api_key = api_key if api_key is not None else settings.qdrant.api_key

@@ -4,7 +4,7 @@ from functools import lru_cache
 from loguru import logger
 from pydantic import BaseModel
 
-from .qdrant_thumbnail_store import QdrantThumbnailStore, models
+from .qdrant_thumbnail_store import QdrantThumbnailStore, _qdrant_models
 
 
 class PlotImageVectorRecord(BaseModel):
@@ -26,6 +26,7 @@ class QdrantPlotImageStore(QdrantThumbnailStore):
     def upsert_records(self, records: Sequence[PlotImageVectorRecord]) -> None:
         if not records:
             return
+        models = _qdrant_models()
         self._upsert_points(
             [
                 models.PointStruct(
@@ -52,6 +53,7 @@ class QdrantPlotImageStore(QdrantThumbnailStore):
             raise ValueError("limit must be positive")
         if offset < 0:
             raise ValueError("offset must be non-negative")
+        models = _qdrant_models()
         try:
             if not self._collection_exists():
                 return []

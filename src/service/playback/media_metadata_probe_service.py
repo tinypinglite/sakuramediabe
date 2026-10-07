@@ -8,10 +8,19 @@ from loguru import logger
 from src.common.runtime_time import parse_external_datetime
 from src.common.service_helpers import safe_int
 
-try:
-    import av
-except ImportError:  # pragma: no cover - exercised by runtime environment, not tests
-    av = None
+av = None
+
+
+def _load_av():
+    """延迟导入 PyAV：仅剪辑生成用到，避免 API 进程启动即常驻约 18MB。"""
+    global av
+    if av is None:
+        try:
+            import av as pyav
+        except ImportError:  # pragma: no cover - exercised by runtime environment, not tests
+            return None
+        av = pyav
+    return av
 
 
 @dataclass(frozen=True)
@@ -288,7 +297,7 @@ class MediaMetadataProbeService:
     ) -> MediaMetadataProbeResult:
         """探测路径或 seekable file-like，供本地文件与远端 Range reader 共用。"""
 
-        if av is None:
+        if _load_av() is None:
             logger.warning(
                 "Media metadata probe skipped because pyav is unavailable source={}",
                 source_label,
