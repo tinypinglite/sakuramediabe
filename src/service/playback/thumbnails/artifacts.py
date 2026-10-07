@@ -143,7 +143,9 @@ class ThumbnailArtifactService:
                     relative_path = (
                         target_dir / f"{artifact.offset_seconds}.webp"
                     ).relative_to(image_root).as_posix()
-                    image = Image.create(origin=relative_path)
+                    # 复用已存在的同 origin Image 行：迁移/清理容错可能残留共享引用，
+                    # 若直接 create 会撞唯一约束使重生成永久失败。
+                    image, _created = Image.get_or_create(origin=relative_path)
                     MediaThumbnail.create(
                         media=media,
                         image=image,

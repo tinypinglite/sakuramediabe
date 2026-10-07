@@ -1,10 +1,13 @@
 from collections.abc import Sequence
 from typing import Literal
+from uuid import uuid4
 
 import peewee
 from loguru import logger
 
 from src.api.exception.errors import ApiError
+from src.common.image_store import delete_image_file, read_image_bytes, write_image_file
+from src.common.media_paths import media_point_image_relative_path
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     paginate,
@@ -568,15 +571,32 @@ class MediaService:
                 point = cls._point_query_with_image().where(MediaPoint.id == point.id).get()
                 return cls._to_media_point_resource(point), False
 
-            point = MediaPoint.create(
-                media=media,
-                thumbnail=thumbnail,
-                image=thumbnail.image_id,
-                movie_number=media.movie_number,
-                video_item_id=media.video_item_id,
-                offset_seconds=thumbnail.offset,
-            )
-            point = cls._point_query_with_image().where(MediaPoint.id == point.id).get()
+            # 时刻钉图是用户资产：拷贝来源缩略图字节为自有副本，之后与缩略图生命周期解绑，
+            # 来源媒体重置/重生成缩略图都不会影响已钉下的时刻。
+            try:
+                image_bytes = read_image_bytes(thumbnail.image.origin)
+            except FileNotFoundError as exc:
+                raise ApiError(
+                    500, "thumbnail_image_missing", "缩略图文件缺失，无法创建时刻"
+                ) from exc
+            relative_path = media_point_image_relative_path(
+                f"{uuid4().hex}.webp"
+            ).as_posix()
+            write_image_file(relative_path, image_bytes)
+            try:
+                image = Image.create(origin=relative_path)
+                point = MediaPoint.create(
+                    media=media,
+                    thumbnail=thumbnail,
+                    image=image,
+                    movie_number=media.movie_number,
+                    video_item_id=media.video_item_id,
+                    offset_seconds=thumbnail.offset,
+                )
+                point = cls._point_query_with_image().where(MediaPoint.id == point.id).get()
+            except Exception:
+                delete_image_file(relative_path)
+                raise
         return cls._to_media_point_resource(point), True
 
     @classmethod
@@ -687,6 +707,61 @@ class MediaService:
                     get_qdrant_thumbnail_store().delete_by_media_id(media.id)
                 except Exception as exc:
                     logger.warning("Delete media vectors failed media_id={} detail={}", media.id, exc)
+
+    @classmethod
+    def force_reset_media_thumbnails(cls, media_ids: list[int]) -> int:
+        """删除已有缩略图产物并把生成状态重置为 pending，重生成交给定时任务。
+
+        时刻钉图与视频自选封面已拷贝为各自领域的用户资产，不在此处引用缩略图，
+        删除后即可整体重建；媒体正在处理时抛 409（与删除媒体一致），重试幂等。
+        """
+        media_rows = list(
+            Media.select(Media.id, Media.movie_number)
+            .where(Media.id.in_(media_ids), Media.valid == True)
+            .order_by(Media.id)
+        )
+        reset_count = 0
+        for media in media_rows:
+            with media_operation_lock(MEDIA_LOCK, media.id):
+                thumbnail_image_ids = [
+                    image_id
+                    for (image_id,) in MediaThumbnail.select(MediaThumbnail.image_id)
+                    .where(MediaThumbnail.media == media.id)
+                    .tuples()
+                ]
+                with get_database().atomic():
+                    MediaThumbnail.delete().where(
+                        MediaThumbnail.media == media.id
+                    ).execute()
+                    Media.update(
+                        thumbnail_generation_state=Media.THUMBNAIL_STATE_PENDING,
+                        thumbnail_attempt_count=0,
+                        thumbnail_deferred_count=0,
+                        thumbnail_next_retry_at=None,
+                        thumbnail_last_error_code=None,
+                        thumbnail_last_error=None,
+                        thumbnail_terminal_at=None,
+                        updated_at=utc_now_for_db(),
+                    ).where(Media.id == media.id).execute()
+
+                    obsolete_image_paths: set[str] = set()
+                    for image_id in thumbnail_image_ids:
+                        image = Image.get_or_none(Image.id == image_id)
+                        obsolete_image_paths |= ImageCleanupService.delete_image_record_if_unused(image)
+
+                ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
+
+                if media.movie_number and image_search_enabled():
+                    try:
+                        get_qdrant_thumbnail_store().delete_by_media_id(media.id)
+                    except Exception as exc:
+                        logger.warning(
+                            "Delete media vectors failed media_id={} detail={}",
+                            media.id,
+                            exc,
+                        )
+                reset_count += 1
+        return reset_count
 
     @classmethod
     def list_thumbnails(cls, media_id: int) -> list[MediaThumbnailResource]:

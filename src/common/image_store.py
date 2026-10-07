@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
@@ -36,6 +37,27 @@ def read_image_bytes(relative_path: str) -> bytes:
             # 条目缺失或包损坏属于异常状态：回退单文件，文件也不在则按缺失处理。
             pass
     return resolve_image_file_path(relative_path).read_bytes()
+
+
+def write_image_file(relative_path: str, data: bytes) -> None:
+    """写松散图片文件：先写临时文件再原子替换，避免半成品被读取。"""
+    target_path = resolve_image_file_path(relative_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = target_path.with_name(f"{target_path.name}.tmp-{uuid.uuid4().hex}")
+    try:
+        tmp_path.write_bytes(data)
+        os.replace(tmp_path, target_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def delete_image_file(relative_path: str) -> None:
+    """按库内相对路径删除松散图片文件；文件本就不存在时静默放行。"""
+    try:
+        resolve_image_file_path(relative_path).unlink()
+    except FileNotFoundError:
+        return
 
 
 def write_pack(pack_path: Path, entries: Iterable[tuple[str, Path | bytes]]) -> None:

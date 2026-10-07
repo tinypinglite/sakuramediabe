@@ -28,6 +28,7 @@ from src.start.migrations.runner import (
     ACTOR_METADATA_MIGRATION_NAME,
     API_KEYS_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
+    DETACH_USER_ASSET_IMAGES_MIGRATION_NAME,
     DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME,
     DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
     DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME,
@@ -138,6 +139,7 @@ def test_current_migrations_are_discoverable_in_order():
         DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME,
         DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
         API_KEYS_MIGRATION_NAME,
+        DETACH_USER_ASSET_IMAGES_MIGRATION_NAME,
     ]
 
 
@@ -237,6 +239,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME, applied=True),
         MigrationExecution(name=DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME, applied=True),
         MigrationExecution(name=API_KEYS_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=DETACH_USER_ASSET_IMAGES_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -265,6 +268,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME,
         DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
         API_KEYS_MIGRATION_NAME,
+        DETACH_USER_ASSET_IMAGES_MIGRATION_NAME,
     ]
 
 
@@ -545,7 +549,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 25
+    assert summary.applied_count == 26
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -1089,3 +1093,96 @@ def test_remove_generated_thin_cover_migration_clears_only_skipped_movies(clean_
     assert Movie.get_by_id(packed_movie.id).thin_cover_image_id is None
     assert Movie.get_by_id(kept_movie.id).thin_cover_image_id == kept_thin.id
 
+
+
+def test_detach_user_asset_images_migration(clean_db, monkeypatch, tmp_path):
+    import zipfile
+
+    from src.config.config import settings
+    from src.model import (
+        Image,
+        MediaPoint,
+        MediaThumbnail,
+        VideoItem,
+    )
+    from src.service.playback.thumbnails.artifacts import ThumbnailArtifactService
+
+    clean_db.create_tables(TEST_MODELS)
+    image_root = tmp_path / "assets"
+    monkeypatch.setattr(settings.media, "import_image_root_path", str(image_root))
+
+    library = MediaLibrary.create(name="detach", provider_key="demo", provider_config={})
+    movie = Movie.create(movie_number="DETACH-001", title="detach")
+    media = Media.create(movie=movie, library=library, file_name="detach.mp4")
+    thumbnails_dir = ThumbnailArtifactService.thumbnail_directory(media)
+    thumbnails_dir.mkdir(parents=True)
+    pack_path = ThumbnailArtifactService.thumbnail_pack_file(media)
+    with zipfile.ZipFile(pack_path, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("10.webp", b"thumb-10")
+        archive.writestr("20.webp", b"thumb-20")
+
+    origin_10 = (thumbnails_dir / "10.webp").relative_to(image_root).as_posix()
+    origin_20 = (thumbnails_dir / "20.webp").relative_to(image_root).as_posix()
+    image_10 = Image.create(origin=origin_10)
+    image_20 = Image.create(origin=origin_20)
+    MediaThumbnail.create(media=media, image=image_10, offset=10)
+    MediaThumbnail.create(media=media, image=image_20, offset=20)
+    point_a = MediaPoint.create(
+        image=image_10, movie_number="DETACH-001", offset_seconds=10
+    )
+    point_b = MediaPoint.create(
+        image=image_10, movie_number="DETACH-001", offset_seconds=11
+    )
+    video = VideoItem.create(title="detach video", cover_image=image_20)
+
+    # 来源媒体已删除的遗留时刻：图片行无 thumbnail 引用，字节为松散单文件。
+    orphan_origin = "movies/yy/GONE-001/media/999/thumbnails/30.webp"
+    orphan_path = image_root / orphan_origin
+    orphan_path.parent.mkdir(parents=True)
+    orphan_path.write_bytes(b"orphan-30")
+    orphan_image = Image.create(origin=orphan_origin)
+    orphan_point = MediaPoint.create(
+        image=orphan_image, movie_number="GONE-001", offset_seconds=30
+    )
+
+    migration = _load_migration_module(
+        Path(f"{DETACH_USER_ASSET_IMAGES_MIGRATION_NAME}.py")
+    )
+    migration.migrate(clean_db)
+
+    # 时刻：共享同图的时刻复用一个新副本，字节拷出，来源缩略图行与包保留。
+    detached_a = MediaPoint.get_by_id(point_a.id)
+    detached_b = MediaPoint.get_by_id(point_b.id)
+    assert detached_a.image_id == detached_b.image_id
+    assert detached_a.image.origin.startswith("media_points/")
+    assert (image_root / detached_a.image.origin).read_bytes() == b"thumb-10"
+    assert Image.get_or_none(Image.id == image_10.id) is not None
+    assert Image.get_or_none(Image.id == image_20.id) is not None
+    with zipfile.ZipFile(pack_path) as archive:
+        assert sorted(archive.namelist()) == ["10.webp", "20.webp"]
+
+    # 视频封面：独立拷贝。
+    detached_cover = VideoItem.get_by_id(video.id).cover_image
+    assert detached_cover.origin.startswith(f"videos/{video.id}/cover/")
+    assert (image_root / detached_cover.origin).read_bytes() == b"thumb-20"
+
+    # 遗留孤儿时刻：旧行删除、松散文件回收，新副本可用。
+    detached_orphan = MediaPoint.get_by_id(orphan_point.id)
+    assert detached_orphan.image.origin.startswith("media_points/")
+    assert Image.get_or_none(Image.id == orphan_image.id) is None
+    assert not orphan_path.exists()
+
+    # 幂等：重跑不改变状态。
+    reused_image_ids = (
+        MediaPoint.get_by_id(point_a.id).image_id,
+        MediaPoint.get_by_id(point_b.id).image_id,
+        MediaPoint.get_by_id(orphan_point.id).image_id,
+        VideoItem.get_by_id(video.id).cover_image_id,
+    )
+    migration.migrate(clean_db)
+    assert (
+        MediaPoint.get_by_id(point_a.id).image_id,
+        MediaPoint.get_by_id(point_b.id).image_id,
+        MediaPoint.get_by_id(orphan_point.id).image_id,
+        VideoItem.get_by_id(video.id).cover_image_id,
+    ) == reused_image_ids

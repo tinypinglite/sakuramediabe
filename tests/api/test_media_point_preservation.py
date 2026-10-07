@@ -106,7 +106,18 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
         point = MediaPoint.get_by_id(point_id)
         assert point.media_id is None and point.thumbnail_id is None
     assert MediaPoint.get_by_id(point_ids[0]).created_at == original.created_at
-    assert (image_root / '10.webp').is_file() and (image_root / '20.webp').is_file()
+    # 时刻图是自有副本：来源缩略图文件随媒体删除全部回收，时刻图文件不受影响。
+    point_image_paths = [
+        image_root / MediaPoint.get_by_id(point_id).image.origin
+        for point_id in point_ids
+    ]
+    assert all(
+        MediaPoint.get_by_id(point_id).image.origin.startswith('media_points/')
+        for point_id in point_ids
+    )
+    assert all(path.is_file() for path in point_image_paths)
+    assert not (image_root / '10.webp').exists()
+    assert not (image_root / '20.webp').exists()
     assert not (image_root / '30.webp').exists()
     assert MomentRecommendationService._load_seeds() == []
 
@@ -141,11 +152,10 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
     for point_id in point_ids:
         assert client.delete(f'/media-points/{point_id}', headers=headers).status_code == 204
     assert not MomentCollectionItem.select().where(MomentCollectionItem.collection == collection).exists()
-    assert not (image_root / '20.webp').exists()
+    assert all(not path.exists() for path in point_image_paths)
     if kind == 'video':
-        # 视频条目随媒体/视频删除一并清理；封面 Image 被时刻引用，随时刻删除后回收。
+        # 视频条目随媒体/视频删除一并清理；封面 Image 随时刻删除后回收。
         assert VideoItem.get_or_none(VideoItem.id == media.video_item_id) is None
-    assert not (image_root / '10.webp').exists()
     assert client.delete(f'/media-points/{point_ids[0]}', headers=headers).status_code == 404
     assert clip_path.is_file()
 
@@ -165,7 +175,9 @@ def test_replacing_video_cover_keeps_image_referenced_by_orphan_point(
     point = MediaPoint.create(image=old_image, video_item_id=video.id, offset_seconds=10)
     library = MediaLibrary.create(name='covers', provider_key='demo', provider_config={})
     media = Media.create(video_item=video, library=library, file_name='other.mp4')
-    new_image = Image.create(origin='new.webp')
+    thumbnail_path = tmp_path / 'thumb.webp'
+    PILImage.new('RGB', (20, 20), 'red').save(thumbnail_path)
+    new_image = Image.create(origin='thumb.webp')
     thumbnail = MediaThumbnail.create(media=media, image=new_image, offset=20)
     login = client.post('/auth/tokens', json={'username': account_user.username, 'password': 'password123'})
     headers = {'Authorization': f"Bearer {login.json()['access_token']}"}
@@ -173,7 +185,13 @@ def test_replacing_video_cover_keeps_image_referenced_by_orphan_point(
     response = client.patch(f'/videos/{video.id}', headers=headers, json={'cover_thumbnail_id': thumbnail.id})
 
     assert response.status_code == 200, response.text
-    assert VideoItem.get_by_id(video.id).cover_image_id == new_image.id
+    cover_image = VideoItem.get_by_id(video.id).cover_image
+    # 自选封面是拷贝出的自有图片：不复用缩略图 Image 行，字节一致。
+    assert cover_image.id != new_image.id
+    assert cover_image.origin.startswith(f'videos/{video.id}/cover/')
+    assert (tmp_path / cover_image.origin).read_bytes() == thumbnail_path.read_bytes()
+    assert Image.get_or_none(Image.id == new_image.id) is not None
+    # 旧封面仍被时刻引用，替换后保留；删除时刻后才回收。
     assert old_path.is_file() and Image.get_or_none(Image.id == old_image.id) is not None
     assert client.delete(f'/media-points/{point.id}', headers=headers).status_code == 204
     assert not old_path.exists()

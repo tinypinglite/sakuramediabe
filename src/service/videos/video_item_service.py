@@ -1,11 +1,14 @@
 """视频条目（VideoItem）service：非 JAV 视频的条目增删改查与详情组装。"""
 
+from uuid import uuid4
 
 from peewee import JOIN, Case, fn
 
 from src.api.exception.errors import ApiError
 from src.common import build_signed_media_url
+from src.common.image_store import delete_image_file, read_image_bytes, write_image_file
 from src.common.media_formats import normalize_media_resolution
+from src.common.media_paths import video_cover_image_relative_path
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     require_by_id,
@@ -376,6 +379,7 @@ class VideoItemService:
         if not update_data:
             raise ApiError(422, "validation_error", "At least one field must be provided")
         obsolete_cover_image = None
+        new_cover_path = None
         if "cover_thumbnail_id" in update_data:
             thumbnail_id = update_data["cover_thumbnail_id"]
             if thumbnail_id is None:
@@ -403,15 +407,33 @@ class VideoItemService:
             obsolete_cover_image = (
                 video.cover_image if video.cover_image_id is not None else None
             )
-            video.cover_image = thumbnail.image
-        if "title" in update_data and update_data["title"] is not None:
-            video.title = update_data["title"]
-        if "summary" in update_data and update_data["summary"] is not None:
-            video.summary = update_data["summary"]
-        if "release_date" in update_data:
-            video.release_date = update_data["release_date"]
-        video.updated_at = utc_now_for_db()
-        video.save()
+            # 自选封面是用户资产：拷贝缩略图字节为自有副本，与缩略图生命周期解绑。
+            try:
+                image_bytes = read_image_bytes(thumbnail.image.origin)
+            except FileNotFoundError as exc:
+                raise ApiError(
+                    500, "thumbnail_image_missing", "缩略图文件缺失，无法设置视频封面"
+                ) from exc
+            new_cover_path = video_cover_image_relative_path(
+                video.id, f"{uuid4().hex}.webp"
+            ).as_posix()
+            write_image_file(new_cover_path, image_bytes)
+        try:
+            with get_database().atomic():
+                if new_cover_path is not None:
+                    video.cover_image = Image.create(origin=new_cover_path)
+                if "title" in update_data and update_data["title"] is not None:
+                    video.title = update_data["title"]
+                if "summary" in update_data and update_data["summary"] is not None:
+                    video.summary = update_data["summary"]
+                if "release_date" in update_data:
+                    video.release_date = update_data["release_date"]
+                video.updated_at = utc_now_for_db()
+                video.save()
+        except Exception:
+            if new_cover_path is not None:
+                delete_image_file(new_cover_path)
+            raise
         if obsolete_cover_image is not None:
             from src.service.catalog.image_cleanup_service import ImageCleanupService
 

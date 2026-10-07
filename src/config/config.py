@@ -1,5 +1,4 @@
 import json
-import math
 import os
 import pathlib
 import secrets
@@ -87,9 +86,6 @@ class Auth(BaseModel):
 class Media(BaseModel):
     allowed_min_video_file_size: int = 268435456 # 256MB
     import_image_root_path: str = "/data/cache/assets"
-    max_thumbnail_process_count: int = Field(
-        default_factory=lambda: max(1, math.ceil((os.cpu_count() or 1) / 2))
-    )
     # 片段产物独立存储根目录，部署时单独挂卷映射到本地。
     media_clip_root_path: str = "/data/media-clips"
     # 用户可圈选的片段最大时长（秒），仅约束区间长度，不等于 ffmpeg 进程墙钟时长。

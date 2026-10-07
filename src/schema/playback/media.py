@@ -26,6 +26,9 @@ class MediaThumbnailGenerationState(str, Enum):
 
 class MediaThumbnailResetRequest(SchemaModel):
     media_ids: list[int] = Field(min_length=1, max_length=1000)
+    # force=True 时删除已有缩略图产物后重置，等待定时任务重新生成；
+    # 默认只重置「terminal 且无缩略图」的失败状态。
+    force: bool = False
 
     @field_validator("media_ids", mode="before")
     @classmethod

@@ -14,6 +14,11 @@ MOVIE_SUBTITLES_SUBDIR = "subtitles"
 # 或与目录同级同名、不含压缩的 thumbnails.zip（条目名 = 文件名）。
 MEDIA_THUMBNAILS_SUBDIR = "thumbnails"
 MEDIA_THUMBNAILS_PACK_SUFFIX = ".zip"
+
+# 用户资产图片（时刻钉图、视频自选封面）的独立存储：拷贝自缩略图字节，
+# 但归属各自领域，不参与缩略图的整体重建；均为松散单文件，直接删文件回收。
+MEDIA_POINTS_SUBDIR = "media_points"
+VIDEO_COVER_SUBDIR = "cover"
 # 影片图片（封面/薄封面/剧情图）平铺在 movies/<shard>/<番号>/ 下，
 # 打包形态是同目录、不含压缩的 assets.zip（条目名 = 文件名）。
 MOVIE_ASSETS_PACK_NAME = "assets.zip"
@@ -68,6 +73,18 @@ def movie_subtitle_dir(movie_number: str) -> Path:
     provider 媒体与宿主字幕资产的字幕都落这里；媒体库内不再存放 .srt。
     """
     return movie_asset_dir(movie_number) / MOVIE_SUBTITLES_SUBDIR
+
+
+def media_point_image_relative_path(file_name: str) -> PurePosixPath:
+    """时刻钉图的库内相对路径 ``media_points/<file_name>``。"""
+    return PurePosixPath(MEDIA_POINTS_SUBDIR, file_name)
+
+
+def video_cover_image_relative_path(video_item_id: int, file_name: str) -> PurePosixPath:
+    """视频自选封面的库内相对路径 ``videos/<video_item_id>/cover/<file_name>``。"""
+    return PurePosixPath(
+        "videos", str(video_item_id), VIDEO_COVER_SUBDIR, file_name
+    )
 
 
 def image_pack_relative_path(relative_path: str) -> PurePosixPath | None:

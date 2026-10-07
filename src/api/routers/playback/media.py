@@ -135,13 +135,16 @@ def list_media(
     "/thumbnail-generation/reset",
     response_model=MediaThumbnailResetResponse,
 )
-def reset_terminal_media_thumbnails(
+def reset_media_thumbnails(
     payload: MediaThumbnailResetRequest,
     current_user=Depends(get_current_user),
 ):
-    return MediaThumbnailResetResponse(
-        reset_count=MediaThumbnailService.reset_terminal_media(payload.media_ids),
+    reset_count = (
+        MediaService.force_reset_media_thumbnails(payload.media_ids)
+        if payload.force
+        else MediaThumbnailService.reset_terminal_media(payload.media_ids)
     )
+    return MediaThumbnailResetResponse(reset_count=reset_count)
 
 
 @router.get("/invalid", response_model=PageResponse[InvalidMediaResource])
