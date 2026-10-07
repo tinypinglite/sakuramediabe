@@ -20,7 +20,6 @@ from src.schema.transfers.downloads import DownloadRequestCreateRequest
 from src.service.transfers.downloads import resource_hash
 from src.service.transfers.downloads.request_service import DownloadRequestService
 from src.service.transfers.downloads.task_service import DownloadTaskService
-from src.service.transfers.shared.import_task_service import ImportTaskService
 
 HASH = "0123456789abcdef0123456789abcdef01234567"
 OTHER_HASH = "abcdef0123456789abcdef0123456789abcdef01"
@@ -272,6 +271,8 @@ def test_submit_delete_and_cross_client_resubmit_cycle(downloads, monkeypatch):
     DownloadTaskService.delete_task(task.id, delete_files=True)
     client.delete_instance()
     assert DownloadSubmissionRecord.select().count() == 1
+    # 删除不再打墓碑标记：提交历史只增不改，记录保持 submitted。
+    assert DownloadSubmissionRecord.get_by_id(record.id).state == "submitted"
 
     library = MediaLibrary.create(
         name="cloud", provider_key="cloud115", provider_config={}
@@ -359,18 +360,6 @@ def test_unparseable_source_never_reaches_provider(downloads):
         DownloadRequestService().create_request(_payload("invalid"))
     provider.submit.assert_not_called()
     assert not DownloadSubmissionRecord.select().exists()
-
-
-def test_automatic_cleanup_does_not_blacklist(downloads, monkeypatch):
-    client, provider = downloads
-    task = _task(client, "completed")
-    monkeypatch.setattr(
-        "src.service.transfers.shared.import_task_service.download_provider",
-        lambda client: provider,
-    )
-    ImportTaskService._delete_remote_download_task(task.id)
-    provider.delete_task.assert_called_once_with(remote_id=HASH, delete_files=False)
-    assert not DownloadResourceBlacklist.select().exists()
 
 
 def test_migration_creates_history_without_changing_download_tasks(test_db, downloads):

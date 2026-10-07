@@ -19,7 +19,6 @@ from src.common.media_import_status import (
 )
 from src.model import BackgroundTaskRun, DownloadTask, MediaLibrary
 from src.model.base import get_database
-from src.plugins.provider_protocol import ProviderOperationError
 from src.schema.transfers.media_import import (
     ImportAcceptedResponse,
     ImportFailedItemResource,
@@ -27,7 +26,6 @@ from src.schema.transfers.media_import import (
     ImportRequest,
 )
 from src.service.system import ActivityService
-from src.service.transfers.downloads.common import download_provider
 from src.service.transfers.shared.import_notifications import create_new_media_reminder
 from src.service.transfers.shared.write_mutex import library_import_mutex_key
 
@@ -475,8 +473,6 @@ class ImportTaskService:
         else:
             status = IMPORT_STATUS_SKIPPED
         cls._set_download_status(download_task_id, status)
-        if status == IMPORT_STATUS_COMPLETED:
-            cls._delete_remote_download_task(download_task_id)
         summary = result.model_dump()
         if download_task_id is not None:
             summary["download_task_id"] = int(download_task_id)
@@ -598,42 +594,6 @@ class ImportTaskService:
         DownloadTask.update(import_status=status).where(
             DownloadTask.id == int(download_task_id)
         ).execute()
-
-    @staticmethod
-    def _delete_remote_download_task(download_task_id: int | None) -> None:
-        """Remove the provider task record after a successful import, preserving files."""
-        if download_task_id is None:
-            return
-        task = DownloadTask.get_or_none(DownloadTask.id == int(download_task_id))
-        if task is None:
-            return
-        try:
-            download_provider(task.client).delete_task(
-                remote_id=task.remote_id,
-                delete_files=False,
-            )
-        except ProviderOperationError as exc:
-            if exc.code == "source_not_found":
-                return
-            logger.warning(
-                "Auto-delete remote download task failed task_id={} provider={} operation={} code={}",
-                task.id,
-                exc.provider_key,
-                exc.operation,
-                exc.code,
-            )
-        except ApiError as exc:
-            logger.warning(
-                "Auto-delete remote download task unavailable task_id={} code={}",
-                task.id,
-                exc.code,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Auto-delete remote download task failed unexpectedly task_id={} error_type={}",
-                task.id,
-                type(exc).__name__,
-            )
 
     @classmethod
     def recover_interrupted_downloads(cls) -> int:

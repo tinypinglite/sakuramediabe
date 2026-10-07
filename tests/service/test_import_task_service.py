@@ -89,7 +89,7 @@ def test_only_skipped_files_marks_download_skipped(monkeypatch):
     assert statuses == [(7, IMPORT_STATUS_SKIPPED)]
 
 
-def test_successful_import_deletes_remote_task_but_keeps_files(test_db, monkeypatch):
+def test_successful_import_keeps_download_task(test_db, monkeypatch):
     library = MediaLibrary.create(
         name="library", provider_key="test", provider_config={}
     )
@@ -103,22 +103,9 @@ def test_successful_import_deletes_remote_task_but_keeps_files(test_db, monkeypa
         completed_source_ref={"source": "TEST-002"},
         import_status="running",
     )
-    deleted = []
     monkeypatch.setattr(
         "src.service.transfers.imports.import_service.MediaImportService.import_from_source",
         lambda *_a, **_k: ImportResult(imported_count=1, failed_count=0),
-    )
-    monkeypatch.setattr(
-        "src.service.transfers.shared.import_task_service.download_provider",
-        lambda _client: type(
-            "Provider",
-            (),
-            {
-                "delete_task": lambda _self, *, remote_id, delete_files: deleted.append(
-                    (remote_id, delete_files)
-                )
-            },
-        )(),
     )
 
     ImportTaskService.execute(
@@ -131,8 +118,8 @@ def test_successful_import_deletes_remote_task_but_keeps_files(test_db, monkeypa
         },
     )
 
+    # 导入成功只写导入状态；远端任务记录与文件由用户自行管理，宿主不再自动删除。
     assert DownloadTask.get_by_id(task.id).import_status == IMPORT_STATUS_COMPLETED
-    assert deleted == [("remote-task-2", False)]
 
 
 def test_batch_progress_counts_download_tasks_and_continues_after_failure(test_db, monkeypatch):
@@ -174,7 +161,6 @@ def test_batch_progress_counts_download_tasks_and_continues_after_failure(test_d
         "src.service.transfers.imports.import_service.MediaImportService.import_from_source",
         import_source,
     )
-    monkeypatch.setattr(ImportTaskService, "_delete_remote_download_task", lambda _task_id: None)
 
     summary = ImportTaskService.execute(
         reporter,
@@ -236,7 +222,6 @@ def test_import_notification_reports_unique_movie_count(monkeypatch, batch, has_
         ImportTaskService, "_set_download_status",
         lambda task_id, status: statuses.append((task_id, status)),
     )
-    monkeypatch.setattr(ImportTaskService, "_delete_remote_download_task", lambda _id: None)
     monkeypatch.setattr(
         "src.service.transfers.shared.import_notifications.NotificationService.create_once",
         lambda draft: notices.append(draft),
