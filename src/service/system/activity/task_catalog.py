@@ -20,4 +20,5 @@ TASK_NAME_REGISTRY = {
     "activity_record_cleanup": "任务记录清理",
     "library_import": "媒体库导入",
     "media_storage_transfer": "媒体存储迁移",
+    "batch_operation": "批量操作",
 }

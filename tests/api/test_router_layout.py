@@ -19,6 +19,7 @@ from src.api.routers.system import (
     account,
     activity,
     auth,
+    batch_operations,
     indexer_settings,
     plugins,
     status,
@@ -40,6 +41,7 @@ from src.api.routers.videos import items as video_items
         (media_transfer.router, (deps.db_deps, deps.get_current_user)),
         (status.router, (deps.db_deps, deps.get_current_user)),
         (activity.router, (deps.db_deps, deps.get_current_user)),
+        (batch_operations.router, (deps.db_deps, deps.get_current_user)),
         (indexer_settings.router, (deps.db_deps,)),
         (plugins.router, (deps.db_deps, deps.get_current_user)),
         (system_config.router, (deps.db_deps,)),
@@ -124,6 +126,15 @@ def test_create_app_registers_media_storage_transfer_route():
     }
     assert ("/media-transfers", "POST") in route_methods
     assert ("/media-transfers/candidates", "POST") in route_methods
+
+
+def test_create_app_registers_batch_operations_route():
+    route_methods = {
+        (getattr(route, "path", None), method)
+        for route in create_app().routes
+        for method in getattr(route, "methods", set())
+    }
+    assert ("/batch-operations", "POST") in route_methods
 
 
 def test_openapi_uses_oauth2_password_flow_for_authorize_button():

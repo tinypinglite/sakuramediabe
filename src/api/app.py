@@ -45,6 +45,7 @@ from src.api.routers.playback.media_points import router as media_points_router
 from src.api.routers.system.account import router as account_router
 from src.api.routers.system.activity import router as activity_router
 from src.api.routers.system.auth import router as auth_router
+from src.api.routers.system.batch_operations import router as batch_operations_router
 from src.api.routers.system.config import router as config_router
 from src.api.routers.system.indexer_settings import router as indexer_settings_router
 from src.api.routers.system.jobs import router as jobs_router
@@ -115,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(media_transfer_router)
     app.include_router(status_router)
     app.include_router(activity_router)
+    app.include_router(batch_operations_router)
     app.include_router(jobs_router)
     app.include_router(account_router)
     app.include_router(auth_router)

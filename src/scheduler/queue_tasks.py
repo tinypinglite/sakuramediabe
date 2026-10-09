@@ -18,12 +18,15 @@ from src.scheduler.contracts import JobDefinition
 LANE_DEFAULT = "default"
 LANE_IMPORT = "import"
 LANE_TRANSFER = "transfer"
+LANE_BATCH = "batch"
 
 # 并发道容量：default 复刻 APS ThreadPoolExecutor(4)，导入道使用 2 并发。
+# batch 道单并发：用户批量操作必须按提交顺序串行执行，避免并发写争抢同一资源。
 LANE_CONCURRENCY: dict[str, int] = {
     LANE_DEFAULT: 4,
     LANE_IMPORT: 2,
     LANE_TRANSFER: 1,
+    LANE_BATCH: 1,
 }
 
 
@@ -39,6 +42,12 @@ def _run_media_storage_transfer(reporter, params: dict[str, Any]) -> dict:
     )
 
     return MediaTransferTaskService.execute(reporter, params)
+
+
+def _run_batch_operation(reporter, params: dict[str, Any]) -> dict:
+    from src.service.system.batch_operation_service import BatchOperationTaskService
+
+    return BatchOperationTaskService.execute(reporter, params)
 
 
 def _recover_media_storage_transfers() -> dict[str, int]:
@@ -80,6 +89,15 @@ QUEUE_TASK_REGISTRY: dict[str, JobDefinition] = {
             handler=_run_media_storage_transfer,
             business_recovery=_recover_media_storage_transfers,
             lane=LANE_TRANSFER,
+        ),
+        JobDefinition(
+            task_key="batch_operation",
+            log_name="batch-operation",
+            cli_name="batch-operation",
+            cli_help="执行一次用户批量操作（批量删除、合集成员增删等）",
+            manual_only=True,
+            handler=_run_batch_operation,
+            lane=LANE_BATCH,
         ),
     )
 }
