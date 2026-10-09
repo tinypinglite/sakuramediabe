@@ -189,7 +189,7 @@ class ActorService:
         )
 
     @staticmethod
-    def _actor_query():
+    def actor_query():
         """演员基础查询统一补齐头像，避免调用方重复 join。"""
         movie_count_expression = ActorService._movie_count_expression().alias(
             "movie_count"
@@ -282,7 +282,7 @@ class ActorService:
                 {"height_min": height_min, "height_max": height_max},
             )
 
-        query = cls._actor_query()
+        query = cls.actor_query()
         query = query.where(Actor.merged_into.is_null())
         scope_conditions = cls._actor_scope_conditions(gender, subscription_status)
         if scope_conditions:
@@ -312,12 +312,12 @@ class ActorService:
             actor_id,
             "actor",
             error_message="演员不存在",
-            query=cls._actor_query(),
+            query=cls.actor_query(),
         )
         if actor.merged_into_id is None:
             return actor
         canonical = (
-            cls._actor_query().where(Actor.id == actor.merged_into_id).get_or_none()
+            cls.actor_query().where(Actor.id == actor.merged_into_id).get_or_none()
         )
         return canonical or actor
 
@@ -512,7 +512,7 @@ class ActorService:
             try:
                 actor = import_service.upsert_actor_from_javdb_resource(actor_resource)
                 actor_with_profile = (
-                    cls._actor_query().where(Actor.id == actor.id).get_or_none()
+                    cls.actor_query().where(Actor.id == actor.id).get_or_none()
                     or actor
                 )
                 imported_actors.append(

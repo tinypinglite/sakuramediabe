@@ -11,6 +11,7 @@ from .movie_task_service import MovieTaskService
 from .movie_thin_cover_backfill_service import MovieThinCoverBackfillService
 from .subscribed_actor_movie_sync_service import SubscribedActorMovieSyncService
 from .tag_service import TagService
+from .view_history_service import ViewHistoryService
 
 __all__ = [
     "ActorMergeService",
@@ -27,4 +28,5 @@ __all__ = [
     "MovieThinCoverBackfillService",
     "SubscribedActorMovieSyncService",
     "TagService",
+    "ViewHistoryService",
 ]

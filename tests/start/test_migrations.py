@@ -48,6 +48,7 @@ from src.start.migrations.runner import (
     PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
     REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
     REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
+    VIEW_HISTORY_MIGRATION_NAME,
     WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME,
     MigrationExecution,
     MigrationRunSummary,
@@ -140,6 +141,7 @@ def test_current_migrations_are_discoverable_in_order():
         DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
         API_KEYS_MIGRATION_NAME,
         DETACH_USER_ASSET_IMAGES_MIGRATION_NAME,
+        VIEW_HISTORY_MIGRATION_NAME,
     ]
 
 
@@ -240,6 +242,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME, applied=True),
         MigrationExecution(name=API_KEYS_MIGRATION_NAME, applied=True),
         MigrationExecution(name=DETACH_USER_ASSET_IMAGES_MIGRATION_NAME, applied=True),
+        MigrationExecution(name=VIEW_HISTORY_MIGRATION_NAME, applied=True),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -269,6 +272,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
         API_KEYS_MIGRATION_NAME,
         DETACH_USER_ASSET_IMAGES_MIGRATION_NAME,
+        VIEW_HISTORY_MIGRATION_NAME,
     ]
 
 
@@ -549,7 +553,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 26
+    assert summary.applied_count == 27
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -731,6 +735,19 @@ def test_api_keys_migration_creates_table(clean_db):
     assert clean_db.table_exists("api_keys")
     assert {"name", "key_hint", "key_hash", "last_used_at"} <= _column_names(
         clean_db, "api_keys"
+    )
+
+
+def test_view_history_migration_creates_table(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    clean_db.execute_sql("DROP TABLE view_history")
+
+    _load_migration_module(Path(f"{VIEW_HISTORY_MIGRATION_NAME}.py")).migrate(clean_db)
+
+    assert clean_db.table_exists("view_history")
+    assert {"entity_type", "entity_id", "viewed_at"} <= _column_names(
+        clean_db, "view_history"
     )
 
 

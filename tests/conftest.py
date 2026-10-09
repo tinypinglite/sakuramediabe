@@ -59,6 +59,7 @@ from src.model import (
     VideoCollection,
     VideoCollectionItem,
     VideoItem,
+    ViewHistory,
 )
 from src.model.base import create_database, database_proxy, init_database
 
@@ -112,6 +113,7 @@ TEST_MODELS = [
     DownloadTask,
     DownloadSubmissionRecord,
     DownloadResourceBlacklist,
+    ViewHistory,
 ]
 
 

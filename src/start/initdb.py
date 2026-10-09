@@ -47,6 +47,7 @@ from src.model import (
     VideoCollection,
     VideoCollectionItem,
     VideoItem,
+    ViewHistory,
     init_database,
 )
 
@@ -97,6 +98,7 @@ def create_tables():
             DownloadTask,
             DownloadSubmissionRecord,
             DownloadResourceBlacklist,
+            ViewHistory,
         ],
         safe=True,
     )

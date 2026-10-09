@@ -6,6 +6,9 @@ from .base import (
     init_database,
 )
 from .catalog import (
+    VIEW_HISTORY_ENTITY_ACTOR,
+    VIEW_HISTORY_ENTITY_MOVIE,
+    VIEW_HISTORY_MAX_ENTRIES,
     Actor,
     Image,
     Movie,
@@ -15,6 +18,7 @@ from .catalog import (
     MovieTag,
     Subtitle,
     Tag,
+    ViewHistory,
 )
 from .collections import (
     PLAYLIST_KIND_CUSTOM,
@@ -72,6 +76,9 @@ __all__ = [
     "RECENTLY_PLAYED_PLAYLIST_DESCRIPTION",
     "RECENTLY_PLAYED_PLAYLIST_NAME",
     "SYSTEM_PLAYLIST_KINDS",
+    "VIEW_HISTORY_ENTITY_ACTOR",
+    "VIEW_HISTORY_ENTITY_MOVIE",
+    "VIEW_HISTORY_MAX_ENTRIES",
     "Actor",
     "ApiKey",
     "BackgroundTaskRun",
@@ -114,6 +121,7 @@ __all__ = [
     "VideoCollection",
     "VideoCollectionItem",
     "VideoItem",
+    "ViewHistory",
     "create_database",
     "database_proxy",
     "get_database",

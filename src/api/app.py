@@ -18,6 +18,7 @@ from src.api.routers.catalog.actors import router as actors_router
 from src.api.routers.catalog.movies import router as movies_router
 from src.api.routers.catalog.subscriptions import router as movie_subscriptions_router
 from src.api.routers.catalog.tags import router as tags_router
+from src.api.routers.catalog.view_history import router as view_history_router
 from src.api.routers.collections.clip_collections import (
     router as clip_collections_router,
 )
@@ -97,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(movies_router)
     app.include_router(movie_subscriptions_router)
     app.include_router(tags_router)
+    app.include_router(view_history_router)
     app.include_router(playlists_router)
     app.include_router(clip_collections_router)
     app.include_router(moment_collections_router)
