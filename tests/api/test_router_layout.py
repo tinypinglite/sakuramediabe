@@ -194,6 +194,7 @@ def test_create_app_registers_image_search_routes():
     assert "/system/notifications" in paths
     assert "/system/task-runs" in paths
     assert "/system/task-runs/active" in paths
+    assert "/system/task-runs/attention" in paths
     assert "/system/events/stream" not in paths
     assert "/status/insights" in paths
     assert "/status/watch-trend" in paths

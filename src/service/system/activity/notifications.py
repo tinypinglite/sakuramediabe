@@ -17,6 +17,7 @@ from src.schema.system.activity import (
 from src.service.system.activity.filters import (
     normalize_allowed_filter,
 )
+from src.service.system.activity.task_summary import has_failed_summary
 from src.service.system.activity.task_text import resolve_task_name
 from src.service.system.language_service import language_scope_if_needed
 
@@ -40,16 +41,6 @@ class NotificationDraft:
     related_task_run_id: int | None = None
     related_resource_type: str | None = None
     related_resource_id: int | None = None
-
-
-
-def _detect_failed_summary(summary: dict | None) -> bool:
-    if not summary:
-        return False
-    for key, value in summary.items():
-        if isinstance(value, (int, float)) and value > 0 and "failed" in key:
-            return True
-    return False
 
 
 def _notification_content(source: str | None, catalog_key: str) -> str:
@@ -196,7 +187,7 @@ class NotificationService:
             )
             return
         # 常态成功和 skipped 不发通知，仅带 failed 统计的完成态提示 warning。
-        if not _detect_failed_summary(task_run.result_summary or {}):
+        if not has_failed_summary(task_run.result_summary or {}):
             return
         cls.create_once(
             NotificationDraft(

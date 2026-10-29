@@ -155,3 +155,69 @@ def test_movie_heat_recompute_api_returns_async_task(monkeypatch, client, accoun
         "task_key": "movie_heat_update",
         "state": "pending",
     }
+
+
+def test_job_metadata_reports_recent_run_and_failure_counts(client, account_user):
+    from datetime import timedelta
+
+    from src.common.runtime_time import utc_now_for_db
+
+    now = utc_now_for_db()
+    job_key = "movie_heat_update"
+    BackgroundTaskRun.create(
+        task_key=job_key,
+        task_name=job_key,
+        trigger_type="scheduled",
+        state="failed",
+        created_at=now - timedelta(hours=30),
+        started_at=now - timedelta(hours=30),
+        finished_at=now - timedelta(hours=30),
+        result_summary={},
+    )
+    BackgroundTaskRun.create(
+        task_key=job_key,
+        task_name=job_key,
+        trigger_type="scheduled",
+        state="completed",
+        created_at=now - timedelta(hours=5),
+        started_at=now - timedelta(hours=5),
+        finished_at=now - timedelta(hours=5),
+        result_summary={"updated_count": 3},
+    )
+    latest = BackgroundTaskRun.create(
+        task_key=job_key,
+        task_name=job_key,
+        trigger_type="scheduled",
+        state="failed",
+        created_at=now - timedelta(hours=2),
+        started_at=now - timedelta(hours=2),
+        finished_at=now - timedelta(hours=2),
+        result_summary={"failed_count": 1},
+    )
+    BackgroundTaskRun.create(
+        task_key="not_a_registered_job",
+        task_name="not_a_registered_job",
+        trigger_type="manual",
+        state="failed",
+        created_at=now - timedelta(hours=1),
+        started_at=now - timedelta(hours=1),
+        finished_at=now - timedelta(hours=1),
+        result_summary={},
+    )
+
+    response = client.get(
+        "/system/jobs", headers=_auth_headers(client, account_user.username)
+    )
+
+    assert response.status_code == 200
+    jobs = {job["task_key"]: job for job in response.json()}
+    assert set(jobs) == set(JOB_REGISTRY_BY_KEY)
+    job = jobs[job_key]
+    assert job["recent_run_count"] == 2
+    assert job["recent_failure_count"] == 1
+    assert job["last_task_run"]["id"] == latest.id
+    assert job["last_task_run"]["has_warning"] is True
+    # 未在近 24 小时运行的任务显式返回 0，前端无需区分 null。
+    idle_key = next(key for key in JOB_REGISTRY_BY_KEY if key != job_key)
+    assert jobs[idle_key]["recent_run_count"] == 0
+    assert jobs[idle_key]["recent_failure_count"] == 0

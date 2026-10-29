@@ -18,11 +18,21 @@ class TaskRunResource(SchemaModel):
     progress_text: str | None = None
     result_text: str | None = None
     result_summary: dict[str, Any] | None = None
+    # 由 result_summary 的 failed 计数推导，不落库。
+    has_warning: bool = False
     error_message: str | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class TaskRunAttentionResource(SchemaModel):
+    task_key: str
+    task_name: str
+    latest_run: TaskRunResource
+    failed_count_7d: int
+    last_issue_at: datetime
 
 
 class NotificationResource(SchemaModel):

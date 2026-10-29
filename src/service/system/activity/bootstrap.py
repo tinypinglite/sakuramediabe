@@ -24,6 +24,7 @@ class ActivityBootstrapService:
         task_key: str | None = None,
         task_trigger_type: str | None = None,
         task_sort: str | None = None,
+        task_scope: str | None = None,
     ) -> ActivityBootstrapResource:
         with activity_read_snapshot():
             notifications = NotificationService.page_notifications(
@@ -37,6 +38,7 @@ class ActivityBootstrapService:
                     task_key=task_key,
                     trigger_type=task_trigger_type,
                     sort=task_sort,
+                    scope=task_scope,
                 ),
                 page=1,
                 page_size=ACTIVITY_BOOTSTRAP_PAGE_SIZE,

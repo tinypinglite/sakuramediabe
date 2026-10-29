@@ -15,7 +15,7 @@ from src.model import (
 from src.service.catalog.movie_subscription_search_state_service import (
     MovieSubscriptionSearchStateService,
 )
-from src.service.system.activity.notifications import _detect_failed_summary
+from src.service.system.activity.task_summary import has_failed_summary
 from src.service.transfers.downloads.auto_subscribed.auto_download_service import (
     MIN_SIZE_BYTES,
     SubscribedMovieAutoDownloadService,
@@ -101,7 +101,7 @@ def test_auto_download_records_candidate_conversion_failure_as_process(monkeypat
     assert summary["failed_items"] == [
         {"movie_number": "ABC-001", "stage": "process", "detail": "bad candidate"}
     ]
-    assert _detect_failed_summary(summary) is True
+    assert has_failed_summary(summary) is True
 
 
 def test_auto_download_records_response_handling_failure_as_process(monkeypatch):

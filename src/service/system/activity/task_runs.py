@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+
+import peewee
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
@@ -9,19 +11,23 @@ from src.common.service_helpers import require_by_id, validate_page
 from src.model import BackgroundTaskRun
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
-from src.schema.system.activity import TaskRunResource
+from src.schema.system.activity import TaskRunAttentionResource, TaskRunResource
 from src.service.system.activity.filters import (
     normalize_allowed_filter,
     normalize_string_filter,
 )
 from src.service.system.activity.notifications import NotificationService
+from src.service.system.activity.task_summary import has_failed_summary
 from src.service.system.activity.task_text import (
     resolve_task_name as resolve_task_name_text,
 )
 
 ALLOWED_TASK_TRIGGER_TYPES = {"scheduled", "manual", "startup", "internal", "plugin"}
 ALLOWED_TASK_STATES = {"pending", "running", "completed", "failed"}
+ALLOWED_TASK_RUN_SCOPES = {"all", "operations"}
 ACTIVE_TASK_RUN_STATES = {"pending", "running"}
+TERMINAL_TASK_RUN_STATES = ("completed", "failed")
+ATTENTION_FAILURE_WINDOW_DAYS = 7
 TASK_RUN_SORT_FIELDS = {
     "started_at:desc": (BackgroundTaskRun.started_at.desc(), BackgroundTaskRun.id.desc()),
     "started_at:asc": (BackgroundTaskRun.started_at.asc(), BackgroundTaskRun.id.asc()),
@@ -80,7 +86,9 @@ class TaskRunService:
 
     @staticmethod
     def to_task_run_resource(task_run: BackgroundTaskRun) -> TaskRunResource:
-        return TaskRunResource.model_validate(task_run)
+        resource = TaskRunResource.model_validate(task_run)
+        resource.has_warning = has_failed_summary(task_run.result_summary)
+        return resource
 
     @staticmethod
     def resolve_task_name(task_key: str, task_name: str | None = None) -> str:
@@ -94,6 +102,7 @@ class TaskRunService:
         task_key: str | None = None,
         trigger_type: str | None = None,
         sort: str | None = None,
+        scope: str | None = None,
     ):
         normalized_state = normalize_allowed_filter(
             state, field_name="state", allowed_values=ALLOWED_TASK_STATES
@@ -104,6 +113,9 @@ class TaskRunService:
             allowed_values=ALLOWED_TASK_TRIGGER_TYPES,
         )
         normalized_task_key = normalize_string_filter(task_key)
+        normalized_scope = normalize_allowed_filter(
+            scope, field_name="scope", allowed_values=ALLOWED_TASK_RUN_SCOPES
+        )
         order_by = TASK_RUN_SORT_FIELDS.get((sort or "started_at:desc").strip().lower())
         if order_by is None:
             raise ApiError(
@@ -120,6 +132,13 @@ class TaskRunService:
             query = query.where(BackgroundTaskRun.trigger_type == normalized_trigger_type)
         if normalized_task_key is not None:
             query = query.where(BackgroundTaskRun.task_key == normalized_task_key)
+        if normalized_scope == "operations":
+            # 操作视图剔除「定时任务正常跑完」的噪声；失败/告警和手动触发一律保留。
+            # 条件必须落在 count 和分页之前，否则 total 与实际条目口径不一致。
+            query = query.where(
+                (BackgroundTaskRun.trigger_type != "scheduled")
+                | (BackgroundTaskRun.state != "completed")
+            )
         return query.order_by(*order_by)
 
     @classmethod
@@ -357,6 +376,7 @@ class TaskRunService:
         task_key: str | None = None,
         trigger_type: str | None = None,
         sort: str | None = None,
+        scope: str | None = None,
     ) -> PageResponse[TaskRunResource]:
         validate_page(page, page_size, error_code="invalid_pagination")
         return cls.page_task_runs(
@@ -365,10 +385,64 @@ class TaskRunService:
                 task_key=task_key,
                 trigger_type=trigger_type,
                 sort=sort,
+                scope=scope,
             ),
             page=page,
             page_size=page_size,
         )
+
+    @classmethod
+    def list_attention_task_runs(cls, *, limit: int = 50) -> list[TaskRunAttentionResource]:
+        """按任务聚合的待关注项：最新终态失败，或最新完成但带 failed 计数告警。
+
+        只取每个 task_key 的最新终态行（max(id)），因此更早的失败不会把已经恢复的
+        任务重新顶上来，也不会因为告警历史把常态任务堆进首屏。
+        """
+        latest_terminal_ids = (
+            BackgroundTaskRun.select(peewee.fn.MAX(BackgroundTaskRun.id))
+            .where(BackgroundTaskRun.state.in_(TERMINAL_TASK_RUN_STATES))
+            .group_by(BackgroundTaskRun.task_key)
+        )
+        issue_runs = [
+            run
+            for run in BackgroundTaskRun.select().where(
+                BackgroundTaskRun.id.in_(latest_terminal_ids)
+            )
+            if run.state == "failed"
+            or (run.state == "completed" and has_failed_summary(run.result_summary))
+        ]
+        if not issue_runs:
+            return []
+
+        since = now() - timedelta(days=ATTENTION_FAILURE_WINDOW_DAYS)
+        failed_counts = {
+            row.task_key: row.failed_count
+            for row in (
+                BackgroundTaskRun.select(
+                    BackgroundTaskRun.task_key,
+                    peewee.fn.COUNT(BackgroundTaskRun.id).alias("failed_count"),
+                )
+                .where(
+                    BackgroundTaskRun.task_key.in_([run.task_key for run in issue_runs]),
+                    BackgroundTaskRun.state == "failed",
+                    BackgroundTaskRun.created_at >= since,
+                )
+                .group_by(BackgroundTaskRun.task_key)
+            )
+        }
+
+        items = [
+            TaskRunAttentionResource(
+                task_key=run.task_key,
+                task_name=run.task_name,
+                latest_run=cls.to_task_run_resource(run),
+                failed_count_7d=failed_counts.get(run.task_key, 0),
+                last_issue_at=run.finished_at or run.started_at or run.created_at,
+            )
+            for run in issue_runs
+        ]
+        items.sort(key=lambda item: (item.last_issue_at, item.latest_run.id), reverse=True)
+        return items[:limit]
 
     @classmethod
     def list_active_task_runs(cls) -> list[TaskRunResource]:

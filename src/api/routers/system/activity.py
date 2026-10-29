@@ -7,6 +7,7 @@ from src.schema.system.activity import (
     NotificationResource,
     NotificationUpdateRequest,
     NotificationUpdateResponse,
+    TaskRunAttentionResource,
     TaskRunResource,
 )
 from src.service.system import ActivityService
@@ -24,6 +25,7 @@ def get_activity_bootstrap(
     task_key: str | None = Query(default=None),
     task_trigger_type: str | None = Query(default=None),
     task_sort: str | None = Query(default=None),
+    task_scope: str | None = Query(default=None),
 ):
     return ActivityService.get_activity_bootstrap(
         notification_category=notification_category,
@@ -31,6 +33,7 @@ def get_activity_bootstrap(
         task_key=task_key,
         task_trigger_type=task_trigger_type,
         task_sort=task_sort,
+        task_scope=task_scope,
     )
 
 
@@ -70,6 +73,7 @@ def list_task_runs(
     task_key: str | None = Query(default=None),
     trigger_type: str | None = Query(default=None),
     sort: str | None = Query(default=None),
+    scope: str | None = Query(default=None),
 ):
     return ActivityService.list_task_runs(
         page=page,
@@ -78,7 +82,16 @@ def list_task_runs(
         task_key=task_key,
         trigger_type=trigger_type,
         sort=sort,
+        scope=scope,
     )
+
+
+@router.get(
+    "/system/task-runs/attention", response_model=list[TaskRunAttentionResource]
+)
+def list_attention_task_runs(limit: int = Query(default=50, ge=1, le=100)):
+    # 静态路径必须声明在 /system/task-runs/{task_run_id} 之前，否则会被当成 id。
+    return ActivityService.list_attention_task_runs(limit=limit)
 
 
 @router.get("/system/task-runs/{task_run_id}", response_model=TaskRunResource)
