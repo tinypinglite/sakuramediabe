@@ -122,7 +122,11 @@ class TelemetryService:
     def _sysctl(name: str) -> str | None:
         try:
             result = subprocess.run(
-                ["sysctl", "-n", name], capture_output=True, text=True, timeout=5
+                ["sysctl", "-n", name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
             )
         except (OSError, subprocess.SubprocessError):
             return None

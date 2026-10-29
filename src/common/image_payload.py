@@ -34,15 +34,13 @@ def looks_like_image(data: bytes) -> bool:
     """按魔数判断字节是否像一张图片；不解析像素，不抛异常。"""
     if len(data) < _MIN_IMAGE_BYTES:
         return False
-    if data.startswith(_JPEG_MAGIC) or data.startswith(_PNG_MAGIC):
+    if data.startswith((_JPEG_MAGIC, _PNG_MAGIC)):
         return True
     if data.startswith(_GIF_MAGICS):
         return True
     if data.startswith(_RIFF_MAGIC) and data[8:12] == _WEBP_TAG:
         return True
-    if data[4:8] == _ISO_BMFF_TAG and data[8:12] in _ISO_BMFF_BRANDS:
-        return True
-    return False
+    return data[4:8] == _ISO_BMFF_TAG and data[8:12] in _ISO_BMFF_BRANDS
 
 
 @lru_cache(maxsize=256)

@@ -27,8 +27,7 @@ from pathlib import Path
 from loguru import logger
 from peewee import Query
 from PIL import Image as PillowImage
-from PIL import ImageOps
-from PIL import UnidentifiedImageError
+from PIL import ImageOps, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.common.media_paths import (
@@ -262,7 +261,7 @@ class MovieCoverRefreshService:
                     stats["refreshed_movies"] += 1
                 if not options.dry_run:
                     self.ledger.mark_done(movie.id)
-            except Exception as exc:  # noqa: BLE001 - 单部失败不能中断整批
+            except Exception as exc:  # 单部失败不能中断整批
                 with stats_lock:
                     stats["failed_movies"] += 1
                 self.ledger.mark_failed(movie.id, f"{type(exc).__name__}:{exc}")
@@ -318,7 +317,7 @@ class MovieCoverRefreshService:
                 movie = futures[future]
                 try:
                     future.result()
-                except Exception as exc:  # noqa: BLE001 - worker 自身崩溃不能拖垮整批
+                except Exception as exc:  # worker 自身崩溃不能拖垮整批
                     logger.error(
                         "Movie cover refresh worker crashed movie_number={} detail={}",
                         movie.movie_number,
