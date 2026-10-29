@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -8,7 +9,7 @@ import peewee
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import require_by_id, validate_page
-from src.model import BackgroundTaskRun
+from src.model import BackgroundTaskRun, SystemNotification
 from src.model.base import get_database
 from src.schema.common.pagination import PageResponse
 from src.schema.system.activity import TaskRunAttentionResource, TaskRunResource
@@ -28,6 +29,14 @@ ALLOWED_TASK_RUN_SCOPES = {"all", "operations"}
 ACTIVE_TASK_RUN_STATES = {"pending", "running"}
 TERMINAL_TASK_RUN_STATES = ("completed", "failed")
 ATTENTION_FAILURE_WINDOW_DAYS = 7
+LATEST_SUCCESS_ONLY_TASK_KEYS = frozenset(
+    {
+        "download_task_sync",
+        "download_task_auto_import",
+        "media_thumbnail_generation",
+        "image_search_index",
+    }
+)
 TASK_RUN_SORT_FIELDS = {
     "started_at:desc": (BackgroundTaskRun.started_at.desc(), BackgroundTaskRun.id.desc()),
     "started_at:asc": (BackgroundTaskRun.started_at.asc(), BackgroundTaskRun.id.asc()),
@@ -89,6 +98,39 @@ class TaskRunService:
         resource = TaskRunResource.model_validate(task_run)
         resource.has_warning = has_failed_summary(task_run.result_summary)
         return resource
+
+    @staticmethod
+    def delete_task_runs_by_ids(task_run_ids: Iterable[int]) -> int:
+        """删除任务运行并解除通知引用；调用方负责事务边界。"""
+        ids = list(task_run_ids)
+        if not ids:
+            return 0
+        SystemNotification.update(related_task_run=None).where(
+            SystemNotification.related_task_run.in_(ids)
+        ).execute()
+        return BackgroundTaskRun.delete().where(BackgroundTaskRun.id.in_(ids)).execute()
+
+    @classmethod
+    def _compact_success_history(cls, task_run: BackgroundTaskRun) -> None:
+        """高频任务只保留最近一次无告警的成功记录。"""
+        if (
+            task_run.task_key not in LATEST_SUCCESS_ONLY_TASK_KEYS
+            or task_run.state != "completed"
+            or has_failed_summary(task_run.result_summary)
+        ):
+            return
+        previous_clean_success_ids = [
+            run.id
+            for run in BackgroundTaskRun.select(
+                BackgroundTaskRun.id, BackgroundTaskRun.result_summary
+            ).where(
+                BackgroundTaskRun.task_key == task_run.task_key,
+                BackgroundTaskRun.state == "completed",
+                BackgroundTaskRun.id < task_run.id,
+            )
+            if not has_failed_summary(run.result_summary)
+        ]
+        cls.delete_task_runs_by_ids(previous_clean_success_ids)
 
     @staticmethod
     def resolve_task_name(task_key: str, task_name: str | None = None) -> str:
@@ -289,6 +331,7 @@ class TaskRunService:
             task_run.save()
             if notify_result:
                 NotificationService.notify_task_result(task_run, failed=False)
+            cls._compact_success_history(task_run)
             return task_run, True
 
     @classmethod

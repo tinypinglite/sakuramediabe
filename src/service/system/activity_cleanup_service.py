@@ -8,6 +8,7 @@ from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
 from src.model import BackgroundTaskRun, SystemNotification
 from src.model.base import get_database
+from src.service.system.activity.task_runs import TaskRunService
 
 
 class ActivityCleanupService:
@@ -78,13 +79,7 @@ class ActivityCleanupService:
                 stale_ids = BackgroundTaskRun.select(BackgroundTaskRun.id).where(
                     stale_condition
                 )
-                # 先把指向待删运行记录的通知外键置空，避免悬挂引用，不依赖数据库级联行为。
-                SystemNotification.update(related_task_run=None).where(
-                    SystemNotification.related_task_run.in_(stale_ids)
-                ).execute()
-                deleted_total += (
-                    BackgroundTaskRun.delete().where(stale_condition).execute()
-                )
+                deleted_total += TaskRunService.delete_task_runs_by_ids(stale_ids)
         return deleted_total
 
     def _cleanup_notifications(self, retention_days: int) -> int:

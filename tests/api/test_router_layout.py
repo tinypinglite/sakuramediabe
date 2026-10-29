@@ -26,7 +26,12 @@ from src.api.routers.system import (
     status,
 )
 from src.api.routers.system import config as system_config
-from src.api.routers.transfers import downloads, media_import, media_transfer
+from src.api.routers.transfers import (
+    download_selection,
+    downloads,
+    media_import,
+    media_transfer,
+)
 from src.api.routers.videos import collections as video_collections
 from src.api.routers.videos import items as video_items
 
@@ -38,6 +43,10 @@ from src.api.routers.videos import items as video_items
         (account.router, (deps.db_deps,)),
         (media_libraries.router, (deps.db_deps,)),
         (downloads.router, (deps.db_deps,)),
+        (
+            download_selection.router,
+            (deps.db_deps, deps.get_current_user),
+        ),
         (media_import.router, (deps.db_deps, deps.get_current_user)),
         (media_transfer.router, (deps.db_deps, deps.get_current_user)),
         (status.router, (deps.db_deps, deps.get_current_user)),
@@ -84,6 +93,14 @@ def test_create_app_registers_movie_subscription_routes():
     assert "/movie-subscriptions/search/reset" in paths
     # 批量取消订阅刻意不在本域：复用已有的 /movies/unsubscriptions 与 DELETE /media/{id}。
     assert "/movie-subscriptions/removals" not in paths
+
+
+def test_create_app_registers_download_selection_routes():
+    paths = {getattr(route, "path", None) for route in create_app().routes}
+
+    assert "/download-selection-policy" in paths
+    assert "/download-selection-policy/preview" in paths
+    assert "/download-resource-blacklist" in paths
 
 
 def test_create_app_registers_videos_routes():

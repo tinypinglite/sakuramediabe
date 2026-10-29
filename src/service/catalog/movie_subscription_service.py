@@ -29,6 +29,7 @@ from src.schema.catalog.subscriptions import (
 )
 from src.schema.common.pagination import PageResponse
 from src.service.catalog.movie_subscription_search_state_service import (
+    ERROR_CODE_FILTERED_BY_POLICY,
     ERROR_CODE_NO_CANDIDATE,
     STATE_EXHAUSTED,
     STATE_FAILED_RETRYABLE,
@@ -103,8 +104,11 @@ class MovieSubscriptionService:
                     & (
                         Movie.subscription_search_error_code.is_null(True)
                         | (
-                            Movie.subscription_search_error_code
-                            != ERROR_CODE_NO_CANDIDATE
+                            (Movie.subscription_search_error_code != ERROR_CODE_NO_CANDIDATE)
+                            & (
+                                Movie.subscription_search_error_code
+                                != ERROR_CODE_FILTERED_BY_POLICY
+                            )
                         )
                     ),
                     MovieSubscriptionStatus.FAILED.value,
@@ -261,6 +265,7 @@ class MovieSubscriptionService:
                     attempt_count=movie.subscription_search_attempt_count,
                     attempt_limit=attempt_limit,
                     last_searched_at=movie.subscription_search_last_attempted_at,
+                    last_error_code=movie.subscription_search_error_code,
                     last_error=movie.subscription_search_last_error,
                     import_status=import_status_by_movie.get(movie.movie_number),
                     dead_download_task_count=failed_task_counts.get(

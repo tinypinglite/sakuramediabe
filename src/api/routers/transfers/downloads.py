@@ -18,6 +18,8 @@ from src.schema.transfers.downloads import (
     DownloadManualRequest,
     DownloadRequestCreateRequest,
     DownloadRequestCreateResponse,
+    DownloadResourceBlacklistItemResource,
+    DownloadResourceBlacklistQuery,
     DownloadTaskBatchImportRequest,
     DownloadTaskBatchImportResponse,
     DownloadTaskFileResource,
@@ -25,10 +27,16 @@ from src.schema.transfers.downloads import (
     DownloadTaskResource,
     DownloadTasksQuery,
 )
+from src.service.transfers.downloads.blacklist_service import (
+    DownloadResourceBlacklistService,
+)
 from src.service.transfers.downloads.client_config_service import DownloadClientService
 from src.service.transfers.downloads.request_service import DownloadRequestService
 from src.service.transfers.downloads.resource_hash import MAX_TORRENT_BYTES
 from src.service.transfers.downloads.search_service import DownloadSearchService
+from src.service.transfers.downloads.selection.policy_service import (
+    DownloadSelectionPolicyService,
+)
 from src.service.transfers.downloads.task_service import DownloadTaskService
 
 router = APIRouter(tags=["downloads"], dependencies=[Depends(db_deps)])
@@ -82,10 +90,22 @@ def list_download_candidates(
     query: DownloadCandidatesQuery = Depends(),
     current_user=Depends(get_current_user),
 ):
-    return DownloadSearchService().search_candidates(
+    candidates = DownloadSearchService().search_candidates(
         movie_number=query.movie_number,
         indexer_kind=query.indexer_kind,
     )
+    return DownloadSelectionPolicyService.evaluate_for_manual(candidates)
+
+
+@router.get(
+    "/download-resource-blacklist",
+    response_model=PageResponse[DownloadResourceBlacklistItemResource],
+)
+def list_download_resource_blacklist(
+    query: DownloadResourceBlacklistQuery = Depends(),
+    current_user=Depends(get_current_user),
+):
+    return DownloadResourceBlacklistService.list_items(query)
 
 
 @router.post("/download-requests", response_model=DownloadRequestCreateResponse)

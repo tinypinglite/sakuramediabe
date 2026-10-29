@@ -15,6 +15,7 @@ STATE_FAILED_RETRYABLE = "failed_retryable"
 STATE_EXHAUSTED = "exhausted"
 
 ERROR_CODE_NO_CANDIDATE = "no_candidate_found"
+ERROR_CODE_FILTERED_BY_POLICY = "filtered_by_policy"
 INTERRUPTED_ERROR_MESSAGE = "订阅影片资源查询任务中断，等待重试"
 
 

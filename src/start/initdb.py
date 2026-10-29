@@ -17,6 +17,7 @@ from src.model import (
     DailyRecommendationItem,
     DownloadClient,
     DownloadResourceBlacklist,
+    DownloadSelectionPolicy,
     DownloadSubmissionRecord,
     DownloadTask,
     Image,
@@ -60,6 +61,7 @@ from src.model import (
 
 def create_tables():
     database = init_database(settings.database)
+    fresh_install = "movie" not in database.get_tables()
     # 新版只以当前 Peewee 模型为准，不再尝试修复旧库结构或迁移历史字段。
     database.create_tables(
         [
@@ -104,6 +106,7 @@ def create_tables():
             DownloadClient,
             Indexer,
             IndexerDownloadClient,
+            DownloadSelectionPolicy,
             DownloadTask,
             DownloadSubmissionRecord,
             DownloadResourceBlacklist,
@@ -111,6 +114,11 @@ def create_tables():
         ],
         safe=True,
     )
+    from src.service.transfers.downloads.selection.defaults import (
+        seed_default_selection_policy,
+    )
+
+    seed_default_selection_policy(database, fresh_install=fresh_install)
     return database
 
 

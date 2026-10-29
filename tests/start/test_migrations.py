@@ -9,6 +9,7 @@ from src.model import (
     Actor,
     BackgroundTaskRun,
     DownloadClient,
+    DownloadSelectionPolicy,
     DownloadSubmissionRecord,
     DownloadTask,
     Image,
@@ -32,6 +33,7 @@ from src.start.migrations.runner import (
     CONSOLIDATED_MIGRATION_NAME,
     DETACH_USER_ASSET_IMAGES_MIGRATION_NAME,
     DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME,
+    DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME,
     DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
     DOWNLOAD_TASK_MANUAL_FIELDS_MIGRATION_NAME,
     DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME,
@@ -160,7 +162,26 @@ def test_current_migrations_are_discoverable_in_order():
         DOWNLOAD_TASK_MANUAL_FIELDS_MIGRATION_NAME,
         ALLOW_LOCAL_ACTOR_MIGRATION_NAME,
         USER_LANGUAGE_MIGRATION_NAME,
+        DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME,
     ]
+
+
+def test_download_selection_policy_migration_seeds_legacy_rules_idempotently(
+    clean_db,
+):
+    migration = _load_migration_module(
+        Path(f"{DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME}.py")
+    )
+
+    migration.migrate(clean_db)
+    migration.migrate(clean_db)
+
+    clean_db.bind([DownloadSelectionPolicy], bind_refs=False, bind_backrefs=False)
+    policy = DownloadSelectionPolicy.get_by_id(1)
+    assert policy.version == 1
+    assert policy.rules["min_size_bytes"] == 1024**3
+    assert policy.rules["max_size_bytes"] == 40 * 1024**3
+    assert policy.rules["ranking"] == ["size_desc"]
 
 
 def test_plugin_metadata_migration_preserves_movies_and_allows_multiple_null_ids(clean_db):
@@ -289,6 +310,10 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MigrationExecution(name=DOWNLOAD_TASK_MANUAL_FIELDS_MIGRATION_NAME, applied=True),
         MigrationExecution(name=ALLOW_LOCAL_ACTOR_MIGRATION_NAME, applied=True),
         MigrationExecution(name=USER_LANGUAGE_MIGRATION_NAME, applied=True),
+        MigrationExecution(
+            name=DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME,
+            applied=True,
+        ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -328,6 +353,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         DOWNLOAD_TASK_MANUAL_FIELDS_MIGRATION_NAME,
         ALLOW_LOCAL_ACTOR_MIGRATION_NAME,
         USER_LANGUAGE_MIGRATION_NAME,
+        DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME,
     ]
 
 
@@ -699,7 +725,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 36
+    assert summary.applied_count == 37
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

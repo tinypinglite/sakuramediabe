@@ -1,4 +1,6 @@
 
+from dataclasses import dataclass
+
 from loguru import logger
 
 from src.api.exception.errors import ApiError
@@ -12,6 +14,13 @@ from src.service.transfers.downloads.clients.torznab import (
 from src.service.transfers.downloads.common import validate_non_empty
 
 
+@dataclass(frozen=True)
+class DownloadCandidateSearchResult:
+    candidates: list[DownloadCandidateResource]
+    raw_candidate_count: int
+    system_candidate_count: int
+
+
 class DownloadSearchService:
     def __init__(self, torznab_client: TorznabClient | None = None):
         self.torznab_client = torznab_client or TorznabClient()
@@ -23,6 +32,19 @@ class DownloadSearchService:
         indexer_kind: str | None = None,
         download_client_id: int | None = None,
     ) -> list[DownloadCandidateResource]:
+        return self.search_candidates_with_stats(
+            movie_number=movie_number,
+            indexer_kind=indexer_kind,
+            download_client_id=download_client_id,
+        ).candidates
+
+    def search_candidates_with_stats(
+        self,
+        *,
+        movie_number: str,
+        indexer_kind: str | None = None,
+        download_client_id: int | None = None,
+    ) -> DownloadCandidateSearchResult:
         normalized_movie_number = validate_non_empty(
             movie_number,
             "invalid_download_candidate_movie_number",
@@ -43,7 +65,21 @@ class DownloadSearchService:
                 "Torznab search failed",
                 {"detail": str(exc)},
             ) from exc
-        return self._filter_title_mismatched_candidates(candidates, normalized_movie_number)
+        raw_candidate_count = len(candidates)
+        candidates = [
+            candidate
+            for candidate in candidates
+            if (candidate.source_uri or "").strip() and (candidate.title or "").strip()
+        ]
+        candidates = self._filter_title_mismatched_candidates(
+            candidates,
+            normalized_movie_number,
+        )
+        return DownloadCandidateSearchResult(
+            candidates=candidates,
+            raw_candidate_count=raw_candidate_count,
+            system_candidate_count=len(candidates),
+        )
 
     @staticmethod
     def _filter_title_mismatched_candidates(

@@ -10,6 +10,7 @@ from src.model import (
     BackgroundTaskRun,
     DailyRecommendationItem,
     DownloadClient,
+    DownloadSelectionPolicy,
     Image,
     IndexerDownloadClient,
     Media,
@@ -96,6 +97,14 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
     assert not clean_db.table_exists("resource_task_attempt")
     assert SchemaMigration.table_exists()
     assert SystemNotification.table_exists()
+    assert DownloadSelectionPolicy.table_exists()
+    policy = DownloadSelectionPolicy.get_by_id(1)
+    assert policy.version == 1
+    assert policy.rules["ranking"] == [
+        "size_desc",
+        "seeders_desc",
+        "published_at_desc",
+    ]
     assert not clean_db.table_exists("system_event")
     notification_columns = _column_names(clean_db, "system_notification")
     assert {

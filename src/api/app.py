@@ -63,6 +63,9 @@ from src.api.routers.system.metadata_providers import (
 )
 from src.api.routers.system.plugins import router as plugins_router
 from src.api.routers.system.status import router as status_router
+from src.api.routers.transfers.download_selection import (
+    router as download_selection_router,
+)
 from src.api.routers.transfers.downloads import router as downloads_router
 from src.api.routers.transfers.media_import import router as media_import_router
 from src.api.routers.transfers.media_transfer import router as media_transfer_router
@@ -135,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(taste_profile_router)
     app.include_router(ranking_sources_router)
     app.include_router(downloads_router)
+    app.include_router(download_selection_router)
     app.include_router(media_import_router)
     app.include_router(media_transfer_router)
     app.include_router(status_router)

@@ -77,6 +77,28 @@ class DownloadCandidateClientResource(SchemaModel):
     name: str
 
 
+class DownloadSelectionRejectionResource(SchemaModel):
+    code: str
+    message: str
+    group_label: str | None = None
+    term: str | None = None
+    field: str | None = None
+    limit: int | None = None
+    actual: int | str | None = None
+
+
+class DownloadCandidateSelectionEvaluationResource(SchemaModel):
+    eligible: bool
+    rejection_reasons: list[DownloadSelectionRejectionResource] = Field(
+        default_factory=list
+    )
+    matched_required_group_labels: list[str] = Field(default_factory=list)
+    matched_preferred_group_label: str | None = None
+    preference_rank: int | None = None
+    selection_rank: int | None = None
+    within_attempt_limit: bool = False
+
+
 class DownloadCandidateResource(SchemaModel):
     source_uri: str
     indexer_name: str
@@ -86,13 +108,38 @@ class DownloadCandidateResource(SchemaModel):
     download_clients: list[DownloadCandidateClientResource]
     movie_number: str
     title: str
+    # title 保留标题+描述的展示文本；规则匹配和原始标题展示使用这两个字段。
+    release_title: str = ""
+    description: str = ""
+    published_at: datetime | None = None
     size_bytes: int
     seeders: int
+    selection_evaluation: DownloadCandidateSelectionEvaluationResource | None = None
 
 
 class DownloadCandidatesQuery(SchemaModel):
     movie_number: str
     indexer_kind: str | None = None
+
+
+class DownloadResourceBlacklistQuery(SchemaModel):
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+
+
+class DownloadResourceBlacklistSubmissionResource(SchemaModel):
+    movie_number: str
+    indexer_name: str
+    title: str
+    client_id: int
+    task_id: int | None = None
+    submitted_at: datetime
+
+
+class DownloadResourceBlacklistItemResource(SchemaModel):
+    info_hash: str
+    blacklisted_at: datetime
+    latest_submission: DownloadResourceBlacklistSubmissionResource | None = None
 
 
 class DownloadCandidateCreatePayload(SchemaModel):

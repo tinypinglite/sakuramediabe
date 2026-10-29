@@ -1,3 +1,4 @@
+from datetime import datetime
 from types import SimpleNamespace
 
 import httpx
@@ -17,6 +18,7 @@ TORZNAB_RESPONSE = """
     <title>good-indexer</title>
     <item>
       <title>SSNI-001 1080p</title>
+      <pubDate>Thu, 29 Oct 2026 12:00:00 +0000</pubDate>
       <size>1024</size>
       <torznab:attr name="seeders" value="5" />
       <link>magnet:?xt=urn:btih:good-result</link>
@@ -186,6 +188,21 @@ def test_torznab_search_strips_html_from_candidate_title(monkeypatch):
     )
 
     assert candidates[0].title == "SSNI-001 uncensored 1080p & remux"
+
+
+def test_torznab_search_preserves_title_description_and_publish_date(monkeypatch):
+    _patch_indexers(monkeypatch)
+
+    candidates = TorznabClient(client=_FakeHttpClient()).search(
+        "SSNI-001",
+        download_client_id=22,
+    )
+
+    candidate = candidates[0]
+    assert candidate.title == "SSNI-001 1080p"
+    assert candidate.release_title == "SSNI-001 1080p"
+    assert candidate.description == ""
+    assert candidate.published_at == datetime(2026, 10, 29, 12, 0, 0)
 
 
 def test_torznab_client_default_uses_configured_timeout(monkeypatch):

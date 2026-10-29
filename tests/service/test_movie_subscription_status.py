@@ -308,6 +308,7 @@ def test_status_filter_selects_only_import_failed(client):
 def test_search_state_branches_restore_subscription_statuses(client):
     from src.common.runtime_time import utc_now_for_db
     from src.service.catalog.movie_subscription_search_state_service import (
+        ERROR_CODE_FILTERED_BY_POLICY,
         ERROR_CODE_NO_CANDIDATE,
         STATE_EXHAUSTED,
         STATE_FAILED_RETRYABLE,
@@ -319,6 +320,7 @@ def test_search_state_branches_restore_subscription_statuses(client):
     no_candidate = _subscribe("SRCH-002")
     infra_failed = _subscribe("SRCH-003")
     succeeded = _subscribe("SRCH-004")
+    policy_filtered = _subscribe("SRCH-005")
     Movie.update(
         subscription_search_state=STATE_EXHAUSTED,
         subscription_search_attempt_count=3,
@@ -340,12 +342,24 @@ def test_search_state_branches_restore_subscription_statuses(client):
         subscription_search_state=STATE_SUCCEEDED,
         subscription_search_last_attempted_at=now,
     ).where(Movie.id == succeeded.id).execute()
+    Movie.update(
+        subscription_search_state=STATE_FAILED_RETRYABLE,
+        subscription_search_attempt_count=0,
+        subscription_search_error_code=ERROR_CODE_FILTERED_BY_POLICY,
+        subscription_search_last_error="policy filtered",
+        subscription_search_last_attempted_at=now,
+    ).where(Movie.id == policy_filtered.id).execute()
 
     assert _status_of("SRCH-001") == MovieSubscriptionStatus.EXHAUSTED.value
     assert _status_of("SRCH-002") == MovieSubscriptionStatus.MISSING.value
     assert _status_of("SRCH-003") == MovieSubscriptionStatus.FAILED.value
     assert _status_of("SRCH-004") == MovieSubscriptionStatus.MISSING.value
+    assert _status_of("SRCH-005") == MovieSubscriptionStatus.MISSING.value
 
     page = MovieSubscriptionService.list_subscriptions(page=1, page_size=20)
     item = next(item for item in page.items if item.movie_number == "SRCH-003")
     assert item.last_error == "indexer timeout"
+    filtered_item = next(
+        item for item in page.items if item.movie_number == "SRCH-005"
+    )
+    assert filtered_item.last_error_code == ERROR_CODE_FILTERED_BY_POLICY

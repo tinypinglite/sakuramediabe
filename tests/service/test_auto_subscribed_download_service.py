@@ -7,10 +7,15 @@ from src.api.exception.errors import ApiError
 from src.model import (
     BackgroundTaskRun,
     DownloadClient,
+    DownloadSelectionPolicy,
     DownloadTask,
     Media,
     MediaLibrary,
     Movie,
+)
+from src.schema.transfers.download_selection import (
+    DownloadSelectionKeywordGroup,
+    DownloadSelectionRules,
 )
 from src.service.catalog.movie_subscription_search_state_service import (
     MovieSubscriptionSearchStateService,
@@ -19,6 +24,15 @@ from src.service.system.activity.task_summary import has_failed_summary
 from src.service.transfers.downloads.auto_subscribed.auto_download_service import (
     MIN_SIZE_BYTES,
     SubscribedMovieAutoDownloadService,
+)
+from src.service.transfers.downloads.search_service import (
+    DownloadCandidateSearchResult,
+)
+from src.service.transfers.downloads.selection.defaults import (
+    legacy_selection_rules,
+)
+from src.service.transfers.downloads.selection.policy_service import (
+    DownloadSelectionPolicyService,
 )
 
 
@@ -31,6 +45,10 @@ def _candidate(*, title: str, source_uri: str, client_ids: tuple[int, ...] = (1,
             for client_id in client_ids
         ],
         indexer_name="indexer",
+        indexer_kind="pt",
+        release_title=title,
+        description="",
+        published_at=None,
         title=title,
         size_bytes=MIN_SIZE_BYTES,
         seeders=10,
@@ -45,7 +63,15 @@ def _build_service(
     error=None,
     media_replacement_pending: bool = False,
 ):
-    search_service = SimpleNamespace(search_candidates=Mock(return_value=candidates))
+    search_service = SimpleNamespace(
+        search_candidates_with_stats=Mock(
+            return_value=DownloadCandidateSearchResult(
+                candidates=candidates,
+                raw_candidate_count=len(candidates),
+                system_candidate_count=len(candidates),
+            )
+        )
+    )
     request_service = SimpleNamespace(create_request=Mock())
     if error is not None:
         request_service.create_request.side_effect = error
@@ -77,6 +103,16 @@ def _build_service(
         MovieSubscriptionSearchStateService,
         "mark_failed",
         Mock(),
+    )
+    monkeypatch.setattr(
+        DownloadSelectionPolicyService,
+        "get_resource",
+        Mock(
+            return_value=SimpleNamespace(
+                rules=legacy_selection_rules(),
+                version=1,
+            )
+        ),
     )
     return service, request_service
 
@@ -193,6 +229,54 @@ def test_auto_download_does_not_roll_over_after_client_accepts(monkeypatch):
     assert summary["submitted_movies"] == 1
     request_service.create_request.assert_called_once()
     assert request_service.create_request.call_args.args[0].client_id == 1
+
+
+def test_auto_download_applies_policy_before_candidate_attempt_limit(monkeypatch):
+    response = SimpleNamespace(created=True)
+    candidates = []
+    for index in range(1, 6):
+        candidate = _candidate(
+            title=f"ordinary-{index}",
+            source_uri=f"magnet:?xt=ordinary-{index}",
+        )
+        candidate.size_bytes = (10 - index) * MIN_SIZE_BYTES
+        candidates.append(candidate)
+    target = _candidate(
+        title="target resource",
+        source_uri="magnet:?xt=target",
+    )
+    target.size_bytes = MIN_SIZE_BYTES
+    candidates.append(target)
+    service, request_service = _build_service(
+        monkeypatch,
+        candidates=candidates,
+        response=response,
+    )
+    monkeypatch.setattr(
+        DownloadSelectionPolicyService,
+        "get_resource",
+        Mock(
+            return_value=SimpleNamespace(
+                rules=DownloadSelectionRules(
+                    preferred_groups=[
+                        DownloadSelectionKeywordGroup(
+                            label="target",
+                            terms=["target"],
+                        )
+                    ]
+                ),
+                version=2,
+            )
+        ),
+    )
+
+    summary = service.run(reporter=SimpleNamespace(emit=Mock()))
+
+    assert summary["submitted_movies"] == 1
+    assert (
+        request_service.create_request.call_args.args[0].candidate.source_uri
+        == "magnet:?xt=target"
+    )
 
 
 def test_auto_download_global_blacklist_skips_other_clients_for_same_candidate(monkeypatch):
@@ -356,7 +440,15 @@ def test_auto_download_exhausts_old_movie_after_configured_no_candidate_budget(
         is_subscribed=True,
     )
     service = SubscribedMovieAutoDownloadService(
-        download_search_service=SimpleNamespace(search_candidates=Mock(return_value=[])),
+        download_search_service=SimpleNamespace(
+            search_candidates_with_stats=Mock(
+                return_value=DownloadCandidateSearchResult(
+                    candidates=[],
+                    raw_candidate_count=0,
+                    system_candidate_count=0,
+                )
+            )
+        ),
         download_request_service=SimpleNamespace(create_request=Mock()),
     )
     reporter = SimpleNamespace(emit=Mock())
@@ -368,6 +460,56 @@ def test_auto_download_exhausts_old_movie_after_configured_no_candidate_budget(
     assert stored.subscription_search_state == "exhausted"
     assert stored.subscription_search_attempt_count == 3
     assert stored.subscription_search_error_code == "no_candidate_found"
+
+
+def test_auto_download_policy_filter_does_not_consume_retry_budget(test_db):
+    movie = Movie.create(
+        movie_number="POLICY-001",
+        javdb_id="policy-001",
+        title="policy",
+        is_subscribed=True,
+    )
+    DownloadSelectionPolicy.create(
+        id=1,
+        version=1,
+        rules=DownloadSelectionRules(
+            required_groups=[
+                DownloadSelectionKeywordGroup(label="required", terms=["TARGET"])
+            ]
+        ).model_dump(mode="json"),
+    )
+    candidate = _candidate(
+        title="POLICY-001 ordinary",
+        source_uri="magnet:?xt=ordinary",
+    )
+    request_service = SimpleNamespace(create_request=Mock())
+    service = SubscribedMovieAutoDownloadService(
+        download_search_service=SimpleNamespace(
+            search_candidates_with_stats=Mock(
+                return_value=DownloadCandidateSearchResult(
+                    candidates=[candidate],
+                    raw_candidate_count=1,
+                    system_candidate_count=1,
+                )
+            )
+        ),
+        download_request_service=request_service,
+    )
+
+    summary = service.run(reporter=SimpleNamespace(emit=Mock()))
+
+    stored = Movie.get_by_id(movie.id)
+    assert stored.subscription_search_state == "failed_retryable"
+    assert stored.subscription_search_attempt_count == 0
+    assert stored.subscription_search_error_code == "filtered_by_policy"
+    assert summary["policy_filtered_movies"] == 1
+    assert summary["policy_filtered_movie_numbers"] == ["POLICY-001"]
+    assert summary["no_candidate_movies"] == 0
+    assert summary["raw_candidate_count"] == 1
+    assert summary["system_candidate_count"] == 1
+    assert summary["policy_eligible_candidate_count"] == 0
+    assert summary["policy_rejection_counts"] == {"required_group_missing": 1}
+    request_service.create_request.assert_not_called()
 
 
 def test_auto_download_skips_when_library_import_running(monkeypatch):

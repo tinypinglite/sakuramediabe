@@ -67,6 +67,7 @@ class MovieSubscriptionListItemResource(SchemaModel):
     attempt_count: int = 0
     attempt_limit: int = 0
     last_searched_at: datetime | None = None
+    last_error_code: str | None = None
     last_error: str | None = None
     import_status: str | None = None
     # 该影片已判死的下载任务数：试过几个种子都失败了。

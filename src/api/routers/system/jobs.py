@@ -1,11 +1,8 @@
-from datetime import timedelta
-
 import peewee
 from fastapi import APIRouter, Depends, status
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
-from src.common.runtime_time import utc_now_for_db
 from src.model import BackgroundTaskRun
 from src.plugins.i18n import localize_json_schema
 from src.scheduler.contracts import JobDefinition
@@ -20,8 +17,6 @@ router = APIRouter(
     tags=["jobs"],
     dependencies=[Depends(db_deps), Depends(get_current_user)],
 )
-
-RECENT_JOB_RUN_WINDOW_HOURS = 24
 
 
 def _latest_task_run_by_key() -> dict[str, BackgroundTaskRun]:
@@ -38,38 +33,11 @@ def _latest_task_run_by_key() -> dict[str, BackgroundTaskRun]:
     return {row.task_key: row for row in rows}
 
 
-def _recent_job_run_stats() -> dict[str, tuple[int, int]]:
-    # 近 24 小时按 task_key 聚合运行数与失败数；只统计任务注册表里的键，
-    # 免得历史遗留或插件残留的 task_key 混进任务列表口径。
-    keys = list(JOB_REGISTRY_BY_KEY.keys())
-    cutoff = utc_now_for_db() - timedelta(hours=RECENT_JOB_RUN_WINDOW_HOURS)
-    rows = (
-        BackgroundTaskRun.select(
-            BackgroundTaskRun.task_key,
-            peewee.fn.COUNT(BackgroundTaskRun.id).alias("run_count"),
-            peewee.fn.SUM(
-                peewee.Case(None, [(BackgroundTaskRun.state == "failed", 1)], 0)
-            ).alias("failure_count"),
-        )
-        .where(
-            BackgroundTaskRun.task_key.in_(keys),
-            BackgroundTaskRun.created_at >= cutoff,
-        )
-        .group_by(BackgroundTaskRun.task_key)
-    )
-    return {
-        row.task_key: (row.run_count, int(row.failure_count or 0))
-        for row in rows
-    }
-
-
 def _build_job_metadata(
     job_def: JobDefinition,
     last_run: BackgroundTaskRun | None,
-    recent_stats: tuple[int, int],
 ) -> JobMetadataResource:
     disabled_reason = job_disabled_reason(job_def.task_key)
-    recent_run_count, recent_failure_count = recent_stats
     return JobMetadataResource(
         task_key=job_def.task_key,
         log_name=job_def.log_name,
@@ -85,8 +53,6 @@ def _build_job_metadata(
             if job_def.params_schema is not None
             else None
         ),
-        recent_run_count=recent_run_count,
-        recent_failure_count=recent_failure_count,
         # 统一走 TaskRunService 序列化，last_task_run 也带 has_warning。
         last_task_run=TaskRunService.to_task_run_resource(last_run) if last_run else None,
     )
@@ -95,13 +61,8 @@ def _build_job_metadata(
 @router.get("/system/jobs", response_model=list[JobMetadataResource])
 def list_jobs():
     latest = _latest_task_run_by_key()
-    recent = _recent_job_run_stats()
     return [
-        _build_job_metadata(
-            job_def,
-            latest.get(job_def.task_key),
-            recent.get(job_def.task_key, (0, 0)),
-        )
+        _build_job_metadata(job_def, latest.get(job_def.task_key))
         for job_def in JOB_REGISTRY
     ]
 

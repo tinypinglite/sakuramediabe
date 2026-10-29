@@ -1,3 +1,4 @@
+from .download_selection import DownloadSelectionPolicy
 from .downloads import (
     DownloadClient,
     DownloadResourceBlacklist,
@@ -10,6 +11,7 @@ from .downloads import (
 __all__ = [
     "DownloadClient",
     "DownloadResourceBlacklist",
+    "DownloadSelectionPolicy",
     "DownloadSubmissionRecord",
     "DownloadTask",
     "Indexer",

@@ -1,4 +1,6 @@
 import re
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from html.parser import HTMLParser
 
 import httpx
@@ -6,6 +8,7 @@ import xmltodict
 from loguru import logger
 
 from src.common.movie_numbers import normalize_movie_number
+from src.common.runtime_time import to_db_utc_naive
 from src.config.config import settings
 from src.model import DownloadClient, Indexer, IndexerDownloadClient
 from src.schema.transfers.downloads import (
@@ -197,6 +200,7 @@ class TorznabClient:
         title = _clean_candidate_text(item.get("title"))
         description = _clean_candidate_text(item.get("description"))
         full_title = " ".join(part for part in [title, description] if part)
+        published_at = self._parse_published_at(item.get("pubDate"))
         # Torznab 协议中磁力链可能出现在 magneturl 属性、link 或 guid 任一字段
         # （只有磁力链没有 .torrent 文件时，聚合器如 Jackett 会把磁力链直接塞进 link/guid），
         # 因此按内容而非字段名分流：磁力链归 magnet_url，其余链接归 torrent_url。
@@ -220,9 +224,23 @@ class TorznabClient:
             ],
             movie_number=movie_number.strip(),
             title=full_title or title,
+            release_title=title,
+            description=description,
+            published_at=published_at,
             size_bytes=size_bytes,
             seeders=seeders,
         )
+
+    @classmethod
+    def _parse_published_at(cls, value) -> datetime | None:
+        raw = cls._coerce_text(value)
+        if not raw:
+            return None
+        try:
+            parsed = parsedate_to_datetime(raw)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return to_db_utc_naive(parsed)
 
     @classmethod
     def _resolve_source_uri(cls, *raw_links) -> str:

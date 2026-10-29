@@ -1,10 +1,11 @@
-"""任务运行 scope、待关注聚合、has_warning 与近 24h 任务统计的服务层测试。"""
+"""任务运行 scope、待关注聚合、告警识别与高频成功历史压缩测试。"""
 
 from datetime import timedelta
 
-from src.api.routers.system.jobs import _recent_job_run_stats
+import pytest
+
 from src.common.runtime_time import utc_now_for_db
-from src.model import BackgroundTaskRun
+from src.model import BackgroundTaskRun, SystemNotification
 from src.service.system import ActivityService
 from src.service.system.activity.task_summary import has_failed_summary
 
@@ -162,34 +163,106 @@ def test_attention_uses_latest_terminal_run_per_task(test_db):
     )
 
 
-def test_recent_job_run_stats_counts_last_24h_for_registry_keys(test_db):
-    now = utc_now_for_db()
-    job_key = "movie_heat_update"
-    _create_run(
-        task_key=job_key,
-        state="completed",
+@pytest.mark.parametrize(
+    "task_key",
+    [
+        "download_task_sync",
+        "download_task_auto_import",
+        "media_thumbnail_generation",
+        "image_search_index",
+    ],
+)
+def test_frequent_task_keeps_only_latest_clean_success(test_db, task_key):
+    first = ActivityService.create_task_run(
+        task_key=task_key,
         trigger_type="scheduled",
-        created_at=now - timedelta(hours=20),
     )
-    _create_run(
-        task_key=job_key,
-        state="failed",
+    ActivityService.complete_task_run(first.id, notify_result=False)
+    latest = ActivityService.create_task_run(
+        task_key=task_key,
         trigger_type="scheduled",
-        created_at=now - timedelta(hours=4),
     )
-    _create_run(
-        task_key=job_key,
-        state="failed",
-        trigger_type="scheduled",
-        created_at=now - timedelta(hours=48),
-    )
-    _create_run(
-        task_key="not_a_registered_job",
-        state="failed",
-        created_at=now - timedelta(hours=1),
-    )
+    ActivityService.complete_task_run(latest.id, notify_result=False)
 
-    stats = _recent_job_run_stats()
+    assert (
+        not BackgroundTaskRun.select().where(BackgroundTaskRun.id == first.id).exists()
+    )
+    assert BackgroundTaskRun.get_by_id(latest.id).state == "completed"
 
-    assert stats[job_key] == (2, 1)
-    assert "not_a_registered_job" not in stats
+
+def test_success_compaction_preserves_failures_warnings_and_active_runs(test_db):
+    task_key = "download_task_sync"
+    warning = ActivityService.create_task_run(
+        task_key=task_key, trigger_type="scheduled"
+    )
+    ActivityService.complete_task_run(
+        warning.id,
+        result_summary={"failed_count": 1},
+        notify_result=False,
+    )
+    failed = ActivityService.create_task_run(
+        task_key=task_key, trigger_type="scheduled"
+    )
+    ActivityService.fail_task_run(failed.id, error_message="boom", notify_result=False)
+    running = ActivityService.create_task_run(
+        task_key=task_key,
+        trigger_type="scheduled",
+        state="running",
+    )
+    first_clean = ActivityService.create_task_run(
+        task_key=task_key, trigger_type="scheduled"
+    )
+    ActivityService.complete_task_run(first_clean.id, notify_result=False)
+    latest_clean = ActivityService.create_task_run(
+        task_key=task_key, trigger_type="scheduled"
+    )
+    ActivityService.complete_task_run(latest_clean.id, notify_result=False)
+
+    assert (
+        not BackgroundTaskRun.select()
+        .where(BackgroundTaskRun.id == first_clean.id)
+        .exists()
+    )
+    assert BackgroundTaskRun.get_by_id(latest_clean.id).state == "completed"
+    assert BackgroundTaskRun.get_by_id(warning.id).state == "completed"
+    assert BackgroundTaskRun.get_by_id(failed.id).state == "failed"
+    assert BackgroundTaskRun.get_by_id(running.id).state == "running"
+
+
+def test_non_frequent_task_keeps_multiple_successes(test_db):
+    task_key = "movie_heat_update"
+    first = ActivityService.create_task_run(task_key=task_key, trigger_type="scheduled")
+    ActivityService.complete_task_run(first.id, notify_result=False)
+    second = ActivityService.create_task_run(
+        task_key=task_key, trigger_type="scheduled"
+    )
+    ActivityService.complete_task_run(second.id, notify_result=False)
+
+    assert BackgroundTaskRun.get_by_id(first.id).state == "completed"
+    assert BackgroundTaskRun.get_by_id(second.id).state == "completed"
+
+
+def test_success_compaction_detaches_notification_reference(test_db):
+    task_key = "image_search_index"
+    old_success = ActivityService.create_task_run(
+        task_key=task_key, trigger_type="scheduled"
+    )
+    ActivityService.complete_task_run(old_success.id, notify_result=False)
+    notification = SystemNotification.create(
+        category="task",
+        title="旧任务通知",
+        content="任务已完成",
+        related_task_run=old_success.id,
+    )
+    latest_success = ActivityService.create_task_run(
+        task_key=task_key, trigger_type="scheduled"
+    )
+    ActivityService.complete_task_run(latest_success.id, notify_result=False)
+
+    assert (
+        not BackgroundTaskRun.select()
+        .where(BackgroundTaskRun.id == old_success.id)
+        .exists()
+    )
+    notification = SystemNotification.get_by_id(notification.id)
+    assert notification.related_task_run_id is None

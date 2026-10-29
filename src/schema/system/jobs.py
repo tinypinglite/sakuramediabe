@@ -15,9 +15,6 @@ class JobMetadataResource(SchemaModel):
     manual_trigger_allowed: bool
     # 有参数任务时输出 JSON Schema，前端据此渲染请求体表单。
     params_schema: dict | None = None
-    # 近 24 小时运行数与其中失败数，首屏用来判断任务是否持续在跑。
-    recent_run_count: int = 0
-    recent_failure_count: int = 0
     last_task_run: TaskRunResource | None = None
 
 
