@@ -211,6 +211,7 @@
   "errors.plugin_install_failed": "Plugin installation failed",
   "errors.plugin_operation_busy": "Plugin management or media transfer is in progress. Please try again later.",
   "errors.plugin_too_large": "Plugin package exceeds the size limit",
+  "errors.plugin_torrent_bytes_unsupported": "The target downloader does not support torrent file submission",
   "errors.plugin_upgrade_failed": "Plugin upgrade failed",
   "errors.provider_authentication_failed": "Media provider authentication failed",
   "errors.provider_browse_failed": "Media provider browse failed",

@@ -757,6 +757,62 @@ class PluginDownloadService:
         )
         return PluginDownloadResult(task_id=response.task.id, created=response.created)
 
+    def submit_torrent(
+        self,
+        *,
+        movie_number: str,
+        torrent_bytes: bytes,
+        title: str,
+        download_client_id: int,
+    ) -> PluginDownloadResult:
+        """提交完整种子字节；目标 provider 必须原生支持，禁止降级为磁力。"""
+        if not isinstance(torrent_bytes, bytes):
+            raise TypeError("torrent_bytes 必须是 bytes")
+        self._validate_positive_id(download_client_id, "download_client_id")
+
+        from src.api.exception.errors import ApiError
+        from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
+        from src.service.transfers.downloads.common import (
+            require_client,
+            validate_non_empty,
+        )
+        from src.service.transfers.downloads.request_service import (
+            DownloadRequestService,
+        )
+
+        normalized_movie_number = validate_non_empty(
+            movie_number,
+            "invalid_download_request_movie_number",
+            "movie_number cannot be empty",
+        )
+        normalized_title = validate_non_empty(
+            title,
+            "invalid_download_request_candidate",
+            "candidate title cannot be empty",
+        )
+        client = require_client(download_client_id)
+        if not MEDIA_PROVIDER_REGISTRY.supports_torrent_bytes(
+            client.library.provider_key
+        ):
+            raise ApiError(
+                422,
+                "plugin_torrent_bytes_unsupported",
+                "目标下载器不支持种子文件提交",
+                {
+                    "download_client_id": client.id,
+                    "provider_key": client.library.provider_key,
+                },
+            )
+
+        response = DownloadRequestService().create_manual_request(
+            client_id=client.id,
+            media_kind="jav",
+            torrent_bytes=torrent_bytes,
+            movie_number=normalized_movie_number,
+            display_name=normalized_title,
+        )
+        return PluginDownloadResult(task_id=response.task.id, created=response.created)
+
 
 class SubscriptionApi:
     """``context.subscriptions``：订阅意图与宿主计算出的处理状态。"""

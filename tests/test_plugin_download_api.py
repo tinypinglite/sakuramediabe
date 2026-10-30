@@ -12,6 +12,7 @@ from src.plugins import (
     PluginDownloadResult,
     PluginDownloadTarget,
 )
+from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
 from src.schema.transfers.downloads import DownloadCandidateResource
 from src.service.transfers.downloads.request_service import DownloadRequestService
 from src.service.transfers.downloads.search_service import DownloadSearchService
@@ -154,6 +155,118 @@ def test_submit_rejects_stale_library_target(test_db, tmp_path, monkeypatch):
     assert caught.value.status_code == 409
     assert caught.value.code == "plugin_download_candidate_stale"
     assert called is False
+
+
+def test_submit_torrent_reuses_manual_request_with_bytes(
+    test_db,
+    tmp_path,
+    monkeypatch,
+):
+    client = _client()
+    captured = {}
+
+    def fake_create_manual_request(self, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(task=SimpleNamespace(id=42), created=True)
+
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "supports_torrent_bytes",
+        lambda provider_key: provider_key == "local",
+    )
+    monkeypatch.setattr(
+        DownloadRequestService,
+        "create_manual_request",
+        fake_create_manual_request,
+    )
+
+    result = PluginContext("download_demo", {}, tmp_path).downloads.submit_torrent(
+        movie_number="abc-001",
+        torrent_bytes=b"torrent-bytes",
+        title="ABC-001 1080p",
+        download_client_id=client.id,
+    )
+
+    assert result == PluginDownloadResult(task_id=42, created=True)
+    assert captured == {
+        "client_id": client.id,
+        "media_kind": "jav",
+        "torrent_bytes": b"torrent-bytes",
+        "movie_number": "abc-001",
+        "display_name": "ABC-001 1080p",
+    }
+
+
+def test_submit_torrent_rejects_provider_without_bytes_support(
+    test_db,
+    tmp_path,
+    monkeypatch,
+):
+    client = _client()
+    called = False
+
+    def fake_create_manual_request(self, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("unsupported provider must not receive torrent bytes")
+
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "supports_torrent_bytes",
+        lambda provider_key: False,
+    )
+    monkeypatch.setattr(
+        DownloadRequestService,
+        "create_manual_request",
+        fake_create_manual_request,
+    )
+
+    with pytest.raises(ApiError) as caught:
+        PluginContext("download_demo", {}, tmp_path).downloads.submit_torrent(
+            movie_number="ABC-001",
+            torrent_bytes=b"torrent-bytes",
+            title="ABC-001 1080p",
+            download_client_id=client.id,
+        )
+
+    assert caught.value.status_code == 422
+    assert caught.value.code == "plugin_torrent_bytes_unsupported"
+    assert called is False
+
+
+@pytest.mark.parametrize("torrent_bytes", [b"", bytearray(b"torrent")])
+def test_submit_torrent_requires_complete_bytes(
+    test_db,
+    tmp_path,
+    monkeypatch,
+    torrent_bytes,
+):
+    client = _client()
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "supports_torrent_bytes",
+        lambda provider_key: True,
+    )
+
+    if isinstance(torrent_bytes, bytearray):
+        with pytest.raises(TypeError, match="torrent_bytes"):
+            PluginContext("download_demo", {}, tmp_path).downloads.submit_torrent(
+                movie_number="ABC-001",
+                torrent_bytes=torrent_bytes,
+                title="ABC-001 1080p",
+                download_client_id=client.id,
+            )
+        return
+
+    with pytest.raises(ApiError) as caught:
+        PluginContext("download_demo", {}, tmp_path).downloads.submit_torrent(
+            movie_number="ABC-001",
+            torrent_bytes=torrent_bytes,
+            title="ABC-001 1080p",
+            download_client_id=client.id,
+        )
+
+    assert caught.value.code == "invalid_download_torrent"
 
 
 def test_list_targets_returns_all_configured_clients(test_db, tmp_path):
