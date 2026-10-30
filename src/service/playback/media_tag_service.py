@@ -10,14 +10,20 @@ from peewee import JOIN, fn
 from src.api.exception.errors import ApiError
 from src.common.service_helpers import (
     build_ordered_expressions,
+    require_by_id,
     resolve_sort_expression,
 )
-from src.model import Media, MediaMediaTag, MediaTag
+from src.model import Media, MediaMediaTag, MediaTag, get_database
 from src.schema.common.media_tags import MediaTagBriefResource
 from src.schema.playback.media_tags import (
+    MediaTagAssignmentResource,
     MediaTagPreviewMatchResource,
     MediaTagResource,
     MediaTagUpsertRequest,
+)
+from src.service.playback.operation_locks import (
+    MEDIA_LOCK,
+    media_operation_lock,
 )
 
 
@@ -410,3 +416,101 @@ class MediaTagService:
                 MediaTagBriefResource.model_validate(row)
             )
         return result
+
+    @staticmethod
+    def _require_jav_media(media_id: int) -> Media:
+        media = require_by_id(
+            Media,
+            media_id,
+            "media",
+            error_message="媒体不存在",
+        )
+        if media.movie_number is None:
+            raise ApiError(
+                422,
+                "media_tag_not_supported",
+                "媒体文件标签仅支持 JAV 媒体",
+                {"media_id": media_id},
+            )
+        if not media.valid:
+            raise ApiError(
+                422,
+                "media_tag_assignment_invalid",
+                "失效媒体不支持媒体文件标签",
+                {"media_id": media_id},
+            )
+        return media
+
+    @staticmethod
+    def _require_assignment_tags(tag_ids: Sequence[int]) -> list[MediaTag]:
+        # 合法性（正整数、去重）由 MediaTagAssignmentRequest 的校验器保证，
+        # 这里只负责标签是否存在。
+        if not tag_ids:
+            return []
+        tags = list(
+            MediaTag.select()
+            .where(MediaTag.id.in_(list(tag_ids)))
+            .order_by(MediaTag.name, MediaTag.id)
+        )
+        found_ids = {tag.id for tag in tags}
+        missing_ids = [tag_id for tag_id in tag_ids if tag_id not in found_ids]
+        if missing_ids:
+            raise ApiError(
+                404,
+                "media_tag_not_found",
+                "媒体标签不存在",
+                {"tag_ids": missing_ids},
+            )
+        return tags
+
+    @classmethod
+    def _assignment_resource(cls, media: Media) -> MediaTagAssignmentResource:
+        tags = cls.list_briefs_by_media_ids([media.id]).get(media.id, [])
+        return MediaTagAssignmentResource(
+            media_id=media.id,
+            tags=tags,
+            is_media_tags_manually_managed=media.is_media_tags_manually_managed,
+        )
+
+    @classmethod
+    def get_media_assignment(cls, media_id: int) -> MediaTagAssignmentResource:
+        return cls._assignment_resource(cls._require_jav_media(media_id))
+
+    @classmethod
+    def set_manual_assignment(
+        cls,
+        media_id: int,
+        tag_ids: Sequence[int],
+    ) -> MediaTagAssignmentResource:
+        # 与重算任务共用同一条媒体锁，避免手工接管被自动打标覆盖。
+        with media_operation_lock(MEDIA_LOCK, media_id):
+            media = cls._require_jav_media(media_id)
+            tags = cls._require_assignment_tags(tag_ids)
+            with get_database().atomic():
+                MediaMediaTag.delete().where(MediaMediaTag.media == media.id).execute()
+                if tags:
+                    MediaMediaTag.insert_many(
+                        [{"media": media.id, "tag": tag.id} for tag in tags]
+                    ).on_conflict_ignore().execute()
+                media.is_media_tags_manually_managed = True
+                media.save(only=[Media.is_media_tags_manually_managed])
+            return cls._assignment_resource(media)
+
+    @classmethod
+    def reset_media_assignment_to_auto(
+        cls,
+        media_id: int,
+    ) -> MediaTagAssignmentResource:
+        with media_operation_lock(MEDIA_LOCK, media_id):
+            media = cls._require_jav_media(media_id)
+            rules = cls.load_active_rules()
+            with get_database().atomic():
+                media.is_media_tags_manually_managed = False
+                media.save(only=[Media.is_media_tags_manually_managed])
+                cls.replace_media_tags(
+                    media,
+                    rules,
+                    release_title=media.release_title,
+                    release_description=media.release_description,
+                )
+            return cls._assignment_resource(media)

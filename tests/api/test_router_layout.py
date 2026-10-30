@@ -117,6 +117,9 @@ def test_create_app_registers_media_tag_routes():
     assert ("/media-tags/preview", "POST") in route_methods
     assert ("/media-tags/{tag_id}", "PUT") in route_methods
     assert ("/media-tags/{tag_id}", "DELETE") in route_methods
+    assert ("/media/{media_id}/tags", "GET") in route_methods
+    assert ("/media/{media_id}/tags", "PUT") in route_methods
+    assert ("/media/{media_id}/tags/reset", "POST") in route_methods
 
 
 def test_create_app_registers_videos_routes():

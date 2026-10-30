@@ -4,12 +4,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.model import Media, MediaLibrary, VideoItem, get_database
+from src.model import (
+    Media,
+    MediaLibrary,
+    MediaMediaTag,
+    MediaTag,
+    Movie,
+    VideoItem,
+    get_database,
+)
 from src.plugins.manager import PluginManager
 from src.plugins.operation_lock import plugin_operation_lock
 from src.service.playback.media_clip_service import MediaClipService
 from src.service.playback.media_library_service import MediaLibraryService
 from src.service.playback.media_service import MediaService
+from src.service.playback.media_tag_retag_service import MediaTagRetagService
+from src.service.playback.media_tag_service import MediaTagService
 from src.service.playback.media_validity_scan_service import MediaValidityScanService
 from src.service.playback.operation_locks import (
     LIBRARY_LOCK,
@@ -178,6 +188,50 @@ def test_scanner_skips_library_deleted_after_enumeration(test_db, monkeypatch):
     )
 
     assert stats["scanned_libraries"] == 0
+
+
+def test_media_tag_assignment_respects_media_lock(test_db):
+    lib = MediaLibrary.create(name="library", provider_key="local", provider_config={})
+    movie = Movie.create(movie_number="LOCK-001", title="lock")
+    media = Media.create(movie=movie, library=lib, file_name="LOCK-001.mp4")
+    tag = MediaTag.create(name="lock-tag", include_terms=["LOCK-001"], exclude_terms=[])
+
+    with other_session_lock(MEDIA_LOCK, media.id):
+        with pytest.raises(MediaOperationBusy):
+            MediaTagService.set_manual_assignment(media.id, [tag.id])
+        with pytest.raises(MediaOperationBusy):
+            MediaTagService.reset_media_assignment_to_auto(media.id)
+
+    assert not MediaMediaTag.select().exists()
+    assert not Media.get_by_id(media.id).is_media_tags_manually_managed
+
+
+def test_media_tag_retag_skips_media_locked_by_another_session(test_db):
+    lib = MediaLibrary.create(name="library", provider_key="local", provider_config={})
+    movie = Movie.create(movie_number="LOCK-002", title="lock")
+    media = Media.create(movie=movie, library=lib, file_name="LOCK-002.mp4")
+    auto_tag = MediaTag.create(name="auto-tag", include_terms=["LOCK-002"], exclude_terms=[])
+
+    with other_session_lock(MEDIA_LOCK, media.id):
+        stats = MediaTagRetagService.retag_all_jav_media(
+            reporter=SimpleNamespace(emit=lambda **kwargs: None)
+        )
+
+    # 锁被占用时跳过本条媒体，既不算失败也不写入自动标签。
+    assert stats["manual_skipped"] == 1
+    assert stats["failed_media"] == 0
+    assert not MediaMediaTag.select().exists()
+
+    stats = MediaTagRetagService.retag_all_jav_media(
+        reporter=SimpleNamespace(emit=lambda **kwargs: None)
+    )
+    assert stats["manual_skipped"] == 0
+    assert stats["tagged_media"] == 1
+    assert set(
+        MediaMediaTag.select(MediaMediaTag.tag)
+        .where(MediaMediaTag.media == media.id)
+        .tuples()
+    ) == {(auto_tag.id,)}
 
 
 def test_plugin_management_gate_covers_real_mutation_entries(tmp_path):

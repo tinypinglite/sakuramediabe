@@ -18,3 +18,4 @@ class MediaSummaryResource(SchemaModel):
     video_info: dict[str, Any] | None = None
     valid: bool = True
     tags: list[MediaTagBriefResource] = Field(default_factory=list)
+    is_media_tags_manually_managed: bool = False

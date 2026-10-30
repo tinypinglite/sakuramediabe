@@ -152,6 +152,7 @@ def test_create_tables_creates_videos_domain_tables_and_decoupled_media(clean_db
     # Media 解耦：movie_number 可空且新增 video_item_id。
     media_columns = _column_names(database, "media")
     assert "video_item_id" in media_columns
+    assert "is_media_tags_manually_managed" in media_columns
     assert _column_is_nullable(database, "media", "movie_number") is True
     assert {"library_id", "storage_ref", "file_name"} <= media_columns
     assert not {"path", "backend_locator", "storage_mode"} & media_columns

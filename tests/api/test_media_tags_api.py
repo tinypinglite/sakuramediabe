@@ -1,4 +1,11 @@
-from src.model import Media, MediaLibrary, MediaMediaTag, MediaTag, Movie
+from src.model import (
+    Media,
+    MediaLibrary,
+    MediaMediaTag,
+    MediaTag,
+    Movie,
+    VideoItem,
+)
 
 
 def _auth_headers(client, account_user) -> dict[str, str]:
@@ -188,3 +195,196 @@ def test_media_tag_filter_validation_and_authentication(client, account_user):
 
     unauthorized = client.get("/media-tags")
     assert unauthorized.status_code == 401
+
+
+def test_media_tag_manual_assignment_takeover_reset_and_media_list_fields(
+    client,
+    account_user,
+):
+    headers = _auth_headers(client, account_user)
+    library = MediaLibrary.create(
+        name="tag-assignment-api",
+        provider_key="test",
+        provider_config={},
+    )
+    movie = Movie.create(
+        movie_number="TAG-ASSIGN-001",
+        javdb_id="tag-assign-001",
+        title="assignment",
+    )
+    media = Media.create(
+        movie=movie,
+        library=library,
+        file_name="TAG-ASSIGN-001.4k.mp4",
+    )
+    first = MediaTag.create(
+        name="first",
+        include_terms=["first"],
+        exclude_terms=[],
+    )
+    second = MediaTag.create(
+        name="second",
+        include_terms=["TAG-ASSIGN-001"],
+        exclude_terms=[],
+    )
+
+    initial = client.get(f"/media/{media.id}/tags", headers=headers)
+    assert initial.status_code == 200
+    assert initial.json() == {
+        "media_id": media.id,
+        "tags": [],
+        "is_media_tags_manually_managed": False,
+    }
+
+    assigned = client.put(
+        f"/media/{media.id}/tags",
+        headers=headers,
+        json={"tag_ids": [first.id, second.id]},
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json() == {
+        "media_id": media.id,
+        "tags": [
+            {"id": first.id, "name": "first"},
+            {"id": second.id, "name": "second"},
+        ],
+        "is_media_tags_manually_managed": True,
+    }
+
+    listed = client.get(
+        "/media",
+        headers=headers,
+        params={"kind": "jav"},
+    )
+    assert listed.status_code == 200
+    listed_item = next(
+        item for item in listed.json()["items"] if item["id"] == media.id
+    )
+    assert listed_item["tags"] == assigned.json()["tags"]
+    assert listed_item["is_media_tags_manually_managed"] is True
+
+    reset = client.post(
+        f"/media/{media.id}/tags/reset",
+        headers=headers,
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json() == {
+        "media_id": media.id,
+        "tags": [{"id": second.id, "name": "second"}],
+        "is_media_tags_manually_managed": False,
+    }
+
+
+def test_media_tag_assignment_rejects_video_missing_and_invalid_ids(
+    client,
+    account_user,
+):
+    headers = _auth_headers(client, account_user)
+    library = MediaLibrary.create(
+        name="tag-assignment-invalid",
+        provider_key="test",
+        provider_config={},
+    )
+    video = VideoItem.create(title="video")
+    media = Media.create(
+        video_item=video,
+        library=library,
+        file_name="video.mp4",
+    )
+
+    unsupported = client.put(
+        f"/media/{media.id}/tags",
+        headers=headers,
+        json={"tag_ids": []},
+    )
+    assert unsupported.status_code == 422
+    assert unsupported.json()["error"]["code"] == "media_tag_not_supported"
+
+    missing_media = client.get("/media/999999/tags", headers=headers)
+    assert missing_media.status_code == 404
+    assert missing_media.json()["error"]["code"] == "media_not_found"
+
+    movie = Movie.create(
+        movie_number="TAG-ASSIGN-002",
+        javdb_id="tag-assign-002",
+        title="invalid",
+    )
+    jav_media = Media.create(
+        movie=movie,
+        library=library,
+        file_name="TAG-ASSIGN-002.mp4",
+    )
+    missing_tag = client.put(
+        f"/media/{jav_media.id}/tags",
+        headers=headers,
+        json={"tag_ids": [999999]},
+    )
+    assert missing_tag.status_code == 404
+    assert missing_tag.json()["error"]["code"] == "media_tag_not_found"
+
+    invalid_ids = client.put(
+        f"/media/{jav_media.id}/tags",
+        headers=headers,
+        json={"tag_ids": [0]},
+    )
+    assert invalid_ids.status_code == 422
+    assert invalid_ids.json()["error"]["code"] == "validation_error"
+
+    boolean_ids = client.put(
+        f"/media/{jav_media.id}/tags",
+        headers=headers,
+        json={"tag_ids": [True]},
+    )
+    assert boolean_ids.status_code == 422
+    assert boolean_ids.json()["error"]["code"] == "validation_error"
+
+    duplicated_ids = client.put(
+        f"/media/{jav_media.id}/tags",
+        headers=headers,
+        json={"tag_ids": [1, 1]},
+    )
+    assert duplicated_ids.status_code == 422
+    assert duplicated_ids.json()["error"]["code"] == "validation_error"
+
+    unauthorized = client.get(f"/media/{jav_media.id}/tags")
+    assert unauthorized.status_code == 401
+
+
+def test_media_tag_assignment_rejects_invalid_media(
+    client,
+    account_user,
+):
+    headers = _auth_headers(client, account_user)
+    library = MediaLibrary.create(
+        name="tag-assignment-invalid-media",
+        provider_key="test",
+        provider_config={},
+    )
+    movie = Movie.create(
+        movie_number="TAG-ASSIGN-003",
+        javdb_id="tag-assign-003",
+        title="invalid media",
+    )
+    media = Media.create(
+        movie=movie,
+        library=library,
+        file_name="TAG-ASSIGN-003.mp4",
+        valid=False,
+    )
+    tag = MediaTag.create(
+        name="invalid-media-tag",
+        include_terms=["never"],
+        exclude_terms=[],
+    )
+
+    response = client.put(
+        f"/media/{media.id}/tags",
+        headers=headers,
+        json={"tag_ids": [tag.id]},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "media_tag_assignment_invalid"
+
+    read = client.get(f"/media/{media.id}/tags", headers=headers)
+    assert read.status_code == 422
+    assert read.json()["error"]["code"] == "media_tag_assignment_invalid"

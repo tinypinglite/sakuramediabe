@@ -66,6 +66,7 @@ from src.service.catalog.image_cleanup_service import ImageCleanupService
 # 绕开包级 __init__ 的初始化顺序依赖。
 from src.service.collections.playlist_service import PlaylistService
 from src.service.discovery import get_qdrant_thumbnail_store
+from src.service.playback.media_tag_service import MediaTagService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.playback.operation_locks import (
     MEDIA_LOCK,
@@ -170,6 +171,7 @@ class MediaService:
     @staticmethod
     def _to_media_list_item_resource(
         media: Media,
+        tags=None,
     ) -> MediaListItemResource:
         # 按归属拆分：JAV 媒体展示番号、影片封面与热度，非 JAV 媒体回退到 VideoItem 标题。
         if media.movie_number:
@@ -195,6 +197,10 @@ class MediaService:
                 thumbnail_generation_state=media.thumbnail_generation_state,
                 thumbnail_last_error_code=media.thumbnail_last_error_code,
                 heat=movie.heat,
+                tags=tags or [],
+                is_media_tags_manually_managed=(
+                    media.is_media_tags_manually_managed
+                ),
                 created_at=media.created_at,
                 updated_at=media.updated_at,
             )
@@ -217,9 +223,27 @@ class MediaService:
             thumbnail_generation_state=media.thumbnail_generation_state,
             thumbnail_last_error_code=media.thumbnail_last_error_code,
             heat=None,
+            tags=tags or [],
+            is_media_tags_manually_managed=media.is_media_tags_manually_managed,
             created_at=media.created_at,
             updated_at=media.updated_at,
         )
+
+    @classmethod
+    def _to_media_list_item_resources(
+        cls,
+        media_rows: Sequence[Media],
+    ) -> list[MediaListItemResource]:
+        tags_by_media_id = MediaTagService.list_briefs_by_media_ids(
+            [media.id for media in media_rows]
+        )
+        return [
+            cls._to_media_list_item_resource(
+                media,
+                tags_by_media_id.get(media.id, []),
+            )
+            for media in media_rows
+        ]
 
     @staticmethod
     def _media_list_query():
@@ -299,7 +323,7 @@ class MediaService:
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        items = [cls._to_media_list_item_resource(media) for media in rows]
+        items = cls._to_media_list_item_resources(rows)
         return PageResponse[MediaListItemResource](
             items=items,
             page=page,
@@ -347,8 +371,9 @@ class MediaService:
                 .where(Media.movie.in_(movie_numbers))
                 .order_by(Media.created_at.asc(), Media.id.asc())
             )
-            for media in rows:
-                media_by_movie[media.movie_number].append(cls._to_media_list_item_resource(media))
+            media_items = cls._to_media_list_item_resources(rows)
+            for media, item in zip(rows, media_items, strict=True):
+                media_by_movie[media.movie_number].append(item)
         return PageResponse[MultiVersionMovieResource](
             items=[
                 MultiVersionMovieResource(
@@ -440,8 +465,8 @@ class MediaService:
                         name=collection_row.collection.name,
                     )
                 )
-        for media in media_rows:
-            item = cls._to_media_list_item_resource(media)
+        media_items = cls._to_media_list_item_resources(media_rows)
+        for media, item in zip(media_rows, media_items, strict=True):
             media_by_hash[media.file_hash].append(
                 DuplicateMediaListItemResource(
                     **item.model_dump(),

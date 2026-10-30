@@ -51,6 +51,8 @@ class Media(TimestampedMixin, BaseModel):
     source_indexer = peewee.CharField(max_length=255, null=True)
     info_hash = peewee.CharField(max_length=40, null=True)
     download_task_id = peewee.IntegerField(null=True)
+    # 手工接管后不再参与规则自动打标；恢复自动时由当前规则重新生成。
+    is_media_tags_manually_managed = peewee.BooleanField(default=False)
     duration_seconds = peewee.IntegerField(default=0)
     # 统一存放整理后的探测结果，避免把 codec/profile/bitrate 拆成多列重复维护。
     video_info = JsonTextField(null=True)

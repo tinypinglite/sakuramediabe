@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from src.model import (
@@ -9,6 +11,7 @@ from src.model import (
     VideoItem,
 )
 from src.schema.playback.media_tags import MediaTagUpsertRequest
+from src.service.playback.media_tag_retag_service import MediaTagRetagService
 from src.service.playback.media_tag_service import (
     MediaTagRule,
     MediaTagService,
@@ -121,6 +124,87 @@ def test_load_active_rules_excludes_disabled_tags(test_db):
     rules = MediaTagService.load_active_rules()
 
     assert [rule.name for rule in rules] == ["enabled"]
+
+
+def test_manual_assignment_accepts_disabled_tags_and_skips_auto_rules(test_db):
+    library = MediaLibrary.create(
+        name="manual-assignment",
+        provider_key="test",
+        provider_config={},
+    )
+    movie = Movie.create(movie_number="MANUAL-001", title="manual")
+    media = Media.create(
+        movie=movie,
+        library=library,
+        file_name="MANUAL-001.4k.mp4",
+    )
+    manual_tag = MediaTag.create(
+        name="manual-disabled",
+        include_terms=["never-auto"],
+        exclude_terms=[],
+        enabled=False,
+    )
+    auto_tag = MediaTag.create(
+        name="auto-match",
+        include_terms=["MANUAL-001"],
+        exclude_terms=[],
+        enabled=True,
+    )
+
+    assignment = MediaTagService.set_manual_assignment(media.id, [manual_tag.id])
+
+    assert assignment.is_media_tags_manually_managed is True
+    assert [tag.id for tag in assignment.tags] == [manual_tag.id]
+    assert set(
+        MediaMediaTag.select(MediaMediaTag.tag)
+        .where(MediaMediaTag.media == media.id)
+        .tuples()
+    ) == {(manual_tag.id,)}
+
+    reset = MediaTagService.reset_media_assignment_to_auto(media.id)
+
+    assert reset.is_media_tags_manually_managed is False
+    assert [tag.id for tag in reset.tags] == [auto_tag.id]
+
+
+def test_manual_assignment_survives_auto_retag(test_db):
+    library = MediaLibrary.create(
+        name="manual-assignment-retag",
+        provider_key="test",
+        provider_config={},
+    )
+    movie = Movie.create(movie_number="MANUAL-002", title="manual")
+    media = Media.create(
+        movie=movie,
+        library=library,
+        file_name="MANUAL-002.4k.mp4",
+    )
+    manual_tag = MediaTag.create(
+        name="manual-only",
+        include_terms=["never-auto"],
+        exclude_terms=[],
+        enabled=True,
+    )
+    MediaTag.create(
+        name="auto-match",
+        include_terms=["MANUAL-002"],
+        exclude_terms=[],
+        enabled=True,
+    )
+
+    MediaTagService.set_manual_assignment(media.id, [manual_tag.id])
+
+    stats = MediaTagRetagService.retag_all_jav_media(
+        reporter=SimpleNamespace(emit=lambda **payload: None)
+    )
+
+    assert stats["manual_skipped"] == 1
+    assert stats["failed_media"] == 0
+    assert set(
+        MediaMediaTag.select(MediaMediaTag.tag)
+        .where(MediaMediaTag.media == media.id)
+        .tuples()
+    ) == {(manual_tag.id,)}
 
 
 def test_media_tag_media_count_only_counts_valid_jav_media(test_db):

@@ -27,6 +27,7 @@ def list_movie_media_summaries(
             Media.duration_seconds,
             Media.video_info,
             Media.valid,
+            Media.is_media_tags_manually_managed,
         )
         .join(MediaLibrary, JOIN.LEFT_OUTER)
         .where(Media.movie.in_(set(movie_numbers)))

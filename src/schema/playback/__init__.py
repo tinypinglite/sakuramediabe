@@ -18,6 +18,8 @@ from .media_libraries import (
     MediaLibraryUpdateRequest,
 )
 from .media_tags import (
+    MediaTagAssignmentRequest,
+    MediaTagAssignmentResource,
     MediaTagPreviewMatchResource,
     MediaTagPreviewRequest,
     MediaTagPreviewResponse,
@@ -39,6 +41,8 @@ __all__ = [
     "MediaPointResource",
     "MediaProgressResource",
     "MediaProgressUpdateRequest",
+    "MediaTagAssignmentRequest",
+    "MediaTagAssignmentResource",
     "MediaTagPreviewMatchResource",
     "MediaTagPreviewRequest",
     "MediaTagPreviewResponse",

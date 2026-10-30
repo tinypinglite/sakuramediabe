@@ -7,6 +7,11 @@ from loguru import logger
 from src.i18n import translate
 from src.model import Media, MediaMediaTag, get_database
 from src.service.playback.media_tag_service import MediaTagService
+from src.service.playback.operation_locks import (
+    MEDIA_LOCK,
+    MediaOperationBusy,
+    media_operation_lock,
+)
 
 
 class MediaTagRetagService:
@@ -33,6 +38,7 @@ class MediaTagRetagService:
             "tagged_media": 0,
             "updated_media": 0,
             "cleared_media": 0,
+            "manual_skipped": 0,
             "failed_media": 0,
         }
         logger.info(
@@ -53,6 +59,7 @@ class MediaTagRetagService:
                     tagged=stats["tagged_media"],
                     updated=stats["updated_media"],
                     cleared=stats["cleared_media"],
+                    manual_skipped=stats["manual_skipped"],
                     failed=stats["failed_media"],
                 ),
                 summary_patch=stats,
@@ -64,28 +71,42 @@ class MediaTagRetagService:
 
         for completed, media_id in enumerate(media_ids, start=1):
             try:
-                with get_database().atomic():
+                # 与手工接管共用同一条媒体锁：拿不到锁说明有人正在改这条媒体的标签，
+                # 本轮跳过，避免自动结果覆盖用户已接管的选择。
+                with (
+                    media_operation_lock(MEDIA_LOCK, media_id),
+                    get_database().atomic(),
+                ):
                     media = Media.get_by_id(media_id)
-                    old_tag_ids = {
-                        int(tag_id)
-                        for (tag_id,) in (
-                            MediaMediaTag.select(MediaMediaTag.tag)
-                            .where(MediaMediaTag.media == media_id)
-                            .tuples()
+                    if media.is_media_tags_manually_managed:
+                        stats["manual_skipped"] += 1
+                    else:
+                        old_tag_ids = {
+                            int(tag_id)
+                            for (tag_id,) in (
+                                MediaMediaTag.select(MediaMediaTag.tag)
+                                .where(MediaMediaTag.media == media_id)
+                                .tuples()
+                            )
+                        }
+                        new_tag_ids = MediaTagService.replace_media_tags(
+                            media,
+                            rules,
+                            release_title=media.release_title,
+                            release_description=media.release_description,
                         )
-                    }
-                    new_tag_ids = MediaTagService.replace_media_tags(
-                        media,
-                        rules,
-                        release_title=media.release_title,
-                        release_description=media.release_description,
-                    )
-                    if new_tag_ids:
-                        stats["tagged_media"] += 1
-                    if old_tag_ids != new_tag_ids:
-                        stats["updated_media"] += 1
-                    if old_tag_ids and not new_tag_ids:
-                        stats["cleared_media"] += 1
+                        if new_tag_ids:
+                            stats["tagged_media"] += 1
+                        if old_tag_ids != new_tag_ids:
+                            stats["updated_media"] += 1
+                        if old_tag_ids and not new_tag_ids:
+                            stats["cleared_media"] += 1
+            except MediaOperationBusy:
+                stats["manual_skipped"] += 1
+                logger.info(
+                    "Media tag retag skipped busy media_id={}",
+                    media_id,
+                )
             except Exception as exc:
                 stats["failed_media"] += 1
                 logger.warning(
@@ -96,12 +117,13 @@ class MediaTagRetagService:
             emit_progress(completed)
             if completed == 1 or completed % step == 0:
                 logger.info(
-                    "Media tag retag progress completed={}/{} tagged={} updated={} cleared={} failed={}",
+                    "Media tag retag progress completed={}/{} tagged={} updated={} cleared={} manual_skipped={} failed={}",
                     completed,
                     len(media_ids),
                     stats["tagged_media"],
                     stats["updated_media"],
                     stats["cleared_media"],
+                    stats["manual_skipped"],
                     stats["failed_media"],
                 )
         return stats

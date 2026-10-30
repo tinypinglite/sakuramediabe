@@ -47,6 +47,7 @@ def test_media_tag_retag_is_idempotent_uses_snapshot_and_clears_disabled_tags(te
         "tagged_media": 1,
         "updated_media": 1,
         "cleared_media": 0,
+        "manual_skipped": 0,
         "failed_media": 0,
     }
     assert set(
@@ -68,6 +69,7 @@ def test_media_tag_retag_is_idempotent_uses_snapshot_and_clears_disabled_tags(te
         "tagged_media": 0,
         "updated_media": 1,
         "cleared_media": 1,
+        "manual_skipped": 0,
         "failed_media": 0,
     }
     assert not MediaMediaTag.select().exists()
@@ -98,13 +100,60 @@ def test_media_tag_retag_only_processes_jav_media(test_db):
         {
             "current": 0,
             "total": 0,
-            "text": "媒体文件标签重算 · 已完成 0/0 · 已标记 0 · 已更新 0 · 已清除 0 · 失败 0",
+            "text": "媒体文件标签重算 · 已完成 0/0 · 已标记 0 · 已更新 0 · 已清除 0 · 手动跳过 0 · 失败 0",
             "summary_patch": {
                 "total_media": 0,
                 "tagged_media": 0,
                 "updated_media": 0,
                 "cleared_media": 0,
+                "manual_skipped": 0,
                 "failed_media": 0,
             },
         }
     ]
+
+
+def test_media_tag_retag_skips_manually_managed_media(test_db):
+    library = MediaLibrary.create(
+        name="retag-manual-library",
+        provider_key="test",
+        provider_config={},
+    )
+    movie = Movie.create(movie_number="RETAG-MANUAL-001", title="manual")
+    media = Media.create(
+        movie=movie,
+        library=library,
+        file_name="RETAG-MANUAL-001.mp4",
+        is_media_tags_manually_managed=True,
+    )
+    manual_tag = MediaTag.create(
+        name="manual",
+        include_terms=["not-auto"],
+        exclude_terms=[],
+        enabled=True,
+    )
+    MediaTag.create(
+        name="auto",
+        include_terms=["RETAG-MANUAL-001"],
+        exclude_terms=[],
+        enabled=True,
+    )
+    MediaMediaTag.create(media=media, tag=manual_tag)
+
+    stats = MediaTagRetagService.retag_all_jav_media(
+        reporter=SimpleNamespace(emit=lambda **payload: None)
+    )
+
+    assert stats == {
+        "total_media": 1,
+        "tagged_media": 0,
+        "updated_media": 0,
+        "cleared_media": 0,
+        "manual_skipped": 1,
+        "failed_media": 0,
+    }
+    assert set(
+        MediaMediaTag.select(MediaMediaTag.tag)
+        .where(MediaMediaTag.media == media.id)
+        .tuples()
+    ) == {(manual_tag.id,)}

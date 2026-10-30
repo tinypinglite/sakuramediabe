@@ -47,6 +47,7 @@ from src.start.migrations.runner import (
     MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
     MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
     MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
+    MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME,
     MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME,
     MEDIA_TAGS_MIGRATION_NAME,
     MEDIA_THUMBNAIL_ARCHIVE_MIGRATION_NAME,
@@ -169,6 +170,7 @@ def test_current_migrations_are_discoverable_in_order():
         MEDIA_TAGS_MIGRATION_NAME,
         MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
         MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME,
+        MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME,
     ]
 
 
@@ -224,6 +226,19 @@ def test_media_tag_reverse_index_migration_is_idempotent(clean_db):
         if index.columns == ["tag_id", "media_id"]
     )
     assert not reverse_index.unique
+
+
+def test_media_tag_manual_lock_migration_adds_column_idempotently(clean_db):
+    clean_db.create_tables(TEST_MODELS)
+    _drop_columns(clean_db, "media", ("is_media_tags_manually_managed",))
+    migration = _load_migration_module(
+        Path(f"{MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME}.py")
+    )
+
+    migration.migrate(clean_db)
+    migration.migrate(clean_db)
+
+    assert "is_media_tags_manually_managed" in _column_names(clean_db, "media")
 
 
 def test_media_source_snapshot_migration_adds_columns_idempotently(clean_db):
@@ -402,6 +417,10 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
             name=MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME,
             applied=True,
         ),
+        MigrationExecution(
+            name=MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME,
+            applied=True,
+        ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -445,6 +464,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MEDIA_TAGS_MIGRATION_NAME,
         MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
         MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME,
+        MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME,
     ]
 
 
@@ -816,7 +836,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 40
+    assert summary.applied_count == 41
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

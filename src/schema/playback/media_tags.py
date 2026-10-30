@@ -81,3 +81,31 @@ class MediaTagPreviewMatchResource(SchemaModel):
 
 class MediaTagPreviewResponse(SchemaModel):
     matches: list[MediaTagPreviewMatchResource] = Field(default_factory=list)
+
+
+class MediaTagAssignmentRequest(SchemaModel):
+    tag_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("tag_ids", mode="before")
+    @classmethod
+    def reject_boolean_tag_ids(cls, value):
+        if isinstance(value, (list, tuple)) and any(
+            isinstance(item, bool) for item in value
+        ):
+            raise ValueError("tag_ids 必须全部为正整数")
+        return value
+
+    @field_validator("tag_ids")
+    @classmethod
+    def validate_tag_ids(cls, value: list[int]) -> list[int]:
+        if any(item <= 0 for item in value):
+            raise ValueError("tag_ids 必须全部为正整数")
+        if len(set(value)) != len(value):
+            raise ValueError("tag_ids 不可重复")
+        return value
+
+
+class MediaTagAssignmentResource(SchemaModel):
+    media_id: int
+    tags: list[MediaTagBriefResource] = Field(default_factory=list)
+    is_media_tags_manually_managed: bool = False

@@ -6,6 +6,7 @@ from pydantic import Field, field_validator
 
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+from src.schema.common.media_tags import MediaTagBriefResource
 from src.schema.videos.items import VideoCollectionRef
 
 
@@ -152,6 +153,8 @@ class MediaListItemResource(SchemaModel):
     thumbnail_last_error_code: str | None = None
     # 仅 JAV 媒体有意义，非 JAV 视频恒为 None。
     heat: int | None = None
+    tags: list[MediaTagBriefResource] = Field(default_factory=list)
+    is_media_tags_manually_managed: bool = False
     created_at: datetime
     updated_at: datetime
 

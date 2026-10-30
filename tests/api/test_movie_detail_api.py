@@ -90,6 +90,7 @@ def test_movie_detail_exposes_media_tags_and_source_snapshot(
     assert response.status_code == 200
     media_item = response.json()["media_items"][0]
     assert media_item["tags"] == [{"id": tag.id, "name": "detail-tag"}]
+    assert media_item["is_media_tags_manually_managed"] is False
     assert media_item["release_title"] == "DETAIL-TAG-001 1080p"
     assert media_item["release_description"] == "source description"
     assert media_item["source_indexer"] == "indexer-a"

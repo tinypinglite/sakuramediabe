@@ -39,7 +39,12 @@ from src.schema.playback.media import (
     MediaThumbnailResource,
     MultiVersionMovieResource,
 )
+from src.schema.playback.media_tags import (
+    MediaTagAssignmentRequest,
+    MediaTagAssignmentResource,
+)
 from src.service.playback import MediaService, MediaThumbnailService
+from src.service.playback.media_tag_service import MediaTagService
 from src.service.playback.provider_helpers import library_handle_for, media_handle_for
 
 router = APIRouter(
@@ -224,6 +229,31 @@ def list_media_points_for_media(
     current_user=Depends(get_current_user),
 ):
     return MediaService.list_points(media_id)
+
+
+@router.get("/{media_id}/tags", response_model=MediaTagAssignmentResource)
+def get_media_tag_assignment(
+    media_id: int,
+    current_user=Depends(get_current_user),
+):
+    return MediaTagService.get_media_assignment(media_id)
+
+
+@router.put("/{media_id}/tags", response_model=MediaTagAssignmentResource)
+def set_media_tag_assignment(
+    media_id: int,
+    payload: MediaTagAssignmentRequest,
+    current_user=Depends(get_current_user),
+):
+    return MediaTagService.set_manual_assignment(media_id, payload.tag_ids)
+
+
+@router.post("/{media_id}/tags/reset", response_model=MediaTagAssignmentResource)
+def reset_media_tag_assignment(
+    media_id: int,
+    current_user=Depends(get_current_user),
+):
+    return MediaTagService.reset_media_assignment_to_auto(media_id)
 
 
 @router.get("/{media_id}/play/{resource_path:path}")

@@ -92,6 +92,7 @@ def _assert_media_payload(items, data):
         "file_size_bytes": 9000000000, "valid": True,
         "video_info": {"container": {"bit_rate": 10000000}, "video": {"bit_rate": 9000000}},
         "tags": [],
+            "is_media_tags_manually_managed": False,
     }
     second = first["media_items"][1]
     assert second["library_name"] == "Cloud"
