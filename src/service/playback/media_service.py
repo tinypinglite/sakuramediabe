@@ -333,15 +333,34 @@ class MediaService:
 
     @classmethod
     def list_multi_version_movies(
-        cls, *, page: int = 1, page_size: int = 20,
-        include_vr: bool = False, include_fc2: bool = False,
+        cls,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        include_vr: bool = False,
+        include_fc2: bool = False,
+        include_processed: bool = False,
     ) -> PageResponse[MultiVersionMovieResource]:
         validate_page(page, page_size, error_code="invalid_media_filter")
+        current_snapshot = peewee.fn.STRING_AGG(
+            Media.id.cast("text"), ","
+        ).order_by(Media.id.asc())
+        stored_snapshot = peewee.fn.COALESCE(
+            Movie.multi_version_processed_snapshot, ""
+        )
+        having = [peewee.fn.COUNT(Media.id) > 1]
+        if not include_processed:
+            having.append(stored_snapshot != current_snapshot)
         groups = (
-            Media.select(Media.movie)
+            Media.select(
+                Media.movie,
+                Movie.multi_version_processed_snapshot,
+                current_snapshot.alias("current_snapshot"),
+            )
+            .join(Movie, on=(Media.movie == Movie.movie_number))
             .where(Media.movie.is_null(False))
-            .group_by(Media.movie)
-            .having(peewee.fn.COUNT(Media.id) > 1)
+            .group_by(Media.movie, Movie.multi_version_processed_snapshot)
+            .having(*having)
         )
         if not include_vr:
             vr_tagged_movies = (
@@ -356,12 +375,19 @@ class MediaService:
         if not include_fc2:
             groups = groups.where(~Media.movie.startswith("FC2"))
         total = groups.count()
-        movie_numbers = [
-            number for (number,) in (
-                groups.order_by(peewee.fn.MAX(Media.updated_at).desc(), Media.movie.asc())
-                .offset((page - 1) * page_size).limit(page_size).tuples()
+        page_groups = list(
+            groups.order_by(
+                peewee.fn.MAX(Media.updated_at).desc(), Media.movie.asc()
             )
-        ]
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .tuples()
+        )
+        movie_numbers = [number for number, _, _ in page_groups]
+        processed_by_movie = {
+            number: stored is not None and stored == current
+            for number, stored, current in page_groups
+        }
         media_by_movie: dict[str, list[MediaListItemResource]] = {
             number: [] for number in movie_numbers
         }
@@ -377,13 +403,55 @@ class MediaService:
         return PageResponse[MultiVersionMovieResource](
             items=[
                 MultiVersionMovieResource(
-                    movie_number=number, media_count=len(items), media_items=items,
+                    movie_number=number,
+                    media_count=len(items),
+                    media_items=items,
+                    is_processed=processed_by_movie[number],
                 )
                 for number, items in media_by_movie.items()
                 if len(items) > 1
             ],
             page=page, page_size=page_size, total=total,
         )
+
+    @staticmethod
+    def _multi_version_snapshot(media_ids: Sequence[int]) -> str:
+        return ",".join(str(media_id) for media_id in sorted(media_ids))
+
+    @classmethod
+    def mark_multi_version_processed(
+        cls, movie_number: str, media_ids: Sequence[int]
+    ) -> None:
+        movie = Movie.get_or_none(Movie.movie_number == movie_number)
+        if movie is None:
+            raise ApiError(404, "movie_not_found", "影片不存在")
+        current_ids = [
+            media_id
+            for (media_id,) in Media.select(Media.id)
+            .where(Media.movie == movie_number)
+            .order_by(Media.id.asc())
+            .tuples()
+        ]
+        if len(current_ids) < 2 or sorted(media_ids) != current_ids:
+            raise ApiError(
+                409,
+                "multi_version_changed",
+                "影片版本已变化，请刷新后重试",
+            )
+        Movie.update(
+            multi_version_processed_snapshot=cls._multi_version_snapshot(
+                current_ids
+            )
+        ).where(Movie.id == movie.id).execute()
+
+    @staticmethod
+    def clear_multi_version_processed(movie_number: str) -> None:
+        movie = Movie.get_or_none(Movie.movie_number == movie_number)
+        if movie is None:
+            raise ApiError(404, "movie_not_found", "影片不存在")
+        Movie.update(multi_version_processed_snapshot=None).where(
+            Movie.id == movie.id
+        ).execute()
 
     @classmethod
     def list_duplicate_media_groups(

@@ -124,6 +124,10 @@ class Movie(TimestampedMixin, BaseModel):
         constraints=[SQL("DEFAULT 0")],
         verbose_name="受保护字段版本",
     )
+    multi_version_processed_snapshot = peewee.TextField(
+        null=True,
+        verbose_name="多版本已处理快照",
+    )
 
     @staticmethod
     def resolve_series(series_name: str | None) -> MovieSeries | None:

@@ -195,6 +195,7 @@
   "errors.movie_metadata_number_conflict": "Remote metadata movie number does not match the local movie",
   "errors.movie_metadata_refresh_failed": "Failed to refresh movie metadata",
   "errors.movie_not_found": "Movie not found",
+  "errors.multi_version_changed": "The movie versions changed; refresh and try again",
   "errors.movie_review_fetch_failed": "Failed to fetch movie reviews",
   "errors.movie_similarity_index_not_ready": "The movie similarity index has not finished its first build",
   "errors.movie_subscription_has_media": "This movie has media files and cannot be unsubscribed",

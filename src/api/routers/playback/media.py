@@ -38,6 +38,7 @@ from src.schema.playback.media import (
     MediaThumbnailResetResponse,
     MediaThumbnailResource,
     MultiVersionMovieResource,
+    MultiVersionProcessedRequest,
 )
 from src.schema.playback.media_tags import (
     MediaTagAssignmentRequest,
@@ -182,11 +183,41 @@ def list_multi_version_movies(
     page_size: int = 20,
     include_vr: bool = Query(False, description="包含番号含 VR 或拥有 VR 标签的影片"),
     include_fc2: bool = Query(False, description="包含番号以 FC2 开头的影片"),
+    include_processed: bool = Query(False, description="包含已处理的多版本影片"),
     current_user=Depends(get_current_user),
 ):
     return MediaService.list_multi_version_movies(
-        page=page, page_size=page_size, include_vr=include_vr, include_fc2=include_fc2,
+        page=page,
+        page_size=page_size,
+        include_vr=include_vr,
+        include_fc2=include_fc2,
+        include_processed=include_processed,
     )
+
+
+@router.put(
+    "/multi-version-movies/{movie_number}/processed",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def mark_multi_version_processed(
+    movie_number: str,
+    payload: MultiVersionProcessedRequest,
+    current_user=Depends(get_current_user),
+):
+    MediaService.mark_multi_version_processed(movie_number, payload.media_ids)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete(
+    "/multi-version-movies/{movie_number}/processed",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def clear_multi_version_processed(
+    movie_number: str,
+    current_user=Depends(get_current_user),
+):
+    MediaService.clear_multi_version_processed(movie_number)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _parse_merged_media_ids(raw: str | None) -> tuple[int, ...]:

@@ -59,6 +59,7 @@ from src.start.migrations.runner import (
     MOVIE_INTERACTION_SORT_INDEXES_MIGRATION_NAME,
     MOVIE_MEDIA_REPLACEMENT_MIGRATION_NAME,
     MOVIE_RATINGS_MIGRATION_NAME,
+    MULTI_VERSION_PROCESSED_MIGRATION_NAME,
     PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
     PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
     REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
@@ -175,6 +176,7 @@ def test_current_migrations_are_discoverable_in_order():
         MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME,
         MEDIA_CONTENT_HASHES_MIGRATION_NAME,
         MEDIA_CONTENT_GCID_MIGRATION_NAME,
+        MULTI_VERSION_PROCESSED_MIGRATION_NAME,
     ]
 
 
@@ -433,6 +435,10 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
             name=MEDIA_CONTENT_GCID_MIGRATION_NAME,
             applied=True,
         ),
+        MigrationExecution(
+            name=MULTI_VERSION_PROCESSED_MIGRATION_NAME,
+            applied=True,
+        ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -479,6 +485,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME,
         MEDIA_CONTENT_HASHES_MIGRATION_NAME,
         MEDIA_CONTENT_GCID_MIGRATION_NAME,
+        MULTI_VERSION_PROCESSED_MIGRATION_NAME,
     ]
 
 
@@ -850,7 +857,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 43
+    assert summary.applied_count == 44
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -1200,6 +1207,22 @@ def test_drop_movie_extra_migration_removes_column(clean_db):
     )
 
     assert "extra" not in _column_names(clean_db, "movie")
+
+
+def test_multi_version_processed_migration_adds_snapshot_column(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    _drop_columns(
+        clean_db,
+        "movie",
+        ("multi_version_processed_snapshot",),
+    )
+
+    _load_migration_module(
+        Path(f"{MULTI_VERSION_PROCESSED_MIGRATION_NAME}.py")
+    ).migrate(clean_db)
+
+    assert "multi_version_processed_snapshot" in _column_names(clean_db, "movie")
 
 
 def test_drop_image_derived_sizes_migration_removes_columns(clean_db):
