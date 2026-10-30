@@ -23,4 +23,5 @@ def media_handle_for(media: Media) -> MediaHandle:
         duration_seconds=media.duration_seconds,
         content_md5=getattr(media, "content_md5", None),
         content_sha1=getattr(media, "content_sha1", None),
+        content_gcid=getattr(media, "content_gcid", None),
     )

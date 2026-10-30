@@ -546,9 +546,14 @@ class MediaTransferTaskService:
             raise TypeError("media_transfer_source_invalid_session")
         content_md5 = info.content_md5
         content_sha1 = info.content_sha1
+        content_gcid = info.content_gcid
         if (content_md5 is not None or content_sha1 is not None) and (
             not MediaTransferTaskService._valid_hex(content_md5, 32)
             or not MediaTransferTaskService._valid_hex(content_sha1, 40)
+        ):
+            raise TypeError("media_transfer_source_invalid_hashes")
+        if content_gcid is not None and not MediaTransferTaskService._valid_hex(
+            content_gcid, 40
         ):
             raise TypeError("media_transfer_source_invalid_hashes")
 
@@ -562,12 +567,16 @@ class MediaTransferTaskService:
 
     @staticmethod
     def _persist_source_hashes(media: Media, info: MediaTransferSourceInfo) -> None:
-        if info.content_md5 is None:
+        fields = {}
+        if info.content_md5 is not None:
+            fields.update(
+                content_md5=info.content_md5.lower(),
+                content_sha1=info.content_sha1.lower(),
+            )
+        if info.content_gcid is not None:
+            fields["content_gcid"] = info.content_gcid.upper()
+        if not fields:
             return
-        fields = {
-            "content_md5": info.content_md5.lower(),
-            "content_sha1": info.content_sha1.lower(),
-        }
         if all(getattr(media, name) == value for name, value in fields.items()):
             return
         for name, value in fields.items():

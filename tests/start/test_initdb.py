@@ -133,6 +133,7 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
         "download_task_id",
         "content_md5",
         "content_sha1",
+        "content_gcid",
     } <= _column_names(clean_db, "media")
     assert not clean_db.table_exists("subtitle_import_job")
 

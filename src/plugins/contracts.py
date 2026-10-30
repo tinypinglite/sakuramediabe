@@ -22,7 +22,8 @@ from src.scheduler.contracts import JobDefinition
 # 12：新增插件 i18n 能力（context.i18n.t、ranking/provider config 可选 i18n）。
 # 13：新增插件种子文件提交能力（context.downloads.submit_torrent）。
 # 14：迁移来源可携带完整 MD5/SHA-1，目标 provider 可复用宿主缓存的 SHA-1。
-HOST_API_VERSION = 14
+# 15：迁移来源可携带 GCID，目标 provider 可复用宿主缓存的 GCID。
+HOST_API_VERSION = 15
 MIN_SUPPORTED_HOST_API_VERSION = 4
 
 

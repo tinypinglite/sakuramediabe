@@ -43,6 +43,7 @@ class MediaHandle:
     duration_seconds: int
     content_md5: str | None = None
     content_sha1: str | None = None
+    content_gcid: str | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,7 @@ class MediaTransferSourceInfo:
     size_bytes: int
     content_md5: str | None = None
     content_sha1: str | None = None
+    content_gcid: str | None = None
 
 
 class MediaTransferReader(Protocol):
