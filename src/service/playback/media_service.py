@@ -252,12 +252,13 @@ class MediaService:
         kind: MediaPointKind = MediaPointKind.ALL,
         library_id: int | None = None,
         actor_ids: list[int] | None = None,
+        search: str | None = None,
         thumbnail_generation_state: MediaThumbnailGenerationState | None = None,
         sort: str | None = None,
         page: int = 1,
         page_size: int = 20,
     ) -> PageResponse[MediaListItemResource]:
-        """跨 JAV 与 videos 域分页列出全部媒体，支持归属/库/订阅女优筛选与排序。"""
+        """跨 JAV 与 videos 域分页列出媒体，支持归属/库/女优/文件名筛选与排序。"""
         validate_page(page, page_size, error_code="invalid_media_filter")
 
         base_query = cls._media_list_query()
@@ -283,6 +284,9 @@ class MediaService:
                 Movie.id.in_(actor_movie_ids)
             )
             base_query = base_query.where(Media.movie.in_(movie_numbers))
+        normalized_search = (search or "").strip()
+        if normalized_search:
+            base_query = base_query.where(Media.file_name.contains(normalized_search))
         if thumbnail_generation_state is not None:
             base_query = base_query.where(
                 Media.thumbnail_generation_state == thumbnail_generation_state.value
