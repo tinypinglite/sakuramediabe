@@ -259,11 +259,43 @@ def test_source_without_hashes_keeps_cache_empty(move):
     assert changed.content_gcid is None
 
 
-def test_partial_source_hashes_stop_before_stage(move):
+@pytest.mark.parametrize(
+    ("info", "expected_md5", "expected_sha1"),
+    (
+        (
+            MediaTransferSourceInfo(
+                file_name="source.mp4", size_bytes=10, content_md5=TRANSFER_MD5
+            ),
+            TRANSFER_MD5,
+            None,
+        ),
+        (
+            MediaTransferSourceInfo(
+                file_name="source.mp4", size_bytes=10, content_sha1=TRANSFER_SHA1
+            ),
+            None,
+            TRANSFER_SHA1,
+        ),
+    ),
+)
+def test_source_hashes_are_cached_independently(
+    move, info, expected_md5, expected_sha1
+):
+    move.source.info = info
+
+    assert execute(enqueue(move))["transferred_count"] == 1
+
+    changed = Media.get_by_id(move.media.id)
+    assert changed.content_md5 == expected_md5
+    assert changed.content_sha1 == expected_sha1
+    assert changed.content_gcid is None
+
+
+def test_invalid_source_hash_stops_before_stage(move):
     move.source.info = MediaTransferSourceInfo(
         file_name="source.mp4",
         size_bytes=10,
-        content_md5=TRANSFER_MD5,
+        content_md5="invalid",
     )
     run = enqueue(move)
 
