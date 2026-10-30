@@ -15,6 +15,8 @@ from src.model import (
     IndexerDownloadClient,
     Media,
     MediaLibrary,
+    MediaMediaTag,
+    MediaTag,
     MediaThumbnail,
     MomentRecommendation,
     Movie,
@@ -119,8 +121,17 @@ def test_create_tables_creates_system_tables(clean_db, monkeypatch):
         for index in notification_indexes
     )
     assert Subtitle.table_exists()
+    assert MediaTag.table_exists()
+    assert MediaMediaTag.table_exists()
     assert "is_blacklisted" in _column_names(clean_db, "movie")
     assert "media_replacement_pending" in _column_names(clean_db, "movie")
+    assert {
+        "release_title",
+        "release_description",
+        "source_indexer",
+        "info_hash",
+        "download_task_id",
+    } <= _column_names(clean_db, "media")
     assert not clean_db.table_exists("subtitle_import_job")
 
 

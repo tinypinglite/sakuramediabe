@@ -155,6 +155,8 @@ class SubscribedMovieAutoDownloadService:
                                 "source_uri": candidate.source_uri,
                                 "indexer_name": candidate.indexer_name,
                                 "title": candidate.title,
+                                "release_title": candidate.release_title,
+                                "description": candidate.description,
                                 "size_bytes": candidate.size_bytes,
                                 "seeders": candidate.seeders,
                             },

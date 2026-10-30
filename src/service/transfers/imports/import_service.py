@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from threading import RLock, local
 from typing import Any
@@ -38,6 +39,7 @@ from src.common.movie_numbers import (
 from src.common.service_helpers import emit_progress
 from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import (
+    DownloadSubmissionRecord,
     Media,
     MediaLibrary,
     Movie,
@@ -60,12 +62,24 @@ from src.schema.transfers.media_import import ImportResult
 from src.service.catalog.catalog_import_service import CatalogImportService
 from src.service.catalog.movie_image_service import ImageDownloadError
 from src.service.catalog.subtitle_asset_service import SubtitleAssetService
+from src.service.playback.media_tag_service import (
+    MediaTagRule,
+    MediaTagService,
+)
 from src.service.playback.provider_helpers import media_handle_for
 from src.service.playback.thumbnails.adoption import ThumbnailAdoptionService
 from src.service.transfers.downloads.common import library_handle_for
 from src.service.videos.video_cover_service import VideoCoverService
 
 ImportProgressCallback = Callable[[dict[str, object]], None]
+
+
+@dataclass(frozen=True, slots=True)
+class MediaSourceSnapshot:
+    release_title: str | None = None
+    description: str | None = None
+    indexer_name: str | None = None
+    info_hash: str | None = None
 
 
 class MetadataImportResult(BaseModel):
@@ -250,6 +264,31 @@ class MediaImportService:
                 for number in movie_numbers
             }
 
+    @staticmethod
+    def _load_source_snapshot(
+        download_task_id: int | None,
+    ) -> MediaSourceSnapshot | None:
+        if download_task_id is None:
+            return None
+        record = (
+            DownloadSubmissionRecord.select()
+            .where(
+                DownloadSubmissionRecord.task_id == download_task_id,
+                DownloadSubmissionRecord.state == "submitted",
+            )
+            .order_by(DownloadSubmissionRecord.id.desc())
+            .first()
+        )
+        if record is None:
+            return None
+        description = (record.description or "").strip()
+        return MediaSourceSnapshot(
+            release_title=(record.release_title or "").strip() or None,
+            description=description[:8000] or None,
+            indexer_name=(record.indexer_name or "").strip() or None,
+            info_hash=(record.info_hash or "").strip() or None,
+        )
+
     def import_from_source(
         self,
         source_ref: dict[str, Any],
@@ -261,6 +300,7 @@ class MediaImportService:
         progress_callback: ImportProgressCallback | None = None,
         operation_namespace: str | None = None,
         target_movie_number: str | None = None,
+        download_task_id: int | None = None,
     ) -> ImportResult:
         if not isinstance(source_ref, dict) or not source_ref:
             raise ApiError(422, "invalid_import_source", "source_ref must be an object")
@@ -271,6 +311,7 @@ class MediaImportService:
             raise ApiError(404, "media_library_not_found", "媒体库不存在")
         if media_kind not in {"jav", "video"}:
             raise ApiError(422, "invalid_media_kind", "无效的媒体类型")
+        source_snapshot = self._load_source_snapshot(download_task_id)
         if media_kind == "jav" and collection_id is not None:
             raise ApiError(422, "invalid_collection", "jav import does not support collection_id")
         if collection_id is not None and VideoCollection.get_or_none(
@@ -343,6 +384,7 @@ class MediaImportService:
                                 library_id=library_id,
                                 media_kind=media_kind,
                                 source_disposition=source_disposition,
+                                download_task_id=download_task_id,
                             )
                         )
                     continue
@@ -420,6 +462,7 @@ class MediaImportService:
                             library_id=library_id,
                             media_kind=media_kind,
                             source_disposition=source_disposition,
+                            download_task_id=download_task_id,
                         )
                     )
                 scanned_files = tuple(
@@ -466,6 +509,9 @@ class MediaImportService:
             )
         }
         with self.metadata_import_batch(sorted(metadata_numbers)) as metadata_futures:
+            tag_rules: tuple[MediaTagRule, ...] = ()
+            if media_kind == "jav" and scanned_files:
+                tag_rules = MediaTagService.load_active_rules()
             for index, source in enumerate(scanned_files, start=1):
                 if index == 1 or index % step == 0:
                     logger.info(
@@ -489,6 +535,7 @@ class MediaImportService:
                                 library_id=library_id,
                                 media_kind=media_kind,
                                 source_disposition=source_disposition,
+                                download_task_id=download_task_id,
                             )
                         )
                     continue
@@ -501,6 +548,7 @@ class MediaImportService:
                             library_id=library_id,
                             media_kind=media_kind,
                             source_disposition=source_disposition,
+                            download_task_id=download_task_id,
                         )
                     )
                     continue
@@ -518,6 +566,7 @@ class MediaImportService:
                             library_id=library_id,
                             media_kind=media_kind,
                             source_disposition=source_disposition,
+                            download_task_id=download_task_id,
                         )
                     )
                     emit_progress(
@@ -575,6 +624,9 @@ class MediaImportService:
                             library=library,
                             source=source,
                             staged=staged,
+                            source_snapshot=source_snapshot,
+                            download_task_id=download_task_id,
+                            tag_rules=tag_rules,
                         )
                         new_playable_movies.append(
                             {"id": movie.id, "movie_number": movie.movie_number, "title": movie.title}
@@ -589,6 +641,9 @@ class MediaImportService:
                                 library=library,
                                 source=source,
                                 staged=staged,
+                                source_snapshot=source_snapshot,
+                                download_task_id=download_task_id,
+                                tag_rules=tag_rules,
                             )
                             if collection_id is not None:
                                 from src.service.videos.video_collection_service import (
@@ -607,6 +662,7 @@ class MediaImportService:
                             library_id=library_id,
                             media_kind=media_kind,
                             source_disposition=source_disposition,
+                            download_task_id=download_task_id,
                         )
                     )
                     self._abort_staged(storage, staged)
@@ -620,6 +676,7 @@ class MediaImportService:
                             library_id=library_id,
                             media_kind=media_kind,
                             source_disposition=source_disposition,
+                            download_task_id=download_task_id,
                         )
                     )
                     self._abort_staged(storage, staged)
@@ -636,6 +693,7 @@ class MediaImportService:
                                 library_id=library_id,
                                 media_kind=media_kind,
                                 source_disposition=source_disposition,
+                                download_task_id=download_task_id,
                             )
                         )
                         finalize_error = exc
@@ -654,6 +712,7 @@ class MediaImportService:
                                 library_id=library_id,
                                 media_kind=media_kind,
                                 source_disposition=source_disposition,
+                                download_task_id=download_task_id,
                             )
                         )
                         finalize_error = exc
@@ -687,6 +746,7 @@ class MediaImportService:
                                 failure_items=failure_items,
                                 library_id=library_id,
                                 media_kind=media_kind,
+                                download_task_id=download_task_id,
                             )
                 emit_progress(
                     progress_callback,
@@ -747,6 +807,15 @@ class MediaImportService:
         library = MediaLibrary.get_or_none(MediaLibrary.id == library_id)
         if library is None:
             raise ApiError(404, "media_library_not_found", "媒体库不存在")
+        raw_download_task_id = failure_item.get("download_task_id")
+        download_task_id = (
+            int(raw_download_task_id)
+            if isinstance(raw_download_task_id, int)
+            and not isinstance(raw_download_task_id, bool)
+            else None
+        )
+        source_snapshot = self._load_source_snapshot(download_task_id)
+        tag_rules = MediaTagService.load_active_rules()
         storage = self._storage(library)
         if source_disposition == "in_place" and not self._supports_in_place_import(
             library, storage
@@ -802,6 +871,9 @@ class MediaImportService:
                     library=library,
                     source=source,
                     staged=staged,
+                    source_snapshot=source_snapshot,
+                    download_task_id=download_task_id,
+                    tag_rules=tag_rules,
                 )
             except ProviderOperationError as exc:
                 self._abort_staged(storage, staged)
@@ -857,6 +929,7 @@ class MediaImportService:
         library_id: int,
         media_kind: str,
         source_disposition: str,
+        download_task_id: int | None = None,
     ) -> dict[str, Any]:
         item = make_failure_item(source.relative_path, reason, detail)
         item.update(
@@ -870,6 +943,7 @@ class MediaImportService:
                 "library_id": library_id,
                 "media_kind": media_kind,
                 "source_disposition": source_disposition,
+                "download_task_id": download_task_id,
                 "state": "pending",
                 "retry_task_run_id": None,
                 "resolved_movie_id": None,
@@ -888,6 +962,9 @@ class MediaImportService:
         library,
         source: ImportFile,
         staged: StagedMedia,
+        source_snapshot: MediaSourceSnapshot | None = None,
+        download_task_id: int | None = None,
+        tag_rules: Sequence[MediaTagRule] = (),
     ) -> Media:
         with get_database().atomic():
             media = Media.create(
@@ -901,12 +978,32 @@ class MediaImportService:
                 video_info=staged.video_info,
                 resolution=normalize_media_resolution(staged.resolution),
                 valid=True,
+                release_title=(
+                    source_snapshot.release_title if source_snapshot is not None else None
+                ),
+                release_description=(
+                    source_snapshot.description if source_snapshot is not None else None
+                ),
+                source_indexer=(
+                    source_snapshot.indexer_name if source_snapshot is not None else None
+                ),
+                info_hash=(
+                    source_snapshot.info_hash if source_snapshot is not None else None
+                ),
+                download_task_id=download_task_id,
             )
             file_hash = storage.compute_file_hash(media=media_handle_for(media))
             if not isinstance(file_hash, str) or not file_hash:
                 raise ValueError("provider returned an invalid media file hash")
             media.file_hash = file_hash
             media.save(only=[Media.file_hash])
+            if movie is not None:
+                MediaTagService.attach_matching_tags(
+                    media,
+                    tag_rules,
+                    release_title=media.release_title,
+                    release_description=media.release_description,
+                )
         try:
             # 同文件已在别处导入过时直接收养既有缩略图，省一次远端抽帧。
             # 收养只是优化：失败不能把已完成的媒体创建一起回滚。
@@ -954,6 +1051,7 @@ class MediaImportService:
         failure_items: list[dict[str, Any]],
         library_id: int,
         media_kind: str,
+        download_task_id: int | None = None,
     ) -> int:
         video_parent = PurePosixPath(video_source.relative_path).parent
         failed_count = 0
@@ -1001,6 +1099,7 @@ class MediaImportService:
                         library_id=library_id,
                         media_kind=media_kind,
                         source_disposition=source_disposition,
+                        download_task_id=download_task_id,
                     )
                 )
                 failed_count += 1
@@ -1019,6 +1118,7 @@ class MediaImportService:
                         library_id=library_id,
                         media_kind=media_kind,
                         source_disposition=source_disposition,
+                        download_task_id=download_task_id,
                     )
                 )
                 failed_count += 1

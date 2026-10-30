@@ -39,6 +39,7 @@ from src.model import (
     Image,
     Media,
     MediaLibrary,
+    MediaMediaTag,
     MediaPoint,
     MediaProgress,
     Movie,
@@ -131,6 +132,8 @@ class MovieService:
         actor_age_max: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
+        media_tag_ids: list[int] | None = None,
+        media_tag_match: TagMatchMode = TagMatchMode.OR,
         years: list[int] | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
@@ -248,6 +251,29 @@ class MovieService:
                 # OR：命中任意一个 tag 即可。
                 tagged_movie_ids = MovieTag.select(MovieTag.movie).where(MovieTag.tag.in_(tag_ids))
             filtered_query = filtered_query.where(Movie.id.in_(tagged_movie_ids))
+
+        if media_tag_ids is not None:
+            # 媒体标签只认有效媒体；子查询按影片聚合，避免 join 放大列表行和 total。
+            effective_media_tag_query = (
+                MediaMediaTag.select(Media.movie)
+                .join(Media, on=(MediaMediaTag.media == Media.id))
+                .where(
+                    MediaMediaTag.tag.in_(media_tag_ids),
+                    Media.valid == True,
+                    Media.movie.is_null(False),
+                )
+            )
+            if media_tag_match == TagMatchMode.AND:
+                matched_movie_ids = (
+                    effective_media_tag_query.group_by(Media.movie)
+                    .having(
+                        fn.COUNT(fn.DISTINCT(MediaMediaTag.tag))
+                        == len(media_tag_ids)
+                    )
+                )
+            else:
+                matched_movie_ids = effective_media_tag_query.group_by(Media.movie)
+            filtered_query = filtered_query.where(Movie.movie_number.in_(matched_movie_ids))
 
         if years:
             # 多选年份为 OR：命中任一所选年份区间即可。保留范围比较，
@@ -515,6 +541,8 @@ class MovieService:
         actor_age_max: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
+        media_tag_ids: list[int] | None = None,
+        media_tag_match: TagMatchMode = TagMatchMode.OR,
         years: list[int] | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
@@ -549,6 +577,8 @@ class MovieService:
                 actor_age_max=actor_age_max,
                 tag_ids=tag_ids,
                 tag_match=tag_match,
+                media_tag_ids=media_tag_ids,
+                media_tag_match=media_tag_match,
                 years=years,
                 status=status,
                 collection_type=collection_type,
@@ -719,6 +749,9 @@ class MovieService:
             return []
 
         media_ids = [media.id for media in media_items]
+        from src.service.playback.media_tag_service import MediaTagService
+
+        tags_by_media_id = MediaTagService.list_briefs_by_media_ids(media_ids)
         # 进度和打点分开查，避免在一个大 join 里把媒体行放大成笛卡尔展开。
         progress_items = {
             progress.media_id: progress
@@ -756,6 +789,7 @@ class MovieService:
                     last_watched_at=progress.last_watched_at,
                 )
             media.points = points_by_media_id.get(media.id, [])
+            media.tags = tags_by_media_id.get(media.id, [])
             bundle = MEDIA_PROVIDER_REGISTRY.require(media.library.provider_key)
             # 失效媒体不生成播放地址；条目仍返回，前端据空地址禁用播放。
             media.play_url = (
@@ -896,6 +930,8 @@ class MovieService:
         actor_age_max: int | None = None,
         tag_ids: list[int] | None = None,
         tag_match: TagMatchMode = TagMatchMode.OR,
+        media_tag_ids: list[int] | None = None,
+        media_tag_match: TagMatchMode = TagMatchMode.OR,
         years: list[int] | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
@@ -930,6 +966,8 @@ class MovieService:
             actor_age_max=actor_age_max,
             tag_ids=tag_ids,
             tag_match=tag_match,
+            media_tag_ids=media_tag_ids,
+            media_tag_match=media_tag_match,
             years=years,
             status=status,
             collection_type=collection_type,
@@ -960,6 +998,8 @@ class MovieService:
                 actor_age_max=actor_age_max,
                 tag_ids=tag_ids,
                 tag_match=tag_match,
+                media_tag_ids=media_tag_ids,
+                media_tag_match=media_tag_match,
                 years=years,
                 status=status,
                 collection_type=collection_type,

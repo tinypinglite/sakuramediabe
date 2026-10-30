@@ -1,6 +1,13 @@
 from types import SimpleNamespace
 
-from src.model import Media, MediaLibrary, Movie, RankingItem
+from src.model import (
+    Media,
+    MediaLibrary,
+    MediaMediaTag,
+    MediaTag,
+    Movie,
+    RankingItem,
+)
 from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
     ProviderOperationError,
@@ -44,6 +51,50 @@ def test_movie_detail_exposes_media_playback_deliveries(
     assert response.json()["media_items"][0]["library_name"] == "detail-library"
     assert response.json()["media_items"][0]["media_id"] == media.id
     assert response.json()["media_items"][0]["playback_deliveries"] == ["proxy", "redirect"]
+
+
+def test_movie_detail_exposes_media_tags_and_source_snapshot(
+    client,
+    account_user,
+    monkeypatch,
+):
+    library = MediaLibrary.create(
+        name="detail-tag-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    movie = Movie.create(movie_number="DETAIL-TAG-001", javdb_id="detail-tag-1", title="detail")
+    media = Media.create(
+        movie=movie,
+        library=library,
+        file_name="DETAIL-TAG-001.mp4",
+        release_title="DETAIL-TAG-001 1080p",
+        release_description="source description",
+        source_indexer="indexer-a",
+        info_hash="0123456789abcdef0123456789abcdef01234567",
+        download_task_id=77,
+    )
+    tag = MediaTag.create(name="detail-tag", include_terms=["detail"], exclude_terms=[])
+    MediaMediaTag.create(media=media, tag=tag)
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(playback_deliveries=("proxy",)),
+    )
+
+    response = client.get(
+        f"/movies/{movie.movie_number}",
+        headers=_auth_headers(client, account_user),
+    )
+
+    assert response.status_code == 200
+    media_item = response.json()["media_items"][0]
+    assert media_item["tags"] == [{"id": tag.id, "name": "detail-tag"}]
+    assert media_item["release_title"] == "DETAIL-TAG-001 1080p"
+    assert media_item["release_description"] == "source description"
+    assert media_item["source_indexer"] == "indexer-a"
+    assert media_item["info_hash"] == "0123456789abcdef0123456789abcdef01234567"
+    assert media_item["download_task_id"] == 77
 
 
 def test_movie_detail_exposes_ranking_placements(client, account_user, monkeypatch):

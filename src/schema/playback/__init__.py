@@ -17,6 +17,13 @@ from .media_libraries import (
     MediaLibraryResource,
     MediaLibraryUpdateRequest,
 )
+from .media_tags import (
+    MediaTagPreviewMatchResource,
+    MediaTagPreviewRequest,
+    MediaTagPreviewResponse,
+    MediaTagResource,
+    MediaTagUpsertRequest,
+)
 
 __all__ = [
     "MediaClipCreateRequest",
@@ -32,4 +39,9 @@ __all__ = [
     "MediaPointResource",
     "MediaProgressResource",
     "MediaProgressUpdateRequest",
+    "MediaTagPreviewMatchResource",
+    "MediaTagPreviewRequest",
+    "MediaTagPreviewResponse",
+    "MediaTagResource",
+    "MediaTagUpsertRequest",
 ]

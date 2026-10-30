@@ -231,6 +231,26 @@ def test_auto_download_does_not_roll_over_after_client_accepts(monkeypatch):
     assert request_service.create_request.call_args.args[0].client_id == 1
 
 
+def test_auto_download_passes_clean_release_title_and_description(monkeypatch):
+    candidate = _candidate(
+        title="ABC-001 1080p 中文字幕",
+        source_uri="magnet:?xt=clean-fields",
+    )
+    candidate.release_title = "ABC-001 1080p"
+    candidate.description = "中文字幕"
+    service, request_service = _build_service(
+        monkeypatch,
+        candidates=[candidate],
+        response=SimpleNamespace(created=True),
+    )
+
+    service.run(reporter=SimpleNamespace(emit=Mock()))
+
+    payload = request_service.create_request.call_args.args[0]
+    assert payload.candidate.release_title == "ABC-001 1080p"
+    assert payload.candidate.description == "中文字幕"
+
+
 def test_auto_download_applies_policy_before_candidate_attempt_limit(monkeypatch):
     response = SimpleNamespace(created=True)
     candidates = []

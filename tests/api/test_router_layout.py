@@ -14,7 +14,7 @@ from src.api.routers.discovery import image_search, ranking_sources, taste_profi
 from src.api.routers.discovery.hot_actress_releases import (
     router as hot_actress_releases_router,
 )
-from src.api.routers.playback import media_libraries
+from src.api.routers.playback import media_libraries, media_tags
 from src.api.routers.system import (
     account,
     activity,
@@ -42,6 +42,7 @@ from src.api.routers.videos import items as video_items
         (auth.router, (deps.db_deps,)),
         (account.router, (deps.db_deps,)),
         (media_libraries.router, (deps.db_deps,)),
+        (media_tags.router, (deps.db_deps, deps.get_current_user)),
         (downloads.router, (deps.db_deps,)),
         (
             download_selection.router,
@@ -101,6 +102,21 @@ def test_create_app_registers_download_selection_routes():
     assert "/download-selection-policy" in paths
     assert "/download-selection-policy/preview" in paths
     assert "/download-resource-blacklist" in paths
+
+
+def test_create_app_registers_media_tag_routes():
+    app = create_app()
+    route_methods = {
+        (getattr(route, "path", None), method)
+        for route in app.routes
+        for method in getattr(route, "methods", set())
+    }
+
+    assert ("/media-tags", "GET") in route_methods
+    assert ("/media-tags", "POST") in route_methods
+    assert ("/media-tags/preview", "POST") in route_methods
+    assert ("/media-tags/{tag_id}", "PUT") in route_methods
+    assert ("/media-tags/{tag_id}", "DELETE") in route_methods
 
 
 def test_create_app_registers_videos_routes():

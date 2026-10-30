@@ -37,6 +37,7 @@ from src.service.discovery import (
 )
 from src.service.playback import (
     MediaFileHashBackfillService,
+    MediaTagRetagService,
     MediaThumbnailService,
     MediaValidityScanService,
 )
@@ -143,6 +144,16 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次空媒体文件哈希补算",
         cron_setting="media_file_hash_backfill_cron",
         handler=lambda reporter, _params: MediaFileHashBackfillService.backfill_missing_file_hashes(
+            reporter=reporter,
+        ),
+    ),
+    JobDefinition(
+        task_key=MediaTagRetagService.TASK_KEY,
+        log_name="media-tag-retag",
+        cli_name="retag-media",
+        cli_help="按当前标签规则重算媒体文件标签",
+        manual_only=True,
+        handler=lambda reporter, _params: MediaTagRetagService.retag_all_jav_media(
             reporter=reporter,
         ),
     ),

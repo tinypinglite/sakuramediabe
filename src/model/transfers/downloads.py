@@ -113,6 +113,8 @@ class DownloadSubmissionRecord(TimestampedMixin, BaseModel):
     indexer_name = peewee.CharField(max_length=255)
     # 索引器返回的种子标题没有长度上限，不能按 varchar(255) 截断入库。
     title = peewee.TextField()
+    release_title = peewee.TextField(null=True)
+    description = peewee.TextField(null=True)
     source_uri = peewee.TextField()
     info_hash = peewee.CharField(max_length=40)
     state = peewee.CharField(max_length=32, default="submitting")

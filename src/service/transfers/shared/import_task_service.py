@@ -484,6 +484,7 @@ class ImportTaskService:
                 progress_callback=progress_callback,
                 operation_namespace=operation_namespace or f"task:{task_run_id}",
                 target_movie_number=target_movie_number,
+                download_task_id=download_task_id,
             )
         except Exception:
             cls._set_download_status(download_task_id, IMPORT_STATUS_FAILED)

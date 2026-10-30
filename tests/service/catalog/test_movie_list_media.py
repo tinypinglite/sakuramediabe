@@ -91,6 +91,7 @@ def _assert_media_payload(items, data):
         "resolution": "3840x2160", "duration_seconds": 7200,
         "file_size_bytes": 9000000000, "valid": True,
         "video_info": {"container": {"bit_rate": 10000000}, "video": {"bit_rate": 9000000}},
+        "tags": [],
     }
     second = first["media_items"][1]
     assert second["library_name"] == "Cloud"
@@ -146,7 +147,7 @@ def test_rankings_reuse_media_query(media_movies, monkeypatch):
         RankingItem.create(source_key="test", board_key="all", rank=i + 1, movie=movie, movie_number=movie.movie_number)
     with count_queries(only_select=True) as queries:
         response = RankingCatalogService.list_board_items("test", "all", None).model_dump(mode="json")
-    assert queries.count == 5
+    assert queries.count == 6
     _assert_media_payload(response["items"], data)
 
 
@@ -162,11 +163,11 @@ def test_movie_media_queries_stay_constant_and_preserve_pagination(test_db):
                 Media.create(movie=movie, library=library, file_name=f"{i}-{copy}.mp4")
     # list_movies 额外有一条批量 my_score 查询；其余列表不附带个人评分。
     loaders = [
-        (MovieService.list_movies, 4),
-        (partial(MovieService.list_movies, actor_id=actor.id), 4),
-        (MovieService.list_latest_movies, 3),
-        (MovieService.list_subscribed_actor_latest_movies, 3),
-        (partial(MovieService.list_movies_by_series, series_id=series.id), 3),
+        (MovieService.list_movies, 5),
+        (partial(MovieService.list_movies, actor_id=actor.id), 5),
+        (MovieService.list_latest_movies, 4),
+        (MovieService.list_subscribed_actor_latest_movies, 4),
+        (partial(MovieService.list_movies_by_series, series_id=series.id), 4),
     ]
     for load, expected_query_count in loaders:
         for page_size in (1, 20, 100):
@@ -196,7 +197,7 @@ def test_similar_movies_return_media_without_additional_flag_query(media_movies)
     service = MovieRecommendationService(store=store)
     with count_queries(only_select=True) as queries:
         items = [item.model_dump(mode="json") for item in service.list_similar_resources("MEDIA-000")]
-    assert queries.count == 3
+    assert queries.count == 4
     _assert_media_payload(items, data)
     assert all(item["similarity_score"] == 0.9 for item in items)
 

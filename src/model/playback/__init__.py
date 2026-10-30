@@ -7,13 +7,16 @@ from .media import (
     MediaThumbnail,
     MediaThumbnailArchive,
 )
+from .media_tags import MediaMediaTag, MediaTag
 
 __all__ = [
     "Media",
     "MediaClip",
     "MediaLibrary",
+    "MediaMediaTag",
     "MediaPoint",
     "MediaProgress",
+    "MediaTag",
     "MediaThumbnail",
     "MediaThumbnailArchive",
 ]

@@ -148,6 +148,11 @@ class MovieMediaPointResource(SchemaModel):
 class MovieMediaResource(MediaSummaryResource):
     play_url: str
     playback_deliveries: list[Literal["proxy", "redirect"]]
+    release_title: str | None = None
+    release_description: str | None = None
+    source_indexer: str | None = None
+    info_hash: str | None = None
+    download_task_id: int | None = None
     progress: MovieMediaProgressResource | None = None
     points: list[MovieMediaPointResource] = Field(default_factory=list)
 

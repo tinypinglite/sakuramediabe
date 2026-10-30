@@ -45,6 +45,12 @@ class Media(TimestampedMixin, BaseModel):
     file_hash = peewee.CharField(max_length=64, null=True, index=True)
     # 由支持该可选能力的 provider 生成；相同值代表同一位置且未变化的导入源。
     import_source_identity = peewee.CharField(max_length=512, null=True)
+    # 下载导入来源快照；任务删除后 download_task_id 仍保留，不建外键。
+    release_title = peewee.TextField(null=True)
+    release_description = peewee.TextField(null=True)
+    source_indexer = peewee.CharField(max_length=255, null=True)
+    info_hash = peewee.CharField(max_length=40, null=True)
+    download_task_id = peewee.IntegerField(null=True)
     duration_seconds = peewee.IntegerField(default=0)
     # 统一存放整理后的探测结果，避免把 codec/profile/bitrate 拆成多列重复维护。
     video_info = JsonTextField(null=True)

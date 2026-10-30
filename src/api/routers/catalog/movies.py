@@ -58,6 +58,8 @@ def list_movies(
     actor_age_max: int | None = Query(default=None, ge=0),
     tag_ids: str | None = Query(default=None),
     tag_match: TagMatchMode = Query(default=TagMatchMode.OR),
+    media_tag_ids: str | None = Query(default=None),
+    media_tag_match: TagMatchMode = Query(default=TagMatchMode.OR),
     year: str | None = Query(default=None),
     status: MovieListStatus = MovieListStatus.ALL,
     collection_type: MovieCollectionType = MovieCollectionType.ALL,
@@ -90,6 +92,10 @@ def list_movies(
         actor_age_max=actor_age_max,
         tag_ids=parse_csv_positive_ints(tag_ids, "tag_ids", error_code="invalid_movie_filter"),
         tag_match=tag_match,
+        media_tag_ids=parse_csv_positive_ints(
+            media_tag_ids, "media_tag_ids", error_code="invalid_movie_filter"
+        ),
+        media_tag_match=media_tag_match,
         years=parse_csv_positive_ints(year, "year", error_code="invalid_movie_filter"),
         status=status,
         collection_type=collection_type,

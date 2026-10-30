@@ -3,6 +3,7 @@ from typing import Any
 from pydantic import Field
 
 from src.schema.common.base import SchemaModel
+from src.schema.common.media_tags import MediaTagBriefResource
 
 
 class MediaSummaryResource(SchemaModel):
@@ -16,3 +17,4 @@ class MediaSummaryResource(SchemaModel):
     duration_seconds: int = 0
     video_info: dict[str, Any] | None = None
     valid: bool = True
+    tags: list[MediaTagBriefResource] = Field(default_factory=list)

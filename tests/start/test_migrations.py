@@ -45,7 +45,10 @@ from src.start.migrations.runner import (
     IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
     MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
     MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
+    MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
     MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
+    MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME,
+    MEDIA_TAGS_MIGRATION_NAME,
     MEDIA_THUMBNAIL_ARCHIVE_MIGRATION_NAME,
     MOMENT_COLLECTIONS_MIGRATION_NAME,
     MOVIE_BLACKLIST_MIGRATION_NAME,
@@ -163,6 +166,9 @@ def test_current_migrations_are_discoverable_in_order():
         ALLOW_LOCAL_ACTOR_MIGRATION_NAME,
         USER_LANGUAGE_MIGRATION_NAME,
         DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME,
+        MEDIA_TAGS_MIGRATION_NAME,
+        MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
+        MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME,
     ]
 
 
@@ -182,6 +188,79 @@ def test_download_selection_policy_migration_seeds_legacy_rules_idempotently(
     assert policy.rules["min_size_bytes"] == 1024**3
     assert policy.rules["max_size_bytes"] == 40 * 1024**3
     assert policy.rules["ranking"] == ["size_desc"]
+
+
+def test_media_tag_migration_creates_tables_and_unique_index_idempotently(clean_db):
+    clean_db.create_tables(TEST_MODELS)
+    clean_db.execute_sql("DROP TABLE IF EXISTS media_media_tag CASCADE")
+    clean_db.execute_sql("DROP TABLE IF EXISTS media_tag CASCADE")
+    migration = _load_migration_module(Path(f"{MEDIA_TAGS_MIGRATION_NAME}.py"))
+
+    migration.migrate(clean_db)
+    migration.migrate(clean_db)
+
+    assert {"media_tag", "media_media_tag"} <= set(clean_db.get_tables())
+    unique_index = next(
+        index
+        for index in clean_db.get_indexes("media_media_tag")
+        if index.columns == ["media_id", "tag_id"]
+    )
+    assert unique_index.unique
+
+
+def test_media_tag_reverse_index_migration_is_idempotent(clean_db):
+    clean_db.create_tables(TEST_MODELS)
+    clean_db.execute_sql("DROP INDEX IF EXISTS media_media_tag_tag_id_media_id")
+    migration = _load_migration_module(
+        Path(f"{MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME}.py")
+    )
+
+    migration.migrate(clean_db)
+    migration.migrate(clean_db)
+
+    reverse_index = next(
+        index
+        for index in clean_db.get_indexes("media_media_tag")
+        if index.columns == ["tag_id", "media_id"]
+    )
+    assert not reverse_index.unique
+
+
+def test_media_source_snapshot_migration_adds_columns_idempotently(clean_db):
+    clean_db.create_tables(TEST_MODELS)
+    _drop_columns(
+        clean_db,
+        "media",
+        (
+            "release_title",
+            "release_description",
+            "source_indexer",
+            "info_hash",
+            "download_task_id",
+        ),
+    )
+    _drop_columns(
+        clean_db,
+        "download_submission_record",
+        ("release_title", "description"),
+    )
+    migration = _load_migration_module(
+        Path(f"{MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME}.py")
+    )
+
+    migration.migrate(clean_db)
+    migration.migrate(clean_db)
+
+    assert {
+        "release_title",
+        "release_description",
+        "source_indexer",
+        "info_hash",
+        "download_task_id",
+    } <= _column_names(clean_db, "media")
+    assert {"release_title", "description"} <= _column_names(
+        clean_db, "download_submission_record"
+    )
 
 
 def test_plugin_metadata_migration_preserves_movies_and_allows_multiple_null_ids(clean_db):
@@ -314,6 +393,15 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
             name=DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME,
             applied=True,
         ),
+        MigrationExecution(name=MEDIA_TAGS_MIGRATION_NAME, applied=True),
+        MigrationExecution(
+            name=MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
+            applied=True,
+        ),
+        MigrationExecution(
+            name=MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME,
+            applied=True,
+        ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -354,6 +442,9 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         ALLOW_LOCAL_ACTOR_MIGRATION_NAME,
         USER_LANGUAGE_MIGRATION_NAME,
         DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME,
+        MEDIA_TAGS_MIGRATION_NAME,
+        MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
+        MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME,
     ]
 
 
@@ -725,7 +816,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 37
+    assert summary.applied_count == 40
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

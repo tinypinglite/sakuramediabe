@@ -148,6 +148,8 @@ class DownloadCandidateCreatePayload(SchemaModel):
     title: str
     size_bytes: int
     seeders: int
+    release_title: str = ""
+    description: str = ""
 
 
 class DownloadRequestCreateRequest(SchemaModel):

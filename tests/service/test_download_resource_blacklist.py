@@ -427,6 +427,9 @@ def test_migration_creates_history_without_changing_download_tasks(test_db, down
         "src.start.migrations.versions.20260908_01_add_download_resource_history"
     )
     migration.migrate(test_db)
+    import_module(
+        "src.start.migrations.versions.20261031_02_add_media_source_snapshot"
+    ).migrate(test_db)
     record = DownloadSubmissionRecord.create(
         client_id=client.id,
         task_id=task.id,

@@ -65,6 +65,9 @@ USER_LANGUAGE_MIGRATION_NAME = "20261027_01_add_user_language"
 DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME = (
     "20261030_01_add_download_selection_policy"
 )
+MEDIA_TAGS_MIGRATION_NAME = "20261031_01_add_media_tags"
+MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME = "20261031_02_add_media_source_snapshot"
+MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME = "20261031_03_add_media_tag_reverse_index"
 
 
 @dataclass(frozen=True)
