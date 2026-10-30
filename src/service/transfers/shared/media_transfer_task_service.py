@@ -209,6 +209,7 @@ class MediaTransferTaskService:
                                     expected_file_name=media.file_name,
                                     expected_size_bytes=media.file_size_bytes,
                                 )
+                                cls._persist_source_hashes(media, source.info)
                                 reason = "stage_failed"
                                 staged = target_storage.stage_transfer(
                                     source=source,
@@ -543,6 +544,36 @@ class MediaTransferTaskService:
             getattr(source, "assert_unchanged", None)
         ):
             raise TypeError("media_transfer_source_invalid_session")
+        content_md5 = info.content_md5
+        content_sha1 = info.content_sha1
+        if (content_md5 is not None or content_sha1 is not None) and (
+            not MediaTransferTaskService._valid_hex(content_md5, 32)
+            or not MediaTransferTaskService._valid_hex(content_sha1, 40)
+        ):
+            raise TypeError("media_transfer_source_invalid_hashes")
+
+    @staticmethod
+    def _valid_hex(value: object, length: int) -> bool:
+        return (
+            isinstance(value, str)
+            and len(value) == length
+            and all(character in "0123456789abcdefABCDEF" for character in value)
+        )
+
+    @staticmethod
+    def _persist_source_hashes(media: Media, info: MediaTransferSourceInfo) -> None:
+        if info.content_md5 is None:
+            return
+        fields = {
+            "content_md5": info.content_md5.lower(),
+            "content_sha1": info.content_sha1.lower(),
+        }
+        if all(getattr(media, name) == value for name, value in fields.items()):
+            return
+        for name, value in fields.items():
+            setattr(media, name, value)
+        # 哈希缓存不是用户可见的媒体修改，不推进 updated_at 改变列表排序。
+        Media.update(**fields).where(Media.id == media.id).execute()
 
     @staticmethod
     def _validate_staged(

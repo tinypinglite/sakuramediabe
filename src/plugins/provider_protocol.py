@@ -41,6 +41,8 @@ class MediaHandle:
     file_name: str
     file_size_bytes: int
     duration_seconds: int
+    content_md5: str | None = None
+    content_sha1: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +147,8 @@ class MediaTransferSourceInfo:
 
     file_name: str
     size_bytes: int
+    content_md5: str | None = None
+    content_sha1: str | None = None
 
 
 class MediaTransferReader(Protocol):

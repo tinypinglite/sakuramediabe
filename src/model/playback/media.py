@@ -43,6 +43,9 @@ class Media(TimestampedMixin, BaseModel):
     resolution = peewee.CharField(max_length=32, null=True)
     file_size_bytes = peewee.BigIntegerField(default=0)
     file_hash = peewee.CharField(max_length=64, null=True, index=True)
+    # 完整内容哈希只在迁移需要时补齐，后续迁移直接复用。
+    content_md5 = peewee.CharField(max_length=32, null=True)
+    content_sha1 = peewee.CharField(max_length=40, null=True)
     # 由支持该可选能力的 provider 生成；相同值代表同一位置且未变化的导入源。
     import_source_identity = peewee.CharField(max_length=512, null=True)
     # 下载导入来源快照；任务删除后 download_task_id 仍保留，不建外键。

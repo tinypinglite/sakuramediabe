@@ -43,6 +43,7 @@ from src.start.migrations.runner import (
     IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME,
     IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME,
     IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME,
+    MEDIA_CONTENT_HASHES_MIGRATION_NAME,
     MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
     MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
     MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
@@ -171,6 +172,7 @@ def test_current_migrations_are_discoverable_in_order():
         MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
         MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME,
         MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME,
+        MEDIA_CONTENT_HASHES_MIGRATION_NAME,
     ]
 
 
@@ -421,6 +423,10 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
             name=MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME,
             applied=True,
         ),
+        MigrationExecution(
+            name=MEDIA_CONTENT_HASHES_MIGRATION_NAME,
+            applied=True,
+        ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -465,6 +471,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
         MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME,
         MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME,
+        MEDIA_CONTENT_HASHES_MIGRATION_NAME,
     ]
 
 
@@ -836,7 +843,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 41
+    assert summary.applied_count == 42
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -966,6 +973,19 @@ def test_media_import_source_identity_migration_adds_column_and_index(clean_db):
     assert "media_library_id_import_source_identity" in {
         index.name for index in clean_db.get_indexes("media")
     }
+
+
+def test_media_content_hashes_migration_adds_nullable_columns(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    columns = ("content_md5", "content_sha1")
+    _drop_columns(clean_db, "media", columns)
+
+    _load_migration_module(Path(f"{MEDIA_CONTENT_HASHES_MIGRATION_NAME}.py")).migrate(
+        clean_db
+    )
+
+    assert set(columns) <= _column_names(clean_db, "media")
 
 
 def test_image_origin_pattern_index_migration_creates_index(clean_db):

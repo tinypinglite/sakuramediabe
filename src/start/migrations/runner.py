@@ -69,6 +69,7 @@ MEDIA_TAGS_MIGRATION_NAME = "20261031_01_add_media_tags"
 MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME = "20261031_02_add_media_source_snapshot"
 MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME = "20261031_03_add_media_tag_reverse_index"
 MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME = "20261031_04_add_media_tag_manual_lock"
+MEDIA_CONTENT_HASHES_MIGRATION_NAME = "20261031_05_add_media_content_hashes"
 
 
 @dataclass(frozen=True)

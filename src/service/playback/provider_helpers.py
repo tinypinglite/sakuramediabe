@@ -21,4 +21,6 @@ def media_handle_for(media: Media) -> MediaHandle:
         file_name=media.file_name,
         file_size_bytes=media.file_size_bytes,
         duration_seconds=media.duration_seconds,
+        content_md5=getattr(media, "content_md5", None),
+        content_sha1=getattr(media, "content_sha1", None),
     )

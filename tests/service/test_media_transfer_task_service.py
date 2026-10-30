@@ -26,9 +26,17 @@ from src.service.transfers.shared.media_transfer_task_service import (
     MediaTransferTaskService as Service,
 )
 
+TRANSFER_MD5 = "49be0b0bc9c65a0f105a4d14bf812e5d"
+TRANSFER_SHA1 = "1a6d82802710806673c06581472421b5d88b09bd"
+
 
 class Source:
-    info = MediaTransferSourceInfo(file_name="source.mp4", size_bytes=10)
+    info = MediaTransferSourceInfo(
+        file_name="source.mp4",
+        size_bytes=10,
+        content_md5=TRANSFER_MD5,
+        content_sha1=TRANSFER_SHA1,
+    )
     changed = False
     opened = False
     cleaned = False
@@ -170,6 +178,8 @@ def test_move_preserves_original_id_and_related_assets(move):
     assert changed.video_item_id == media.video_item_id
     for field in ("file_hash", "duration_seconds", "resolution", "video_info", "valid"):
         assert getattr(changed, field) == getattr(media, field)
+    assert changed.content_md5 == TRANSFER_MD5
+    assert changed.content_sha1 == TRANSFER_SHA1
     assert changed.import_source_identity is None
     for model, (row_id, fields) in before.items():
         assert model.get_by_id(row_id).__data__ == fields
@@ -181,11 +191,82 @@ def test_move_preserves_original_id_and_related_assets(move):
 
 def test_not_hit_skips_without_switch_or_cleanup(move):
     move.target.missed = True
+    original_updated_at = move.media.updated_at
     result = execute(enqueue(move))
     assert result["skipped_count"] == 1
-    assert Media.get_by_id(move.media.id).library_id == move.source_lib.id
+    changed = Media.get_by_id(move.media.id)
+    assert changed.library_id == move.source_lib.id
+    assert changed.content_md5 == TRANSFER_MD5
+    assert changed.content_sha1 == TRANSFER_SHA1
+    assert changed.updated_at == original_updated_at
     assert not move.source.cleaned
     assert move.target.finalized == move.target.aborted == 0
+
+
+def test_not_hit_retry_passes_persisted_hashes_to_source(move):
+    move.target.missed = True
+    first = enqueue(move)
+    execute(first)
+    BackgroundTaskRun.update(state="completed", mutex_key=None).where(
+        BackgroundTaskRun.id == first.id
+    ).execute()
+
+    received = []
+    open_source = move.source.open_transfer_source
+
+    def capture_source_handle(*, media):
+        received.append(
+            (
+                media.content_md5,
+                media.content_sha1,
+            )
+        )
+        return open_source(media=media)
+
+    move.source.open_transfer_source = capture_source_handle
+
+    assert execute(enqueue(move))["skipped_count"] == 1
+    assert received == [(TRANSFER_MD5, TRANSFER_SHA1)]
+
+
+def test_source_hashes_are_persisted_before_target_stage(move):
+    stage = move.target.stage_transfer
+
+    def inspect_hashes(**kwargs):
+        changed = Media.get_by_id(move.media.id)
+        assert changed.content_md5 == TRANSFER_MD5
+        assert changed.content_sha1 == TRANSFER_SHA1
+        return stage(**kwargs)
+
+    move.target.stage_transfer = inspect_hashes
+    assert execute(enqueue(move))["transferred_count"] == 1
+
+
+def test_source_without_hashes_keeps_cache_empty(move):
+    move.source.info = MediaTransferSourceInfo(file_name="source.mp4", size_bytes=10)
+
+    assert execute(enqueue(move))["transferred_count"] == 1
+
+    changed = Media.get_by_id(move.media.id)
+    assert changed.content_md5 is None
+    assert changed.content_sha1 is None
+
+
+def test_partial_source_hashes_stop_before_stage(move):
+    move.source.info = MediaTransferSourceInfo(
+        file_name="source.mp4",
+        size_bytes=10,
+        content_md5=TRANSFER_MD5,
+    )
+    run = enqueue(move)
+
+    with pytest.raises(RuntimeError):
+        execute(run)
+
+    assert move.target.staged == 0
+    changed = Media.get_by_id(move.media.id)
+    assert changed.content_md5 is None
+    assert changed.content_sha1 is None
 
 
 def test_changed_source_only_aborts_before_switch(move):
