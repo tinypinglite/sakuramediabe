@@ -20,19 +20,23 @@ from src.plugins.provider_protocol import (
     ConfigField,
     DownloadClientHandle,
     LibraryHandle,
+    LibraryLoginSpec,
     MediaProviderRegistry,
     PreparedLibrary,
+    PreparedLibraryLogin,
     ProviderOperationError,
     RemoteDownloadTask,
     StorageSpaceUsage,
     ThumbnailGeneration,
+    WebLoginCookieCapture,
+    WebLoginLocalStorageCapture,
     supports_import_source_validation,
     supports_space_usage,
 )
 
 
-def test_plugin_protocol_uses_host_api_v15():
-    assert HOST_API_VERSION == 15
+def test_plugin_protocol_uses_host_api_v16():
+    assert HOST_API_VERSION == 16
 
 
 def test_import_source_validation_is_optional_provider_capability():
@@ -109,6 +113,7 @@ class _Bundle:
     )
     playback_deliveries = ("proxy",)
     downloads = None
+    library_login = None
 
     def __init__(self):
         self.calls: list[str] = []
@@ -120,6 +125,12 @@ class _Bundle:
     def build_storage(self, *, library):
         self.calls.append("build_storage")
         return _Storage()
+
+    def resolve_library_login(self, *, captured):
+        return PreparedLibraryLogin(
+            provider_config={"cookie": captured["cookie"]},
+            account_key="account",
+        )
 
 
 class _DownloadProvider:
@@ -259,6 +270,106 @@ def test_media_provider_validator_accepts_config_field_i18n():
         )
         is bundle
     )
+
+
+def test_media_provider_validator_accepts_library_login():
+    bundle = _Bundle()
+    bundle.library_login = LibraryLoginSpec(
+        start_url="https://example.com/login",
+        allowed_hosts=("example.com",),
+        cookie_captures=(
+            WebLoginCookieCapture(
+                url="https://example.com/",
+                capture_names=("SESSION",),
+                required_names=("SESSION",),
+            ),
+        ),
+        local_storage_captures=(
+            WebLoginLocalStorageCapture(
+                origin="https://example.com",
+                required_json_keys=("refresh_token",),
+            ),
+        ),
+        managed_config_keys=("cookie",),
+    )
+
+    validated = validate_media_provider_extension(
+        plugin_id="demo_plugin",
+        extension=PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+    )
+
+    assert validated is bundle
+
+
+def test_media_provider_validator_requires_login_resolver():
+    bundle = _Bundle()
+    bundle.library_login = LibraryLoginSpec(
+        start_url="https://example.com/login",
+        allowed_hosts=("example.com",),
+        managed_config_keys=("cookie",),
+    )
+    bundle.resolve_library_login = None
+
+    with pytest.raises(TypeError, match="resolve_library_login"):
+        validate_media_provider_extension(
+            plugin_id="demo_plugin",
+            extension=PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+        )
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    (
+        (
+            LibraryLoginSpec(
+                start_url="http://example.com/login",
+                allowed_hosts=("example.com",),
+                managed_config_keys=("cookie",),
+            ),
+            "HTTPS",
+        ),
+        (
+            LibraryLoginSpec(
+                start_url="https://example.com/login",
+                allowed_hosts=("https://example.com",),
+                managed_config_keys=("cookie",),
+            ),
+            "主机名",
+        ),
+        (
+            LibraryLoginSpec(
+                start_url="https://example.com/login",
+                allowed_hosts=("example.com",),
+                cookie_captures=(
+                    WebLoginCookieCapture(
+                        url="https://example.com/",
+                        capture_names=("SESSION",),
+                        required_names=("MISSING",),
+                    ),
+                ),
+                managed_config_keys=("cookie",),
+            ),
+            "required_names",
+        ),
+        (
+            LibraryLoginSpec(
+                start_url="https://example.com/login",
+                allowed_hosts=("example.com",),
+                managed_config_keys=("unknown",),
+            ),
+            "未知字段",
+        ),
+    ),
+)
+def test_media_provider_validator_rejects_invalid_library_login(spec, message):
+    bundle = _Bundle()
+    bundle.library_login = spec
+
+    with pytest.raises(ValueError, match=message):
+        validate_media_provider_extension(
+            plugin_id="demo_plugin",
+            extension=PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+        )
 
 
 def test_media_provider_registry_builds_and_unloads_storage():

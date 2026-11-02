@@ -1,7 +1,25 @@
 from copy import deepcopy
 
+from src.api.exception.errors import ApiError
 from src.model import Media, MediaLibrary
-from src.plugins.provider_protocol import LibraryHandle, MediaHandle
+from src.plugins.provider_protocol import (
+    MEDIA_PROVIDER_REGISTRY,
+    LibraryHandle,
+    MediaHandle,
+    ProviderUnavailableError,
+)
+
+
+def require_media_provider(provider_key: str):
+    try:
+        return MEDIA_PROVIDER_REGISTRY.require(provider_key)
+    except ProviderUnavailableError as exc:
+        raise ApiError(
+            503,
+            "provider_not_installed",
+            "媒体提供方未安装",
+            {"provider_key": provider_key},
+        ) from exc
 
 
 def library_handle_for(library: MediaLibrary) -> LibraryHandle:

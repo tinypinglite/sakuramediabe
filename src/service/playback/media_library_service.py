@@ -1,5 +1,6 @@
 import threading
 import time
+from dataclasses import asdict
 from typing import Any
 
 from loguru import logger
@@ -20,11 +21,15 @@ from src.schema.playback.media_libraries import (
     MediaLibraryResource,
     MediaLibraryUpdateRequest,
 )
+from src.service.playback.media_library_login_service import MediaLibraryLoginService
 from src.service.playback.operation_locks import (
     LIBRARY_LOCK,
     media_operation_lock,
 )
-from src.service.playback.provider_helpers import library_handle_for
+from src.service.playback.provider_helpers import (
+    library_handle_for,
+    require_media_provider,
+)
 
 # 状态页每次打开都会查询容量，远程 provider 有网络成本，进程内短暂缓存。
 SPACE_USAGE_CACHE_TTL_SECONDS = 300
@@ -53,18 +58,6 @@ class MediaLibraryService:
                 "Media library name cannot be empty",
             )
         return normalized
-
-    @staticmethod
-    def _bundle(provider_key: str):
-        try:
-            return MEDIA_PROVIDER_REGISTRY.require(provider_key)
-        except ProviderUnavailableError as exc:
-            raise ApiError(
-                503,
-                "provider_not_installed",
-                "媒体提供方未安装",
-                {"provider_key": provider_key},
-            ) from exc
 
     @classmethod
     def _resource(cls, library: MediaLibrary) -> MediaLibraryResource:
@@ -241,6 +234,7 @@ class MediaLibraryService:
         entries = []
         for bundle in MEDIA_PROVIDER_REGISTRY.list_bundles():
             downloads = bundle.downloads
+            login_spec = getattr(bundle, "library_login", None)
             entries.append(
                 {
                     "provider_key": bundle.provider_key,
@@ -250,6 +244,9 @@ class MediaLibraryService:
                         for field in bundle.library_config_fields
                     ],
                     "playback_deliveries": list(bundle.playback_deliveries),
+                    "library_login": (
+                        None if login_spec is None else asdict(login_spec)
+                    ),
                     "download_config_fields": (
                         None
                         if downloads is None
@@ -268,10 +265,16 @@ class MediaLibraryService:
         provider_key = payload.provider_key.strip()
         if not provider_key:
             raise ApiError(422, "invalid_media_library_provider", "provider_key cannot be empty")
-        bundle = cls._bundle(provider_key)
+        bundle = require_media_provider(provider_key)
+        submitted_config, login_session_id = cls._merge_login_session(
+            provider_key=provider_key,
+            bundle=bundle,
+            auth_session_id=payload.auth_session_id,
+            submitted_config=cls._submitted_config(payload.provider_config),
+        )
         provider_config, prepared = cls._prepare_config(
             bundle,
-            cls._submitted_config(payload.provider_config),
+            submitted_config,
             None,
         )
         cls._ensure_name_available(name)
@@ -281,6 +284,8 @@ class MediaLibraryService:
             provider_config=provider_config,
             account_key=prepared.account_key,
         )
+        if login_session_id is not None:
+            MediaLibraryLoginService.delete_session(login_session_id)
         return cls._resource(library)
 
     @classmethod
@@ -300,19 +305,68 @@ class MediaLibraryService:
                 if name != library.name:
                     cls._ensure_name_available(name, exclude_library_id=library.id)
                 library.name = name
-            if "provider_config" in update_data:
-                bundle = cls._bundle(library.provider_key)
+            login_session_id = None
+            if "provider_config" in update_data or payload.auth_session_id is not None:
+                bundle = require_media_provider(library.provider_key)
+                submitted_config, login_session_id = cls._merge_login_session(
+                    provider_key=library.provider_key,
+                    bundle=bundle,
+                    auth_session_id=payload.auth_session_id,
+                    submitted_config=cls._submitted_config(
+                        update_data.get("provider_config", {})
+                    ),
+                )
                 provider_config, prepared = cls._prepare_config(
                     bundle,
-                    cls._submitted_config(update_data["provider_config"]),
+                    submitted_config,
                     library,
                 )
                 library.provider_config = provider_config
                 library.account_key = prepared.account_key
             library.save()
+            if login_session_id is not None:
+                MediaLibraryLoginService.delete_session(login_session_id)
             # provider_config/account_key 可能已变化，新旧缓存键都要失效。
             cls._forget_space_usage(library)
             return cls._resource(library)
+
+    @staticmethod
+    def _merge_login_session(
+        *,
+        provider_key: str,
+        bundle,
+        auth_session_id: str | None,
+        submitted_config: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        if auth_session_id is None:
+            return submitted_config, None
+        login_spec = getattr(bundle, "library_login", None)
+        if login_spec is None:
+            raise ApiError(
+                422,
+                "provider_login_unsupported",
+                "该媒体库提供方不支持网页登录",
+            )
+        managed_keys = set(login_spec.managed_config_keys)
+        conflicts = sorted(set(submitted_config) & managed_keys)
+        if conflicts:
+            raise ApiError(
+                422,
+                "media_library_login_managed_config_conflict",
+                "使用网页登录时不能提交由登录管理的配置字段",
+                {"fields": conflicts},
+            )
+        session = MediaLibraryLoginService.get_session(
+            auth_session_id,
+            provider_key=provider_key,
+        )
+        merged = {
+            key: value
+            for key, value in session.provider_config.items()
+            if key in managed_keys
+        }
+        merged.update(submitted_config)
+        return merged, session.id
 
     @classmethod
     def delete_library(cls, library_id: int) -> None:

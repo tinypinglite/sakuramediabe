@@ -95,6 +95,45 @@ class PreparedLibrary:
 
 
 @dataclass(frozen=True)
+class WebLoginCookieCapture:
+    """Cookie fields the host should collect from a provider login page."""
+
+    url: str
+    capture_names: tuple[str, ...]
+    required_names: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class WebLoginLocalStorageCapture:
+    """Local-storage entries the host should collect from one web origin."""
+
+    origin: str
+    required_json_keys: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LibraryLoginSpec:
+    """Provider-declared web login flow rendered by the host frontend."""
+
+    start_url: str
+    allowed_hosts: tuple[str, ...]
+    cookie_captures: tuple[WebLoginCookieCapture, ...] = ()
+    local_storage_captures: tuple[WebLoginLocalStorageCapture, ...] = ()
+    managed_config_keys: tuple[str, ...] = ()
+    timeout_seconds: int = 300
+    mode: Literal["webview"] = "webview"
+
+
+@dataclass(frozen=True)
+class PreparedLibraryLogin:
+    """Result of resolving captured login material into provider credentials."""
+
+    provider_config: JsonObject
+    account_key: str | None
+    account_label: str | None = None
+
+
+@dataclass(frozen=True)
 class BrowseEntry:
     source_ref: JsonObject
     name: str
@@ -531,6 +570,8 @@ class MediaProviderBundle(Protocol):
     # 首项为插件默认传输方式；其余项为可显式请求的方式。
     playback_deliveries: tuple[PlaybackDelivery, ...]
     downloads: DownloadComponent | None
+    # 可选 WebView 登录声明；缺失或 None 表示沿用原有配置表单。
+    library_login: LibraryLoginSpec | None
 
     def prepare_library(
         self,
@@ -727,6 +768,7 @@ __all__ = [
     "ImportPlacement",
     "JsonObject",
     "LibraryHandle",
+    "LibraryLoginSpec",
     "MediaHandle",
     "MediaProviderBundle",
     "MediaProviderRegistry",
@@ -736,6 +778,7 @@ __all__ = [
     "PlaybackContext",
     "PlaybackDelivery",
     "PreparedLibrary",
+    "PreparedLibraryLogin",
     "ProviderDiagnosticCheck",
     "ProviderDiagnosticReport",
     "ProviderOperationError",
@@ -758,6 +801,8 @@ __all__ = [
     "StorageVideoInfoProbeProvider",
     "ThumbnailArtifact",
     "ThumbnailGeneration",
+    "WebLoginCookieCapture",
+    "WebLoginLocalStorageCapture",
     "refresh_media_provider_registry",
     "supports_import_source_validation",
     "supports_media_transfer_source",

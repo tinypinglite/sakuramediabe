@@ -23,7 +23,8 @@ from src.scheduler.contracts import JobDefinition
 # 13：新增插件种子文件提交能力（context.downloads.submit_torrent）。
 # 14：迁移来源可携带完整 MD5/SHA-1，目标 provider 可复用宿主缓存的 SHA-1。
 # 15：迁移来源可携带 GCID，目标 provider 可复用宿主缓存的 GCID。
-HOST_API_VERSION = 15
+# 16：媒体 Provider 可声明 WebView 登录规则并解析登录凭据。
+HOST_API_VERSION = 16
 MIN_SUPPORTED_HOST_API_VERSION = 4
 
 
