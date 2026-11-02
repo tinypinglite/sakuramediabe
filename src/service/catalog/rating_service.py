@@ -14,9 +14,10 @@ from src.schema.catalog.ratings import (
     RatingDimensionUpsertRequest,
 )
 
-# 个人评分统一 1-5 分制；维度分值固定 1-5，总分同为 1-5。
+# 维度最低分固定 1；新维度默认 1-5，可选 1-10/1-100；影片总分固定 1-5。
 MIN_SCORE = 1
-MAX_SCORE = 5
+DEFAULT_MAX_SCORE = 5
+TOTAL_MAX_SCORE = 5
 
 
 class RatingService:
@@ -28,9 +29,15 @@ class RatingService:
 
     @classmethod
     def list_dimensions(cls) -> list[RatingDimensionResource]:
-        return RatingDimensionResource.from_items(
-            RatingDimension.select().order_by(RatingDimension.id)
-        )
+        dimensions = list(RatingDimension.select().order_by(RatingDimension.id))
+        dimensions_with_scores = cls._dimension_ids_with_scores()
+        return [
+            cls._dimension_resource(
+                dimension,
+                has_scores=dimension.id in dimensions_with_scores,
+            )
+            for dimension in dimensions
+        ]
 
     @classmethod
     def create_dimension(
@@ -40,10 +47,10 @@ class RatingService:
         dimension = RatingDimension.create(
             name=payload.name,
             min_value=MIN_SCORE,
-            max_value=MAX_SCORE,
+            max_value=payload.max_value or DEFAULT_MAX_SCORE,
             weight=payload.weight if payload.weight is not None else 1.0,
         )
-        return RatingDimensionResource.from_attributes_model(dimension)
+        return cls._dimension_resource(dimension, has_scores=False)
 
     @classmethod
     def update_dimension(
@@ -53,16 +60,30 @@ class RatingService:
         cls._ensure_name_available(payload.name, exclude_id=dimension_id)
         # 纯改名不影响任何总分，避免无谓刷新全部评分的 updated_at；省略 weight 时保留原值。
         next_weight = dimension.weight if payload.weight is None else payload.weight
-        scores_changed = next_weight != dimension.weight
+        next_max_value = (
+            dimension.max_value if payload.max_value is None else payload.max_value
+        )
+        has_scores = cls._dimension_has_scores(dimension_id)
+        if next_max_value != dimension.max_value and has_scores:
+            raise ApiError(
+                409,
+                "rating_dimension_scale_locked",
+                "该评分维度已有评分，不能修改分数范围",
+                {
+                    "dimension_id": dimension_id,
+                    "max_value": dimension.max_value,
+                },
+            )
+        weight_changed = next_weight != dimension.weight
         with get_database().atomic():
             dimension.name = payload.name
             dimension.min_value = MIN_SCORE
-            dimension.max_value = MAX_SCORE
+            dimension.max_value = next_max_value
             dimension.weight = next_weight
             dimension.save()
-            if scores_changed:
+            if weight_changed:
                 cls._recalculate_all()
-        return RatingDimensionResource.from_attributes_model(dimension)
+        return cls._dimension_resource(dimension, has_scores=has_scores)
 
     @classmethod
     def delete_dimension(cls, dimension_id: int) -> None:
@@ -220,9 +241,43 @@ class RatingService:
             weight_sum += dimension.weight
         if weight_sum <= 0:
             return 0.0
-        total = MIN_SCORE + (MAX_SCORE - MIN_SCORE) * weighted_sum / weight_sum
+        total = (
+            MIN_SCORE
+            + (TOTAL_MAX_SCORE - MIN_SCORE) * weighted_sum / weight_sum
+        )
         # 与前端预览的 half-up 取整保持一致，避免显示 3.3 保存后变 3.2。
         return math.floor(total * 10 + 0.5) / 10
+
+    @classmethod
+    def _dimension_resource(
+        cls, dimension: RatingDimension, *, has_scores: bool
+    ) -> RatingDimensionResource:
+        return RatingDimensionResource(
+            id=dimension.id,
+            name=dimension.name,
+            min_value=dimension.min_value,
+            max_value=dimension.max_value,
+            weight=dimension.weight,
+            has_scores=has_scores,
+        )
+
+    @classmethod
+    def _dimension_has_scores(cls, dimension_id: int) -> bool:
+        return str(dimension_id) in cls._dimension_score_keys()
+
+    @classmethod
+    def _dimension_ids_with_scores(cls) -> set[int]:
+        return {
+            int(key) for key in cls._dimension_score_keys() if key.isdigit()
+        }
+
+    @staticmethod
+    def _dimension_score_keys() -> set[str]:
+        keys: set[str] = set()
+        for (values,) in MovieRating.select(MovieRating.values).tuples():
+            if isinstance(values, dict):
+                keys.update(str(key) for key in values)
+        return keys
 
     @classmethod
     def _dimensions_by_id(cls) -> dict[int, RatingDimension]:

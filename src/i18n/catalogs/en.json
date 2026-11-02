@@ -240,6 +240,7 @@
   "errors.ranking_source_not_found": "Ranking source not found",
   "errors.rating_dimension_exists": "Rating dimension name already exists",
   "errors.rating_dimension_not_found": "Rating dimension not found",
+  "errors.rating_dimension_scale_locked": "The score range cannot be changed because this rating dimension already has scores",
   "errors.rating_dimensions_empty": "Set up rating dimensions first",
   "errors.rating_value_out_of_range": "Rating value is outside the dimension range",
   "errors.readonly_config_key": "This configuration key is read-only",

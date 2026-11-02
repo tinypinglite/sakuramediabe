@@ -8,6 +8,7 @@
   "errors.logs_unavailable": "服务器日志目录不可用",
   "errors.log_entries_not_found": "所选时间范围内没有可导出的日志",
   "errors.log_export_too_large": "所选时间范围的日志过大，请缩短时间范围后重试",
+  "errors.rating_dimension_scale_locked": "该评分维度已有评分，不能修改分数范围",
   "tasks.actor_subscription_sync.name": "订阅演员影片同步",
   "tasks.actor_subscription_sync.progress.start": "开始同步已订阅演员影片",
   "tasks.movie_javdb_backfill.name": "JavDB 影片补录",

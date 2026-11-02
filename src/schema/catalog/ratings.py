@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import Field, field_validator
 
@@ -11,10 +12,13 @@ class RatingDimensionResource(SchemaModel):
     min_value: int
     max_value: int
     weight: float
+    has_scores: bool = False
 
 
 class RatingDimensionUpsertRequest(SchemaModel):
     name: str = Field(min_length=1, max_length=64)
+    # 只能选择固定档位；min_value 始终为 1。更新时省略表示保留当前范围。
+    max_value: Literal[5, 10, 100] | None = None
     # 前端暂不开放权重编辑；更新时省略表示保留原值，创建时默认 1.0。
     weight: float | None = Field(default=None, gt=0)
 
