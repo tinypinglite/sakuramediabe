@@ -21,6 +21,7 @@ from src.api.routers.system import (
     auth,
     batch_operations,
     indexer_settings,
+    logs,
     metadata_providers,
     plugins,
     status,
@@ -56,6 +57,7 @@ from src.api.routers.videos import items as video_items
         (indexer_settings.router, (deps.db_deps,)),
         (metadata_providers.router, (deps.db_deps, deps.get_current_user)),
         (plugins.router, (deps.db_deps, deps.get_current_user)),
+        (logs.router, (deps.db_deps, deps.get_current_user)),
         (system_config.router, (deps.db_deps,)),
         (image_search.router, (deps.db_deps, deps.get_current_user)),
         (hot_actress_releases_router, (deps.db_deps, deps.get_current_user)),
@@ -173,6 +175,16 @@ def test_create_app_registers_batch_operations_route():
         for method in getattr(route, "methods", set())
     }
     assert ("/batch-operations", "POST") in route_methods
+
+
+def test_create_app_registers_log_archive_route():
+    route_methods = {
+        (getattr(route, "path", None), method)
+        for route in create_app().routes
+        for method in getattr(route, "methods", set())
+    }
+
+    assert ("/system/logs/archive", "GET") in route_methods
 
 
 def test_openapi_uses_oauth2_password_flow_for_authorize_button():
