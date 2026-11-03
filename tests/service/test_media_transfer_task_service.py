@@ -628,6 +628,62 @@ def test_busy_library_prevents_provider_work(move):
     assert summary["unexecuted_media_ids"] == [move.media.id]
 
 
+def test_busy_media_is_skipped_and_batch_continues(move):
+    from src.service.playback.operation_locks import MEDIA_LOCK
+    from tests.service.test_media_operation_locks import other_session_lock
+
+    busy = move.media
+    following = Media.create(
+        library=move.source_lib,
+        video_item=VideoItem.create(title="following"),
+        storage_ref={"path": "source.mp4"},
+        file_name="source.mp4",
+        file_size_bytes=10,
+        duration_seconds=123,
+        resolution="1920x1080",
+        video_info={"codec": "h264"},
+        file_hash="e" * 64,
+        import_source_identity="following",
+    )
+    run = enqueue(move, [busy.id, following.id])
+    with other_session_lock(MEDIA_LOCK, busy.id):
+        result = execute(run)
+
+    assert result["transferred_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["unexecuted_media_ids"] == []
+    assert result["reason_code"] == "media_busy"
+    assert result["issues"] == [
+        {"media_id": busy.id, "reason_code": "media_busy", "target_committed": False}
+    ]
+    assert Media.get_by_id(busy.id).library_id == move.source_lib.id
+    assert Media.get_by_id(following.id).library_id == move.target_lib.id
+    persisted = BackgroundTaskRun.get_by_id(run.id)
+    assert persisted.progress_current == 2
+    assert persisted.progress_total == 2
+    assert persisted.params["_move_index"] == 2
+    assert "_current_item" not in persisted.params
+
+
+def test_changed_media_is_recorded_as_failed_item(move):
+    run = enqueue(move)
+    Media.update(library=move.target_lib.id).where(Media.id == move.media.id).execute()
+
+    with pytest.raises(RuntimeError, match="未全部完成"):
+        execute(run)
+
+    summary = BackgroundTaskRun.get_by_id(run.id).result_summary
+    assert summary["failed_count"] == 1
+    assert summary["unexecuted_media_ids"] == []
+    assert summary["issues"] == [
+        {
+            "media_id": move.media.id,
+            "reason_code": "media_unavailable",
+            "target_committed": False,
+        }
+    ]
+
+
 def test_lost_batch_connection_cannot_be_replaced_by_new_media_lock(move, monkeypatch):
     from src.model import get_database
 

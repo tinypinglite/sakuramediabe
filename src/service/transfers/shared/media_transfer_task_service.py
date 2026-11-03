@@ -187,8 +187,17 @@ class MediaTransferTaskService:
                 )
                 for index, media_id in enumerate(request.media_ids):
                     reason = "media_unavailable"
-                    with media_operation_lock(MEDIA_LOCK, media_id):
+                    with ExitStack() as item_scope:
+                        try:
+                            item_scope.enter_context(
+                                media_operation_lock(MEDIA_LOCK, media_id)
+                            )
+                        except MediaOperationBusy:
+                            # 单媒体被其他任务占用只跳过当前条目，不能终止整批。
+                            cls._skip_busy_item(task_id, reporter, index, media_id)
+                            continue
                         check_connection()
+                        cls._begin_item(task_id, index, media_id)
                         media = Media.get_or_none(Media.id == media_id)
                         if (
                             media is None
@@ -196,7 +205,6 @@ class MediaTransferTaskService:
                             or media.library_id != source_id
                         ):
                             raise RuntimeError("源媒体已变化")
-                        cls._begin_item(task_id, index, media_id)
                         original = media_handle_for(media)
                         staged = None
                         switch_attempted = False
@@ -383,6 +391,48 @@ class MediaTransferTaskService:
                 ]
             )
         reporter.summary = summary
+
+    @classmethod
+    def _skip_busy_item(cls, task_id, reporter, index, media_id):
+        """媒体被其他任务占用：记为失败并推进游标，避免单条冲突终止整批。"""
+        with get_database().atomic():
+            run = cls._locked_run(task_id)
+            cls._require_running(task_id)
+            params = dict(run.params)
+            if params.get("_move_index", 0) != index or params.get("_current_item"):
+                raise RuntimeError("media_transfer_cannot_resume")
+            params["_move_index"] = index + 1
+            summary = dict(run.result_summary)
+            summary["failed_count"] = summary.get("failed_count", 0) + 1
+            summary["issues"] = [
+                *summary.get("issues", []),
+                {
+                    "media_id": media_id,
+                    "reason_code": "media_busy",
+                    "target_committed": False,
+                },
+            ]
+            summary["unexecuted_media_ids"] = params["media_ids"][index + 1 :]
+            summary["reason_code"] = "media_busy"
+            run.params, run.result_summary = params, summary
+            run.progress_current, run.progress_total = (
+                index + 1,
+                len(params["media_ids"]),
+            )
+            run.save(
+                only=[
+                    BackgroundTaskRun.params,
+                    BackgroundTaskRun.result_summary,
+                    BackgroundTaskRun.progress_current,
+                    BackgroundTaskRun.progress_total,
+                ]
+            )
+        reporter.summary = summary
+        logger.info(
+            "Media storage transfer skipped busy media task_run_id={} media_id={}",
+            task_id,
+            media_id,
+        )
 
     @classmethod
     def _record_failure(cls, task_id, reason):
