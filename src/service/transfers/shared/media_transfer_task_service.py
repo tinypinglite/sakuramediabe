@@ -1,11 +1,13 @@
 """Move an existing Media; interrupted work never resumes destructive provider calls."""
 
+import time
 from contextlib import ExitStack
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from peewee import DatabaseError
 
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
@@ -27,6 +29,7 @@ from src.schema.transfers.media_transfer import (
     MediaStorageTransferAcceptedResponse,
     MediaStorageTransferCandidatesRequest,
     MediaStorageTransferCandidatesResponse,
+    MediaStorageTransferFileResource,
     MediaStorageTransferLibraryResource,
     MediaStorageTransferRequest,
     MediaStorageTransferResult,
@@ -44,6 +47,18 @@ from src.service.transfers.shared.write_scope import library_import_scope_key
 
 class MediaTransferTaskService:
     TASK_KEY = "media_storage_transfer"
+    STAGE_TRANSFER_ATTEMPTS = 3
+    STAGE_TRANSFER_RETRY_DELAYS = (0.5, 1.0)
+    BATCH_FATAL_REASONS = frozenset(
+        {
+            "media_operation_connection_lost",
+            "media_transfer_not_running",
+            "media_transfer_cannot_resume",
+            "media_transfer_wrong_item",
+            "media_transfer_wrong_task",
+            "媒体库配置已变化，请重新发起",
+        }
+    )
 
     @classmethod
     def list_candidates(
@@ -106,8 +121,18 @@ class MediaTransferTaskService:
             },
             _move_index=0,
         )
+        files = [
+            MediaStorageTransferFileResource(
+                media_id=media.id,
+                file_name=media.file_name,
+                movie_number=media.movie_number,
+                size_bytes=media.file_size_bytes,
+            )
+            for media in medias
+        ]
         summary = MediaStorageTransferResult(
-            unexecuted_media_ids=[m.id for m in medias]
+            unexecuted_media_ids=[m.id for m in medias],
+            files=files,
         ).model_dump()
         with get_database().atomic():
             task = ActivityService.create_task_run(
@@ -122,6 +147,21 @@ class MediaTransferTaskService:
         return MediaStorageTransferAcceptedResponse(
             task_run_id=task.id, task_key=task.task_key, state=task.state
         )
+
+    @classmethod
+    def list_files(
+        cls, task_run_id: int
+    ) -> list[MediaStorageTransferFileResource]:
+        run = BackgroundTaskRun.get_or_none(BackgroundTaskRun.id == task_run_id)
+        if run is None or run.task_key != cls.TASK_KEY:
+            raise ApiError(404, "media_transfer_task_not_found", "迁移任务不存在")
+        raw_files = (run.result_summary or {}).get("files", [])
+        if not isinstance(raw_files, list):
+            return []
+        return [
+            MediaStorageTransferFileResource.model_validate(item)
+            for item in raw_files
+        ]
 
     @staticmethod
     def _require_source_capability(source):
@@ -139,6 +179,55 @@ class MediaTransferTaskService:
             raise ApiError(
                 422, "media_transfer_target_unsupported", "目标媒体库不支持迁移"
             )
+
+    @classmethod
+    def _stage_transfer_with_retry(
+        cls,
+        *,
+        task_id: int,
+        media_id: int,
+        index: int,
+        source,
+        target_storage,
+        placement: ImportPlacement,
+    ) -> StagedMediaTransfer:
+        operation_key = f"task:{task_id}:{index + 1}"
+        for attempt in range(1, cls.STAGE_TRANSFER_ATTEMPTS + 1):
+            try:
+                return target_storage.stage_transfer(
+                    source=source,
+                    placement=placement,
+                    operation_key=operation_key,
+                )
+            except ProviderOperationError as exc:
+                if (
+                    exc.code != "unavailable"
+                    or not exc.retryable
+                    or attempt >= cls.STAGE_TRANSFER_ATTEMPTS
+                ):
+                    raise
+                delay = cls.STAGE_TRANSFER_RETRY_DELAYS[attempt - 1]
+                logger.warning(
+                    "Media storage transfer stage retry task_run_id={} media_id={} attempt={}/{} delay_seconds={} error_code={}",
+                    task_id,
+                    media_id,
+                    attempt,
+                    cls.STAGE_TRANSFER_ATTEMPTS,
+                    delay,
+                    exc.code,
+                )
+                time.sleep(delay)
+        raise AssertionError("unreachable stage transfer retry state")
+
+    @classmethod
+    def _is_batch_fatal(cls, exc: Exception) -> bool:
+        if isinstance(exc, ProviderUnavailableError | DatabaseError):
+            return True
+        if isinstance(exc, ProviderOperationError):
+            return exc.code == "authentication_failed"
+        if isinstance(exc, ApiError) and exc.status_code != 409:
+            return True
+        return isinstance(exc, RuntimeError) and str(exc) in cls.BATCH_FATAL_REASONS
 
     @classmethod
     def execute(cls, reporter, params: dict[str, Any]) -> dict[str, Any]:
@@ -204,7 +293,13 @@ class MediaTransferTaskService:
                             or not media.valid
                             or media.library_id != source_id
                         ):
-                            raise RuntimeError("源媒体已变化")
+                            cls._record_failure(
+                                task_id,
+                                "media_unavailable",
+                                reporter=reporter,
+                                terminal=False,
+                            )
+                            continue
                         original = media_handle_for(media)
                         staged = None
                         switch_attempted = False
@@ -219,12 +314,15 @@ class MediaTransferTaskService:
                                 )
                                 cls._persist_source_hashes(media, source.info)
                                 reason = "stage_failed"
-                                staged = target_storage.stage_transfer(
+                                staged = cls._stage_transfer_with_retry(
+                                    task_id=task_id,
+                                    media_id=media_id,
+                                    index=index,
                                     source=source,
+                                    target_storage=target_storage,
                                     placement=ImportPlacement(
                                         relative_path=cls._placement_for(media)
                                     ),
-                                    operation_key=f"task:{task_id}:{index + 1}",
                                 )
                                 check_connection()
                                 cls._require_running(task_id)
@@ -259,7 +357,7 @@ class MediaTransferTaskService:
                                 reason = "cleanup_unconfirmed"
                                 check_connection()
                                 cls._finish_item(task_id, reporter, "transferred_count")
-                        except Exception:
+                        except Exception as exc:
                             if (
                                 not switch_attempted
                                 and isinstance(staged, StagedMediaTransfer)
@@ -278,7 +376,22 @@ class MediaTransferTaskService:
                                         task_id,
                                         media_id,
                                     )
-                            raise
+                            if cls._is_batch_fatal(exc):
+                                raise
+                            cls._record_failure(
+                                task_id, reason, reporter=reporter, terminal=False
+                            )
+                            continue
+                summary = dict(reporter.summary or {})
+                if (
+                    summary.get("transferred_count", 0) == 0
+                    and summary.get("skipped_count", 0) == 0
+                    and (
+                        summary.get("failed_count", 0)
+                        or summary.get("cleanup_incomplete_count", 0)
+                    )
+                ):
+                    raise RuntimeError("媒体迁移未全部完成，请查看任务结果")
             reporter.summary = BackgroundTaskRun.get_by_id(task_id).result_summary
             return dict(reporter.summary)
         except Exception as exc:
@@ -291,7 +404,7 @@ class MediaTransferTaskService:
                 reason,
             )
             try:
-                cls._record_failure(task_id, reason)
+                cls._record_failure(task_id, reason, reporter=reporter)
                 reporter.summary = BackgroundTaskRun.get_by_id(task_id).result_summary
             except Exception:
                 logger.warning("媒体迁移结果未确认 task_run_id={}", task_id)
@@ -370,10 +483,25 @@ class MediaTransferTaskService:
             run = cls._locked_run(task_id)
             cls._require_running(task_id)
             params = dict(run.params)
+            index = params["_move_index"]
             params.pop("_current_item")
             params["_move_index"] += 1
             summary = dict(run.result_summary)
             summary[count_key] += 1
+            if count_key == "transferred_count":
+                cls._update_file_result(
+                    summary,
+                    index,
+                    status="transferred",
+                    target_committed=True,
+                )
+            else:
+                cls._update_file_result(
+                    summary,
+                    index,
+                    status="skipped",
+                    reason_code="target_not_available",
+                )
             summary["unexecuted_media_ids"] = params["media_ids"][
                 params["_move_index"] :
             ]
@@ -412,6 +540,12 @@ class MediaTransferTaskService:
                     "target_committed": False,
                 },
             ]
+            cls._update_file_result(
+                summary,
+                index,
+                status="failed",
+                reason_code="media_busy",
+            )
             summary["unexecuted_media_ids"] = params["media_ids"][index + 1 :]
             summary["reason_code"] = "media_busy"
             run.params, run.result_summary = params, summary
@@ -435,7 +569,7 @@ class MediaTransferTaskService:
         )
 
     @classmethod
-    def _record_failure(cls, task_id, reason):
+    def _record_failure(cls, task_id, reason, *, reporter=None, terminal=True):
         run = BackgroundTaskRun.get_by_id(task_id)
         item = (run.params or {}).get("_current_item")
         with ExitStack() as stack:
@@ -461,13 +595,75 @@ class MediaTransferTaskService:
                             "target_committed": switched,
                         },
                     ]
+                    cls._update_file_result(
+                        summary,
+                        index,
+                        status="cleanup_incomplete" if switched else "failed",
+                        reason_code=reason,
+                        target_committed=switched,
+                    )
                     index += 1
+                    params["_move_index"] = index
                 summary["unexecuted_media_ids"] = params["media_ids"][index:]
+                if terminal:
+                    cls._mark_remaining_unexecuted(summary, index)
                 summary["reason_code"] = reason
                 run.params, run.result_summary = params, summary
-                run.save(
-                    only=[BackgroundTaskRun.params, BackgroundTaskRun.result_summary]
+                run.progress_current, run.progress_total = (
+                    index,
+                    len(params["media_ids"]),
                 )
+                run.save(
+                    only=[
+                        BackgroundTaskRun.params,
+                        BackgroundTaskRun.result_summary,
+                        BackgroundTaskRun.progress_current,
+                        BackgroundTaskRun.progress_total,
+                    ]
+                )
+        if reporter is not None:
+            reporter.summary = summary
+
+    @staticmethod
+    def _update_file_result(
+        summary: dict[str, Any],
+        index: int,
+        *,
+        status: str,
+        reason_code: str | None = None,
+        target_committed: bool = False,
+    ) -> None:
+        raw_files = summary.get("files")
+        if not isinstance(raw_files, list) or index < 0 or index >= len(raw_files):
+            return
+        files = [dict(item) for item in raw_files]
+        files[index].update(
+            {
+                "status": status,
+                "reason_code": reason_code,
+                "target_committed": target_committed,
+            }
+        )
+        summary["files"] = files
+
+    @classmethod
+    def _mark_remaining_unexecuted(
+        cls, summary: dict[str, Any], start_index: int
+    ) -> None:
+        raw_files = summary.get("files")
+        if not isinstance(raw_files, list):
+            return
+        files = [dict(item) for item in raw_files]
+        for item in files[start_index:]:
+            if item.get("status") == "pending":
+                item.update(
+                    {
+                        "status": "unexecuted",
+                        "reason_code": None,
+                        "target_committed": False,
+                    }
+                )
+        summary["files"] = files
 
     @classmethod
     def recover_interrupted_transfers(cls) -> dict[str, int]:

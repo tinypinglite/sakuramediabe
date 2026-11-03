@@ -166,6 +166,7 @@ def test_create_app_registers_media_storage_transfer_route():
     }
     assert ("/media-transfers", "POST") in route_methods
     assert ("/media-transfers/candidates", "POST") in route_methods
+    assert ("/media-transfers/{task_run_id}/files", "GET") in route_methods
 
 
 def test_create_app_registers_batch_operations_route():

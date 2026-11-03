@@ -97,6 +97,17 @@ class TaskRunService:
     def to_task_run_resource(task_run: BackgroundTaskRun) -> TaskRunResource:
         resource = TaskRunResource.model_validate(task_run)
         resource.has_warning = has_failed_summary(task_run.result_summary)
+        if (
+            task_run.task_key == "media_storage_transfer"
+            and isinstance(resource.result_summary, dict)
+            and isinstance(resource.result_summary.get("files"), list)
+        ):
+            # 逐文件明细由 /media-transfers/{id}/files 按需读取；任务列表每 3 秒轮询，
+            # 这里只保留计数标记，避免一次迁移的完整文件清单反复传输。
+            summary = dict(resource.result_summary)
+            files = summary.pop("files")
+            summary["file_details"] = {"count": len(files)}
+            resource.result_summary = summary
         return resource
 
     @staticmethod

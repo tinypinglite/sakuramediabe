@@ -37,6 +37,7 @@
   "tasks.activity_record_cleanup.name": "任务记录清理",
   "tasks.library_import.name": "媒体库导入",
   "tasks.media_storage_transfer.name": "媒体存储迁移",
+  "errors.media_transfer_task_not_found": "迁移任务不存在",
   "tasks.batch_operation.name": "批量操作",
   "notifications.new_media.title": "有新的影片可以播放了",
   "notifications.new_media.content": "新增了 {count} 个影片",

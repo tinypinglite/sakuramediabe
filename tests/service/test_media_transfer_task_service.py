@@ -17,7 +17,11 @@ from src.model import (
     Subtitle,
     VideoItem,
 )
-from src.plugins.provider_protocol import MediaTransferSourceInfo, StagedMediaTransfer
+from src.plugins.provider_protocol import (
+    MediaTransferSourceInfo,
+    ProviderOperationError,
+    StagedMediaTransfer,
+)
 from src.schema.transfers.media_transfer import (
     MediaStorageTransferCandidatesRequest,
     MediaStorageTransferRequest,
@@ -151,6 +155,21 @@ def enqueue(move, media_ids=None):
     return run
 
 
+def add_following_media(move):
+    return Media.create(
+        library=move.source_lib,
+        video_item=move.media.video_item_id,
+        storage_ref={"path": "source.mp4"},
+        file_name="source.mp4",
+        file_size_bytes=10,
+        duration_seconds=123,
+        resolution="1920x1080",
+        video_info={"codec": "h264"},
+        file_hash="e" * 64,
+        import_source_identity="following",
+    )
+
+
 def execute(run):
     return Service.execute(SimpleNamespace(task_run_id=run.id, summary={}), run.params)
 
@@ -189,6 +208,18 @@ def test_move_preserves_original_id_and_related_assets(move):
     assert move.source.cleaned and not move.source.opened
     assert move.target.finalized == 1 and move.target.aborted == 0
     assert result["transferred_count"] == 1 and result["unexecuted_media_ids"] == []
+    assert result["files"] == [
+        {
+            "media_id": media.id,
+            "file_name": "source.mp4",
+            "movie_number": None,
+            "size_bytes": 10,
+            "status": "transferred",
+            "reason_code": None,
+            "target_committed": True,
+        }
+    ]
+    assert Service.list_files(run.id)[0].status == "transferred"
     assert "_current_item" not in BackgroundTaskRun.get_by_id(run.id).params
 
 
@@ -205,6 +236,9 @@ def test_not_hit_skips_without_switch_or_cleanup(move):
     assert changed.updated_at == original_updated_at
     assert not move.source.cleaned
     assert move.target.finalized == move.target.aborted == 0
+    assert result["files"][0]["status"] == "skipped"
+    assert result["files"][0]["reason_code"] == "target_not_available"
+    assert result["files"][0]["target_committed"] is False
 
 
 def test_not_hit_retry_passes_persisted_hashes_to_source(move):
@@ -246,6 +280,169 @@ def test_source_hashes_are_persisted_before_target_stage(move):
 
     move.target.stage_transfer = inspect_hashes
     assert execute(enqueue(move))["transferred_count"] == 1
+
+
+def test_stage_transfer_retries_retryable_unavailable(move, monkeypatch):
+    monkeypatch.setattr(Service, "STAGE_TRANSFER_RETRY_DELAYS", (0.0, 0.0))
+    stage = move.target.stage_transfer
+    operation_keys = []
+
+    def flaky(**kwargs):
+        operation_keys.append(kwargs["operation_key"])
+        if len(operation_keys) < 3:
+            raise ProviderOperationError(
+                provider_key="test",
+                operation="stage_transfer",
+                code="unavailable",
+                safe_message="transient",
+                retryable=True,
+            )
+        return stage(**kwargs)
+
+    move.target.stage_transfer = flaky
+    result = execute(enqueue(move))
+
+    assert len(operation_keys) == 3
+    assert len(set(operation_keys)) == 1
+    assert result["transferred_count"] == 1
+    assert result["issues"] == []
+
+
+def test_stage_retry_exhausted_continues_next_media(move, monkeypatch):
+    monkeypatch.setattr(Service, "STAGE_TRANSFER_RETRY_DELAYS", (0.0, 0.0))
+    second = add_following_media(move)
+    stage = move.target.stage_transfer
+    calls = 0
+
+    def flaky(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls <= 3:
+            raise ProviderOperationError(
+                provider_key="test",
+                operation="stage_transfer",
+                code="unavailable",
+                safe_message="transient",
+                retryable=True,
+            )
+        return stage(**kwargs)
+
+    move.target.stage_transfer = flaky
+    result = execute(enqueue(move, [move.media.id, second.id]))
+
+    assert calls == 4
+    assert result["transferred_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["unexecuted_media_ids"] == []
+    assert result["issues"] == [
+        {
+            "media_id": move.media.id,
+            "reason_code": "stage_failed",
+            "target_committed": False,
+        }
+    ]
+    assert [item["status"] for item in result["files"]] == ["failed", "transferred"]
+
+
+def test_non_retryable_stage_failure_continues_without_retry(move):
+    second = add_following_media(move)
+    stage = move.target.stage_transfer
+    calls = 0
+
+    def fail_once(**kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ProviderOperationError(
+                provider_key="test",
+                operation="stage_transfer",
+                code="invalid_config",
+                safe_message="bad stage",
+                retryable=False,
+            )
+        return stage(**kwargs)
+
+    move.target.stage_transfer = fail_once
+    result = execute(enqueue(move, [move.media.id, second.id]))
+
+    assert calls == 2
+    assert result["transferred_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["unexecuted_media_ids"] == []
+
+
+def test_batch_fatal_error_stops_remaining_media(move, monkeypatch):
+    second = add_following_media(move)
+
+    def lose_connection(*args):
+        raise RuntimeError("media_operation_connection_lost")
+
+    monkeypatch.setattr(Service, "_switch_media", lose_connection)
+    run = enqueue(move, [move.media.id, second.id])
+
+    with pytest.raises(RuntimeError, match="未全部完成"):
+        execute(run)
+
+    summary = BackgroundTaskRun.get_by_id(run.id).result_summary
+    assert summary["failed_count"] == 1
+    assert summary["unexecuted_media_ids"] == [second.id]
+    assert Media.get_by_id(second.id).library_id == move.source_lib.id
+    assert [item["status"] for item in summary["files"]] == ["failed", "unexecuted"]
+
+
+def test_authentication_failure_stops_batch(move):
+    second = add_following_media(move)
+    calls = []
+
+    def fail_auth(**kwargs):
+        calls.append(kwargs["operation_key"])
+        raise ProviderOperationError(
+            provider_key="test",
+            operation="stage_transfer",
+            code="authentication_failed",
+            safe_message="login expired",
+            retryable=False,
+        )
+
+    move.target.stage_transfer = fail_auth
+    run = enqueue(move, [move.media.id, second.id])
+
+    with pytest.raises(RuntimeError, match="未全部完成"):
+        execute(run)
+
+    assert len(calls) == 1
+    summary = BackgroundTaskRun.get_by_id(run.id).result_summary
+    assert summary["failed_count"] == 1
+    assert summary["unexecuted_media_ids"] == [second.id]
+    assert [item["status"] for item in summary["files"]] == ["failed", "unexecuted"]
+    assert Media.get_by_id(second.id).library_id == move.source_lib.id
+
+
+def test_all_failed_items_are_processed_before_task_fails(move):
+    second = add_following_media(move)
+    calls = []
+
+    def fail(**kwargs):
+        calls.append(kwargs["operation_key"])
+        raise ProviderOperationError(
+            provider_key="test",
+            operation="stage_transfer",
+            code="invalid_config",
+            safe_message="bad stage",
+            retryable=False,
+        )
+
+    move.target.stage_transfer = fail
+    run = enqueue(move, [move.media.id, second.id])
+
+    with pytest.raises(RuntimeError, match="未全部完成"):
+        execute(run)
+
+    assert len(calls) == 2
+    summary = BackgroundTaskRun.get_by_id(run.id).result_summary
+    assert summary["failed_count"] == 2
+    assert summary["unexecuted_media_ids"] == []
+    assert [item["status"] for item in summary["files"]] == ["failed", "failed"]
 
 
 def test_source_without_hashes_keeps_cache_empty(move):
@@ -401,38 +598,51 @@ def test_media_switch_and_phase_rollback_together(move, monkeypatch):
 
 
 @pytest.mark.parametrize("failure", ["target", "cleanup"])
-def test_post_switch_failure_retains_target_and_stops_batch(move, failure):
-    second = Media.create(
-        library=move.source_lib,
-        video_item=move.media.video_item_id,
-        file_name="source.mp4",
-        file_size_bytes=10,
-    )
+def test_post_switch_failure_retains_target_and_continues_batch(move, failure):
+    second = add_following_media(move)
+    original_finalize = move.target.finalize_transfer
+    original_cleanup = move.source.cleanup_transfer_source
+    calls = {"finalize": 0, "cleanup": 0}
+
+    def fail_first_finalize(**kwargs):
+        calls["finalize"] += 1
+        if calls["finalize"] == 1:
+            raise RuntimeError("SECRET_SENTINEL target unavailable")
+        original_finalize(**kwargs)
+
+    def fail_first_cleanup(**kwargs):
+        calls["cleanup"] += 1
+        if calls["cleanup"] == 1:
+            raise RuntimeError("SECRET_SENTINEL cleanup failed")
+        original_cleanup(**kwargs)
+
     if failure == "target":
-        move.target.error = True
+        move.target.finalize_transfer = fail_first_finalize
     else:
-        move.source.cleanup_error = True
+        move.source.cleanup_transfer_source = fail_first_cleanup
     run = enqueue(move, [move.media.id, second.id])
-    with pytest.raises(RuntimeError) as error:
-        execute(run)
-    assert "SECRET_SENTINEL" not in str(error.value)
-    assert error.value.__suppress_context__
-    assert move.target.staged == 1 and move.target.aborted == 0
-    assert not move.source.cleaned
+    result = execute(run)
+    assert move.target.staged == 2 and move.target.aborted == 0
+    assert move.source.cleaned
     assert Media.get_by_id(move.media.id).library_id == move.target_lib.id
-    summary = BackgroundTaskRun.get_by_id(run.id).result_summary
-    assert summary["cleanup_incomplete_count"] == 1
-    assert summary["unexecuted_media_ids"] == [second.id]
-    assert "SECRET_SENTINEL" not in str(summary)
+    assert Media.get_by_id(second.id).library_id == move.target_lib.id
+    assert result["transferred_count"] == 1
+    assert result["cleanup_incomplete_count"] == 1
+    assert result["unexecuted_media_ids"] == []
+    assert [item["status"] for item in result["files"]] == [
+        "cleanup_incomplete",
+        "transferred",
+    ]
+    assert result["files"][0]["reason_code"] in {
+        "target_verification_failed",
+        "source_cleanup_failed",
+    }
+    assert result["files"][0]["target_committed"] is True
+    assert "SECRET_SENTINEL" not in str(result)
 
 
 def test_completed_items_survive_later_failure(move):
-    second = Media.create(
-        library=move.source_lib,
-        video_item=move.media.video_item_id,
-        file_name="source.mp4",
-        file_size_bytes=10,
-    )
+    second = add_following_media(move)
     finalize = move.target.finalize_transfer
 
     def fail_second(**kwargs):
@@ -442,12 +652,16 @@ def test_completed_items_survive_later_failure(move):
 
     move.target.finalize_transfer = fail_second
     run = enqueue(move, [move.media.id, second.id])
-    with pytest.raises(RuntimeError):
-        execute(run)
-    summary = BackgroundTaskRun.get_by_id(run.id).result_summary
+    result = execute(run)
+    summary = result
     assert (
         summary["transferred_count"] == 1 and summary["cleanup_incomplete_count"] == 1
     )
+    assert summary["unexecuted_media_ids"] == []
+    assert [item["status"] for item in summary["files"]] == [
+        "transferred",
+        "cleanup_incomplete",
+    ]
 
 
 def test_crash_after_unlink_is_only_reconciled_never_retried(move):
@@ -626,6 +840,7 @@ def test_busy_library_prevents_provider_work(move):
     summary = BackgroundTaskRun.get_by_id(run.id).result_summary
     assert summary["reason_code"] == "media_busy"
     assert summary["unexecuted_media_ids"] == [move.media.id]
+    assert summary["files"][0]["status"] == "unexecuted"
 
 
 def test_busy_media_is_skipped_and_batch_continues(move):
@@ -656,6 +871,8 @@ def test_busy_media_is_skipped_and_batch_continues(move):
     assert result["issues"] == [
         {"media_id": busy.id, "reason_code": "media_busy", "target_committed": False}
     ]
+    assert [item["status"] for item in result["files"]] == ["failed", "transferred"]
+    assert result["files"][0]["reason_code"] == "media_busy"
     assert Media.get_by_id(busy.id).library_id == move.source_lib.id
     assert Media.get_by_id(following.id).library_id == move.target_lib.id
     persisted = BackgroundTaskRun.get_by_id(run.id)
@@ -682,6 +899,26 @@ def test_changed_media_is_recorded_as_failed_item(move):
             "target_committed": False,
         }
     ]
+
+
+def test_changed_media_failure_continues_next_media(move):
+    second = add_following_media(move)
+    run = enqueue(move, [move.media.id, second.id])
+    Media.update(library=move.target_lib.id).where(Media.id == move.media.id).execute()
+
+    result = execute(run)
+
+    assert result["transferred_count"] == 1
+    assert result["failed_count"] == 1
+    assert result["unexecuted_media_ids"] == []
+    assert result["issues"] == [
+        {
+            "media_id": move.media.id,
+            "reason_code": "media_unavailable",
+            "target_committed": False,
+        }
+    ]
+    assert [item["status"] for item in result["files"]] == ["failed", "transferred"]
 
 
 def test_lost_batch_connection_cannot_be_replaced_by_new_media_lock(move, monkeypatch):

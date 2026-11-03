@@ -189,6 +189,7 @@
   "errors.media_transfer_source_unsupported": "The source media library does not support migration",
   "errors.media_transfer_target_library_not_found": "Target media library not found",
   "errors.media_transfer_target_unsupported": "The target media library does not support migration",
+  "errors.media_transfer_task_not_found": "Migration task not found",
   "errors.merged_playback_cross_library": "Merged segments must come from the same media library",
   "errors.merged_playback_cross_movie": "Merged segments must belong to the same movie",
   "errors.merged_playback_need_at_least_two": "Merged playback requires at least two segments",

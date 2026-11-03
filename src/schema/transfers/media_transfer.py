@@ -1,6 +1,6 @@
 """Requests and task results for moving managed media between libraries."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 from pydantic_core import PydanticCustomError
@@ -64,6 +64,24 @@ class MediaStorageTransferAcceptedResponse(SchemaModel):
     state: str
 
 
+class MediaStorageTransferFileResource(SchemaModel):
+    media_id: int
+    file_name: str
+    movie_number: str | None = None
+    size_bytes: int = 0
+    status: Literal[
+        "pending",
+        "transferred",
+        "skipped",
+        "failed",
+        "cleanup_incomplete",
+        "unexecuted",
+    ] = "pending"
+    reason_code: str | None = None
+    # 目标端文件已确认并切换媒体归属；源文件是否清理成功需结合 status 判断。
+    target_committed: bool = False
+
+
 class MediaStorageTransferResult(SchemaModel):
     transferred_count: int = 0
     skipped_count: int = 0
@@ -71,4 +89,5 @@ class MediaStorageTransferResult(SchemaModel):
     cleanup_incomplete_count: int = 0
     unexecuted_media_ids: list[int] = Field(default_factory=list)
     issues: list[dict[str, Any]] = Field(default_factory=list)
+    files: list[MediaStorageTransferFileResource] = Field(default_factory=list)
     reason_code: str | None = None

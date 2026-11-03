@@ -477,7 +477,13 @@ class StorageMediaTransferTargetProvider(Protocol):
         source: MediaTransferSource,
         placement: ImportPlacement,
         operation_key: str,
-    ) -> StagedMediaTransfer: ...
+    ) -> StagedMediaTransfer:
+        """Stage a transfer idempotently for ``operation_key``.
+
+        The host may invoke this method again after a retryable failure. Providers
+        must reuse an already staged matching file instead of creating a duplicate.
+        """
+        ...
 
     def finalize_transfer(self, *, receipt: JsonObject) -> None: ...
 

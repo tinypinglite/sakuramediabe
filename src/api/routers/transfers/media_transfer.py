@@ -5,6 +5,7 @@ from src.schema.transfers.media_transfer import (
     MediaStorageTransferAcceptedResponse,
     MediaStorageTransferCandidatesRequest,
     MediaStorageTransferCandidatesResponse,
+    MediaStorageTransferFileResource,
     MediaStorageTransferRequest,
 )
 from src.service.transfers.shared.media_transfer_task_service import (
@@ -32,3 +33,11 @@ def list_media_transfer_candidates(payload: MediaStorageTransferCandidatesReques
 )
 def create_media_transfer(payload: MediaStorageTransferRequest):
     return MediaTransferTaskService.enqueue(payload)
+
+
+@router.get(
+    "/media-transfers/{task_run_id}/files",
+    response_model=list[MediaStorageTransferFileResource],
+)
+def list_media_transfer_files(task_run_id: int):
+    return MediaTransferTaskService.list_files(task_run_id)
