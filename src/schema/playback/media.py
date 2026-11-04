@@ -173,6 +173,8 @@ class MediaListItemResource(SchemaModel):
     thumbnail_last_error_code: str | None = None
     # 仅 JAV 媒体有意义，非 JAV 视频恒为 None。
     heat: int | None = None
+    # 仅 PornBox 媒体有归属合集；JAV 媒体返回空列表。
+    collections: list[VideoCollectionRef] = Field(default_factory=list)
     tags: list[MediaTagBriefResource] = Field(default_factory=list)
     is_media_tags_manually_managed: bool = False
     created_at: datetime
@@ -180,8 +182,7 @@ class MediaListItemResource(SchemaModel):
 
 
 class DuplicateMediaListItemResource(MediaListItemResource):
-    # 仅 PornBox 媒体有归属合集；JAV 媒体返回空列表。
-    collections: list[VideoCollectionRef] = Field(default_factory=list)
+    pass
 
 
 class DuplicateMediaGroupResource(SchemaModel):

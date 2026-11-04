@@ -202,6 +202,7 @@ class MediaService:
     def _to_media_list_item_resource(
         media: Media,
         tags=None,
+        collections=None,
     ) -> MediaListItemResource:
         # 按归属拆分：JAV 媒体展示番号、影片封面与热度，非 JAV 媒体回退到 VideoItem 标题。
         if media.movie_number:
@@ -234,6 +235,7 @@ class MediaService:
                 thumbnail_generation_state=media.thumbnail_generation_state,
                 thumbnail_last_error_code=media.thumbnail_last_error_code,
                 heat=movie.heat,
+                collections=collections or [],
                 tags=tags or [],
                 is_media_tags_manually_managed=(
                     media.is_media_tags_manually_managed
@@ -267,6 +269,7 @@ class MediaService:
             thumbnail_generation_state=media.thumbnail_generation_state,
             thumbnail_last_error_code=media.thumbnail_last_error_code,
             heat=None,
+            collections=collections or [],
             tags=tags or [],
             is_media_tags_manually_managed=media.is_media_tags_manually_managed,
             created_at=media.created_at,
@@ -281,13 +284,52 @@ class MediaService:
         tags_by_media_id = MediaTagService.list_briefs_by_media_ids(
             [media.id for media in media_rows]
         )
+        collections_by_video_id = cls._collections_by_video_id(
+            [
+                media.video_item_id
+                for media in media_rows
+                if media.video_item_id is not None
+            ]
+        )
         return [
             cls._to_media_list_item_resource(
                 media,
                 tags_by_media_id.get(media.id, []),
+                collections_by_video_id.get(media.video_item_id, []),
             )
             for media in media_rows
         ]
+
+    @staticmethod
+    def _collections_by_video_id(
+        video_ids: Sequence[int],
+    ) -> dict[int, list[VideoCollectionRef]]:
+        if not video_ids:
+            return {}
+        collections_by_video_id: dict[int, list[VideoCollectionRef]] = {}
+        collection_rows = (
+            VideoCollectionItem.select(
+                VideoCollectionItem.video_item,
+                VideoCollection.id,
+                VideoCollection.name,
+            )
+            .join(
+                VideoCollection,
+                on=(VideoCollectionItem.collection == VideoCollection.id),
+            )
+            .where(VideoCollectionItem.video_item.in_(video_ids))
+            .order_by(VideoCollection.name.asc(), VideoCollection.id.asc())
+        )
+        for collection_row in collection_rows:
+            collections_by_video_id.setdefault(
+                collection_row.video_item_id, []
+            ).append(
+                VideoCollectionRef(
+                    id=collection_row.collection.id,
+                    name=collection_row.collection.name,
+                )
+            )
+        return collections_by_video_id
 
     @staticmethod
     def _media_list_query():
@@ -577,42 +619,10 @@ class MediaService:
             .where(kind_filter, Media.file_hash.in_(page_hashes))
             .order_by(Media.file_hash.asc(), Media.created_at.asc(), Media.id.asc())
         )
-        video_ids = [
-            media.video_item_id
-            for media in media_rows
-            if media.video_item_id is not None
-        ]
-        collections_by_video_id: dict[int, list[VideoCollectionRef]] = {}
-        if video_ids:
-            collection_rows = (
-                VideoCollectionItem.select(
-                    VideoCollectionItem.video_item,
-                    VideoCollection.id,
-                    VideoCollection.name,
-                )
-                .join(
-                    VideoCollection,
-                    on=(VideoCollectionItem.collection == VideoCollection.id),
-                )
-                .where(VideoCollectionItem.video_item.in_(video_ids))
-                .order_by(VideoCollection.name.asc(), VideoCollection.id.asc())
-            )
-            for collection_row in collection_rows:
-                collections_by_video_id.setdefault(
-                    collection_row.video_item_id, []
-                ).append(
-                    VideoCollectionRef(
-                        id=collection_row.collection.id,
-                        name=collection_row.collection.name,
-                    )
-                )
         media_items = cls._to_media_list_item_resources(media_rows)
         for media, item in zip(media_rows, media_items, strict=True):
             media_by_hash[media.file_hash].append(
-                DuplicateMediaListItemResource(
-                    **item.model_dump(),
-                    collections=collections_by_video_id.get(media.video_item_id, []),
-                )
+                DuplicateMediaListItemResource(**item.model_dump())
             )
 
         return PageResponse[DuplicateMediaGroupResource](
