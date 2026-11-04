@@ -28,7 +28,6 @@ from src.schema.playback.media import (
     DuplicateMediaGroupResource,
     InvalidMediaResource,
     MediaListItemResource,
-    MediaPlaybackHealthStatus,
     MediaPlaybackModeResource,
     MediaPointKind,
     MediaPointResource,
@@ -121,8 +120,6 @@ def list_media(
     actor_ids: str | None = Query(default=None),
     search: str | None = Query(default=None),
     thumbnail_generation_state: MediaThumbnailGenerationState | None = Query(default=None),
-    interleave_gap_mib_min: float | None = Query(default=None, gt=0),
-    playback_health_status: MediaPlaybackHealthStatus | None = Query(default=None),
     sort: str | None = Query(default=None),
     page: int = 1,
     page_size: int = 20,
@@ -134,8 +131,6 @@ def list_media(
         actor_ids=parse_csv_positive_ints(actor_ids, "actor_ids", error_code="invalid_media_filter"),
         search=search,
         thumbnail_generation_state=thumbnail_generation_state,
-        interleave_gap_mib_min=interleave_gap_mib_min,
-        playback_health_status=playback_health_status,
         sort=sort,
         page=page,
         page_size=page_size,
@@ -313,8 +308,6 @@ async def play_media(
     media = Media.get_or_none(Media.id == media_id)
     if media is None:
         raise ApiError(404, "media_not_found", "媒体不存在")
-    if not media.valid:
-        raise ApiError(422, "media_invalid", "媒体已失效，无法播放")
     library = media.library
     if library is None:
         raise ApiError(404, "media_library_not_found", "媒体库不存在")

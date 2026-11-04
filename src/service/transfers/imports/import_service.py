@@ -62,9 +62,6 @@ from src.schema.transfers.media_import import ImportResult
 from src.service.catalog.catalog_import_service import CatalogImportService
 from src.service.catalog.movie_image_service import ImageDownloadError
 from src.service.catalog.subtitle_asset_service import SubtitleAssetService
-from src.service.playback.media_playback_health_service import (
-    MediaPlaybackHealthService,
-)
 from src.service.playback.media_tag_service import (
     MediaTagRule,
     MediaTagService,
@@ -632,11 +629,7 @@ class MediaImportService:
                             tag_rules=tag_rules,
                         )
                         new_playable_movies.append(
-                            {
-                                "id": movie.id,
-                                "movie_number": movie.movie_number,
-                                "title": movie.title,
-                            }
+                            {"id": movie.id, "movie_number": movie.movie_number, "title": movie.title}
                         )
                     else:
                         with get_database().atomic():
@@ -1004,26 +997,7 @@ class MediaImportService:
                 raise ValueError("provider returned an invalid media file hash")
             media.file_hash = file_hash
             media.save(only=[Media.file_hash])
-            health = None
-            try:
-                health = MediaPlaybackHealthService.probe_media(
-                    media,
-                    storage=storage,
-                )
-            except Exception:
-                logger.exception(
-                    "Media playback health probe skipped media_id={}",
-                    media.id,
-                )
-            if health is not None:
-                try:
-                    MediaPlaybackHealthService.write_health(media, health)
-                except Exception:
-                    logger.exception(
-                        "Media playback health write skipped media_id={}",
-                        media.id,
-                    )
-            if movie is not None and media.valid:
+            if movie is not None:
                 MediaTagService.attach_matching_tags(
                     media,
                     tag_rules,

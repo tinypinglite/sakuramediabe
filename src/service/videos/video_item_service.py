@@ -42,9 +42,6 @@ from src.schema.videos.items import (
     VideoItemListItemResource,
     VideoItemUpdateRequest,
 )
-from src.service.playback.media_playback_health_service import (
-    MediaPlaybackHealthService,
-)
 
 
 class VideoItemService:
@@ -331,17 +328,7 @@ class VideoItemService:
             )
             media.provider_key = media.library.provider_key
             media.playback_deliveries = list(bundle.playback_deliveries)
-            resources.append(
-                MovieMediaResource.from_attributes_model(media).model_copy(
-                    update={
-                        "interleave_gap_mib": (
-                            MediaPlaybackHealthService.interleave_gap_mib(
-                                media.playback_health
-                            )
-                        ),
-                    }
-                )
-            )
+            resources.append(MovieMediaResource.from_attributes_model(media))
         return resources
 
     @classmethod

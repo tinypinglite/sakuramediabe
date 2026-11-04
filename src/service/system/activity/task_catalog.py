@@ -11,7 +11,6 @@ TASK_NAME_REGISTRY = {
     "media_file_hash_backfill": "媒体文件哈希补算",
     "media_duration_backfill": "媒体时长回填",
     "media_video_info_backfill": "媒体信息回填",
-    "media_playback_health_backfill": "媒体播放结构补检",
     "media_resolution_backfill": "媒体分辨率回填",
     "media_file_scan": "媒体文件巡检",
     "media_thumbnail_generation": "媒体缩略图生成",

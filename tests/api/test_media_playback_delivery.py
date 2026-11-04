@@ -27,9 +27,7 @@ def gateway(monkeypatch):
         file_name="001.mp4",
         file_size_bytes=290884572,
         duration_seconds=589,
-        valid=True,
     )
-    state.media = media
     monkeypatch.setattr(media_router.Media, "get_or_none", lambda *_args: media)
     bundle = SimpleNamespace(playback_deliveries=("redirect", "proxy"))
     state.bundle = bundle
@@ -121,13 +119,3 @@ def test_rejects_unsupported_delivery(gateway):
     gateway.bundle.playback_deliveries = ("proxy",)
     assert gateway.get(delivery="redirect").status_code == 422
     assert gateway.contexts == []
-
-
-def test_playback_health_invalid_does_not_block_usable_media(gateway):
-    gateway.media.playback_health = {
-        "status": "invalid",
-        "reason": "interleave_bad",
-        "detail": {"max_gap_mib": 1024},
-    }
-
-    assert gateway.get(delivery="proxy").status_code == 206

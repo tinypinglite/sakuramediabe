@@ -46,7 +46,6 @@ from src.start.migrations.runner import (
     MEDIA_CONTENT_GCID_MIGRATION_NAME,
     MEDIA_CONTENT_HASHES_MIGRATION_NAME,
     MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME,
-    MEDIA_PLAYBACK_HEALTH_MIGRATION_NAME,
     MEDIA_POINT_PRESERVATION_MIGRATION_NAME,
     MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME,
     MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME,
@@ -178,7 +177,6 @@ def test_current_migrations_are_discoverable_in_order():
         MEDIA_CONTENT_HASHES_MIGRATION_NAME,
         MEDIA_CONTENT_GCID_MIGRATION_NAME,
         MULTI_VERSION_PROCESSED_MIGRATION_NAME,
-        MEDIA_PLAYBACK_HEALTH_MIGRATION_NAME,
     ]
 
 
@@ -441,10 +439,6 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
             name=MULTI_VERSION_PROCESSED_MIGRATION_NAME,
             applied=True,
         ),
-        MigrationExecution(
-            name=MEDIA_PLAYBACK_HEALTH_MIGRATION_NAME,
-            applied=True,
-        ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -492,7 +486,6 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MEDIA_CONTENT_HASHES_MIGRATION_NAME,
         MEDIA_CONTENT_GCID_MIGRATION_NAME,
         MULTI_VERSION_PROCESSED_MIGRATION_NAME,
-        MEDIA_PLAYBACK_HEALTH_MIGRATION_NAME,
     ]
 
 
@@ -864,7 +857,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 45
+    assert summary.applied_count == 44
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
@@ -1230,48 +1223,6 @@ def test_multi_version_processed_migration_adds_snapshot_column(clean_db):
     ).migrate(clean_db)
 
     assert "multi_version_processed_snapshot" in _column_names(clean_db, "movie")
-
-
-def test_media_playback_health_migration_adds_column_without_backfill(
-    clean_db,
-):
-    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
-    clean_db.create_tables(TEST_MODELS)
-    library = MediaLibrary.create(name="legacy-health", provider_key="demo")
-    movie = Movie.create(
-        movie_number="LEGACY-001",
-        javdb_id="legacy-health",
-        title="legacy",
-    )
-    invalid_media = Media.create(
-        movie=movie,
-        library=library,
-        file_name="invalid.mp4",
-        valid=False,
-    )
-    valid_media = Media.create(
-        movie=Movie.create(
-            movie_number="LEGACY-002",
-            javdb_id="legacy-health-valid",
-            title="valid",
-        ),
-        library=library,
-        file_name="valid.mp4",
-        valid=True,
-    )
-    _drop_columns(clean_db, "media", ("playback_health",))
-
-    migration = _load_migration_module(
-        Path(f"{MEDIA_PLAYBACK_HEALTH_MIGRATION_NAME}.py")
-    )
-    migration.migrate(clean_db)
-    migration.migrate(clean_db)
-
-    assert "playback_health" in _column_names(clean_db, "media")
-    invalid = Media.get_by_id(invalid_media.id)
-    valid = Media.get_by_id(valid_media.id)
-    assert invalid.playback_health is None
-    assert valid.playback_health is None
 
 
 def test_drop_image_derived_sizes_migration_removes_columns(clean_db):

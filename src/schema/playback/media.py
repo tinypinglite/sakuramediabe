@@ -25,20 +25,6 @@ class MediaThumbnailGenerationState(str, Enum):
     SUCCEEDED = "succeeded"
 
 
-class MediaPlaybackHealthStatus(str, Enum):
-    OK = "ok"
-    UNKNOWN = "unknown"
-    INVALID = "invalid"
-    NOT_CHECKED = "not_checked"
-
-
-class MediaPlaybackHealthResource(SchemaModel):
-    status: MediaPlaybackHealthStatus
-    reason: str | None = None
-    detail: dict[str, Any] = Field(default_factory=dict)
-    checked_at: str | None = None
-
-
 class MediaThumbnailResetRequest(SchemaModel):
     media_ids: list[int] = Field(min_length=1, max_length=1000)
     # force=True 时删除已有缩略图产物后重置，等待定时任务重新生成；
@@ -144,9 +130,6 @@ class InvalidMediaResource(SchemaModel):
     library_id: int | None
     library_name: str | None
     file_size_bytes: int
-    invalid_reason: str | None = None
-    invalid_detail: dict[str, Any] = Field(default_factory=dict)
-    invalid_checked_at: str | None = None
     updated_at: datetime
 
 
@@ -165,8 +148,6 @@ class MediaListItemResource(SchemaModel):
     file_size_bytes: int
     duration_seconds: int
     resolution: str | None = None
-    interleave_gap_mib: float | None = None
-    playback_health: MediaPlaybackHealthResource
     video_info: dict[str, Any] | None = None
     valid: bool
     thumbnail_generation_state: MediaThumbnailGenerationState

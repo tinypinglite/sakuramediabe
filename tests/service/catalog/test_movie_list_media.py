@@ -90,7 +90,6 @@ def _assert_media_payload(items, data):
         "provider_key": "not-installed", "file_name": "first.mp4",
         "resolution": "3840x2160", "duration_seconds": 7200,
         "file_size_bytes": 9000000000, "valid": True,
-            "interleave_gap_mib": None,
         "video_info": {"container": {"bit_rate": 10000000}, "video": {"bit_rate": 9000000}},
         "tags": [],
             "is_media_tags_manually_managed": False,

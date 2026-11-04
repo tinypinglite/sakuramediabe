@@ -49,8 +49,6 @@ from src.schema.playback.media import (
     DuplicateMediaListItemResource,
     InvalidMediaResource,
     MediaListItemResource,
-    MediaPlaybackHealthResource,
-    MediaPlaybackHealthStatus,
     MediaPointCreateRequest,
     MediaPointKind,
     MediaPointListItemResource,
@@ -68,10 +66,6 @@ from src.service.catalog.image_cleanup_service import ImageCleanupService
 # 绕开包级 __init__ 的初始化顺序依赖。
 from src.service.collections.playlist_service import PlaylistService
 from src.service.discovery import get_qdrant_thumbnail_store
-from src.service.playback.media_playback_health_service import (
-    REASON_FILE_MISSING,
-    MediaPlaybackHealthService,
-)
 from src.service.playback.media_tag_service import MediaTagService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.playback.operation_locks import (
@@ -175,30 +169,6 @@ class MediaService:
         )
 
     @staticmethod
-    def _to_playback_health_resource(
-        health: dict | None,
-    ) -> MediaPlaybackHealthResource:
-        value = health if isinstance(health, dict) else {}
-        raw_status = value.get("status")
-        try:
-            status = MediaPlaybackHealthStatus(raw_status)
-        except (TypeError, ValueError):
-            status = MediaPlaybackHealthStatus.NOT_CHECKED
-        reason = value.get("reason")
-        detail = value.get("detail")
-        checked_at = value.get("checked_at")
-        return MediaPlaybackHealthResource(
-            status=status,
-            reason=reason if isinstance(reason, str) and reason else None,
-            detail=detail if isinstance(detail, dict) else {},
-            checked_at=(
-                checked_at
-                if isinstance(checked_at, str) and checked_at
-                else None
-            ),
-        )
-
-    @staticmethod
     def _to_media_list_item_resource(
         media: Media,
         tags=None,
@@ -224,12 +194,6 @@ class MediaService:
                 file_size_bytes=media.file_size_bytes,
                 duration_seconds=media.duration_seconds,
                 resolution=media.resolution,
-                interleave_gap_mib=MediaPlaybackHealthService.interleave_gap_mib(
-                    media.playback_health
-                ),
-                playback_health=MediaService._to_playback_health_resource(
-                    media.playback_health
-                ),
                 video_info=media.video_info,
                 valid=media.valid,
                 thumbnail_generation_state=media.thumbnail_generation_state,
@@ -258,12 +222,6 @@ class MediaService:
             file_size_bytes=media.file_size_bytes,
             duration_seconds=media.duration_seconds,
             resolution=media.resolution,
-            interleave_gap_mib=MediaPlaybackHealthService.interleave_gap_mib(
-                media.playback_health
-            ),
-            playback_health=MediaService._to_playback_health_resource(
-                media.playback_health
-            ),
             video_info=media.video_info,
             valid=media.valid,
             thumbnail_generation_state=media.thumbnail_generation_state,
@@ -364,8 +322,6 @@ class MediaService:
         actor_ids: list[int] | None = None,
         search: str | None = None,
         thumbnail_generation_state: MediaThumbnailGenerationState | None = None,
-        interleave_gap_mib_min: float | None = None,
-        playback_health_status: MediaPlaybackHealthStatus | None = None,
         sort: str | None = None,
         page: int = 1,
         page_size: int = 20,
@@ -403,33 +359,6 @@ class MediaService:
             base_query = base_query.where(
                 Media.thumbnail_generation_state == thumbnail_generation_state.value
             )
-        if interleave_gap_mib_min is not None:
-            gap_mib = peewee.fn.jsonb_extract_path_text(
-                Media.playback_health,
-                "detail",
-                "max_gap_mib",
-            ).cast("double precision")
-            base_query = base_query.where(gap_mib >= interleave_gap_mib_min)
-        if playback_health_status is not None:
-            status_value = peewee.fn.jsonb_extract_path_text(
-                Media.playback_health,
-                "status",
-            )
-            if playback_health_status is MediaPlaybackHealthStatus.NOT_CHECKED:
-                base_query = base_query.where(
-                    status_value.is_null(True)
-                    | status_value.not_in(
-                        [
-                            MediaPlaybackHealthStatus.OK.value,
-                            MediaPlaybackHealthStatus.UNKNOWN.value,
-                            MediaPlaybackHealthStatus.INVALID.value,
-                        ]
-                    )
-                )
-            else:
-                base_query = base_query.where(
-                    status_value == playback_health_status.value
-                )
 
         total = base_query.count()
         order_by = cls._build_media_list_sort(sort)
@@ -824,14 +753,9 @@ class MediaService:
 
                 VideoItemService.delete_video(media.video_item_id)
                 return
-            # 已巡检确认远端无对象的媒体不再要求 provider 可达；结构异常但文件仍在
-            # 的失效媒体仍需删除实际文件。
-            health_reason = MediaPlaybackHealthService.reason(media.playback_health)
-            provider_file_exists = media.valid or (
-                MediaPlaybackHealthService.is_invalid(media.playback_health)
-                and health_reason != REASON_FILE_MISSING
-            )
-            if provider_file_exists:
+            # 已巡检确认远端无对象的媒体不再要求 provider 可达：插件缺失或鉴权失败时
+            # 也允许清理本地记录，否则死库记录永远删不掉。
+            if media.valid:
                 media_handle = media_handle_for(media)
                 try:
                     storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
@@ -967,14 +891,6 @@ class MediaService:
     @staticmethod
     def _to_invalid_media_resource(media: Media) -> InvalidMediaResource:
         # 按归属拆分：JAV 媒体展示番号与影片封面，非 JAV 媒体回退到 VideoItem 标题。
-        health = media.playback_health if isinstance(media.playback_health, dict) else {}
-        invalid_fields = {
-            "invalid_reason": health.get("reason"),
-            "invalid_detail": (
-                health.get("detail") if isinstance(health.get("detail"), dict) else {}
-            ),
-            "invalid_checked_at": health.get("checked_at"),
-        }
         if media.movie_number:
             movie = media.movie
             return InvalidMediaResource(
@@ -991,7 +907,6 @@ class MediaService:
                 library_id=media.library_id,
                 library_name=media.library.name if media.library_id is not None else None,
                 file_size_bytes=media.file_size_bytes,
-                **invalid_fields,
                 updated_at=media.updated_at,
             )
         video_item = media.video_item if media.video_item_id else None
@@ -1006,7 +921,6 @@ class MediaService:
             library_id=media.library_id,
             library_name=media.library.name if media.library_id is not None else None,
             file_size_bytes=media.file_size_bytes,
-            **invalid_fields,
             updated_at=media.updated_at,
         )
 

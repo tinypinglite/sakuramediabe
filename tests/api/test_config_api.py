@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
 import toml
 
-from src.api.exception.errors import ApiError
 from src.config.config import (
     Settings,
     ensure_runtime_config,
@@ -93,28 +91,6 @@ def test_config_updates_merge_from_disk_and_survive_plugin_updates(tmp_path, mon
         assert persisted["plugins"]["settings"] == {"demo_plugin": {"enabled": True}}
     finally:
         settings.plugins = original_plugins
-        Settings.model_config["toml_file"] = original_config_path
-
-
-def test_media_interleave_config_is_persisted_and_validated(tmp_path, monkeypatch):
-    config_path = tmp_path / "config.toml"
-    original_config_path = Settings.model_config["toml_file"]
-    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
-
-    try:
-        ConfigService.update_config(
-            {"media": {"playback_interleave_max_gap_mib": 72.5}}
-        )
-        persisted = toml.load(config_path)
-        assert persisted["media"]["playback_interleave_max_gap_mib"] == 72.5
-        assert Settings().media.playback_interleave_max_gap_mib == 72.5
-
-        with pytest.raises(ApiError) as error:
-            ConfigService.update_config(
-                {"media": {"playback_interleave_max_gap_mib": 0}}
-            )
-        assert error.value.code == "invalid_config_value"
-    finally:
         Settings.model_config["toml_file"] = original_config_path
 
 
