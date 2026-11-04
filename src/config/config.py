@@ -86,6 +86,8 @@ class Auth(BaseModel):
 class Media(BaseModel):
     allowed_min_video_file_size: int = 268435456 # 256MB
     import_image_root_path: str = "/data/cache/assets"
+    # 播放结构探测只用单个 50% 采样点；达到该字节间隔才判交错失效。
+    playback_interleave_max_gap_mib: float = Field(default=64.0, gt=0)
     # 片段产物独立存储根目录，部署时单独挂卷映射到本地。
     media_clip_root_path: str = "/data/media-clips"
     # 用户可圈选的片段最大时长（秒），仅约束区间长度，不等于 ffmpeg 进程墙钟时长。

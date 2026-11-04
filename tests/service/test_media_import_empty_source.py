@@ -140,7 +140,7 @@ def test_video_import_allows_small_file_and_generates_cover_after_finalizing(mon
         account_key=None,
     )
     video = SimpleNamespace(id=7)
-    media = object()
+    media = SimpleNamespace(valid=True, playback_health=None)
     cover_source = object()
 
     class Storage:

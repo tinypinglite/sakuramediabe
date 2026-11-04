@@ -24,6 +24,12 @@ from src.common.media_import_status import (
     FAILURE_REASON_FILE_TOO_SMALL,
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED,
     FAILURE_REASON_MEDIA_IMPORT_FAILED,
+    FAILURE_REASON_MEDIA_PLAYBACK_CONTAINER_INVALID,
+    FAILURE_REASON_MEDIA_PLAYBACK_FILE_MISSING,
+    FAILURE_REASON_MEDIA_PLAYBACK_INTERLEAVE_BAD,
+    FAILURE_REASON_MEDIA_PLAYBACK_INVALID,
+    FAILURE_REASON_MEDIA_PLAYBACK_MOOV_MISSING,
+    FAILURE_REASON_MEDIA_PLAYBACK_VIDEO_STREAM_MISSING,
     FAILURE_REASON_METADATA_FETCH_FAILED,
     FAILURE_REASON_METADATA_UPSERT_FAILED,
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
@@ -62,6 +68,16 @@ from src.schema.transfers.media_import import ImportResult
 from src.service.catalog.catalog_import_service import CatalogImportService
 from src.service.catalog.movie_image_service import ImageDownloadError
 from src.service.catalog.subtitle_asset_service import SubtitleAssetService
+from src.service.playback.media_playback_health_service import (
+    REASON_CONTAINER_INVALID,
+    REASON_FILE_MISSING,
+    REASON_INTERLEAVE_BAD,
+    REASON_MOOV_MISSING,
+    REASON_VIDEO_STREAM_MISSING,
+    STATUS_INVALID,
+    MediaPlaybackHealthService,
+    PlaybackHealth,
+)
 from src.service.playback.media_tag_service import (
     MediaTagRule,
     MediaTagService,
@@ -87,6 +103,32 @@ class MetadataImportResult(BaseModel):
     movie_id: int | None = None
     failure_reason: str | None = None
     failure_detail: str | None = None
+
+
+PLAYBACK_FAILURE_REASON_BY_HEALTH_REASON = {
+    REASON_FILE_MISSING: FAILURE_REASON_MEDIA_PLAYBACK_FILE_MISSING,
+    REASON_CONTAINER_INVALID: FAILURE_REASON_MEDIA_PLAYBACK_CONTAINER_INVALID,
+    REASON_MOOV_MISSING: FAILURE_REASON_MEDIA_PLAYBACK_MOOV_MISSING,
+    REASON_VIDEO_STREAM_MISSING: (
+        FAILURE_REASON_MEDIA_PLAYBACK_VIDEO_STREAM_MISSING
+    ),
+    REASON_INTERLEAVE_BAD: FAILURE_REASON_MEDIA_PLAYBACK_INTERLEAVE_BAD,
+}
+
+
+class MediaPlaybackImportRejected(RuntimeError):
+    def __init__(self, health: PlaybackHealth) -> None:
+        self.failure_reason = PLAYBACK_FAILURE_REASON_BY_HEALTH_REASON.get(
+            health.reason,
+            FAILURE_REASON_MEDIA_PLAYBACK_INVALID,
+        )
+        detail_parts = [f"reason={health.reason or 'invalid'}"]
+        for key in ("max_gap_mib", "threshold_mib", "error"):
+            value = health.detail.get(key)
+            if value not in (None, ""):
+                detail_parts.append(f"{key}={value}")
+        self.failure_detail = "; ".join(detail_parts)
+        super().__init__(self.failure_detail)
 
 
 class MediaImportService:
@@ -629,7 +671,11 @@ class MediaImportService:
                             tag_rules=tag_rules,
                         )
                         new_playable_movies.append(
-                            {"id": movie.id, "movie_number": movie.movie_number, "title": movie.title}
+                            {
+                                "id": movie.id,
+                                "movie_number": movie.movie_number,
+                                "title": movie.title,
+                            }
                         )
                     else:
                         with get_database().atomic():
@@ -652,6 +698,20 @@ class MediaImportService:
 
                                 VideoCollectionService.add_video(collection_id, video.id)
                         created_video_ids.append(video.id)
+                except MediaPlaybackImportRejected as exc:
+                    failed_count += 1
+                    failure_items.append(
+                        self._make_failure_item(
+                            source,
+                            reason=exc.failure_reason,
+                            detail=exc.failure_detail,
+                            library_id=library_id,
+                            media_kind=media_kind,
+                            source_disposition=source_disposition,
+                            download_task_id=download_task_id,
+                        )
+                    )
+                    self._abort_staged(storage, staged)
                 except ProviderOperationError as exc:
                     failed_count += 1
                     failure_items.append(
@@ -997,7 +1057,28 @@ class MediaImportService:
                 raise ValueError("provider returned an invalid media file hash")
             media.file_hash = file_hash
             media.save(only=[Media.file_hash])
-            if movie is not None:
+            health: PlaybackHealth | None = None
+            try:
+                health = MediaPlaybackHealthService.probe_media(
+                    media,
+                    storage=storage,
+                )
+            except Exception:
+                logger.exception(
+                    "Media playback health probe skipped media_id={}",
+                    media.id,
+                )
+            if health is not None and health.status == STATUS_INVALID:
+                raise MediaPlaybackImportRejected(health)
+            if health is not None:
+                try:
+                    MediaPlaybackHealthService.write_health(media, health)
+                except Exception:
+                    logger.exception(
+                        "Media playback health write skipped media_id={}",
+                        media.id,
+                    )
+            if movie is not None and media.valid:
                 MediaTagService.attach_matching_tags(
                     media,
                     tag_rules,

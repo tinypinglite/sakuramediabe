@@ -27,6 +27,7 @@ def gateway(monkeypatch):
         file_name="001.mp4",
         file_size_bytes=290884572,
         duration_seconds=589,
+        valid=True,
     )
     monkeypatch.setattr(media_router.Media, "get_or_none", lambda *_args: media)
     bundle = SimpleNamespace(playback_deliveries=("redirect", "proxy"))

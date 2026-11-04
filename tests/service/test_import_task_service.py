@@ -130,6 +130,60 @@ def test_successful_import_keeps_download_task(test_db, monkeypatch):
     assert DownloadTask.get_by_id(task.id).import_status == IMPORT_STATUS_COMPLETED
 
 
+def test_playback_invalid_import_marks_download_failed_without_playable_reminder(
+    test_db,
+    monkeypatch,
+):
+    library = MediaLibrary.create(
+        name="library",
+        provider_key="test",
+        provider_config={},
+    )
+    client = DownloadClient.create(name="client", library=library, provider_config={})
+    task = DownloadTask.create(
+        client=client,
+        name="INVALID-001",
+        movie="INVALID-001",
+        remote_id="invalid-media-import",
+        state="completed",
+        completed_source_ref={"source": "INVALID-001"},
+        import_status="running",
+    )
+    playable_reminders = []
+    failure_item = {
+        "path": "INVALID-001.mp4",
+        "reason": "media_playback_moov_missing",
+        "detail": "reason=moov_missing",
+        "kind": "file",
+    }
+    monkeypatch.setattr(
+        "src.service.transfers.imports.import_service.MediaImportService.import_from_source",
+        lambda *_a, **_k: ImportResult(
+            imported_count=0,
+            failed_count=1,
+            failed_files=[failure_item],
+        ),
+    )
+    monkeypatch.setattr(
+        "src.service.transfers.shared.import_task_service.create_new_media_reminder",
+        lambda **kwargs: playable_reminders.append(kwargs),
+    )
+
+    summary = ImportTaskService.execute(
+        SimpleNamespace(progress_callback=None, task_run_id=47),
+        {
+            "media_kind": "jav",
+            "library_id": library.id,
+            "source_ref": {"source": "INVALID-001"},
+            "download_task_id": task.id,
+        },
+    )
+
+    assert summary["failed_files"] == [failure_item]
+    assert playable_reminders == []
+    assert DownloadTask.get_by_id(task.id).import_status == "failed"
+
+
 def test_batch_progress_counts_download_tasks_and_continues_after_failure(test_db, monkeypatch):
     library = MediaLibrary.create(
         name="library", provider_key="test", provider_config={}

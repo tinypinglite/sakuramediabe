@@ -16,6 +16,7 @@ class MediaSummaryResource(SchemaModel):
     file_size_bytes: int = 0
     duration_seconds: int = 0
     video_info: dict[str, Any] | None = None
+    interleave_gap_mib: float | None = None
     valid: bool = True
     tags: list[MediaTagBriefResource] = Field(default_factory=list)
     is_media_tags_manually_managed: bool = False

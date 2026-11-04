@@ -2,6 +2,9 @@ from .media_clip_service import MediaClipService
 from .media_file_hash_backfill_service import MediaFileHashBackfillService
 from .media_library_service import MediaLibraryService
 from .media_metadata_probe_service import MediaMetadataProbeService
+from .media_playback_health_backfill_service import (
+    MediaPlaybackHealthBackfillService,
+)
 from .media_service import MediaService
 from .media_tag_retag_service import MediaTagRetagService
 from .media_thumbnail_service import MediaThumbnailService
@@ -12,6 +15,7 @@ __all__ = [
     "MediaFileHashBackfillService",
     "MediaLibraryService",
     "MediaMetadataProbeService",
+    "MediaPlaybackHealthBackfillService",
     "MediaService",
     "MediaTagRetagService",
     "MediaThumbnailService",

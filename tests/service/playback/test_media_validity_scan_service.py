@@ -24,6 +24,7 @@ def _media(
     *,
     storage_ref: dict | None = None,
     valid: bool = True,
+    playback_health: dict | None = None,
 ) -> Media:
     movie = Movie.create(movie_number=number, javdb_id=f"javdb-{number}", title=number)
     return Media.create(
@@ -33,6 +34,7 @@ def _media(
         file_name=f"{number}.mp4",
         file_size_bytes=100,
         valid=valid,
+        playback_health=playback_health,
     )
 
 
@@ -77,12 +79,164 @@ def test_scan_reconciles_media_from_one_library_inventory(test_db, monkeypatch):
     assert calls == [1]
     assert Media.get_by_id(revived.id).valid is True
     assert Media.get_by_id(invalidated.id).valid is False
+    assert Media.get_by_id(invalidated.id).playback_health["reason"] == "file_missing"
     assert Media.get_by_id(unchanged.id).valid is True
     assert [(current, total) for current, total, _summary in reporter.events] == [
         (1, 3),
         (2, 3),
         (3, 3),
     ]
+
+
+def test_scan_does_not_revive_structural_invalid_media(test_db, monkeypatch):
+    library = MediaLibrary.create(
+        name="validity-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    media = _media(
+        library,
+        "VALIDITY-STRUCTURE",
+        valid=False,
+        playback_health={
+            "status": "invalid",
+            "reason": "interleave_bad",
+            "detail": {"max_gap_mib": 1024},
+            "checked_at": "2026-11-05T00:00:00+00:00",
+        },
+    )
+
+    class Storage:
+        @staticmethod
+        def scan_managed_media_ref_keys():
+            return {_managed_ref_key(media.storage_ref)}
+
+        @staticmethod
+        def managed_media_ref_key(*, media_ref):
+            return _managed_ref_key(media_ref)
+
+    monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _library: Storage())
+
+    stats = MediaValidityScanService.scan_media_validity(reporter=Reporter())
+
+    stored = Media.get_by_id(media.id)
+    assert stats["unchanged_media"] == 1
+    assert stored.valid is False
+    assert stored.playback_health["reason"] == "interleave_bad"
+
+
+def test_scan_preserves_structural_invalid_when_file_disappears(
+    test_db,
+    monkeypatch,
+):
+    library = MediaLibrary.create(
+        name="validity-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    health = {
+        "status": "invalid",
+        "reason": "interleave_bad",
+        "detail": {"max_gap_mib": 1024},
+        "checked_at": "2026-11-05T00:00:00+00:00",
+    }
+    media = _media(
+        library,
+        "VALIDITY-STRUCTURE-MISSING",
+        valid=False,
+        playback_health=health,
+    )
+
+    class Storage:
+        @staticmethod
+        def scan_managed_media_ref_keys():
+            return set()
+
+        @staticmethod
+        def managed_media_ref_key(*, media_ref):
+            return _managed_ref_key(media_ref)
+
+    monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _library: Storage())
+
+    stats = MediaValidityScanService.scan_media_validity(reporter=Reporter())
+
+    stored = Media.get_by_id(media.id)
+    assert stats["unchanged_media"] == 1
+    assert stored.valid is False
+    assert stored.playback_health == health
+
+
+def test_scan_revives_file_missing_when_file_returns(test_db, monkeypatch):
+    library = MediaLibrary.create(
+        name="validity-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    media = _media(
+        library,
+        "VALIDITY-FILE-RETURNED",
+        valid=False,
+        playback_health={
+            "status": "invalid",
+            "reason": "file_missing",
+            "detail": {},
+            "checked_at": "2026-11-05T00:00:00+00:00",
+        },
+    )
+
+    class Storage:
+        @staticmethod
+        def scan_managed_media_ref_keys():
+            return {_managed_ref_key(media.storage_ref)}
+
+        @staticmethod
+        def managed_media_ref_key(*, media_ref):
+            return _managed_ref_key(media_ref)
+
+    monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _library: Storage())
+
+    stats = MediaValidityScanService.scan_media_validity(reporter=Reporter())
+
+    stored = Media.get_by_id(media.id)
+    assert stats["revived_media"] == 1
+    assert stored.valid is True
+    assert stored.playback_health is None
+
+
+def test_scan_notifies_only_new_invalid_media(test_db, monkeypatch):
+    from src.model import SystemNotification
+
+    library = MediaLibrary.create(
+        name="validity-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    _media(library, "VALIDITY-NOTIFY")
+
+    class Storage:
+        @staticmethod
+        def scan_managed_media_ref_keys():
+            return set()
+
+        @staticmethod
+        def managed_media_ref_key(*, media_ref):
+            return _managed_ref_key(media_ref)
+
+    monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _library: Storage())
+
+    MediaValidityScanService.scan_media_validity(reporter=Reporter())
+    second_stats = MediaValidityScanService.scan_media_validity(
+        reporter=Reporter()
+    )
+
+    notifications = list(
+        SystemNotification.select().where(
+            SystemNotification.event_type == "media_invalid_detected"
+        )
+    )
+    assert len(notifications) == 1
+    assert "VALIDITY-NOTIFY" in notifications[0].content
+    assert second_stats["unchanged_media"] == 1
 
 
 def test_scan_skips_only_a_library_when_its_provider_inventory_fails(test_db, monkeypatch):

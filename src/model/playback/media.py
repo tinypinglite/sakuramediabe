@@ -1,6 +1,6 @@
 import peewee
 
-from src.model.base import BaseModel, JsonTextField
+from src.model.base import BaseModel, JsonbField, JsonTextField
 from src.model.catalog.images import Image
 from src.model.catalog.movies import Movie
 from src.model.mixins import TimestampedMixin
@@ -60,6 +60,8 @@ class Media(TimestampedMixin, BaseModel):
     duration_seconds = peewee.IntegerField(default=0)
     # 统一存放整理后的探测结果，避免把 codec/profile/bitrate 拆成多列重复维护。
     video_info = JsonTextField(null=True)
+    # 播放结构健康结果：ok / invalid / unknown，失效原因与采样详情一并保留。
+    playback_health = JsonbField(null=True)
     valid = peewee.BooleanField(default=True)
     # 失败次数与退避信息落在媒体领域，避免通用任务台账被移除后又失去收口语义。
     thumbnail_generation_state = peewee.CharField(

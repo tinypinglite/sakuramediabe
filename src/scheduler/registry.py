@@ -37,6 +37,7 @@ from src.service.discovery import (
 )
 from src.service.playback import (
     MediaFileHashBackfillService,
+    MediaPlaybackHealthBackfillService,
     MediaTagRetagService,
     MediaThumbnailService,
     MediaValidityScanService,
@@ -165,6 +166,18 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         manual_only=True,
         handler=lambda reporter, _params: MediaVideoInfoBackfillService.backfill_missing_video_infos(
             reporter=reporter,
+        ),
+    ),
+    JobDefinition(
+        task_key=MediaPlaybackHealthBackfillService.TASK_KEY,
+        log_name="media-playback-health-backfill",
+        cli_name="backfill-media-playback-health",
+        cli_help="补检媒体播放结构健康状态",
+        manual_only=True,
+        handler=lambda reporter, _params: (
+            MediaPlaybackHealthBackfillService.backfill_pending_health(
+                reporter=reporter,
+            )
         ),
     ),
     JobDefinition(

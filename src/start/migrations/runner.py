@@ -74,6 +74,7 @@ MEDIA_CONTENT_GCID_MIGRATION_NAME = "20261101_01_add_media_content_gcid"
 MULTI_VERSION_PROCESSED_MIGRATION_NAME = (
     "20261102_01_add_movie_multi_version_processed_snapshot"
 )
+MEDIA_PLAYBACK_HEALTH_MIGRATION_NAME = "20261105_01_add_media_playback_health"
 
 
 @dataclass(frozen=True)

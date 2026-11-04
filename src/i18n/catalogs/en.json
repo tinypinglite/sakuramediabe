@@ -1,5 +1,6 @@
 {
   "errors.http_error": "Request failed",
+  "errors.media_invalid": "This media is invalid and cannot be played",
   "errors.forbidden": "You do not have permission to perform this action",
   "errors.internal_error": "Internal server error",
   "errors.logs_unavailable": "Server log directory is unavailable",
@@ -28,6 +29,7 @@
   "tasks.media_tag_retag.name": "Media file tag retag",
   "tasks.media_duration_backfill.name": "Media duration backfill",
   "tasks.media_video_info_backfill.name": "Media info backfill",
+  "tasks.media_playback_health_backfill.name": "Media playback health backfill",
   "tasks.media_resolution_backfill.name": "Media resolution backfill",
   "tasks.media_file_scan.name": "Media file scan",
   "tasks.media_thumbnail_generation.name": "Media thumbnail generation",
@@ -44,6 +46,19 @@
     "one": "{count} new movie added",
     "other": "{count} new movies added"
   },
+  "notifications.media_invalid.title": "Invalid media detected",
+  "notifications.media_invalid.content": {
+    "one": "{count} new invalid media item: {items}. Open Media Management to review it.",
+    "other": "{count} new invalid media items: {items}. Open Media Management to review them."
+  },
+  "notifications.media_invalid.item": "{name}: {reason}",
+  "notifications.media_invalid.more": "and {count} more",
+  "media.invalid.reason.file_missing": "File is missing",
+  "media.invalid.reason.container_invalid": "Container structure is damaged",
+  "media.invalid.reason.moov_missing": "moov is missing",
+  "media.invalid.reason.video_stream_missing": "Video stream is missing",
+  "media.invalid.reason.interleave_bad": "Audio/video interleaving is abnormal",
+  "media.invalid.reason.unknown": "Reason unknown",
   "errors.actor_in_use": "This actor is still in use",
   "errors.actor_merged": "This actor has been merged into another actor and cannot be deleted",
   "errors.actor_not_found": "Actor not found",
@@ -313,6 +328,7 @@
   "tasks.media_thumbnail_pack_backfill.progress.processing": "Thumbnail pack backfill · Processing {current}/{total} · Packed {packed} · Failed {failed}",
   "tasks.media_video_info_backfill.progress.completed": "Media info backfill · Completed {current}/{total} · Updated {updated} · Skipped {skipped} · Failed {failed} · Updated but still incomplete {incomplete}",
   "tasks.media_video_info_backfill.progress.probing": "Media info backfill · Probing {current}/{total} · Updated {updated} · Failed {failed} · Skipped {skipped}",
+  "tasks.media_playback_health_backfill.progress.completed": "Media playback health backfill · Completed {current}/{total} · Updated {updated} · Invalid {invalid} · Unknown {unknown} · Failed {failed}",
   "tasks.media_file_hash_backfill.progress.completed": "Media file hash backfill · Completed {current}/{total} · Updated {updated} · Skipped {skipped} · Failed {failed}",
   "tasks.media_tag_retag.progress.completed": "Media file tag retag · Completed {current}/{total} · Tagged {tagged} · Updated {updated} · Cleared {cleared} · Manual skipped {manual_skipped} · Failed {failed}",
   "tasks.media_thumbnail_generation.progress.scan_querying": "Stage 1/2 · Finding pending media · Querying candidates",

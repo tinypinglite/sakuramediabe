@@ -11,6 +11,14 @@ from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
     ProviderOperationError,
 )
+from src.service.playback.media_invalid_notification_service import (
+    MediaInvalidNotificationService,
+)
+from src.service.playback.media_playback_health_service import (
+    REASON_FILE_MISSING,
+    MediaPlaybackHealthService,
+    health_missing_file,
+)
 from src.service.playback.operation_locks import (
     LIBRARY_LOCK,
     MediaOperationBusy,
@@ -84,6 +92,7 @@ class MediaValidityScanService:
             "unsupported_libraries": 0,
             "failed_libraries": 0,
         }
+        invalid_items: list[dict[str, Any]] = []
         completed = 0
         logger.info("Media validity scan started total_media={}", total_media)
         step = max(total_media // 20, 1)
@@ -161,11 +170,42 @@ class MediaValidityScanService:
                             )
                         else:
                             valid_before = bool(media.valid)
-                            if valid_before == exists:
+                            health_before = media.playback_health
+                            health_after = health_before
+                            valid_after = exists
+                            if exists:
+                                if MediaPlaybackHealthService.is_invalid(
+                                    health_before
+                                ):
+                                    if (
+                                        MediaPlaybackHealthService.reason(
+                                            health_before
+                                        )
+                                        == REASON_FILE_MISSING
+                                    ):
+                                        # 只有“文件消失”这一类失效允许随文件重新出现而解除。
+                                        health_after = None
+                                    else:
+                                        # 结构失效是终态，巡检不能把它洗白。
+                                        valid_after = False
+                            elif not MediaPlaybackHealthService.is_invalid(
+                                health_before
+                            ):
+                                # 只有非失效状态才写文件缺失；已有 invalid 原样保留。
+                                health_after = health_missing_file()
+
+                            if (
+                                valid_before == valid_after
+                                and health_before == health_after
+                            ):
                                 stats["unchanged_media"] += 1
                             else:
-                                updates = {Media.valid: exists, Media.updated_at: utc_now_for_db()}
-                                if exists:
+                                updates = {
+                                    Media.valid: valid_after,
+                                    Media.playback_health: health_after,
+                                    Media.updated_at: utc_now_for_db(),
+                                }
+                                if valid_after and not valid_before:
                                     updates.update(cls._revival_thumbnail_values(media))
                                 updated = (
                                     Media.update(updates)
@@ -176,10 +216,17 @@ class MediaValidityScanService:
                                     stats["skipped_media"] += 1
                                 else:
                                     stats["updated_media"] += 1
-                                    if exists:
+                                    if valid_after and not valid_before:
                                         stats["revived_media"] += 1
-                                    else:
+                                    elif not valid_after and valid_before:
                                         stats["invalidated_media"] += 1
+                                        media.playback_health = health_after
+                                        invalid_items.append(
+                                            MediaPlaybackHealthService.invalid_item(
+                                                media,
+                                                health_after,
+                                            )
+                                        )
                         emit_progress(completed)
 
             except MediaOperationBusy:
@@ -188,4 +235,11 @@ class MediaValidityScanService:
                 completed += skipped
                 emit_progress(completed)
 
+        try:
+            MediaInvalidNotificationService.notify_new_invalid(
+                items=invalid_items,
+                task_run_id=getattr(reporter, "task_run_id", None),
+            )
+        except Exception:
+            logger.exception("Media validity scan notification failed")
         return stats

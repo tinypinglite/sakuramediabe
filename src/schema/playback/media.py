@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, field_validator
 
@@ -130,6 +130,9 @@ class InvalidMediaResource(SchemaModel):
     library_id: int | None
     library_name: str | None
     file_size_bytes: int
+    invalid_reason: str | None = None
+    invalid_detail: dict[str, Any] = Field(default_factory=dict)
+    invalid_checked_at: str | None = None
     updated_at: datetime
 
 
@@ -148,6 +151,7 @@ class MediaListItemResource(SchemaModel):
     file_size_bytes: int
     duration_seconds: int
     resolution: str | None = None
+    interleave_gap_mib: float | None = None
     valid: bool
     thumbnail_generation_state: MediaThumbnailGenerationState
     thumbnail_last_error_code: str | None = None

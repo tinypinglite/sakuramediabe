@@ -5,6 +5,9 @@ from peewee import JOIN
 from src.model.playback.libraries import MediaLibrary
 from src.model.playback.media import Media
 from src.schema.common.media import MediaSummaryResource
+from src.service.playback.media_playback_health_service import (
+    MediaPlaybackHealthService,
+)
 from src.service.playback.media_tag_service import MediaTagService
 
 
@@ -26,6 +29,7 @@ def list_movie_media_summaries(
             Media.file_size_bytes,
             Media.duration_seconds,
             Media.video_info,
+            Media.playback_health,
             Media.valid,
             Media.is_media_tags_manually_managed,
         )
@@ -40,6 +44,11 @@ def list_movie_media_summaries(
     summaries: dict[str, list[MediaSummaryResource]] = {}
     for row in rows:
         row["tags"] = tags_by_media_id.get(int(row["id"]), [])
+        row["interleave_gap_mib"] = (
+            MediaPlaybackHealthService.interleave_gap_mib(
+                row.get("playback_health")
+            )
+        )
         summaries.setdefault(row["movie_number"], []).append(
             MediaSummaryResource.model_validate(row)
         )

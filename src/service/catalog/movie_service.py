@@ -95,6 +95,9 @@ from src.service.catalog.movie_resolution_service import resolution_exists_expre
 from src.service.catalog.rating_service import RatingService
 from src.service.collections import PlaylistService
 from src.service.discovery.ranking_service import RankingCatalogService
+from src.service.playback.media_playback_health_service import (
+    MediaPlaybackHealthService,
+)
 from src.service.playback.provider_helpers import library_handle_for, media_handle_for
 
 
@@ -802,7 +805,17 @@ class MovieService:
             media.library_name = media.library.name
             media.provider_key = media.library.provider_key
             media.playback_deliveries = list(bundle.playback_deliveries)
-            resources.append(MovieMediaResource.from_attributes_model(media))
+            resources.append(
+                MovieMediaResource.from_attributes_model(media).model_copy(
+                    update={
+                        "interleave_gap_mib": (
+                            MediaPlaybackHealthService.interleave_gap_mib(
+                                media.playback_health
+                            )
+                        ),
+                    }
+                )
+            )
         return resources
 
     @staticmethod
