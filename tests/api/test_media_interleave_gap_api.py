@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from src.model import Media, MediaLibrary, Movie
+from src.model import Media, MediaLibrary, Movie, VideoItem
 from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
 
 
@@ -18,6 +18,7 @@ def _media(
     *,
     file_name: str,
     gap_mib: float | None,
+    video_info: dict | None = None,
 ) -> Media:
     playback_health = (
         None
@@ -34,6 +35,7 @@ def _media(
         library=library,
         file_name=file_name,
         playback_health=playback_health,
+        video_info=video_info,
     )
 
 
@@ -66,6 +68,51 @@ def test_media_list_filters_by_interleave_gap(client, account_user):
     assert all(item["interleave_gap_mib"] >= 64 for item in body["items"])
     assert below.id not in {item["id"] for item in body["items"]}
     assert missing.id not in {item["id"] for item in body["items"]}
+
+
+def test_media_list_exposes_video_info_for_jav_and_non_jav(client, account_user):
+    library = MediaLibrary.create(
+        name="video-info-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    movie = Movie.create(
+        movie_number="VIDEO-INFO-001",
+        javdb_id="video-info-1",
+        title="video info",
+    )
+    video_info = {
+        "container": {"bit_rate": 10000000},
+        "video": {
+            "codec_name": "hevc",
+            "bit_rate": 9000000,
+            "frame_rate": 29.97,
+        },
+    }
+    jav = _media(
+        library,
+        movie,
+        file_name="jav.mp4",
+        gap_mib=8.2,
+        video_info=video_info,
+    )
+    video = VideoItem.create(title="PornBox")
+    non_jav = Media.create(
+        video_item=video,
+        library=library,
+        file_name="video.mp4",
+        video_info=video_info,
+    )
+
+    response = client.get(
+        "/media",
+        headers=_auth_headers(client, account_user.username),
+    )
+
+    assert response.status_code == 200
+    items = {item["id"]: item for item in response.json()["items"]}
+    assert items[jav.id]["video_info"] == video_info
+    assert items[non_jav.id]["video_info"] == video_info
 
 
 def test_movie_detail_exposes_interleave_gap(client, account_user, monkeypatch):

@@ -200,6 +200,7 @@ class MediaService:
                 interleave_gap_mib=MediaPlaybackHealthService.interleave_gap_mib(
                     media.playback_health
                 ),
+                video_info=media.video_info,
                 valid=media.valid,
                 thumbnail_generation_state=media.thumbnail_generation_state,
                 thumbnail_last_error_code=media.thumbnail_last_error_code,
@@ -229,6 +230,7 @@ class MediaService:
             interleave_gap_mib=MediaPlaybackHealthService.interleave_gap_mib(
                 media.playback_health
             ),
+            video_info=media.video_info,
             valid=media.valid,
             thumbnail_generation_state=media.thumbnail_generation_state,
             thumbnail_last_error_code=media.thumbnail_last_error_code,

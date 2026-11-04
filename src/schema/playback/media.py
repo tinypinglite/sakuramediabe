@@ -152,6 +152,7 @@ class MediaListItemResource(SchemaModel):
     duration_seconds: int
     resolution: str | None = None
     interleave_gap_mib: float | None = None
+    video_info: dict[str, Any] | None = None
     valid: bool
     thumbnail_generation_state: MediaThumbnailGenerationState
     thumbnail_last_error_code: str | None = None
