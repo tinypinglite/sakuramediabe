@@ -3,6 +3,7 @@ import pytest
 from src.model import Media, MediaLibrary
 from src.plugins.provider_protocol import ImportFile, StagedMedia
 from src.service.playback.media_playback_health_service import (
+    MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES,
     REASON_CONTAINER_INVALID,
     REASON_FILE_MISSING,
     REASON_INTERLEAVE_BAD,
@@ -151,4 +152,36 @@ def test_import_continues_when_playback_probe_raises(test_db, monkeypatch):
     assert result.imported_count == 1
     assert result.failed_count == 0
     assert Media.get().playback_health is None
+    assert events == ["finalize"]
+
+
+def test_import_small_file_records_ok_without_provider_probe(test_db):
+    library = MediaLibrary.create(
+        name="import-health-small-file",
+        provider_key="legacy-demo",
+        provider_config={},
+    )
+    events: list[str] = []
+
+    result = MediaImportService(
+        provider=_storage(events),
+        catalog_import_service=object(),
+    ).import_from_source(
+        {"source": "directory"},
+        library.id,
+        media_kind="video",
+    )
+
+    media = Media.get()
+    assert result.imported_count == 1
+    assert result.failed_count == 0
+    assert media.file_size_bytes < MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES
+    assert media.playback_health["status"] == "ok"
+    assert media.playback_health["reason"] is None
+    assert media.playback_health["detail"] == {
+        "skip_reason": "file_too_small",
+        "file_size_bytes": 100,
+        "probe_min_file_size_bytes": MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES,
+    }
+    assert media.playback_health["checked_at"]
     assert events == ["finalize"]

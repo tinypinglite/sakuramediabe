@@ -28,6 +28,8 @@ MAX_SAMPLE_PACKETS = 20_000
 MAX_READ_BYTES = 1024 * 1024
 ISO_BMFF_SUFFIXES = frozenset({".3gp", ".f4v", ".m4v", ".mov", ".mp4"})
 MAX_BOX_SCAN = 256
+# 小于 64 MiB 的媒体交错问题影响有限，直接视为可用，不做读取探测。
+MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES = 64 * 1024 * 1024
 
 STATUS_OK = "ok"
 STATUS_INVALID = "invalid"
@@ -477,6 +479,16 @@ class MediaPlaybackHealthService:
 
     @classmethod
     def probe_media(cls, media: Media, *, storage: Any | None = None) -> PlaybackHealth:
+        file_size_bytes = int(media.file_size_bytes or 0)
+        if 0 < file_size_bytes < MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES:
+            return PlaybackHealth(
+                status=STATUS_OK,
+                detail={
+                    "skip_reason": "file_too_small",
+                    "file_size_bytes": file_size_bytes,
+                    "probe_min_file_size_bytes": MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES,
+                },
+            )
         try:
             provider_storage = storage
             if provider_storage is None:
@@ -499,19 +511,19 @@ class MediaPlaybackHealthService:
                     reader.seek(0)
                 except Exception:
                     actual_size = None
-                if actual_size is not None and actual_size != int(media.file_size_bytes):
+                if actual_size is not None and actual_size != file_size_bytes:
                     return PlaybackHealth(
                         status=STATUS_UNKNOWN,
                         detail={
                             "error_type": "source_size_mismatch",
-                            "expected_size_bytes": int(media.file_size_bytes),
+                            "expected_size_bytes": file_size_bytes,
                             "actual_size_bytes": actual_size,
                         },
                     )
                 return cls.probe_reader(
                     reader,
                     file_name=media.file_name,
-                    file_size=int(media.file_size_bytes),
+                    file_size=file_size_bytes,
                     duration_seconds=int(media.duration_seconds or 0),
                 )
         except ProviderOperationError as exc:

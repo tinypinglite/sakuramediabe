@@ -7,6 +7,7 @@ from src.model import Media, MediaLibrary, Movie
 from src.plugins.provider_protocol import ProviderOperationError
 from src.service.playback.media_playback_health_service import (
     MAX_READ_BYTES,
+    MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES,
     REASON_CONTAINER_INVALID,
     REASON_FILE_MISSING,
     REASON_INTERLEAVE_BAD,
@@ -44,12 +45,28 @@ class BytesReader:
         return None
 
 
+class ReportedSizeReader(BytesReader):
+    def __init__(self, data: bytes, reported_size: int) -> None:
+        super().__init__(data)
+        self._reported_size = reported_size
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if whence == 2:
+            self._position = max(0, self._reported_size + offset)
+            return self._position
+        return super().seek(offset, whence)
+
+
 def _box(name: str, payload: bytes = b"") -> bytes:
     size = 8 + len(payload)
     return size.to_bytes(4, "big") + name.encode("latin1") + payload
 
 
-def _media(*, valid: bool = True) -> Media:
+def _media(
+    *,
+    valid: bool = True,
+    file_size_bytes: int = MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES,
+) -> Media:
     library = MediaLibrary.create(
         name=f"health-{Media.select().count()}",
         provider_key="demo",
@@ -63,7 +80,7 @@ def _media(*, valid: bool = True) -> Media:
         movie=movie,
         library=library,
         file_name="health.mp4",
-        file_size_bytes=100,
+        file_size_bytes=file_size_bytes,
         duration_seconds=60,
         valid=valid,
     )
@@ -239,6 +256,24 @@ def test_provider_budget_error_is_unknown(test_db):
     assert health.detail["error_type"] == "provider_budget_exceeded"
 
 
+def test_probe_media_skips_small_files_without_opening_source(test_db):
+    media = _media(file_size_bytes=MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES - 1)
+
+    class Storage:
+        @staticmethod
+        def open_cover_source(*, media):
+            raise AssertionError("small media must not be probed")
+
+    health = MediaPlaybackHealthService.probe_media(media, storage=Storage())
+
+    assert health.status == STATUS_OK
+    assert health.detail == {
+        "skip_reason": "file_too_small",
+        "file_size_bytes": MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES - 1,
+        "probe_min_file_size_bytes": MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES,
+    }
+
+
 @pytest.mark.parametrize(
     ("provider_code", "expected_status", "expected_reason"),
     [
@@ -282,7 +317,10 @@ def test_probe_media_uses_cover_source_without_transfer_source(
     class Storage:
         @staticmethod
         def open_cover_source(*, media):
-            return BytesReader(_box("ftyp") + _box("moov", b"x" * 84))
+            return ReportedSizeReader(
+                _box("ftyp") + _box("moov", b"x" * 84),
+                MIN_PLAYBACK_PROBE_FILE_SIZE_BYTES,
+            )
 
         @staticmethod
         def open_transfer_source(*, media):
