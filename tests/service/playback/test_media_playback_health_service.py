@@ -303,17 +303,17 @@ def test_probe_media_uses_cover_source_without_transfer_source(
     assert health.status == STATUS_OK
 
 
-def test_write_health_marks_media_invalid(test_db):
-    media = _media()
+@pytest.mark.parametrize("valid", [True, False])
+def test_write_health_does_not_change_media_validity(test_db, valid):
+    media = _media(valid=valid)
     health = PlaybackHealth(
         status=STATUS_INVALID,
         reason=REASON_INTERLEAVE_BAD,
         detail={"max_gap_mib": 1024},
     )
 
-    newly_invalid = MediaPlaybackHealthService.write_health(media, health)
+    MediaPlaybackHealthService.write_health(media, health)
 
     stored = Media.get_by_id(media.id)
-    assert newly_invalid is True
-    assert stored.valid is False
+    assert stored.valid is valid
     assert stored.playback_health["reason"] == REASON_INTERLEAVE_BAD

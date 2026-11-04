@@ -541,16 +541,10 @@ class MediaPlaybackHealthService:
             )
 
     @staticmethod
-    def write_health(media: Media, health: PlaybackHealth) -> bool:
-        was_valid = bool(media.valid)
+    def write_health(media: Media, health: PlaybackHealth) -> None:
         media.playback_health = health.to_json()
-        fields = [Media.playback_health, Media.updated_at]
-        if health.status == STATUS_INVALID:
-            media.valid = False
-            fields.append(Media.valid)
         media.updated_at = utc_now_for_db()
-        media.save(only=fields)
-        return was_valid and health.status == STATUS_INVALID
+        media.save(only=[Media.playback_health, Media.updated_at])
 
     @classmethod
     def probe_and_write(
@@ -558,10 +552,10 @@ class MediaPlaybackHealthService:
         media: Media,
         *,
         storage: Any | None = None,
-    ) -> tuple[PlaybackHealth, bool]:
+    ) -> PlaybackHealth:
         health = cls.probe_media(media, storage=storage)
-        newly_invalid = cls.write_health(media, health)
-        return health, newly_invalid
+        cls.write_health(media, health)
+        return health
 
 
 def health_missing_file() -> dict[str, Any]:

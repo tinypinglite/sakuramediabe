@@ -174,20 +174,14 @@ class MediaValidityScanService:
                             health_after = health_before
                             valid_after = exists
                             if exists:
-                                if MediaPlaybackHealthService.is_invalid(
-                                    health_before
+                                if (
+                                    MediaPlaybackHealthService.reason(
+                                        health_before
+                                    )
+                                    == REASON_FILE_MISSING
                                 ):
-                                    if (
-                                        MediaPlaybackHealthService.reason(
-                                            health_before
-                                        )
-                                        == REASON_FILE_MISSING
-                                    ):
-                                        # 只有“文件消失”这一类失效允许随文件重新出现而解除。
-                                        health_after = None
-                                    else:
-                                        # 结构失效是终态，巡检不能把它洗白。
-                                        valid_after = False
+                                    # 文件重新出现时清除旧的“文件消失”健康快照。
+                                    health_after = None
                             elif not MediaPlaybackHealthService.is_invalid(
                                 health_before
                             ):
@@ -224,7 +218,7 @@ class MediaValidityScanService:
                                         invalid_items.append(
                                             MediaPlaybackHealthService.invalid_item(
                                                 media,
-                                                health_after,
+                                                health_missing_file(),
                                             )
                                         )
                         emit_progress(completed)

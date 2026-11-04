@@ -49,6 +49,8 @@ from src.schema.playback.media import (
     DuplicateMediaListItemResource,
     InvalidMediaResource,
     MediaListItemResource,
+    MediaPlaybackHealthResource,
+    MediaPlaybackHealthStatus,
     MediaPointCreateRequest,
     MediaPointKind,
     MediaPointListItemResource,
@@ -173,6 +175,30 @@ class MediaService:
         )
 
     @staticmethod
+    def _to_playback_health_resource(
+        health: dict | None,
+    ) -> MediaPlaybackHealthResource:
+        value = health if isinstance(health, dict) else {}
+        raw_status = value.get("status")
+        try:
+            status = MediaPlaybackHealthStatus(raw_status)
+        except (TypeError, ValueError):
+            status = MediaPlaybackHealthStatus.NOT_CHECKED
+        reason = value.get("reason")
+        detail = value.get("detail")
+        checked_at = value.get("checked_at")
+        return MediaPlaybackHealthResource(
+            status=status,
+            reason=reason if isinstance(reason, str) and reason else None,
+            detail=detail if isinstance(detail, dict) else {},
+            checked_at=(
+                checked_at
+                if isinstance(checked_at, str) and checked_at
+                else None
+            ),
+        )
+
+    @staticmethod
     def _to_media_list_item_resource(
         media: Media,
         tags=None,
@@ -198,6 +224,9 @@ class MediaService:
                 duration_seconds=media.duration_seconds,
                 resolution=media.resolution,
                 interleave_gap_mib=MediaPlaybackHealthService.interleave_gap_mib(
+                    media.playback_health
+                ),
+                playback_health=MediaService._to_playback_health_resource(
                     media.playback_health
                 ),
                 video_info=media.video_info,
@@ -228,6 +257,9 @@ class MediaService:
             duration_seconds=media.duration_seconds,
             resolution=media.resolution,
             interleave_gap_mib=MediaPlaybackHealthService.interleave_gap_mib(
+                media.playback_health
+            ),
+            playback_health=MediaService._to_playback_health_resource(
                 media.playback_health
             ),
             video_info=media.video_info,
@@ -291,6 +323,7 @@ class MediaService:
         search: str | None = None,
         thumbnail_generation_state: MediaThumbnailGenerationState | None = None,
         interleave_gap_mib_min: float | None = None,
+        playback_health_status: MediaPlaybackHealthStatus | None = None,
         sort: str | None = None,
         page: int = 1,
         page_size: int = 20,
@@ -335,6 +368,26 @@ class MediaService:
                 "max_gap_mib",
             ).cast("double precision")
             base_query = base_query.where(gap_mib >= interleave_gap_mib_min)
+        if playback_health_status is not None:
+            status_value = peewee.fn.jsonb_extract_path_text(
+                Media.playback_health,
+                "status",
+            )
+            if playback_health_status is MediaPlaybackHealthStatus.NOT_CHECKED:
+                base_query = base_query.where(
+                    status_value.is_null(True)
+                    | status_value.not_in(
+                        [
+                            MediaPlaybackHealthStatus.OK.value,
+                            MediaPlaybackHealthStatus.UNKNOWN.value,
+                            MediaPlaybackHealthStatus.INVALID.value,
+                        ]
+                    )
+                )
+            else:
+                base_query = base_query.where(
+                    status_value == playback_health_status.value
+                )
 
         total = base_query.count()
         order_by = cls._build_media_list_sort(sort)

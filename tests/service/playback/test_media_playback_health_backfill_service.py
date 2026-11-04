@@ -51,7 +51,7 @@ def _media(
     )
 
 
-def test_backfill_only_probes_missing_health_and_notifies_invalid(
+def test_backfill_only_probes_missing_health_and_records_invalid(
     test_db,
     monkeypatch,
 ):
@@ -77,9 +77,8 @@ def test_backfill_only_probes_missing_health_and_notifies_invalid(
             detail={"max_gap_mib": 1024},
         )
         media.playback_health = health.to_json()
-        media.valid = False
-        media.save(only=[Media.playback_health, Media.valid])
-        return health, True
+        media.save(only=[Media.playback_health])
+        return health
 
     monkeypatch.setattr(
         "src.service.playback.media_playback_health_backfill_service."
@@ -99,6 +98,7 @@ def test_backfill_only_probes_missing_health_and_notifies_invalid(
     assert probed == [missing.id]
     assert invalid.id not in probed
     assert Media.get_by_id(existing.id).playback_health["status"] == "ok"
+    assert Media.get_by_id(missing.id).valid is True
     assert stats == {
         "candidate_media": 1,
         "updated_media": 1,
@@ -108,10 +108,9 @@ def test_backfill_only_probes_missing_health_and_notifies_invalid(
         "skipped_media": 0,
         "failed_media": 0,
     }
-    notification = SystemNotification.get(
+    assert SystemNotification.select().where(
         SystemNotification.event_type == "media_invalid_detected"
-    )
-    assert "BACKFILL-001" in notification.content
+    ).count() == 0
 
 
 def test_backfill_counts_ok_and_continues_after_failure(test_db, monkeypatch):
@@ -129,7 +128,7 @@ def test_backfill_counts_ok_and_continues_after_failure(test_db, monkeypatch):
         health = PlaybackHealth(status=STATUS_OK)
         media.playback_health = health.to_json()
         media.save(only=[Media.playback_health])
-        return health, False
+        return health
 
     monkeypatch.setattr(
         "src.service.playback.media_playback_health_backfill_service."
@@ -173,7 +172,7 @@ def test_backfill_retries_unknown_health(test_db, monkeypatch):
 
     def fake_probe_and_write(media, *, storage=None):
         probed.append(media.id)
-        return PlaybackHealth(status=STATUS_OK), False
+        return PlaybackHealth(status=STATUS_OK)
 
     monkeypatch.setattr(
         "src.service.playback.media_playback_health_backfill_service."

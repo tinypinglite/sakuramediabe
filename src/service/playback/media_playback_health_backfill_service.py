@@ -8,9 +8,6 @@ from peewee import fn
 from src.i18n import translate
 from src.model import Media, MediaLibrary
 from src.plugins.provider_protocol import MEDIA_PROVIDER_REGISTRY
-from src.service.playback.media_invalid_notification_service import (
-    MediaInvalidNotificationService,
-)
 from src.service.playback.media_playback_health_service import (
     STATUS_INVALID,
     STATUS_OK,
@@ -62,7 +59,6 @@ class MediaPlaybackHealthBackfillService:
             "skipped_media": 0,
             "failed_media": 0,
         }
-        invalid_items: list[dict[str, Any]] = []
         storage_by_library: dict[int, Any] = {}
         logger.info(
             "Media playback health backfill started candidate_media={}",
@@ -133,20 +129,13 @@ class MediaPlaybackHealthBackfillService:
                     if storage is None:
                         storage = MEDIA_PROVIDER_REGISTRY.storage_for(handle.library)
                         storage_by_library[media.library_id] = storage
-                    health, newly_invalid = MediaPlaybackHealthService.probe_and_write(
+                    health = MediaPlaybackHealthService.probe_and_write(
                         media,
                         storage=storage,
                     )
                     stats["updated_media"] += 1
                     if health.status == STATUS_INVALID:
                         stats["invalid_media"] += 1
-                        if newly_invalid:
-                            invalid_items.append(
-                                MediaPlaybackHealthService.invalid_item(
-                                    media,
-                                    health.to_json(),
-                                )
-                            )
                     elif health.status == STATUS_UNKNOWN:
                         stats["unknown_media"] += 1
                     elif health.status == STATUS_OK:
@@ -162,13 +151,4 @@ class MediaPlaybackHealthBackfillService:
                 )
             emit_progress(completed)
 
-        try:
-            MediaInvalidNotificationService.notify_new_invalid(
-                items=invalid_items,
-                task_run_id=getattr(reporter, "task_run_id", None),
-            )
-        except Exception:
-            logger.exception(
-                "Media playback health backfill notification failed"
-            )
         return stats

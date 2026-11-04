@@ -88,7 +88,10 @@ def test_scan_reconciles_media_from_one_library_inventory(test_db, monkeypatch):
     ]
 
 
-def test_scan_does_not_revive_structural_invalid_media(test_db, monkeypatch):
+def test_scan_revives_structural_invalid_media_when_file_exists(
+    test_db,
+    monkeypatch,
+):
     library = MediaLibrary.create(
         name="validity-library",
         provider_key="demo",
@@ -120,8 +123,8 @@ def test_scan_does_not_revive_structural_invalid_media(test_db, monkeypatch):
     stats = MediaValidityScanService.scan_media_validity(reporter=Reporter())
 
     stored = Media.get_by_id(media.id)
-    assert stats["unchanged_media"] == 1
-    assert stored.valid is False
+    assert stats["revived_media"] == 1
+    assert stored.valid is True
     assert stored.playback_health["reason"] == "interleave_bad"
 
 
@@ -164,6 +167,51 @@ def test_scan_preserves_structural_invalid_when_file_disappears(
     assert stats["unchanged_media"] == 1
     assert stored.valid is False
     assert stored.playback_health == health
+
+
+def test_scan_invalidates_existing_structural_health_for_missing_file(
+    test_db,
+    monkeypatch,
+):
+    from src.model import SystemNotification
+
+    library = MediaLibrary.create(
+        name="validity-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    health = {
+        "status": "invalid",
+        "reason": "interleave_bad",
+        "detail": {"max_gap_mib": 1024},
+        "checked_at": "2026-11-05T00:00:00+00:00",
+    }
+    media = _media(
+        library,
+        "VALIDITY-STRUCTURE-LOST",
+        playback_health=health,
+    )
+
+    class Storage:
+        @staticmethod
+        def scan_managed_media_ref_keys():
+            return set()
+
+        @staticmethod
+        def managed_media_ref_key(*, media_ref):
+            return _managed_ref_key(media_ref)
+
+    monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _library: Storage())
+
+    MediaValidityScanService.scan_media_validity(reporter=Reporter())
+
+    stored = Media.get_by_id(media.id)
+    notification = SystemNotification.get(
+        SystemNotification.event_type == "media_invalid_detected"
+    )
+    assert stored.valid is False
+    assert stored.playback_health == health
+    assert "文件已丢失" in notification.content
 
 
 def test_scan_revives_file_missing_when_file_returns(test_db, monkeypatch):
