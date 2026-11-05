@@ -15,7 +15,7 @@ from src.schema.catalog.actors import (
     ActorUpdateRequest,
     YearResource,
 )
-from src.schema.catalog.movies import TagResource
+from src.schema.catalog.movies import TagListItemResource
 from src.schema.common.pagination import PageResponse
 from src.service.catalog import ActorMergeService, ActorService
 
@@ -185,7 +185,9 @@ def get_actor_movie_ids(actor_id: int):
 
 
 @router.get(
-    "/{actor_id}/tags", response_model=list[TagResource], response_model_by_alias=False
+    "/{actor_id}/tags",
+    response_model=list[TagListItemResource],
+    response_model_by_alias=False,
 )
 def get_actor_tags(actor_id: int):
     return ActorService.get_actor_tags(actor_id)

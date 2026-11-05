@@ -52,7 +52,7 @@ from src.schema.catalog.actors import (
     ActorUpdateRequest,
     YearResource,
 )
-from src.schema.catalog.movies import TagResource
+from src.schema.catalog.movies import TagListItemResource
 from src.schema.common.pagination import PageResponse
 from src.service.catalog.actor_ownership_gateway import (
     MANUAL_ACTOR_FIELD_OWNER,
@@ -967,18 +967,19 @@ class ActorService:
         return [movie.id for movie in query]
 
     @classmethod
-    def get_actor_tags(cls, actor_id: int) -> list[TagResource]:
+    def get_actor_tags(cls, actor_id: int) -> list[TagListItemResource]:
         actor = cls._require_actor(actor_id)
+        movie_count = fn.COUNT(fn.DISTINCT(MovieTag.movie)).alias("movie_count")
         query = (
-            Tag.select(Tag)
+            Tag.select(Tag, movie_count)
             .join(MovieTag)
             .join(Movie, on=(MovieTag.movie == Movie.id))
             .join(MovieActor, on=(MovieActor.movie == Movie.id))
             .where(MovieActor.actor == actor.id)
-            .distinct()
+            .group_by(Tag.id)
             .order_by(Tag.name)
         )
-        return [TagResource(tag_id=tag.id, name=tag.name) for tag in query]
+        return TagListItemResource.from_items(query)
 
     @classmethod
     def get_actor_years(cls, actor_id: int) -> list[YearResource]:
