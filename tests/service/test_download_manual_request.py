@@ -11,6 +11,7 @@ from src.model import (
     VideoCollection,
 )
 from src.plugins.provider_protocol import RemoteDownloadTask
+from src.service.transfers.downloads import download_source as download_source_module
 from src.service.transfers.downloads import request_service as request_service_module
 from src.service.transfers.downloads.request_service import DownloadRequestService
 from src.service.transfers.imports.import_service import MediaImportService
@@ -51,6 +52,11 @@ def manual_context(test_db, monkeypatch):
         "supports_torrent_bytes",
         lambda _provider_key: True,
     )
+    monkeypatch.setattr(
+        request_service_module.MEDIA_PROVIDER_REGISTRY,
+        "supported_source_kinds",
+        lambda _provider_key: {"magnet", "torrent", "ed2k", "http"},
+    )
     return SimpleNamespace(library=library, client=client, provider=provider)
 
 
@@ -74,6 +80,8 @@ def test_manual_jav_magnet_creates_task_without_indexer(manual_context):
     assert record.movie_number == "ABC-123"
     assert record.title == "ABC-123"
     assert record.source_uri == f"magnet:?xt=urn:btih:{HASH}"
+    assert record.source_kind == "magnet"
+    assert record.resource_key == f"bt:{HASH}"
     assert manual_context.provider.submissions[0].display_name == f"ABC-123-{HASH[:6]}"
     assert manual_context.provider.submissions[0].torrent_bytes is None
 
@@ -83,7 +91,7 @@ def test_manual_video_torrent_bytes_prefers_provider_bytes(
 ):
     collection = VideoCollection.create(name="PornBox 合集")
     monkeypatch.setattr(
-        request_service_module,
+        download_source_module,
         "resolve_torrent_upload",
         lambda _payload: (HASH, "Uploaded Torrent"),
     )
@@ -105,6 +113,8 @@ def test_manual_video_torrent_bytes_prefers_provider_bytes(
     assert task.display_name == "用户命名"
     assert task.delete_source_after_import is True
     assert submission.source_uri == f"magnet:?xt=urn:btih:{HASH}"
+    assert submission.source_kind == "torrent"
+    assert submission.resource_key == f"bt:{HASH}"
     assert submission.torrent_bytes == b"torrent-payload"
     assert submission.display_name == f"用户命名-{HASH[:6]}"
     assert DownloadSubmissionRecord.get().movie_number == ""
@@ -114,7 +124,7 @@ def test_manual_torrent_degrades_to_magnet_without_capability(
     manual_context, monkeypatch
 ):
     monkeypatch.setattr(
-        request_service_module,
+        download_source_module,
         "resolve_torrent_upload",
         lambda _payload: (HASH, "Uploaded Torrent"),
     )
@@ -181,6 +191,7 @@ def test_manual_rejects_hash_already_imported(manual_context):
         title="ABC-123",
         source_uri=f"magnet:?xt=urn:btih:{HASH}",
         info_hash=HASH,
+        resource_key=f"bt:{HASH}",
     )
 
     with pytest.raises(ApiError) as error:
@@ -195,15 +206,94 @@ def test_manual_rejects_hash_already_imported(manual_context):
     assert manual_context.provider.submissions == []
 
 
-def test_manual_rejects_non_magnet_source(manual_context):
+def test_manual_rejects_unsupported_source(manual_context):
     with pytest.raises(ApiError) as error:
         DownloadRequestService().create_manual_request(
             client_id=manual_context.client.id,
             media_kind="video",
-            source_uri="https://example.test/movie.torrent",
+            source_uri="ftp://example.test/movie.mp4",
         )
 
     assert error.value.code == "invalid_download_source"
+    assert manual_context.provider.submissions == []
+
+
+def test_manual_accepts_ed2k_and_http_direct_sources(manual_context):
+    service = DownloadRequestService()
+    ed2k = (
+        "ed2k://|file|movie.mp4|12345|"
+        "0123456789abcdef0123456789abcdef|/"
+    )
+    service.create_manual_request(
+        client_id=manual_context.client.id,
+        media_kind="video",
+        source_uri=ed2k,
+        source_kind="ed2k",
+    )
+    ed2k_record = DownloadSubmissionRecord.get(
+        DownloadSubmissionRecord.source_kind == "ed2k"
+    )
+    assert ed2k_record.source_kind == "ed2k"
+    assert (
+        ed2k_record.resource_key
+        == "ed2k:0123456789abcdef0123456789abcdef:12345"
+    )
+    assert ed2k_record.info_hash == ""
+    assert manual_context.provider.submissions[-1].source_kind == "ed2k"
+    assert manual_context.provider.submissions[-1].resource_key == ed2k_record.resource_key
+
+    service.create_manual_request(
+        client_id=manual_context.client.id,
+        media_kind="video",
+        source_uri="https://cdn.example/movie.mp4?token=secret",
+        source_kind="http",
+    )
+    http_record = DownloadSubmissionRecord.get(
+        DownloadSubmissionRecord.source_kind == "http"
+    )
+    assert http_record.source_kind == "http"
+    assert http_record.resource_key.startswith("http:")
+    assert http_record.info_hash == ""
+    assert manual_context.provider.submissions[-1].source_kind == "http"
+    assert manual_context.provider.submissions[-1].source_uri.startswith(
+        "https://cdn.example/"
+    )
+
+
+def test_manual_rejects_declared_source_kind_mismatch(manual_context):
+    with pytest.raises(ApiError) as error:
+        DownloadRequestService().create_manual_request(
+            client_id=manual_context.client.id,
+            media_kind="video",
+            source_uri=f"magnet:?xt=urn:btih:{HASH}",
+            source_kind="http",
+        )
+
+    assert error.value.code == "invalid_download_source"
+    assert manual_context.provider.submissions == []
+
+
+def test_manual_rejects_source_kind_unsupported_by_client(
+    manual_context, monkeypatch
+):
+    monkeypatch.setattr(
+        request_service_module.MEDIA_PROVIDER_REGISTRY,
+        "supported_source_kinds",
+        lambda _provider_key: {"magnet", "torrent"},
+    )
+
+    with pytest.raises(ApiError) as error:
+        DownloadRequestService().create_manual_request(
+            client_id=manual_context.client.id,
+            media_kind="video",
+            source_uri=(
+                "ed2k://|file|movie.mp4|12345|"
+                "0123456789abcdef0123456789abcdef|/"
+            ),
+            source_kind="ed2k",
+        )
+
+    assert error.value.code == "download_source_unsupported"
     assert manual_context.provider.submissions == []
 
 

@@ -35,8 +35,8 @@ from src.plugins.provider_protocol import (
 )
 
 
-def test_plugin_protocol_uses_host_api_v16():
-    assert HOST_API_VERSION == 16
+def test_plugin_protocol_uses_host_api_v17():
+    assert HOST_API_VERSION == 17
 
 
 def test_import_source_validation_is_optional_provider_capability():

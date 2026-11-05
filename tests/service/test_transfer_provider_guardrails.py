@@ -163,7 +163,35 @@ def test_download_client_resource_hides_config_without_download_component(monkey
         "src.service.transfers.downloads.client_config_service.MEDIA_PROVIDER_REGISTRY.require",
         lambda _provider_key: SimpleNamespace(downloads=None),
     )
-    assert DownloadClientService._resource(client).provider_config == {}
+    resource = DownloadClientService._resource(client)
+    assert resource.provider_config == {}
+    assert resource.supported_source_kinds == []
+
+
+def test_download_client_resource_exposes_supported_source_kinds(monkeypatch):
+    client = SimpleNamespace(
+        id=1,
+        name="client",
+        library_id=1,
+        provider_config={},
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        library=SimpleNamespace(provider_key="cloud"),
+    )
+    monkeypatch.setattr(
+        "src.service.transfers.downloads.client_config_service.MEDIA_PROVIDER_REGISTRY.require",
+        lambda _provider_key: SimpleNamespace(
+            downloads=SimpleNamespace(config_fields=())
+        ),
+    )
+    monkeypatch.setattr(
+        "src.service.transfers.downloads.client_config_service.MEDIA_PROVIDER_REGISTRY.supported_source_kinds",
+        lambda _provider_key: frozenset({"magnet", "torrent", "ed2k", "http"}),
+    )
+
+    resource = DownloadClientService._resource(client)
+
+    assert resource.supported_source_kinds == ["ed2k", "http", "magnet", "torrent"]
 
 
 def test_read_only_download_config_is_rejected():

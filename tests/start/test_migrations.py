@@ -34,6 +34,7 @@ from src.start.migrations.runner import (
     DETACH_USER_ASSET_IMAGES_MIGRATION_NAME,
     DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME,
     DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME,
+    DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
     DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME,
     DOWNLOAD_TASK_MANUAL_FIELDS_MIGRATION_NAME,
     DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME,
@@ -177,6 +178,7 @@ def test_current_migrations_are_discoverable_in_order():
         MEDIA_CONTENT_HASHES_MIGRATION_NAME,
         MEDIA_CONTENT_GCID_MIGRATION_NAME,
         MULTI_VERSION_PROCESSED_MIGRATION_NAME,
+            DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
     ]
 
 
@@ -439,6 +441,10 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
             name=MULTI_VERSION_PROCESSED_MIGRATION_NAME,
             applied=True,
         ),
+            MigrationExecution(
+                name=DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
+                applied=True,
+            ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -486,6 +492,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MEDIA_CONTENT_HASHES_MIGRATION_NAME,
         MEDIA_CONTENT_GCID_MIGRATION_NAME,
         MULTI_VERSION_PROCESSED_MIGRATION_NAME,
+            DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
     ]
 
 
@@ -649,6 +656,40 @@ def test_download_submission_indexes_migration_adds_query_indexes(clean_db):
     before = len(clean_db.get_indexes("download_submission_record"))
     migration.migrate(clean_db)
     assert len(clean_db.get_indexes("download_submission_record")) == before
+
+
+def test_download_source_identity_migration_backfills_bt_rows(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    record = DownloadSubmissionRecord.create(
+        client_id=1,
+        movie_number="TEST-001",
+        indexer_name="manual",
+        title="TEST-001",
+        source_uri=f"magnet:?xt=urn:btih:{'a' * 40}",
+        info_hash="a" * 40,
+    )
+    _drop_columns(
+        clean_db,
+        "download_submission_record",
+        ("source_kind", "resource_key"),
+    )
+
+    migration = _load_migration_module(
+        Path(f"{DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME}.py")
+    )
+    migration.migrate(clean_db)
+    migration.migrate(clean_db)
+
+    current = DownloadSubmissionRecord.get_by_id(record.id)
+    assert current.source_kind == "magnet"
+    assert current.resource_key == f"bt:{'a' * 40}"
+    assert {"source_kind", "resource_key"} <= _column_names(
+        clean_db, "download_submission_record"
+    )
+    assert "downloadsubmissionrecord_client_id_resource_key" in {
+        index.name for index in clean_db.get_indexes("download_submission_record")
+    }
 
 
 def test_run_pending_migrations_rejects_current_schema_without_base_marker(clean_db):
@@ -857,7 +898,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 44
+    assert summary.applied_count == 45
     assert clean_db.execute_sql(
         "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
     ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)

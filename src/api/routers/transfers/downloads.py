@@ -130,6 +130,7 @@ def create_manual_download_request(
         client_id=payload.client_id,
         media_kind=payload.media_kind,
         source_uri=payload.source_uri,
+        source_kind=payload.source_kind,
         movie_number=payload.movie_number,
         collection_id=payload.collection_id,
         display_name=payload.display_name,

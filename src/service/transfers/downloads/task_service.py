@@ -68,8 +68,13 @@ class DownloadTaskService:
         total = query.count()
         tasks = list(query.order_by(*resolve_task_sort(sort)).paginate(page, page_size))
         movies_by_number = cls._load_movies_for_tasks(tasks)
+        blacklistable_task_ids = cls._load_blacklistable_task_ids(tasks)
         return PageResponse[DownloadTaskResource](
-            items=DownloadTaskResource.from_models(tasks, movies_by_number=movies_by_number),
+            items=DownloadTaskResource.from_models(
+                tasks,
+                movies_by_number=movies_by_number,
+                blacklistable_task_ids=blacklistable_task_ids,
+            ),
             page=page,
             page_size=page_size,
             total=total,
@@ -83,6 +88,37 @@ class DownloadTaskService:
         movies, _thin_cover_alias = with_movie_card_relations(Movie.select(Movie))
         movies = movies.where(Movie.movie_number.in_(numbers))
         return {movie.movie_number: movie for movie in movies}
+
+    @staticmethod
+    def _load_blacklistable_task_ids(tasks) -> set[int]:
+        task_ids = [
+            task.id
+            for task in tasks
+            if task.import_status in {IMPORT_STATUS_FAILED, IMPORT_STATUS_SKIPPED}
+        ]
+        if not task_ids:
+            return set()
+        latest_sources: dict[int, tuple[str, str]] = {}
+        records = (
+            DownloadSubmissionRecord.select(
+                DownloadSubmissionRecord.task_id,
+                DownloadSubmissionRecord.source_kind,
+                DownloadSubmissionRecord.info_hash,
+            )
+            .where(DownloadSubmissionRecord.task_id.in_(task_ids))
+            .order_by(DownloadSubmissionRecord.id.desc())
+        )
+        for record in records:
+            if record.task_id is not None:
+                latest_sources.setdefault(
+                    record.task_id,
+                    (record.source_kind, record.info_hash),
+                )
+        return {
+            task_id
+            for task_id, (source_kind, info_hash) in latest_sources.items()
+            if source_kind in {"magnet", "torrent"} and info_hash.strip()
+        }
 
     @classmethod
     def delete_task(cls, task_id: int, *, delete_files: bool) -> dict:
@@ -104,7 +140,13 @@ class DownloadTaskService:
                 .order_by(DownloadSubmissionRecord.id.desc())
                 .first()
             )
-            info_hash = canonical_info_hash(record.info_hash if record else task.remote_id)
+            # 黑名单仍只保存 BT hash；eD2k/HTTP 任务删除时不能把资源 key 当 BTIH。
+            if record is None or record.source_kind in {"magnet", "torrent"}:
+                candidate = (
+                    (record.info_hash if record else "") or task.remote_id
+                ).strip()
+                if candidate:
+                    info_hash = canonical_info_hash(candidate)
         try:
             download_provider(task.client).delete_task(
                 remote_id=task.remote_id,

@@ -24,7 +24,8 @@ from src.scheduler.contracts import JobDefinition
 # 14：迁移来源可携带完整 MD5/SHA-1，目标 provider 可复用宿主缓存的 SHA-1。
 # 15：迁移来源可携带 GCID，目标 provider 可复用宿主缓存的 GCID。
 # 16：媒体 Provider 可声明 WebView 登录规则并解析登录凭据。
-HOST_API_VERSION = 16
+# 17：下载 Provider 可声明支持的来源类型，下载提交携带规范化 source identity。
+HOST_API_VERSION = 17
 MIN_SUPPORTED_HOST_API_VERSION = 4
 
 

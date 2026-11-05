@@ -22,6 +22,13 @@ ScanProgressCallback: TypeAlias = Callable[[JsonObject], None]
 SCAN_PROGRESS_HOST_API_VERSION = 7
 PlaybackDelivery: TypeAlias = Literal["proxy", "redirect"]
 MergedPlaybackFormat: TypeAlias = Literal["mp4", "hls"]
+DownloadSourceKind: TypeAlias = Literal["magnet", "torrent", "ed2k", "http"]
+DOWNLOAD_SOURCE_KINDS: frozenset[DownloadSourceKind] = frozenset(
+    {"magnet", "torrent", "ed2k", "http"}
+)
+DEFAULT_DOWNLOAD_SOURCE_KINDS: frozenset[DownloadSourceKind] = frozenset(
+    {"magnet", "torrent"}
+)
 MEDIA_PROVIDER_EXTENSION_KEY = "media.provider"
 
 
@@ -277,6 +284,8 @@ class DownloadSubmission:
     display_name: str
     # 页面上传的完整种子；支持该能力的 provider 优先使用它，避免纯磁力丢失 tracker。
     torrent_bytes: bytes | None = None
+    source_kind: DownloadSourceKind | None = None
+    resource_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -548,6 +557,8 @@ class StorageSpaceProvider(Protocol):
 
 class DownloadComponent(Protocol):
     config_fields: tuple[ConfigField, ...]
+    # 缺省由宿主按 magnet/torrent 处理；新 provider 显式声明可接受的来源类型。
+    supported_source_kinds: frozenset[DownloadSourceKind]
 
     def prepare_client(
         self,
@@ -686,6 +697,22 @@ class MediaProviderRegistry:
         downloads = getattr(bundle, "downloads", None)
         return bool(getattr(downloads, "supports_torrent_bytes", False))
 
+    def supported_source_kinds(
+        self, provider_key: str
+    ) -> frozenset[DownloadSourceKind]:
+        """Return the source kinds declared by the active download component."""
+        entry = self._bundles.get(provider_key)
+        bundle = entry[1] if entry is not None else None
+        downloads = getattr(bundle, "downloads", None)
+        if downloads is None:
+            return frozenset()
+        declared = getattr(
+            downloads, "supported_source_kinds", DEFAULT_DOWNLOAD_SOURCE_KINDS
+        )
+        return frozenset(
+            kind for kind in declared if kind in DOWNLOAD_SOURCE_KINDS
+        )
+
     def require(self, provider_key: str) -> MediaProviderBundle:
         entry = self._bundles.get(provider_key)
         bundle = entry[1] if entry is not None else None
@@ -759,6 +786,8 @@ def refresh_media_provider_registry(
 
 
 __all__ = [
+    "DEFAULT_DOWNLOAD_SOURCE_KINDS",
+    "DOWNLOAD_SOURCE_KINDS",
     "MEDIA_PROVIDER_EXTENSION_KEY",
     "MEDIA_PROVIDER_REGISTRY",
     "BrowseEntry",
@@ -768,6 +797,7 @@ __all__ = [
     "DownloadClientHandle",
     "DownloadComponent",
     "DownloadProvider",
+    "DownloadSourceKind",
     "DownloadSubmission",
     "ImportFile",
     "ImportFileContent",

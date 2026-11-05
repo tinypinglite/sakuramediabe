@@ -16,6 +16,7 @@ class DownloadClientResource(SchemaModel):
     name: str
     library_id: int
     provider_config: dict[str, Any]
+    supported_source_kinds: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
@@ -159,11 +160,12 @@ class DownloadRequestCreateRequest(SchemaModel):
 
 
 class DownloadManualRequest(SchemaModel):
-    """用户手动提交磁力链；种子文件走 /download-requests/manual/torrent。"""
+    """用户手动提交链接；种子文件走 /download-requests/manual/torrent。"""
 
     client_id: int = Field(gt=0)
     media_kind: Literal["jav", "video"]
     source_uri: str = Field(min_length=1)
+    source_kind: Literal["magnet", "ed2k", "http"] | None = None
     movie_number: str | None = None
     collection_id: int | None = Field(default=None, gt=0)
     display_name: str | None = None
@@ -183,6 +185,7 @@ class DownloadTaskResource(SchemaModel):
     state: str
     progress: float
     import_status: str
+    blacklistable: bool = False
     movie_title: str | None = None
     movie_cover: ImageResource | None = None
     movie_thin_cover: ImageResource | None = None
@@ -195,7 +198,13 @@ class DownloadTaskResource(SchemaModel):
         return describe_import_status(self.import_status)
 
     @classmethod
-    def from_model(cls, task, *, movie: "Movie | None" = None) -> "DownloadTaskResource":
+    def from_model(
+        cls,
+        task,
+        *,
+        movie: "Movie | None" = None,
+        blacklistable: bool = False,
+    ) -> "DownloadTaskResource":
         data = {
             "id": task.id,
             "client_id": task.client_id,
@@ -209,6 +218,7 @@ class DownloadTaskResource(SchemaModel):
             "state": task.state,
             "progress": task.progress,
             "import_status": task.import_status,
+            "blacklistable": blacklistable,
             "created_at": task.created_at,
             "updated_at": task.updated_at,
         }
@@ -227,9 +237,18 @@ class DownloadTaskResource(SchemaModel):
         tasks,
         *,
         movies_by_number: "dict[str, Movie] | None" = None,
+        blacklistable_task_ids: set[int] | None = None,
     ) -> list["DownloadTaskResource"]:
         index = movies_by_number or {}
-        return [cls.from_model(task, movie=index.get(task.movie)) for task in tasks]
+        blacklistable_ids = blacklistable_task_ids or set()
+        return [
+            cls.from_model(
+                task,
+                movie=index.get(task.movie),
+                blacklistable=task.id in blacklistable_ids,
+            )
+            for task in tasks
+        ]
 
 
 class DownloadTasksQuery(SchemaModel):

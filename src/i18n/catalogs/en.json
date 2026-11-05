@@ -120,6 +120,7 @@
   "errors.invalid_download_selection_indexers": "The selection policy references unknown indexers",
   "errors.invalid_download_resource_hash": "The download source is missing a valid BT hash",
   "errors.invalid_download_source": "Unsupported download source",
+  "errors.download_source_unsupported": "The selected download client does not support this source type",
   "errors.invalid_download_task_filter": "Invalid download task filter",
   "errors.invalid_download_task_import": "Only completed download tasks with an import source can be imported",
   "errors.invalid_download_torrent": "Invalid torrent file",

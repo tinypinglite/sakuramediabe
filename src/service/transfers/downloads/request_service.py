@@ -15,6 +15,7 @@ from src.model import (
 from src.model.base import get_database
 from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
+    DownloadSourceKind,
     DownloadSubmission,
     ProviderOperationError,
     RemoteDownloadTask,
@@ -33,11 +34,11 @@ from src.service.transfers.downloads.common import (
     validate_non_empty,
     validate_remote_download_task,
 )
-from src.service.transfers.downloads.resource_hash import (
-    resolve_magnet,
-    resolve_resource_hash,
-    resolve_torrent_upload,
+from src.service.transfers.downloads.download_source import (
+    resolve_manual_download_source,
+    resource_suffix,
 )
+from src.service.transfers.downloads.resource_hash import resolve_resource_hash
 
 
 class DownloadRequestService:
@@ -59,7 +60,13 @@ class DownloadRequestService:
             "candidate title cannot be empty",
         )
         info_hash = resolve_resource_hash(source_uri)
-        display_name = self._provider_display_name(movie_number, info_hash)
+        source_kind: DownloadSourceKind = (
+            "magnet" if source_uri.lower().startswith("magnet:") else "torrent"
+        )
+        resource_key = f"bt:{info_hash}"
+        display_name = self._provider_display_name(
+            movie_number, resource_suffix(resource_key)
+        )
         if DownloadResourceBlacklist.select().where(
             DownloadResourceBlacklist.info_hash == info_hash
         ).exists():
@@ -73,6 +80,8 @@ class DownloadRequestService:
             description=payload.candidate.description,
             source_uri=source_uri,
             info_hash=info_hash,
+            source_kind=source_kind,
+            resource_key=resource_key,
             display_name=display_name,
         )
         with get_database().atomic():
@@ -123,6 +132,7 @@ class DownloadRequestService:
         client_id: int,
         media_kind: str,
         source_uri: str | None = None,
+        source_kind: str | None = None,
         torrent_bytes: bytes | None = None,
         movie_number: str | None = None,
         collection_id: int | None = None,
@@ -151,27 +161,43 @@ class DownloadRequestService:
                     {"collection_id": collection_id},
                 )
 
-        if torrent_bytes is not None:
-            info_hash, torrent_name = resolve_torrent_upload(torrent_bytes)
-            source_uri = f"magnet:?xt=urn:btih:{info_hash}"
-            supports_torrent_bytes = MEDIA_PROVIDER_REGISTRY.supports_torrent_bytes(
+        resolved = resolve_manual_download_source(
+            source_uri or "",
+            source_kind=source_kind,
+            torrent_bytes=torrent_bytes,
+        )
+        if resolved.kind not in MEDIA_PROVIDER_REGISTRY.supported_source_kinds(
+            client.library.provider_key
+        ):
+            raise ApiError(
+                422,
+                "download_source_unsupported",
+                "当前下载器不支持该来源类型",
+                {"source_kind": resolved.kind},
+            )
+        info_hash = resolved.info_hash
+        source_uri = resolved.source_uri
+        torrent_name = resolved.display_name
+        supports_torrent_bytes = (
+            resolved.kind == "torrent"
+            and MEDIA_PROVIDER_REGISTRY.supports_torrent_bytes(
                 client.library.provider_key
             )
-        else:
-            source_uri = (source_uri or "").strip()
-            info_hash, torrent_name = resolve_magnet(source_uri)
-            supports_torrent_bytes = False
+        )
 
-        if DownloadResourceBlacklist.select().where(
-            DownloadResourceBlacklist.info_hash == info_hash
-        ).exists():
+        if (
+            info_hash is not None
+            and DownloadResourceBlacklist.select()
+            .where(DownloadResourceBlacklist.info_hash == info_hash)
+            .exists()
+        ):
             raise ApiError(422, "download_source_blacklisted", "该资源已被拉黑")
 
         existing_task_id = (
             DownloadSubmissionRecord.select(DownloadSubmissionRecord.task_id)
             .where(
                 (DownloadSubmissionRecord.client_id == client.id)
-                & (DownloadSubmissionRecord.info_hash == info_hash)
+                & (DownloadSubmissionRecord.resource_key == resolved.resource_key)
                 & (DownloadSubmissionRecord.task_id.is_null(False))
             )
             .order_by(DownloadSubmissionRecord.id.desc())
@@ -191,8 +217,15 @@ class DownloadRequestService:
                 )
 
         requested_name = (display_name or "").strip()[:255]
-        base_name = requested_name or torrent_name or movie_number or info_hash[:8]
-        provider_display_name = self._provider_display_name(base_name, info_hash)
+        base_name = (
+            requested_name
+            or torrent_name
+            or movie_number
+            or resource_suffix(resolved.resource_key)
+        )
+        provider_display_name = self._provider_display_name(
+            base_name, resource_suffix(resolved.resource_key)
+        )
         record, remote_task = self._submit_source(
             client,
             movie_number=movie_number or "",
@@ -202,6 +235,8 @@ class DownloadRequestService:
             description=None,
             source_uri=source_uri,
             info_hash=info_hash,
+            source_kind=resolved.kind,
+            resource_key=resolved.resource_key,
             display_name=provider_display_name,
             torrent_bytes=torrent_bytes if supports_torrent_bytes else None,
         )
@@ -269,7 +304,9 @@ class DownloadRequestService:
         release_title: str | None,
         description: str | None,
         source_uri: str,
-        info_hash: str,
+        info_hash: str | None,
+        source_kind: DownloadSourceKind,
+        resource_key: str,
         display_name: str,
         torrent_bytes: bytes | None = None,
     ) -> tuple[DownloadSubmissionRecord, RemoteDownloadTask]:
@@ -281,7 +318,9 @@ class DownloadRequestService:
             release_title=(release_title or "").strip() or None,
             description=(description or "").strip() or None,
             source_uri=source_uri,
-            info_hash=info_hash,
+            info_hash=info_hash or "",
+            source_kind=source_kind,
+            resource_key=resource_key,
         )
         try:
             remote_task = download_provider(client).submit(
@@ -289,6 +328,8 @@ class DownloadRequestService:
                     source_uri=source_uri,
                     display_name=display_name,
                     torrent_bytes=torrent_bytes,
+                    source_kind=source_kind,
+                    resource_key=resource_key,
                 )
             )
             remote_task = validate_remote_download_task(remote_task)
@@ -335,11 +376,11 @@ class DownloadRequestService:
         return normalized
 
     @staticmethod
-    def _provider_display_name(base: str, info_hash: str) -> str:
+    def _provider_display_name(base: str, suffix: str) -> str:
         # 115 以 <name>-<hash6> 识别托管目录；qB 也沿用同一目录命名。
         # 先截名字再加后缀，保证总长不超过 display_name 列的 255。
-        suffix = info_hash[:6]
-        name = " ".join((base or "").split())[:248] or info_hash[:8]
+        suffix = suffix[:6]
+        name = " ".join((base or "").split())[:248] or suffix
         if name.lower().endswith(f"-{suffix}"):
             return name
         return f"{name}-{suffix}"

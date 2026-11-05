@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from src.model import (
     BackgroundTaskRun,
     DownloadClient,
+    DownloadSubmissionRecord,
     DownloadTask,
     Image,
     MediaLibrary,
@@ -136,6 +137,70 @@ def test_download_tasks_returns_movie_cover_image(client, account_user):
     assert item["movie_title"] == "下载任务影片"
     assert item["movie_cover"]["origin"] == "/files/images/cover.jpg"
     assert item["movie_thin_cover"]["origin"] == "/files/images/thin-cover.jpg"
+
+
+def test_download_tasks_exposes_blacklistable_for_failed_bt_tasks(
+    client, account_user
+):
+    token = _login(client, account_user.username)
+    library = MediaLibrary.create(name="lib", provider_key="test", provider_config={})
+    download_client = DownloadClient.create(
+        name="client",
+        library=library,
+        provider_config={},
+    )
+    rows = (
+        ("bt-failed", "failed", "magnet", "a" * 40),
+        ("http-failed", "failed", "http", ""),
+        ("bt-skipped", "skipped", "magnet", "b" * 40),
+        ("bt-pending", "pending", "magnet", "c" * 40),
+    )
+    for remote_id, import_status, source_kind, info_hash in rows:
+        task = DownloadTask.create(
+            client=download_client,
+            movie="TEST-001",
+            name=remote_id,
+            remote_id=remote_id,
+            state="failed",
+            import_status=import_status,
+        )
+        DownloadSubmissionRecord.create(
+            client_id=download_client.id,
+            task_id=task.id,
+            movie_number="TEST-001",
+            indexer_name="manual",
+            title=remote_id,
+            source_uri=(
+                f"magnet:?xt=urn:btih:{info_hash}"
+                if info_hash
+                else "https://cdn.example/movie.mp4"
+            ),
+            info_hash=info_hash,
+            source_kind=source_kind,
+            resource_key=(
+                f"bt:{info_hash}"
+                if source_kind in {"magnet", "torrent"}
+                else "http:abc123"
+            ),
+        )
+
+    response = client.get(
+        "/download-tasks",
+        params={"page": 1, "page_size": 20},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200, response.text
+    blacklistable = {
+        item["remote_id"]: item["blacklistable"]
+        for item in response.json()["items"]
+    }
+    assert blacklistable == {
+        "bt-failed": True,
+        "http-failed": False,
+        "bt-skipped": True,
+        "bt-pending": False,
+    }
 
 
 def _seed_importable_task(
@@ -469,6 +534,51 @@ def test_manual_download_requires_movie_number_for_jav(client, account_user):
     )
 
     assert response.status_code == 422, response.text
+
+
+def test_manual_link_route_passes_source_kind(client, account_user, monkeypatch):
+    token = _login(client, account_user.username)
+    captured = {}
+
+    def fake_create_manual_request(self, **kwargs):
+        captured.update(kwargs)
+        now = datetime.now(timezone.utc)
+        return DownloadRequestCreateResponse(
+            task=DownloadTaskResource(
+                id=1,
+                client_id=kwargs["client_id"],
+                name="ed2k",
+                remote_id="remote-id",
+                state="queued",
+                progress=0.0,
+                import_status="pending",
+                created_at=now,
+                updated_at=now,
+            ),
+            created=True,
+        )
+
+    monkeypatch.setattr(
+        DownloadRequestService, "create_manual_request", fake_create_manual_request
+    )
+
+    response = client.post(
+        "/download-requests/manual",
+        json={
+            "client_id": 1,
+            "media_kind": "video",
+            "source_uri": (
+                "ed2k://|file|movie.mp4|12345|"
+                "0123456789abcdef0123456789abcdef|/"
+            ),
+            "source_kind": "ed2k",
+        },
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 201, response.text
+    assert captured["source_kind"] == "ed2k"
+    assert captured["source_uri"].startswith("ed2k://|file|movie.mp4|")
 
 
 def test_manual_torrent_route_passes_uploaded_bytes(

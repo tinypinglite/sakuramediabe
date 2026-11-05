@@ -76,10 +76,17 @@ class DownloadClientService:
             bundle = MEDIA_PROVIDER_REGISTRY.require(client.library.provider_key)
         except ProviderUnavailableError:
             data.provider_config = {}
+            data.supported_source_kinds = []
             return data
         if bundle.downloads is None:
             data.provider_config = {}
+            data.supported_source_kinds = []
             return data
+        data.supported_source_kinds = sorted(
+            MEDIA_PROVIDER_REGISTRY.supported_source_kinds(
+                client.library.provider_key
+            )
+        )
         secret_keys = {
             field.key for field in bundle.downloads.config_fields if field.input == "secret"
         }

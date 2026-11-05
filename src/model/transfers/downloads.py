@@ -117,6 +117,8 @@ class DownloadSubmissionRecord(TimestampedMixin, BaseModel):
     description = peewee.TextField(null=True)
     source_uri = peewee.TextField()
     info_hash = peewee.CharField(max_length=40)
+    source_kind = peewee.CharField(max_length=16, default="magnet")
+    resource_key = peewee.CharField(max_length=255, null=True)
     state = peewee.CharField(max_length=32, default="submitting")
     remote_id = peewee.CharField(max_length=255, null=True)
     error_code = peewee.CharField(max_length=255, null=True)
@@ -140,6 +142,13 @@ DownloadSubmissionRecord.add_index(
         DownloadSubmissionRecord,
         (DownloadSubmissionRecord.client_id, DownloadSubmissionRecord.info_hash),
         name="downloadsubmissionrecord_client_id_info_hash",
+    )
+)
+DownloadSubmissionRecord.add_index(
+    peewee.ModelIndex(
+        DownloadSubmissionRecord,
+        (DownloadSubmissionRecord.client_id, DownloadSubmissionRecord.resource_key),
+        name="downloadsubmissionrecord_client_id_resource_key",
     )
 )
 DownloadSubmissionRecord.add_index(
