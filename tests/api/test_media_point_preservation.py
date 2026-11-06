@@ -55,7 +55,7 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
         if kind == 'jav' else {'video_item': VideoItem.create(title='Video')}
     )
     media = Media.create(library=library, file_name='source.mp4', **owner)
-    # JAV 同影片仍有另一版本时旧时刻也不能自动改绑；非 JAV 条目删除会连其余媒体一并清理。
+    # JAV 同影片仍有另一版本时时刻改挂到保留版本；非 JAV 条目删除会连其余媒体一并清理。
     other_media = Media.create(library=library, file_name='other.mp4', **owner)
     thumbnails = []
     for offset in (10, 20, 30):
@@ -102,9 +102,10 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
     assert Media.get_or_none(Media.id == media.id) is None
     # 非 JAV 媒体删除会同步删除视频条目，同条目的其它媒体一并清理；JAV 只删这一条。
     assert bool(Media.get_or_none(Media.id == other_media.id)) is (kind == 'jav')
+    expected_media_id = other_media.id if kind == 'jav' else None
     for point_id in point_ids:
         point = MediaPoint.get_by_id(point_id)
-        assert point.media_id is None and point.thumbnail_id is None
+        assert point.media_id == expected_media_id and point.thumbnail_id is None
     assert MediaPoint.get_by_id(point_ids[0]).created_at == original.created_at
     # 时刻图是自有副本：来源缩略图文件随媒体删除全部回收，时刻图文件不受影响。
     point_image_paths = [
@@ -120,6 +121,13 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
     assert not (image_root / '20.webp').exists()
     assert not (image_root / '30.webp').exists()
     assert MomentRecommendationService._load_seeds() == []
+    if kind == 'jav':
+        refreshed = client.get(detail_path, headers=headers).json()
+        target_detail = next(
+            item for item in refreshed['media_items']
+            if item['media_id'] == other_media.id
+        )
+        assert [point['point_id'] for point in target_detail['points']] == point_ids
 
     for filter_kind, total in [(kind, 2), ('all', 2), ('video' if kind == 'jav' else 'jav', 0)]:
         response = client.get('/media-points', params={'kind': filter_kind, 'page_size': 1}, headers=headers)
@@ -127,7 +135,7 @@ def test_deleted_source_preserves_points_images_collections_and_clips(
         assert response.json()['total'] == total
         assert len(response.json()['items']) == min(total, 1)
     item = client.get('/media-points', params={'kind': kind}, headers=headers).json()['items'][0]
-    assert item['media_id'] is None and item['thumbnail_id'] is None
+    assert item['media_id'] == expected_media_id and item['thumbnail_id'] is None
     assert item['movie_number'] == media.movie_number and item['video_item_id'] == media.video_item_id
     assert client.get(item['image']['origin']).status_code == 200
     # 媒体列表的分类查询仍基于 Media，不能被时刻快照筛选改坏。

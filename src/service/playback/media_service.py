@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from contextlib import nullcontext
 from typing import Literal
 from uuid import uuid4
 
@@ -66,10 +67,15 @@ from src.service.catalog.image_cleanup_service import ImageCleanupService
 # 绕开包级 __init__ 的初始化顺序依赖。
 from src.service.collections.playlist_service import PlaylistService
 from src.service.discovery import get_qdrant_thumbnail_store
+from src.service.playback.media_state_migration_service import (
+    MediaStateMigrationResult,
+    MediaStateMigrationService,
+)
 from src.service.playback.media_tag_service import MediaTagService
 from src.service.playback.media_thumbnail_service import MediaThumbnailService
 from src.service.playback.operation_locks import (
     MEDIA_LOCK,
+    MOVIE_MEDIA_LOCK,
     media_operation_lock,
 )
 from src.service.playback.provider_helpers import media_handle_for
@@ -743,7 +749,13 @@ class MediaService:
         )
 
     @classmethod
-    def delete_media(cls, media_id: int, *, sync_video_member: bool = True) -> None:
+    def delete_media(
+        cls,
+        media_id: int,
+        *,
+        sync_video_member: bool = True,
+        migration_excluded_media_ids: frozenset[int] = frozenset(),
+    ) -> None:
         with media_operation_lock(MEDIA_LOCK, media_id):
             media = cls._require_media(media_id)
             # 非 JAV 视频条目与媒体一一对应：删除媒体即删除条目，合集成员随外键级联清理。
@@ -753,78 +765,123 @@ class MediaService:
 
                 VideoItemService.delete_video(media.video_item_id)
                 return
-            # 已巡检确认远端无对象的媒体不再要求 provider 可达：插件缺失或鉴权失败时
-            # 也允许清理本地记录，否则死库记录永远删不掉。
-            if media.valid:
-                media_handle = media_handle_for(media)
-                try:
-                    storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
-                    storage.delete_media(media=media_handle)
-                except ProviderUnavailableError as exc:
-                    raise ApiError(
-                        503,
-                        "provider_not_installed",
-                        "媒体提供方未安装",
-                    ) from exc
-                except ProviderOperationError as exc:
-                    if exc.code == "source_not_found":
-                        # Provider 已确认来源不存在，宿主记录已无对应远端对象，继续清理本地元数据。
-                        pass
-                    else:
-                        status_code = {
-                            "authentication_failed": 401,
-                            "unavailable": 503,
-                            "invalid_config": 422,
-                            "unsupported": 422,
-                        }[exc.code]
-                        raise ApiError(
-                            status_code,
-                            f"provider_{exc.code}",
-                            exc.safe_message,
-                        ) from exc
-            thumbnails = list(
-                MediaThumbnail.select(MediaThumbnail, Image)
-                .join(Image)
-                .where(MediaThumbnail.media == media)
+
+            movie_id = media.movie.id if media.movie_number else None
+            movie_lock = (
+                media_operation_lock(MOVIE_MEDIA_LOCK, movie_id)
+                if movie_id is not None
+                else nullcontext()
             )
-            thumbnail_image_ids = [thumbnail.image_id for thumbnail in thumbnails]
-            replacement_movie_id = media.movie.id if media.movie_number else None
+            with movie_lock:
+                cls._delete_media_record(
+                    media,
+                    movie_id=movie_id,
+                    migration_excluded_media_ids=migration_excluded_media_ids,
+                )
 
-            with get_database().atomic():
-                # 缩略图先按文件指纹归档：归档行持有 Image 引用，随后的清理不会删除
-                # 记录与物理文件，同 hash 文件再次入库即可直接收养。
-                ThumbnailAdoptionService.archive_media_thumbnails(media)
-                if replacement_movie_id is not None:
-                    # 同一影片并发删除多个版本时，串行判定“是否已经删到最后一份”。
-                    Movie.select(Movie.id).where(Movie.id == replacement_movie_id).for_update().get()
-                # 清理播放进度和缩略图；时刻与切片仅置空来源引用。
-                Media.delete().where(Media.id == media.id).execute()
-                if replacement_movie_id is not None and not Media.select(Media.id).where(
-                    Media.movie == media.movie_number
-                ).exists():
-                    # JAV 的 Media 是订阅补库结果。最后一份删除后由 catalog 状态域开启新一轮搜索；
-                    # 未订阅影片会被更新条件过滤，非 JAV 媒体没有 movie_number，不会走到这里。
-                    from src.service.catalog.movie_subscription_search_state_service import (
-                        MovieSubscriptionSearchStateService,
+    @classmethod
+    def _delete_media_record(
+        cls,
+        media: Media,
+        *,
+        movie_id: int | None,
+        migration_excluded_media_ids: frozenset[int],
+    ) -> None:
+        # 已巡检确认远端无对象的媒体不再要求 provider 可达：插件缺失或鉴权失败时
+        # 也允许清理本地记录，否则死库记录永远删不掉。
+        if media.valid:
+            media_handle = media_handle_for(media)
+            try:
+                storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
+                storage.delete_media(media=media_handle)
+            except ProviderUnavailableError as exc:
+                raise ApiError(
+                    503,
+                    "provider_not_installed",
+                    "媒体提供方未安装",
+                ) from exc
+            except ProviderOperationError as exc:
+                if exc.code == "source_not_found":
+                    # Provider 已确认来源不存在，宿主记录已无对应远端对象，继续清理本地元数据。
+                    pass
+                else:
+                    status_code = {
+                        "authentication_failed": 401,
+                        "unavailable": 503,
+                        "invalid_config": 422,
+                        "unsupported": 422,
+                    }[exc.code]
+                    raise ApiError(
+                        status_code,
+                        f"provider_{exc.code}",
+                        exc.safe_message,
+                    ) from exc
+        thumbnails = list(
+            MediaThumbnail.select(MediaThumbnail, Image)
+            .join(Image)
+            .where(MediaThumbnail.media == media)
+        )
+        thumbnail_image_ids = [thumbnail.image_id for thumbnail in thumbnails]
+        obsolete_image_paths: set[str] = set()
+        migration_result: MediaStateMigrationResult | None = None
+
+        with get_database().atomic():
+            # 缩略图先按文件指纹归档：归档行持有 Image 引用，随后的清理不会删除
+            # 记录与物理文件，同 hash 文件再次入库即可直接收养。
+            ThumbnailAdoptionService.archive_media_thumbnails(media)
+            if movie_id is not None:
+                # 同一影片并发删除多个版本时，串行判定“是否已经删到最后一份”。
+                Movie.select(Movie.id).where(Movie.id == movie_id).for_update().get()
+                target = MediaStateMigrationService.resolve_target_media(
+                    media,
+                    excluded_media_ids=migration_excluded_media_ids,
+                )
+                if target is not None:
+                    migration_result = MediaStateMigrationService.migrate(
+                        media,
+                        target,
                     )
+                    obsolete_image_paths |= migration_result.obsolete_image_paths
 
-                    MovieSubscriptionSearchStateService.reset(
-                        [replacement_movie_id], media_replacement=True
-                    )
+            # 清理播放进度和缩略图；时刻与切片仅置空来源引用。
+            Media.delete().where(Media.id == media.id).execute()
+            if movie_id is not None and not Media.select(Media.id).where(
+                Media.movie == media.movie_number
+            ).exists():
+                # JAV 的 Media 是订阅补库结果。最后一份删除后由 catalog 状态域开启新一轮搜索；
+                # 未订阅影片会被更新条件过滤，非 JAV 媒体没有 movie_number，不会走到这里。
+                from src.service.catalog.movie_subscription_search_state_service import (
+                    MovieSubscriptionSearchStateService,
+                )
 
-                obsolete_image_paths: set[str] = set()
-                for image_id in thumbnail_image_ids:
-                    image = Image.get_or_none(Image.id == image_id)
-                    obsolete_image_paths |= ImageCleanupService.delete_image_record_if_unused(image)
+                MovieSubscriptionSearchStateService.reset(
+                    [movie_id], media_replacement=True
+                )
 
-            ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
+            for image_id in thumbnail_image_ids:
+                image = Image.get_or_none(Image.id == image_id)
+                obsolete_image_paths |= ImageCleanupService.delete_image_record_if_unused(image)
 
-            # 仅 JAV 媒体缩略图会进向量库；非 JAV 缩略图落 SKIPPED 从不入库，跳过空删省一次远端往返。
-            if media.movie_number and image_search_enabled():
-                try:
-                    get_qdrant_thumbnail_store().delete_by_media_id(media.id)
-                except Exception as exc:
-                    logger.warning("Delete media vectors failed media_id={} detail={}", media.id, exc)
+        ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
+
+        if migration_result is not None:
+            logger.info(
+                "Media state migrated source_media_id={} target_media_id={} "
+                "progress={} points={} merged={} skipped={}",
+                media.id,
+                migration_result.target_media_id,
+                migration_result.progress_migrated,
+                migration_result.points_migrated,
+                migration_result.points_merged,
+                migration_result.points_skipped_out_of_range,
+            )
+
+        # 仅 JAV 媒体缩略图会进向量库；非 JAV 缩略图落 SKIPPED 从不入库，跳过空删省一次远端往返。
+        if media.movie_number and image_search_enabled():
+            try:
+                get_qdrant_thumbnail_store().delete_by_media_id(media.id)
+            except Exception as exc:
+                logger.warning("Delete media vectors failed media_id={} detail={}", media.id, exc)
 
     @classmethod
     def force_reset_media_thumbnails(cls, media_ids: list[int]) -> int:

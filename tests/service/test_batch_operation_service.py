@@ -53,10 +53,15 @@ def test_enqueue_creates_pending_rows_in_fifo_order(test_db):
 def test_execute_records_partial_failures_and_continues(monkeypatch):
     from src.service.playback.media_service import MediaService
 
-    calls: list[int] = []
+    calls: list[tuple[int, frozenset[int]]] = []
 
-    def fake_delete_media(media_id: int, *, sync_video_member: bool = True) -> None:
-        calls.append(media_id)
+    def fake_delete_media(
+        media_id: int,
+        *,
+        sync_video_member: bool = True,
+        migration_excluded_media_ids: frozenset[int] = frozenset(),
+    ) -> None:
+        calls.append((media_id, migration_excluded_media_ids))
         if media_id == 2:
             raise ApiError(404, "media_not_found", "媒体不存在")
 
@@ -67,7 +72,8 @@ def test_execute_records_partial_failures_and_continues(monkeypatch):
         reporter, _params("media_delete", [1, 2, 3])
     )
 
-    assert calls == [1, 2, 3]
+    excluded = frozenset({1, 2, 3})
+    assert calls == [(1, excluded), (2, excluded), (3, excluded)]
     assert result == {
         "operation": "media_delete",
         "total": 3,

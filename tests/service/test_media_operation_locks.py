@@ -24,6 +24,7 @@ from src.service.playback.media_validity_scan_service import MediaValidityScanSe
 from src.service.playback.operation_locks import (
     LIBRARY_LOCK,
     MEDIA_LOCK,
+    MOVIE_MEDIA_LOCK,
     MediaOperationBusy,
     media_operation_lock,
 )
@@ -88,6 +89,26 @@ def test_delete_clip_and_thumbnail_respect_same_lock(test_db):
         with pytest.raises(MediaOperationBusy):
             MediaClipService.create_clip(123, None)
         assert MediaThumbnailTaskService._generate_one(123).state == "skipped"
+
+
+def test_delete_same_movie_versions_use_movie_lock(test_db):
+    library = MediaLibrary.create(
+        name="movie-delete-lock",
+        provider_key="local",
+        provider_config={},
+    )
+    movie = Movie.create(movie_number="MOVIE-LOCK-001", title="Movie lock")
+    first = Media.create(movie=movie, library=library, file_name="first.mp4")
+    second = Media.create(movie=movie, library=library, file_name="second.mp4")
+
+    with other_session_lock(MOVIE_MEDIA_LOCK, movie.id):
+        with pytest.raises(MediaOperationBusy):
+            MediaService.delete_media(first.id)
+        with pytest.raises(MediaOperationBusy):
+            MediaService.delete_media(second.id)
+
+    assert Media.get_or_none(Media.id == first.id) is not None
+    assert Media.get_or_none(Media.id == second.id) is not None
 
 
 def test_busy_thumbnail_preserves_retry_budget(test_db):

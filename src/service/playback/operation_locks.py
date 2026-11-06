@@ -7,6 +7,7 @@ from src.model import get_database
 
 MEDIA_LOCK = 17001
 LIBRARY_LOCK = 17002
+MOVIE_MEDIA_LOCK = 17003
 
 
 class MediaOperationBusy(ApiError):

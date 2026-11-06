@@ -86,7 +86,11 @@ class BatchOperationTaskService:
         if operation is BatchOperationType.MEDIA_DELETE:
             from src.service.playback.media_service import MediaService
 
-            return MediaService.delete_media
+            excluded_media_ids = frozenset(request.ids)
+            return lambda media_id: MediaService.delete_media(
+                media_id,
+                migration_excluded_media_ids=excluded_media_ids,
+            )
         if operation is BatchOperationType.CLIP_DELETE:
             from src.service.playback.media_clip_service import MediaClipService
 
