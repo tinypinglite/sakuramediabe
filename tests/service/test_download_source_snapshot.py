@@ -39,6 +39,11 @@ def _context(test_db, monkeypatch):
         "download_provider",
         lambda _client: FakeProvider(),
     )
+    monkeypatch.setattr(
+        request_service_module.MEDIA_PROVIDER_REGISTRY,
+        "supported_source_kinds",
+        lambda _provider_key: {"magnet", "torrent", "ed2k", "http"},
+    )
     return client
 
 
