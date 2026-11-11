@@ -260,6 +260,11 @@ class MediaImportService:
         if not movie_numbers:
             yield {}
             return
+        reset_actor_lookup = getattr(
+            self.catalog_import_service, "reset_actor_lookup", None
+        )
+        if callable(reset_actor_lookup):
+            reset_actor_lookup()
         with ThreadPoolExecutor(
             max_workers=self._metadata_max_workers(len(movie_numbers)),
             thread_name_prefix=thread_name_prefix,

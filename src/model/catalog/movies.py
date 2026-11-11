@@ -55,9 +55,6 @@ class Movie(TimestampedMixin, BaseModel):
     title = peewee.TextField(verbose_name="标题")
     release_date = peewee.DateTimeField(verbose_name="发布时间", index=True, null=True)
     duration_minutes = peewee.IntegerField(verbose_name="时长", default=0, index=True)
-    score = peewee.FloatField(verbose_name="评分", default=0)
-    score_number = peewee.IntegerField(verbose_name="评分人数", default=0)
-    watched_count = peewee.IntegerField(default=0)
     cover_image = peewee.ForeignKeyField(
         Image,
         null=True,
@@ -82,8 +79,17 @@ class Movie(TimestampedMixin, BaseModel):
     )
     maker_name = peewee.CharField(max_length=255, verbose_name="厂商名称", null=True)
     director_name = peewee.CharField(max_length=255, verbose_name="导演名称", null=True)
-    want_watch_count = peewee.IntegerField(default=0)
-    comment_count = peewee.IntegerField(default=0)
+    # 互动数是来源插件声明的动态字段，JSONB 只用于展示；heat 是唯一可排序/筛选的标量。
+    interaction_stats = JsonbField(null=True, verbose_name="互动数快照")
+    stats_source = peewee.CharField(
+        max_length=64, null=True, verbose_name="互动数来源"
+    )
+    stats_updated_at = peewee.DateTimeField(
+        null=True, index=True, verbose_name="互动数更新时间"
+    )
+    heat_version = peewee.CharField(
+        max_length=128, null=True, verbose_name="热度公式版本"
+    )
     heat = peewee.IntegerField(null=False, default=0)
     is_collection = peewee.BooleanField(null=False, default=False, index=True)
     is_subscribed = peewee.BooleanField(null=False, default=False, index=True)
@@ -247,25 +253,17 @@ Movie.add_index(
         name="movie_subscribed_at_sort",
     )
 )
-# 互动数排序索引：字段均可空性为 false，等值排序直接用 DESC + id 稳定次级排序。
-for _sort_field, _sort_index_name in (
-    (Movie.heat, "movie_heat_sort"),
-    (Movie.score, "movie_score_sort"),
-    (Movie.score_number, "movie_score_number_sort"),
-    (Movie.watched_count, "movie_watched_count_sort"),
-    (Movie.want_watch_count, "movie_want_watch_count_sort"),
-    (Movie.comment_count, "movie_comment_count_sort"),
-):
-    Movie.add_index(
-        peewee.ModelIndex(
-            Movie,
-            (
-                peewee.Ordering(_sort_field, "DESC"),
-                peewee.Ordering(Movie.id, "DESC"),
-            ),
-            name=_sort_index_name,
-        )
+# 热度是跨来源唯一可比较的互动指标，保留复合排序索引。
+Movie.add_index(
+    peewee.ModelIndex(
+        Movie,
+        (
+            peewee.Ordering(Movie.heat, "DESC"),
+            peewee.Ordering(Movie.id, "DESC"),
+        ),
+        name="movie_heat_sort",
     )
+)
 
 
 class MovieActor(BaseModel):

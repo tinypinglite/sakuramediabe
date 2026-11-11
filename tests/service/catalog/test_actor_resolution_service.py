@@ -2,7 +2,10 @@ from types import SimpleNamespace
 
 from src.model import Actor
 from src.plugins.extensions.metadata import PluginMetadataActor
-from src.service.catalog.actor_resolution_service import ActorResolutionService
+from src.service.catalog.actor_resolution_service import (
+    ActorLookupIndex,
+    ActorResolutionService,
+)
 
 
 def test_find_existing_prefers_primary_name_then_lowest_id(test_db):
@@ -36,6 +39,93 @@ def test_resolve_movie_actors_creates_local_actor_and_aliases(test_db, monkeypat
     assert stored.name == "新演员"
     assert "别名A" in stored.alias_name
     assert "别名B" in stored.alias_name
+
+
+def test_resolve_movie_actors_applies_gender_without_overwriting_manual(
+    test_db, monkeypatch
+):
+    monkeypatch.setattr(
+        ActorResolutionService, "ensure_avatar", classmethod(lambda *_args, **_kwargs: None)
+    )
+    unknown = Actor.create(name="未知演员", gender=0)
+    manual = Actor.create(
+        name="人工演员",
+        gender=0,
+        field_owners={"gender": "host:manual"},
+    )
+    known = Actor.create(name="已知演员", gender=2)
+
+    ActorResolutionService.resolve_movie_actors(
+        [
+            PluginMetadataActor(name="未知演员", gender=1),
+            PluginMetadataActor(name="人工演员", gender=1),
+            PluginMetadataActor(name="已知演员", gender=1),
+            PluginMetadataActor(name="新演员", gender=1),
+        ]
+    )
+
+    filled = Actor.get_by_id(unknown.id)
+    assert filled.gender == 1
+    assert filled.field_owners["gender"] == "host:metadata"
+    assert Actor.get_by_id(manual.id).gender == 0
+    assert Actor.get_by_id(manual.id).field_owners["gender"] == "host:manual"
+    assert Actor.get_by_id(known.id).gender == 2
+    assert Actor.get(Actor.name == "新演员").gender == 1
+
+
+def test_actor_lookup_index_is_loaded_once_and_tracks_new_actors(
+    test_db, monkeypatch
+):
+    monkeypatch.setattr(
+        ActorResolutionService, "ensure_avatar", classmethod(lambda *_args, **_kwargs: None)
+    )
+    load_count = 0
+    original = ActorLookupIndex._ensure_loaded_locked
+
+    def counting_load(index):
+        nonlocal load_count
+        if not index._loaded:
+            load_count += 1
+        original(index)
+
+    monkeypatch.setattr(
+        ActorLookupIndex, "_ensure_loaded_locked", counting_load
+    )
+    lookup = ActorLookupIndex()
+
+    ActorResolutionService.resolve_movie_actors(
+        [PluginMetadataActor(name="缓存演员")],
+        lookup=lookup,
+    )
+    ActorResolutionService.resolve_movie_actors(
+        [PluginMetadataActor(name="缓存演员")],
+        lookup=lookup,
+    )
+
+    assert load_count == 1
+    assert Actor.select().where(Actor.name == "缓存演员").count() == 1
+
+
+def test_actor_lookup_index_tracks_alias_updates(test_db):
+    actor = Actor.create(name="演员")
+    lookup = ActorLookupIndex.load()
+
+    actor.alias_name = "演员 / 新别名"
+    actor.save(only=[Actor.alias_name])
+    lookup.add_or_refresh(actor)
+
+    assert lookup.find_existing(["新别名"]).id == actor.id
+
+
+def test_actor_lookup_index_normalizes_primary_and_alias_names(test_db):
+    actor = Actor.create(
+        name="Ｍｉｋａｍｉ Ｙｕａ",
+        alias_name="Ｍｉｋａｍｉ Ｙｕａ / 鬼头 桃菜",
+    )
+    lookup = ActorLookupIndex.load()
+
+    assert lookup.find_existing(["mikami yua"]).id == actor.id
+    assert lookup.find_existing(["鬼头桃菜"]).id == actor.id
 
 
 def test_import_gfriends_candidate_reuses_existing_actor(test_db, monkeypatch):

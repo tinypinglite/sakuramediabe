@@ -26,11 +26,16 @@ from src.plugins.extensions.reviews import (
     REVIEWS_EXTENSION_KEY,
     validate_reviews_extension,
 )
+from src.plugins.extensions.stats import (
+    STATS_SOURCE_EXTENSION_KEY,
+    validate_stats_extension,
+)
 
 # key -> validator(plugin_id, extension)；未登记的 key 会被 loader 拒绝。
 EXTENSION_VALIDATORS: dict[str, Callable[..., Any]] = {
     METADATA_SOURCE_EXTENSION_KEY: validate_metadata_extension,
     REVIEWS_EXTENSION_KEY: validate_reviews_extension,
+    STATS_SOURCE_EXTENSION_KEY: validate_stats_extension,
     RANKING_SOURCE_EXTENSION_KEY: validate_ranking_extension,
     MEDIA_PROVIDER_EXTENSION_KEY: validate_media_provider_extension,
 }

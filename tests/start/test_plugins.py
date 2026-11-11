@@ -630,7 +630,7 @@ def test_registry_isolates_plugin_job_conflicting_with_builtin():
         log_name="builtin-x",
         cli_name="builtin-x",
         cli_help="x",
-        cron_setting="movie_heat_cron",
+        cron_setting="movie_stats_sync_cron",
         handler=run,
     )
     plugin_job = JobDefinition(

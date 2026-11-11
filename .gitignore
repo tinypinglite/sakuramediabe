@@ -26,6 +26,8 @@ docs/development
 .codex
 .codegraph
 AGENTS.md
+# GFriends Filetree 在镜像构建期下载，不进入源码仓库。
+/src/metadata/data/
 # 本地测试库连接串（含账号密码），只保留脱敏模板 .env.test.example
 .env.test
 

@@ -10,10 +10,7 @@ from src.scheduler.queue_tasks import (
     _run_gfriends_filetree_refresh,
 )
 from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
-from src.service.catalog import (
-    MovieHeatService,
-    MovieTaskService,
-)
+from src.service.catalog import MovieStatsSourceService, MovieStatsSyncService
 from src.service.catalog.metadata_source_service import MetadataSourceService
 from src.service.catalog.movie_asset_pack_backfill_service import (
     MovieAssetPackBackfillService,
@@ -50,14 +47,6 @@ from src.service.transfers.downloads.sync_service import DownloadSyncService
 # 任务注册表
 # ---------------------------------------------------------------------------
 
-
-def _run_movie_heat(reporter, params):
-    return (
-        MovieTaskService.execute_movie_heat(reporter, params)
-        if params
-        else MovieHeatService.update_movie_heat()
-    )
-
 BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
     JobDefinition(
         task_key="subscribed_movie_auto_download",
@@ -73,12 +62,14 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         },
     ),
     JobDefinition(
-        task_key="movie_heat_update",
-        log_name="movie-heat-update",
-        cli_name="update-movie-heat",
-        cli_help="执行一次影片热度重算",
-        cron_setting="movie_heat_cron",
-        handler=_run_movie_heat,
+        task_key=MovieStatsSyncService.TASK_KEY,
+        log_name="movie-stats-sync",
+        cli_name="sync-movie-stats",
+        cli_help="按绑定插件刷新影片互动数与热度",
+        cron_setting="movie_stats_sync_cron",
+        handler=lambda reporter, params: MovieStatsSyncService.run(
+            reporter=reporter, params=params
+        ),
     ),
     JobDefinition(
         task_key="download_task_sync",
@@ -319,4 +310,5 @@ _ACTIVE_PLUGINS = tuple(
 refresh_media_provider_registry(_ACTIVE_PLUGINS)
 MetadataSourceService.register(_ACTIVE_PLUGINS)
 MovieReviewSourceService.register(_ACTIVE_PLUGINS)
+MovieStatsSourceService.register(_ACTIVE_PLUGINS)
 JOB_REGISTRY_BY_KEY: dict[str, JobDefinition] = {job.task_key: job for job in JOB_REGISTRY}

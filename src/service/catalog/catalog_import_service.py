@@ -21,7 +21,10 @@ from src.model import (
     get_database,
 )
 from src.plugins.extensions.metadata import PluginMovieMetadata
-from src.service.catalog.actor_resolution_service import ActorResolutionService
+from src.service.catalog.actor_resolution_service import (
+    ActorLookupIndex,
+    ActorResolutionService,
+)
 from src.service.catalog.movie_asset_pack_service import MovieAssetPackService
 from src.service.catalog.movie_image_service import (
     ImageDownloadError,
@@ -52,6 +55,11 @@ class CatalogImportService:
     ):
         self.image_service = MovieImageService(image_downloader=image_downloader)
         self.persist_lock = persist_lock
+        self.actor_lookup = ActorLookupIndex()
+
+    def reset_actor_lookup(self) -> None:
+        """每批导入开始时丢弃旧快照；首次演员查找会重新加载。"""
+        self.actor_lookup.invalidate()
 
     @staticmethod
     def _resolve_movie_series(series_name: str | None) -> MovieSeries | None:
@@ -94,6 +102,7 @@ class CatalogImportService:
         actors = ActorResolutionService.resolve_movie_actors(
             detail.actors,
             image_service=self.image_service,
+            lookup=self.actor_lookup,
         )
         with self.image_service.prepare_metadata_images(
             detail.movie_number,

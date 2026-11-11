@@ -1,7 +1,7 @@
 """JSON 语言包加载与翻译。
 
 语言包是纯数据文件，key 使用点分命名空间（如 ``errors.job_not_found``、
-``tasks.movie_heat_update.name``）。这里只做查表、复数选择和插值，
+``tasks.movie_stats_sync.name``）。这里只做查表、复数选择和插值，
 不引入 gettext/Babel 的编译流程。
 
 约定：查表用的 catalog key 参数一律叫 ``catalog_key``，把 ``key`` 留给模板

@@ -66,14 +66,14 @@ def test_config_updates_merge_from_disk_and_survive_plugin_updates(tmp_path, mon
         ConfigService.update_config(
             {
                 "scheduler": {
-                    "movie_heat_cron": "0 6 * * *",
+                    "movie_stats_sync_cron": "0 6 * * *",
                     "worker_default_concurrency": 6,
                 }
             }
         )
         persisted = toml.load(config_path)
         assert persisted["media"]["allowed_min_video_file_size"] == 1
-        assert persisted["scheduler"]["movie_heat_cron"] == "0 6 * * *"
+        assert persisted["scheduler"]["movie_stats_sync_cron"] == "0 6 * * *"
         assert persisted["scheduler"]["worker_default_concurrency"] == 6
 
         plugin_update = Settings.model_validate(settings.model_dump())
@@ -82,7 +82,7 @@ def test_config_updates_merge_from_disk_and_survive_plugin_updates(tmp_path, mon
 
         persisted = toml.load(config_path)
         assert persisted["media"]["allowed_min_video_file_size"] == 1
-        assert persisted["scheduler"]["movie_heat_cron"] == "0 6 * * *"
+        assert persisted["scheduler"]["movie_stats_sync_cron"] == "0 6 * * *"
         assert persisted["plugins"]["settings"] == {"demo_plugin": {"enabled": True}}
 
         ConfigService.update_config({"media": {"allowed_min_video_file_size": 2}})

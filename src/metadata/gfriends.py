@@ -29,7 +29,6 @@ class GfriendsActorImageResolver(MetadataRequestClient):
 
     IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
     FILETREE_REQUEST_TIMEOUT = 60.0
-    BUNDLED_FILETREE_PATH = Path(__file__).with_name("data") / "gfriends-filetree.json.gz"
     _DISK_RECHECK_INTERVAL_SECONDS = 60.0
 
     def __init__(
@@ -38,6 +37,7 @@ class GfriendsActorImageResolver(MetadataRequestClient):
         cdn_base_url: str,
         cache_path: str,
         cache_ttl_hours: int,
+        bundled_filetree_path: str | Path | None = None,
     ):
         MetadataRequestClient.__init__(self, timeout=self.FILETREE_REQUEST_TIMEOUT)
         self.filetree_url = filetree_url
@@ -45,6 +45,18 @@ class GfriendsActorImageResolver(MetadataRequestClient):
         self.cache_path = Path(cache_path).expanduser()
         if not self.cache_path.is_absolute():
             self.cache_path = (Path.cwd() / self.cache_path).resolve()
+        self.bundled_filetree_path = (
+            Path(bundled_filetree_path).expanduser()
+            if bundled_filetree_path is not None
+            else None
+        )
+        if (
+            self.bundled_filetree_path is not None
+            and not self.bundled_filetree_path.is_absolute()
+        ):
+            self.bundled_filetree_path = (
+                Path.cwd() / self.bundled_filetree_path
+            ).resolve()
         self.cache_ttl_seconds = max(cache_ttl_hours, 1) * 3600
         self._index: dict[str, str] | None = None
         self._entries: dict[str, tuple[str, tuple[str, ...]]] = {}
@@ -192,7 +204,7 @@ class GfriendsActorImageResolver(MetadataRequestClient):
             logger.warning(
                 "Failed to build GFriends index cache={} bundled={} detail={}",
                 str(self.cache_path),
-                str(self.BUNDLED_FILETREE_PATH),
+                str(self.bundled_filetree_path),
                 exc,
             )
 
@@ -228,8 +240,8 @@ class GfriendsActorImageResolver(MetadataRequestClient):
             return None
 
     def _read_bundled_payload(self) -> Any | None:
-        path = self.BUNDLED_FILETREE_PATH
-        if not path.is_file():
+        path = self.bundled_filetree_path
+        if path is None or not path.is_file():
             return None
         try:
             with gzip.open(path, "rt", encoding="utf-8") as handle:
@@ -375,6 +387,7 @@ def get_gfriends_directory() -> GfriendsActorImageResolver:
         settings.metadata.gfriends_filetree_url,
         settings.metadata.gfriends_cdn_base_url,
         settings.metadata.gfriends_filetree_cache_path,
+        settings.metadata.gfriends_bundled_filetree_path,
         settings.metadata.gfriends_filetree_cache_ttl_hours,
     )
     with _DIRECTORY_LOCK:
@@ -383,7 +396,8 @@ def get_gfriends_directory() -> GfriendsActorImageResolver:
                 filetree_url=key[0],
                 cdn_base_url=key[1],
                 cache_path=key[2],
-                cache_ttl_hours=key[3],
+                bundled_filetree_path=key[3],
+                cache_ttl_hours=key[4],
             )
             _DIRECTORY_KEY = key
         return _DIRECTORY

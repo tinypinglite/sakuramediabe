@@ -38,6 +38,19 @@ class PluginInUseError(ValueError):
         )
 
 
+class PluginBindingInUseError(ValueError):
+    """A plugin is still bound as the stats or review source."""
+
+    def __init__(self, *, plugin_id: str, capabilities: tuple[str, ...]) -> None:
+        self.details = {
+            "plugin_id": plugin_id,
+            "capabilities": list(capabilities),
+        }
+        super().__init__(
+            f"插件仍绑定为 {', '.join(capabilities)} 来源，无法删除；请先解除绑定。"
+        )
+
+
 class PluginRemovalService:
     """Delete a plugin only after its media-provider usage has been checked."""
 
@@ -49,6 +62,19 @@ class PluginRemovalService:
 
     @classmethod
     def _ensure_not_in_use(cls, manager: PluginManager, plugin_id: str) -> None:
+        bound_capabilities = tuple(
+            capability
+            for capability, bound_plugin_id in (
+                ("stats", settings.plugins.stats_source),
+                ("review", settings.plugins.review_source),
+            )
+            if bound_plugin_id == plugin_id
+        )
+        if bound_capabilities:
+            raise PluginBindingInUseError(
+                plugin_id=plugin_id,
+                capabilities=bound_capabilities,
+            )
         provider_keys = cls._provider_keys(manager, plugin_id)
         if not provider_keys:
             return

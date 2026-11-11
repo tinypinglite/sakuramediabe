@@ -80,6 +80,9 @@ DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME = (
 REMOVE_JAVDB_IDENTITY_MIGRATION_NAME = (
     "20261112_01_remove_javdb_identity"
 )
+REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME = (
+    "20261112_02_replace_movie_interactions_with_stats"
+)
 
 
 @dataclass(frozen=True)

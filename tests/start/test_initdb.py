@@ -312,18 +312,18 @@ def test_create_tables_creates_background_task_run_mutex_index_for_new_schema(cl
     create_tables()
 
     BackgroundTaskRun.create(
-        task_key="movie_heat_update",
-        task_name="影片热度更新",
+        task_key="movie_stats_sync",
+        task_name="影片互动数与热度同步",
         trigger_type="scheduled",
-        mutex_key="aps:movie_heat_update",
+        mutex_key="aps:movie_stats_sync",
     )
 
     try:
         BackgroundTaskRun.create(
-            task_key="movie_heat_update",
-            task_name="影片热度更新",
+            task_key="movie_stats_sync",
+            task_name="影片互动数与热度同步",
             trigger_type="manual",
-            mutex_key="aps:movie_heat_update",
+            mutex_key="aps:movie_stats_sync",
         )
     except IntegrityError:
         pass

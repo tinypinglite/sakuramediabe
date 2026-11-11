@@ -33,7 +33,25 @@ RUN --mount=type=secret,id=github_token,required=false \
         mkdir -p /bundled; \
     fi
 
-# ── Stage 3: 运行时镜像 ──
+# ── Stage 3: GFriends Filetree 构建期 seed ──
+# 运行时仍会按 TTL 刷新 /data 下的缓存；这里只保证首启和离线环境有只读兜底。
+# 发布流水线可传 SAKURAMEDIA_GFRIENDS_REFRESH=<本次 tag> 让 BuildKit 重新下载。
+FROM python:3.10-slim-bookworm@sha256:68d914ec641a0b69267ce65184d000a2bc3a9ee2590ab702b82250ab2385735a AS gfriends
+ARG SAKURAMEDIA_GFRIENDS_SEED=1
+ARG SAKURAMEDIA_GFRIENDS_REFRESH=""
+ARG GFRIENDS_FILETREE_URL="https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
+COPY docker/backend/fetch_gfriends_filetree.py /opt/gfriends/fetch_gfriends_filetree.py
+RUN set -eu; \
+    echo "gfriends seed=${SAKURAMEDIA_GFRIENDS_SEED} refresh=${SAKURAMEDIA_GFRIENDS_REFRESH}"; \
+    mkdir -p /out; \
+    if [ "${SAKURAMEDIA_GFRIENDS_SEED}" = "1" ]; then \
+        GFRIENDS_FILETREE_URL="${GFRIENDS_FILETREE_URL}" \
+            python /opt/gfriends/fetch_gfriends_filetree.py; \
+    else \
+        echo "gfriends seed disabled"; \
+    fi
+
+# ── Stage 4: 运行时镜像 ──
 FROM python:3.10-slim-bookworm@sha256:68d914ec641a0b69267ce65184d000a2bc3a9ee2590ab702b82250ab2385735a AS runtime
 WORKDIR /app
 
@@ -68,6 +86,8 @@ RUN chmod +x /docker-entrypoint.sh \
     && useradd --create-home --shell /bin/bash --gid app app
 
 COPY docker/backend/supervisord.conf /etc/supervisor/supervisord.conf
+# GFriends 构建期 seed：位于 /app 下，不会被 /data 运行时卷遮蔽。
+COPY --from=gfriends /out /app/metadata-data
 # 内置插件包：本地构建为空目录（安装步骤跳过），CI 发布构建为已校验的 ZIP + 索引。
 COPY --from=bundled /bundled /app/bundled-plugins
 COPY src /app/src

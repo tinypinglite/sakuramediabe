@@ -22,3 +22,4 @@ pyproject.toml
 .codegraph
 .github
 .poetry
+src/metadata/data

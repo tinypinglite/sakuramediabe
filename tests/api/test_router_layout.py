@@ -231,10 +231,11 @@ def test_create_app_registers_image_search_routes():
     assert "/actors/gfriends/search" in paths
     assert "/actors/gfriends/import" in paths
     assert "/system/metadata-sources" in paths
-    # 翻译链路已删除；互动同步由常规定时任务负责。
+    assert "/system/plugins/bindings" in paths
+    # 翻译链路已删除；互动数与热度由绑定插件的常规定时任务负责。
     assert "/movies/{movie_number}/desc-translation" not in paths
     assert "/movies/{movie_number}/interaction-sync" not in paths
-    assert "/movies/{movie_number}/heat-recompute" in paths
+    assert "/movies/{movie_number}/heat-recompute" not in paths
     assert "/movies/blacklist" in paths
     assert "/movies/interaction-filter-options" in paths
     assert "/movies/series/{series_id}/metadata-imports" not in paths

@@ -58,3 +58,43 @@ class MetadataSourceOrderRequest(SchemaModel):
 class MetadataSourceOrderResource(SchemaModel):
     items: list[MetadataSourceResource]
     pending_restart: list[str]
+
+
+class StatsFieldResource(SchemaModel):
+    key: str
+    label: str
+    value_type: str
+    min: float = 0
+    max: float | None = None
+    unit: str | None = None
+
+
+class PluginBindingSourceResource(SchemaModel):
+    plugin_id: str
+    display_name: str
+
+
+class PluginBindingResource(SchemaModel):
+    stats_source: str | None = None
+    review_source: str | None = None
+    stats_source_available: bool = False
+    review_source_available: bool = False
+    stats_source_display_name: str | None = None
+    review_source_display_name: str | None = None
+    stats_fields: list[StatsFieldResource] = Field(default_factory=list)
+    heat_version: str | None = None
+    available_stats_sources: list[PluginBindingSourceResource] = Field(
+        default_factory=list
+    )
+    available_review_sources: list[PluginBindingSourceResource] = Field(
+        default_factory=list
+    )
+
+
+class PluginBindingUpdateRequest(SchemaModel):
+    stats_source: str | None = None
+    review_source: str | None = None
+
+
+class PluginBindingUpdateResource(PluginBindingResource):
+    pending_restart: list[str]

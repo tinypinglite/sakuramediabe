@@ -164,7 +164,12 @@ class MovieApi:
                 revision=movie.mutation_revision,
                 values=MappingProxyType({
                     name: series_names.get(movie.series_id) if name == "series_name"
-                    else getattr(movie, name)
+                    else (
+                        MappingProxyType(dict(movie.interaction_stats))
+                        if name == "interaction_stats"
+                        and movie.interaction_stats is not None
+                        else getattr(movie, name)
+                    )
                     for name in MOVIE_SNAPSHOT_FIELDS
                 }),
                 owners=MappingProxyType(dict(movie.field_owners or {})),
@@ -340,16 +345,6 @@ class MovieApi:
             self._plugin_id,
             fields,
             expected_revision,
-        )
-
-    @staticmethod
-    def update_stats(movie_id: int, stats: Any) -> bool:
-        """写入互动数；数值会校验，写入后由宿主重算热度。"""
-        from src.plugins.extensions.stats import PluginMovieStats
-        from src.service.catalog.movie_stats_service import MovieStatsService
-
-        return MovieStatsService.update(
-            movie_id, PluginMovieStats.model_validate(stats)
         )
 
     def set_cover(

@@ -18,6 +18,8 @@ class PluginMetadataActor(BaseModel):
 
     name: str = Field(min_length=1)
     alias_names: list[str] = Field(default_factory=list)
+    # 0 未知、1 女、2 男；插件不知道时保持未知，宿主不猜测。
+    gender: int = Field(default=0, ge=0, le=2, strict=True)
 
 
 class PluginMovieMetadata(BaseModel):

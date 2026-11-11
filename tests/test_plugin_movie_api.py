@@ -32,10 +32,10 @@ def test_snapshot_contains_only_public_readonly_fields(test_db):
 
     assert isinstance(snapshot, MovieSnapshot)
     assert set(snapshot.values) == set(MOVIE_SNAPSHOT_FIELDS)
-    # 新列（heat 等）不会因默认行为意外暴露给插件。
     assert "extra" not in snapshot.values
-    assert "heat" not in snapshot.values
     assert "field_owners" not in snapshot.values
+    assert snapshot.values["heat"] == 999
+    assert snapshot.values["interaction_stats"] is None
     assert snapshot.values["title"] == "旧标题"
     assert snapshot.movie_id == movie.id
     assert snapshot.revision == 0
@@ -56,6 +56,17 @@ def test_snapshot_is_immutable(test_db):
         snapshot.owners["title"] = "plugin:other"
     fresh = Movie.get_by_id(movie.id)
     assert fresh.title == "旧标题"
+
+
+def test_snapshot_interaction_stats_are_read_only(test_db):
+    movie = _create_movie(
+        test_db,
+        interaction_stats={"score": 4.5, "watched_count": 12},
+    )
+    snapshot = MovieApi._to_snapshot(movie)
+
+    with pytest.raises(TypeError):
+        snapshot.values["interaction_stats"]["score"] = 5
 
 
 def test_movies_get_returns_snapshot_or_none(test_db):

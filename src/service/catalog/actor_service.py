@@ -57,7 +57,10 @@ from src.service.catalog.actor_ownership_gateway import (
     MANUAL_ACTOR_FIELD_OWNER,
     ActorOwnershipGateway,
 )
-from src.service.catalog.actor_resolution_service import ActorResolutionService
+from src.service.catalog.actor_resolution_service import (
+    ActorLookupIndex,
+    ActorResolutionService,
+)
 from src.service.catalog.image_cleanup_service import ImageCleanupService
 
 
@@ -451,10 +454,11 @@ class ActorService:
         if not normalized_query:
             raise ApiError(422, "invalid_actor_query", "演员搜索词不能为空")
         directory = get_gfriends_directory()
+        lookup = ActorLookupIndex.load()
         resources: list[GfriendsActorCandidateResource] = []
         for candidate in directory.search(normalized_query, limit=limit):
             names = [candidate.name, *candidate.alias_names]
-            existing = ActorResolutionService.find_existing(names)
+            existing = ActorResolutionService.find_existing(names, lookup=lookup)
             resources.append(
                 GfriendsActorCandidateResource(
                     candidate_id=candidate.candidate_id,

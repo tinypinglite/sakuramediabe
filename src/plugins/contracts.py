@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.scheduler.contracts import JobDefinition
 
-# 18：移除宿主 JavDB 特权，新增电影评论扩展点与互动数写入能力。
+# 18：移除宿主 JavDB 特权，新增电影评论与互动数来源扩展点。
 # 该版本是新的兼容基线；旧版本插件不再加载。
 HOST_API_VERSION = 18
 MIN_SUPPORTED_HOST_API_VERSION = 18

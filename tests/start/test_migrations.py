@@ -66,6 +66,7 @@ from src.start.migrations.runner import (
     REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
     REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
     REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
+    REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
     TASK_RUN_SCOPE_KEY_MIGRATION_NAME,
     USER_LANGUAGE_MIGRATION_NAME,
     VIEW_HISTORY_MIGRATION_NAME,
@@ -181,6 +182,7 @@ def test_current_migrations_are_discoverable_in_order():
         MULTI_VERSION_PROCESSED_MIGRATION_NAME,
             DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
         REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
+        REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
     ]
 
 
@@ -411,14 +413,18 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
             name=MULTI_VERSION_PROCESSED_MIGRATION_NAME,
             applied=True,
         ),
-            MigrationExecution(
-                name=DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
-                applied=True,
-            ),
-            MigrationExecution(
-                name=REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
-                applied=True,
-            ),
+        MigrationExecution(
+            name=DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
+            applied=True,
+        ),
+        MigrationExecution(
+            name=REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
+            applied=True,
+        ),
+        MigrationExecution(
+            name=REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
+            applied=True,
+        ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -468,6 +474,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MULTI_VERSION_PROCESSED_MIGRATION_NAME,
         DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
         REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
+        REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
     ]
 
 
@@ -856,7 +863,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 46
+    assert summary.applied_count == 47
     assert "interaction_synced_at" not in _column_names(clean_db, "movie")
     media_state = clean_db.execute_sql(
         """
@@ -1028,6 +1035,14 @@ def test_image_origin_pattern_index_migration_creates_index(clean_db):
 def test_movie_interaction_sort_indexes_migration_creates_indexes(clean_db):
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
     clean_db.create_tables(TEST_MODELS)
+    for column, definition in (
+        ("score", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
+        ("score_number", "INTEGER NOT NULL DEFAULT 0"),
+        ("watched_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("want_watch_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("comment_count", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        clean_db.execute_sql(f"ALTER TABLE movie ADD COLUMN {column} {definition}")
     index_names = {
         "movie_heat_sort",
         "movie_score_sort",
@@ -1537,3 +1552,80 @@ def test_remove_javdb_identity_migration_drops_fields_and_rewrites_owner(clean_d
     assert Actor.get_by_id(actor.id).name == "保留演员"
     assert Actor.get_by_id(actor.id).field_owners == {"height_cm": "host:metadata"}
     assert Movie.get_by_id(movie.id).title == "保留影片"
+
+
+def test_replace_movie_interactions_migration_backfills_and_drops_legacy_columns(
+    clean_db,
+):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    for column, definition in (
+        ("score", "DOUBLE PRECISION NOT NULL DEFAULT 0"),
+        ("score_number", "INTEGER NOT NULL DEFAULT 0"),
+        ("watched_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("want_watch_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("comment_count", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        clean_db.execute_sql(f"ALTER TABLE movie ADD COLUMN {column} {definition}")
+    clean_db.execute_sql(
+        "CREATE INDEX IF NOT EXISTS movie_score_sort ON movie (score DESC, id DESC)"
+    )
+
+    legacy = Movie.create(movie_number="LEGACY-001", title="legacy", heat=1234)
+    heat_only = Movie.create(movie_number="HEAT-001", title="heat", heat=9)
+    empty = Movie.create(movie_number="EMPTY-001", title="empty", heat=0)
+    clean_db.execute_sql(
+        """
+        UPDATE movie
+        SET score = %s, score_number = %s, watched_count = %s,
+            want_watch_count = %s, comment_count = %s
+        WHERE id = %s
+        """,
+        (4.6, 120, 456, 78, 9, legacy.id),
+    )
+
+    migration = _load_migration_module(
+        Path(f"{REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME}.py")
+    )
+    migration.migrate(clean_db)
+    migration.migrate(clean_db)
+
+    movie_columns = _column_names(clean_db, "movie")
+    assert not {
+        "score",
+        "score_number",
+        "watched_count",
+        "want_watch_count",
+        "comment_count",
+    } & movie_columns
+    assert {
+        "interaction_stats",
+        "stats_source",
+        "stats_updated_at",
+        "heat_version",
+    } <= movie_columns
+    assert "movie_stats_updated_at" in {
+        index.name for index in clean_db.get_indexes("movie")
+    }
+    assert "movie_score_sort" not in {
+        index.name for index in clean_db.get_indexes("movie")
+    }
+
+    legacy_row = Movie.get_by_id(legacy.id)
+    assert legacy_row.interaction_stats == {
+        "score": 4.6,
+        "score_number": 120,
+        "watched_count": 456,
+        "want_watch_count": 78,
+        "comment_count": 9,
+    }
+    assert legacy_row.stats_source == "legacy:host"
+    assert legacy_row.heat == 1234
+    assert legacy_row.heat_version == "host:v6"
+    assert legacy_row.stats_updated_at is None
+
+    assert Movie.get_by_id(heat_only.id).stats_source == "legacy:host"
+    assert Movie.get_by_id(heat_only.id).heat_version == "host:v6"
+    assert Movie.get_by_id(empty.id).interaction_stats is None
+    assert Movie.get_by_id(empty.id).stats_source is None
+    assert Movie.get_by_id(empty.id).heat_version is None

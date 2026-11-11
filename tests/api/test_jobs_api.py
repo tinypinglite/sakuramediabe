@@ -112,7 +112,7 @@ def test_handler_only_job_rejects_missing_and_null_body(
 def test_builtin_jobs_accept_parameterless_async_trigger(client, account_user):
     task_keys = (
         "subscribed_movie_auto_download",
-        "movie_heat_update",
+        "movie_stats_sync",
         "media_file_hash_backfill",
         "media_file_scan",
         "media_video_info_backfill",
@@ -130,37 +130,13 @@ def test_builtin_jobs_accept_parameterless_async_trigger(client, account_user):
         _release_task_run(BackgroundTaskRun.get_by_id(response.json()["task_run_id"]))
 
 
-def test_movie_heat_recompute_api_returns_async_task(monkeypatch, client, account_user):
-    from src.schema.system.jobs import ManualJobTriggerResponse
-
-    monkeypatch.setattr(
-        "src.api.routers.catalog.movies.MovieTaskService.recompute_movie_heat",
-        lambda _movie_number: ManualJobTriggerResponse(
-            task_run_id=77,
-            task_key="movie_heat_update",
-            state="pending",
-        ),
-    )
-    response = client.post(
-        "/movies/ABP-001/heat-recompute",
-        headers=_auth_headers(client, account_user.username),
-    )
-
-    assert response.status_code == 202
-    assert response.json() == {
-        "task_run_id": 77,
-        "task_key": "movie_heat_update",
-        "state": "pending",
-    }
-
-
 def test_job_metadata_uses_latest_run_and_exposes_warning(client, account_user):
     from datetime import timedelta
 
     from src.common.runtime_time import utc_now_for_db
 
     now = utc_now_for_db()
-    job_key = "movie_heat_update"
+    job_key = "movie_stats_sync"
     BackgroundTaskRun.create(
         task_key=job_key,
         task_name=job_key,

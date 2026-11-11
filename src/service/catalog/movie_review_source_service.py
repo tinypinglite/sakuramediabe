@@ -49,6 +49,22 @@ class MovieReviewSourceService:
         )
 
     @classmethod
+    def bound_source(cls):
+        plugin_id = settings.plugins.review_source
+        if not plugin_id:
+            return None
+        for entry in cls.enabled_sources():
+            if entry[0] == plugin_id:
+                return entry
+        raise MovieReviewsUnavailable(
+            f"绑定的评论来源不可用: {plugin_id}"
+        )
+
+    @classmethod
+    def available_sources(cls):
+        return cls.enabled_sources()
+
+    @classmethod
     def fetch(
         cls,
         movie_number: str,
@@ -58,7 +74,9 @@ class MovieReviewSourceService:
         sort: str,
     ) -> list[PluginMovieReview]:
         failures: list[str] = []
-        for plugin_id, name, name_i18n, source in cls.enabled_sources():
+        bound = cls.bound_source()
+        sources = (bound,) if bound is not None else cls.enabled_sources()
+        for plugin_id, name, name_i18n, source in sources:
             display_name = resolve_text(name, name_i18n)
             try:
                 result = source.fetch_reviews(

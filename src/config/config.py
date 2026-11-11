@@ -99,6 +99,10 @@ class Metadata(BaseModel):
     gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
     gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
     gfriends_filetree_cache_path: str = "/data/cache/gfriends/gfriends-filetree.json"
+    # 镜像构建期下载的只读 seed；运行时缓存缺失时作为首启兜底。
+    gfriends_bundled_filetree_path: str | None = (
+        "/app/metadata-data/gfriends-filetree.json.gz"
+    )
     gfriends_filetree_cache_ttl_hours: int = 24 * 7
     import_metadata_max_workers: int = 3
 
@@ -118,6 +122,9 @@ class Plugins(BaseModel):
     # 插件根目录：生产默认 /data/plugins；本地开发可指向 ./storage/plugins。
     root_dir: str = "/data/plugins"
     enabled: list[str] = Field(default_factory=list)
+    # 互动数/评论是单来源能力：与元数据来源的顺序 fallback 分离。
+    stats_source: str | None = None
+    review_source: str | None = None
     job_crons: dict[str, dict[str, str]] = Field(default_factory=dict)
     settings: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
@@ -132,6 +139,18 @@ class Plugins(BaseModel):
                     f"插件 ID 只能包含小写字母、数字、下划线且必须以字母开头: {plugin_id}"
                 )
         return value
+
+    @field_validator("stats_source", "review_source")
+    @classmethod
+    def _validate_bound_plugin_ids(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not _PLUGIN_ID_PATTERN.fullmatch(normalized):
+            raise ValueError(
+                f"绑定插件 ID 只能包含小写字母、数字、下划线且必须以字母开头: {value}"
+            )
+        return normalized
 
     @model_validator(mode="after")
     def _validate_plugin_config_namespaces(self):
@@ -155,7 +174,7 @@ class Scheduler(BaseModel):
     subscribed_movie_auto_download_cron: str = "30 2 * * *"
     download_task_sync_cron: str = "* * * * *"
     download_task_auto_import_cron: str = "* * * * *"
-    movie_heat_cron: str = "15 0 * * *"
+    movie_stats_sync_cron: str = "0 5 * * *"
     media_file_hash_backfill_cron: str = "0 3 * * *"
     # 115 使用整库远端清单对账；每天一次且 Provider 内部限速，避免逐条探测触发风控。
     media_file_scan_cron: str = "0 4 * * *"

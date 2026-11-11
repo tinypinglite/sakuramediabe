@@ -54,11 +54,7 @@ class MovieInteractionDistributionResource(SchemaModel):
 class MovieInteractionFilterOptionsResource(SchemaModel):
     movie_count: int
     heat: MovieInteractionDistributionResource
-    score: MovieInteractionDistributionResource
-    score_number: MovieInteractionDistributionResource
-    watched_count: MovieInteractionDistributionResource
-    want_watch_count: MovieInteractionDistributionResource
-    comment_count: MovieInteractionDistributionResource
+    heat_version: str | None = None
 
 
 class MovieListItemResource(SchemaModel):
@@ -74,11 +70,9 @@ class MovieListItemResource(SchemaModel):
     thin_cover_image: ImageResource | None = None
     release_date: str | None = None
     duration_minutes: int
-    score: float = 0.0
-    watched_count: int = 0
-    want_watch_count: int = 0
-    comment_count: int = 0
-    score_number: int = 0
+    interaction_stats: dict[str, int | float] | None = None
+    stats_source: str | None = None
+    stats_updated_at: datetime | None = None
     heat: int = 0
     is_collection: bool
     is_subscribed: bool
@@ -224,18 +218,6 @@ class MovieNumberParseResponse(SchemaModel):
 
 
 class MovieMetadataImportRequest(SchemaModel):
-    movie_number: str = Field(min_length=1)
-
-    @field_validator("movie_number")
-    @classmethod
-    def validate_movie_number(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized:
-            raise ValueError("movie_number cannot be blank")
-        return normalized
-
-
-class MovieHeatRecomputeParams(SchemaModel):
     movie_number: str = Field(min_length=1)
 
     @field_validator("movie_number")

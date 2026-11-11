@@ -34,13 +34,11 @@ from src.schema.catalog.movies import (
 )
 from src.schema.catalog.subtitles import MovieSubtitleListResource
 from src.schema.common.pagination import PageResponse
-from src.schema.system.jobs import ManualJobTriggerResponse
 from src.service.catalog import (
     MovieActorService,
     MovieMetadataImportService,
     MovieService,
     MovieSubtitleService,
-    MovieTaskService,
 )
 from src.service.discovery import MovieRecommendationService
 
@@ -69,16 +67,6 @@ def list_movies(
     maker_name: str | None = Query(default=None),
     heat_min: int | None = Query(default=None, ge=0),
     heat_max: int | None = Query(default=None, ge=0),
-    score_min: float | None = Query(default=None, ge=0),
-    score_max: float | None = Query(default=None, ge=0),
-    score_number_min: int | None = Query(default=None, ge=0),
-    score_number_max: int | None = Query(default=None, ge=0),
-    watched_count_min: int | None = Query(default=None, ge=0),
-    watched_count_max: int | None = Query(default=None, ge=0),
-    want_watch_count_min: int | None = Query(default=None, ge=0),
-    want_watch_count_max: int | None = Query(default=None, ge=0),
-    comment_count_min: int | None = Query(default=None, ge=0),
-    comment_count_max: int | None = Query(default=None, ge=0),
     resolution: str | None = Query(default=None),
     blacklisted: bool = False,
     query: str | None = Query(default=None),
@@ -109,16 +97,6 @@ def list_movies(
         ),
         heat_min=heat_min,
         heat_max=heat_max,
-        score_min=score_min,
-        score_max=score_max,
-        score_number_min=score_number_min,
-        score_number_max=score_number_max,
-        watched_count_min=watched_count_min,
-        watched_count_max=watched_count_max,
-        want_watch_count_min=want_watch_count_min,
-        want_watch_count_max=want_watch_count_max,
-        comment_count_min=comment_count_min,
-        comment_count_max=comment_count_max,
         resolution=resolution,
         blacklisted=blacklisted,
         rated=rated,
@@ -240,16 +218,7 @@ def create_movie_metadata_import(payload: MovieMetadataImportRequest):
     return sse_streaming_response(stream())
 
 
-# 影片单片翻译端点已删除；互动同步由常规定时任务负责。
-
-
-@router.post(
-    "/{movie_number}/heat-recompute",
-    response_model=ManualJobTriggerResponse,
-    status_code=status.HTTP_202_ACCEPTED,
-)
-def recompute_movie_heat(movie_number: str):
-    return MovieTaskService.recompute_movie_heat(movie_number)
+# 影片单片翻译端点已删除；互动数由绑定插件通过 movie_stats_sync 定时刷新。
 
 
 @router.put(

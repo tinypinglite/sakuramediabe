@@ -91,11 +91,6 @@ class RankingCatalogService:
     RANKING_BOARD_ITEMS_SORT_FIELD_MAP = {
         "rank": RankingItem.rank,
         "heat": Movie.heat,
-        "score": Movie.score,
-        "score_number": Movie.score_number,
-        "watched_count": Movie.watched_count,
-        "want_watch_count": Movie.want_watch_count,
-        "comment_count": Movie.comment_count,
     }
 
     @staticmethod
@@ -265,16 +260,6 @@ class RankingCatalogService:
         sort: str | None = None,
         heat_min: int | None = None,
         heat_max: int | None = None,
-        score_min: float | None = None,
-        score_max: float | None = None,
-        score_number_min: int | None = None,
-        score_number_max: int | None = None,
-        watched_count_min: int | None = None,
-        watched_count_max: int | None = None,
-        want_watch_count_min: int | None = None,
-        want_watch_count_max: int | None = None,
-        comment_count_min: int | None = None,
-        comment_count_max: int | None = None,
     ) -> RankingBoardItemsResource:
         board = cls._require_board(source_key, board_key)
         normalized_period = cls._resolve_period(board, period)
@@ -295,34 +280,7 @@ class RankingCatalogService:
         )
         base_query = apply_numeric_range_filters(
             base_query,
-            (
-                ("heat", Movie.heat, heat_min, heat_max),
-                ("score", Movie.score, score_min, score_max),
-                (
-                    "score_number",
-                    Movie.score_number,
-                    score_number_min,
-                    score_number_max,
-                ),
-                (
-                    "watched_count",
-                    Movie.watched_count,
-                    watched_count_min,
-                    watched_count_max,
-                ),
-                (
-                    "want_watch_count",
-                    Movie.want_watch_count,
-                    want_watch_count_min,
-                    want_watch_count_max,
-                ),
-                (
-                    "comment_count",
-                    Movie.comment_count,
-                    comment_count_min,
-                    comment_count_max,
-                ),
-            ),
+            (("heat", Movie.heat, heat_min, heat_max),),
             error_code="invalid_ranking_filter",
         )
         base_query = base_query.order_by(*order_expressions)

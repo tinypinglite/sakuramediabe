@@ -17,16 +17,24 @@ from fastapi import APIRouter, Body, Depends, File, Form, Request, UploadFile
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
+from src.i18n.text import resolve_text
 from src.plugins.installer import MAX_ARCHIVE_BYTES
 from src.plugins.manager import PluginManager, PluginSettingsValidationError
 from src.schema.system.plugins import (
+    PluginBindingResource,
+    PluginBindingSourceResource,
+    PluginBindingUpdateRequest,
+    PluginBindingUpdateResource,
     PluginDetailResource,
     PluginInstallResponse,
     PluginSettingsResource,
     PluginSettingsUpdateResource,
     PluginSummaryResource,
+    StatsFieldResource,
 )
+from src.service.system.plugin_binding_service import PluginBindingService
 from src.service.system.plugin_removal_service import (
+    PluginBindingInUseError,
     PluginInUseError,
     PluginRemovalService,
 )
@@ -72,6 +80,81 @@ def _upload_temp_path(manager: PluginManager) -> Path:
 @router.get("", response_model=list[PluginSummaryResource])
 def list_plugins():
     return PluginManager().list_plugins()
+
+
+def _binding_resource() -> PluginBindingResource:
+    data = PluginBindingService.describe()
+    return PluginBindingResource(
+        stats_source=data["stats_source"],
+        review_source=data["review_source"],
+        stats_source_available=data["stats_source_available"],
+        review_source_available=data["review_source_available"],
+        stats_source_display_name=(
+            resolve_text(
+                data["stats_source_display_name"] or "",
+                data["stats_source_display_name_i18n"],
+            )
+            or None
+        ),
+        review_source_display_name=(
+            resolve_text(
+                data["review_source_display_name"] or "",
+                data["review_source_display_name_i18n"],
+            )
+            or None
+        ),
+        stats_fields=[
+            StatsFieldResource(
+                key=field.key,
+                label=resolve_text(field.key, field.label_i18n),
+                value_type=field.value_type,
+                min=field.min,
+                max=field.max,
+                unit=field.unit,
+            )
+            for field in data["stats_fields"]
+        ],
+        heat_version=data["heat_version"],
+        available_stats_sources=[
+            PluginBindingSourceResource(
+                plugin_id=item["plugin_id"],
+                display_name=resolve_text(
+                    item["display_name"], item["display_name_i18n"]
+                ),
+            )
+            for item in data["available_stats_sources"]
+        ],
+        available_review_sources=[
+            PluginBindingSourceResource(
+                plugin_id=item["plugin_id"],
+                display_name=resolve_text(
+                    item["display_name"], item["display_name_i18n"]
+                ),
+            )
+            for item in data["available_review_sources"]
+        ],
+    )
+
+
+@router.get("/bindings", response_model=PluginBindingResource)
+def get_plugin_bindings():
+    return _binding_resource()
+
+
+@router.put("/bindings", response_model=PluginBindingUpdateResource)
+def update_plugin_bindings(payload: PluginBindingUpdateRequest):
+    try:
+        PluginBindingService.update(
+            stats_source=payload.stats_source,
+            review_source=payload.review_source,
+        )
+    except ValueError as exc:
+        raise ApiError(422, "invalid_plugin_binding", str(exc)) from exc
+    resource = _binding_resource()
+    return PluginBindingUpdateResource(
+        **resource.model_dump(),
+        pending_restart=["api", "aps"],
+    )
 
 
 @router.get("/{plugin_id}", response_model=PluginDetailResource)
@@ -196,6 +279,8 @@ def remove_plugin(plugin_id: str):
     try:
         PluginRemovalService.remove(plugin_id)
     except PluginInUseError as exc:
+        raise ApiError(409, "plugin_in_use", str(exc), exc.details) from exc
+    except PluginBindingInUseError as exc:
         raise ApiError(409, "plugin_in_use", str(exc), exc.details) from exc
     except ValueError as exc:
         raise ApiError(404, "plugin_not_found", str(exc)) from exc

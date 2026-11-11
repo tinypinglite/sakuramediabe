@@ -46,7 +46,7 @@ def test_aps_command_invokes_scheduler_entrypoint(monkeypatch):
 @pytest.mark.parametrize(
     "cli_name",
     [
-        "update-movie-heat",
+        "sync-movie-stats",
         "generate-media-thumbnails",
         "scan-media-files",
         "cleanup-activity-records",
@@ -175,7 +175,7 @@ def test_aps_subcommand_prepares_database_before_running_job(monkeypatch):
     monkeypatch.setattr("src.start.commands._ensure_database_ready", fake_prepare_database)
     monkeypatch.setattr("src.start.aps.run_job", fake_run_job)
 
-    result = runner.invoke(main, ["aps", "update-movie-heat"])
+    result = runner.invoke(main, ["aps", "sync-movie-stats"])
 
     assert result.exit_code == 0
     assert events == ["db.ready", ("job", "manual")]
@@ -188,8 +188,8 @@ def test_aps_manual_subcommand_exits_with_click_error_when_task_conflicts(monkey
         (),
         {
             "id": 9,
-            "task_key": "movie_heat_update",
-            "task_name": "影片热度更新",
+            "task_key": "movie_stats_sync",
+            "task_name": "影片互动数与热度同步",
             "trigger_type": "scheduled",
             "started_at": None,
         },
@@ -199,10 +199,10 @@ def test_aps_manual_subcommand_exits_with_click_error_when_task_conflicts(monkey
         lambda *args, **kwargs: (_ for _ in ()).throw(TaskRunConflictError(blocking_task_run)),
     )
 
-    result = runner.invoke(main, ["aps", "update-movie-heat"])
+    result = runner.invoke(main, ["aps", "sync-movie-stats"])
 
     assert result.exit_code != 0
-    assert "任务“影片热度更新”已在运行中" in result.output
+    assert "任务“影片互动数与热度同步”已在运行中" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +217,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.get_runtime_timezone", lambda: ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr("src.start.aps.get_runtime_timezone_name", lambda: "Asia/Shanghai")
     monkeypatch.setattr("src.start.aps.settings.scheduler.subscribed_movie_auto_download_cron", "30 2 * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.movie_heat_cron", "15 0 * * *")
+    monkeypatch.setattr("src.start.aps.settings.scheduler.movie_stats_sync_cron", "0 5 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_sync_cron", "*/15 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_auto_import_cron", "*/10 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_file_hash_backfill_cron", "0 3 * * *")
@@ -241,7 +241,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
 
     # 验证部分 cron 表达式
     assert str(scheduler.get_job("subscribed_movie_auto_download").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='30']"
-    assert str(scheduler.get_job("movie_heat_update").trigger) == "cron[month='*', day='*', day_of_week='*', hour='0', minute='15']"
+    assert str(scheduler.get_job("movie_stats_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"
     assert str(scheduler.get_job("download_task_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/15']"
     assert str(scheduler.get_job("download_task_auto_import").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"
     assert str(scheduler.get_job("media_file_hash_backfill").trigger) == "cron[month='*', day='*', day_of_week='*', hour='3', minute='0']"
@@ -749,7 +749,7 @@ def test_schedule_bootstrap_job_rejects_non_bootstrap_task_key():
     with pytest.raises(ValueError, match="unsupported_bootstrap_task_key"):
         _schedule_bootstrap_job(
             scheduler,
-            "movie_heat_update",
+            "movie_stats_sync",
             job_id="invalid_bootstrap",
         )
 
@@ -760,10 +760,10 @@ def test_schedule_bootstrap_job_rejects_non_bootstrap_task_key():
 
 
 def test_run_job_manual_returns_pending_task_run(test_db):
-    task_run = run_job(JOB_REGISTRY_BY_KEY["movie_heat_update"], trigger_type="manual")
+    task_run = run_job(JOB_REGISTRY_BY_KEY["movie_stats_sync"], trigger_type="manual")
 
     assert task_run.state == "pending"
-    assert task_run.task_key == "movie_heat_update"
+    assert task_run.task_key == "movie_stats_sync"
     assert task_run.scheduled_at is not None
 
 
@@ -776,10 +776,10 @@ def test_run_job_scheduled_delegates_to_enqueue(monkeypatch):
         lambda job_def: captured.append(job_def.task_key) or marker,
     )
 
-    result = run_job(JOB_REGISTRY_BY_KEY["movie_heat_update"])
+    result = run_job(JOB_REGISTRY_BY_KEY["movie_stats_sync"])
 
     assert result is marker
-    assert captured == ["movie_heat_update"]
+    assert captured == ["movie_stats_sync"]
 
 
 # ---------------------------------------------------------------------------
@@ -862,7 +862,7 @@ def test_submit_manual_job_enqueues_pending_run_without_inline_execution(test_db
     from src.model import BackgroundTaskRun
     from src.start.aps import submit_manual_job
 
-    job_def = JOB_REGISTRY_BY_KEY["movie_heat_update"]
+    job_def = JOB_REGISTRY_BY_KEY["movie_stats_sync"]
 
     task_run = submit_manual_job(job_def)
 
@@ -903,13 +903,13 @@ def test_task_worker_executes_claimed_queue_run(test_db, monkeypatch):
     from src.service.system.task_queue_service import TaskQueueService
 
     calls = []
-    job_def = JOB_REGISTRY_BY_KEY["movie_heat_update"]
+    job_def = JOB_REGISTRY_BY_KEY["movie_stats_sync"]
     fake_def = job_def.model_copy(
         update={"handler": lambda _reporter, _params: calls.append(1) or {"updated_count": 1}}
     )
-    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, "movie_heat_update", fake_def)
+    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, "movie_stats_sync", fake_def)
 
-    queued = TaskQueueService.enqueue(task_key="movie_heat_update", trigger_type="scheduled")
+    queued = TaskQueueService.enqueue(task_key="movie_stats_sync", trigger_type="scheduled")
     claimed = TaskQueueService.claim_next()
     TaskWorker()._execute(claimed)
 

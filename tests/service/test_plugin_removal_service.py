@@ -9,6 +9,7 @@ from src.model import DownloadClient, Media, MediaLibrary, Movie
 from src.plugins import HOST_API_VERSION
 from src.plugins.manager import PluginManager
 from src.service.system.plugin_removal_service import (
+    PluginBindingInUseError,
     PluginInUseError,
     PluginRemovalService,
 )
@@ -102,5 +103,27 @@ def test_provider_plugin_removal_is_blocked_while_library_is_in_use(
         "library_ids": [library.id],
         "media_count": 1,
         "download_client_count": 1,
+    }
+    assert (root / "media_provider_plugin" / "manifest.json").is_file()
+
+
+def test_plugin_removal_is_blocked_while_bound_as_stats_source(
+    test_db, monkeypatch, tmp_path
+):
+    root = tmp_path / "plugins"
+    monkeypatch.setattr("src.plugins.manager._plugin_root", lambda: root)
+    manager = PluginManager(root_dir=root)
+    manager.install(_make_media_provider_plugin(tmp_path), enable=False)
+    monkeypatch.setattr(
+        "src.service.system.plugin_removal_service.settings.plugins.stats_source",
+        "media_provider_plugin",
+    )
+
+    with pytest.raises(PluginBindingInUseError) as error:
+        PluginRemovalService.remove("media_provider_plugin")
+
+    assert error.value.details == {
+        "plugin_id": "media_provider_plugin",
+        "capabilities": ["stats"],
     }
     assert (root / "media_provider_plugin" / "manifest.json").is_file()
