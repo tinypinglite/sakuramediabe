@@ -1,6 +1,9 @@
 from src.metadata._providers.exceptions import (
+    JavdbAuthError,
+    JavdbAuthRequiredError,
     MetadataProviderError,
     MetadataProviderUnavailable,
+    metadata_error_code,
 )
 from src.metadata._providers.javdb import JavdbProvider
 from src.metadata.gfriends import GfriendsActorImageResolver
@@ -13,6 +16,8 @@ from src.metadata.provider import (
 
 __all__ = [
     "GfriendsActorImageResolver",
+    "JavdbAuthError",
+    "JavdbAuthRequiredError",
     "JavdbProvider",
     "MetadataError",
     "MetadataNotFoundError",
@@ -20,4 +25,5 @@ __all__ = [
     "MetadataProviderUnavailable",
     "MetadataRequestClient",
     "MetadataRequestError",
+    "metadata_error_code",
 ]

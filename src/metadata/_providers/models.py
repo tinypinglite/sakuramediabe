@@ -54,13 +54,6 @@ class JavdbMovieActor(ProviderModel):
     gender: int = 0
 
 
-class JavdbSeries(ProviderModel):
-    javdb_id: str = Field()
-    javdb_type: int = 0
-    name: str
-    videos_count: int = 0
-
-
 class JavdbMovieTag(ProviderModel):
     javdb_id: str = Field()
     name: str
@@ -107,7 +100,6 @@ class JavdbMovieDetail(JavdbMovieBase):
 
 JavdbMovieListItemResource = JavdbMovieListItem
 JavdbMovieActorResource = JavdbMovieActor
-JavdbSeriesResource = JavdbSeries
 JavdbMovieTagResource = JavdbMovieTag
 JavdbReviewMovieResource = JavdbReviewMovie
 JavdbMovieReviewResource = JavdbMovieReview

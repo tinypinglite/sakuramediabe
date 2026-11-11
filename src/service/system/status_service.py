@@ -18,7 +18,12 @@ from src.common.runtime_time import (
 )
 from src.config.config import settings
 from src.metadata.factory import build_javdb_provider
-from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
+from src.metadata.provider import (
+    JavdbAuthError,
+    JavdbAuthRequiredError,
+    MetadataNotFoundError,
+    MetadataRequestError,
+)
 from src.model import (
     SYSTEM_PLAYLIST_KINDS,
     Actor,
@@ -459,6 +464,24 @@ class StatusService:
                     message=str(exc),
                     resource=exc.resource,
                     lookup_value=exc.lookup_value,
+                ),
+            )
+        except JavdbAuthRequiredError as exc:
+            return cls._build_metadata_provider_failure(
+                provider=normalized_provider,
+                start_at=start_at,
+                error=StatusMetadataProviderTestError(
+                    type="metadata_auth_required",
+                    message=str(exc),
+                ),
+            )
+        except JavdbAuthError as exc:
+            return cls._build_metadata_provider_failure(
+                provider=normalized_provider,
+                start_at=start_at,
+                error=StatusMetadataProviderTestError(
+                    type="metadata_auth_failed",
+                    message=str(exc),
                 ),
             )
         except MetadataRequestError as exc:

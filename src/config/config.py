@@ -96,11 +96,21 @@ class Media(BaseModel):
 class Metadata(BaseModel):
     # 不再提供显式代理配置：所有外部站点请求统一跟随容器环境变量
     # HTTP_PROXY / HTTPS_PROXY / NO_PROXY 分流（httpx trust_env 默认开启）。
+    # JavDB 搜索与详情需要登录；空账号表示未配置，认证失败时由元数据插件兜底。
+    javdb_username: str = ""
+    javdb_password: str = ""
+    # API、APS 和 CLI 共用的 JavDB 登录态文件。
+    javdb_session_path: str = "/data/cache/javdb/session.json"
     gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
     gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
     gfriends_filetree_cache_path: str = "/data/cache/gfriends/gfriends-filetree.json"
     gfriends_filetree_cache_ttl_hours: int = 24 * 7
     import_metadata_max_workers: int = 3
+
+    @field_validator("javdb_username")
+    @classmethod
+    def _strip_javdb_username(cls, value: str) -> str:
+        return value.strip()
 
     @field_validator("gfriends_filetree_url", "gfriends_cdn_base_url")
     @classmethod

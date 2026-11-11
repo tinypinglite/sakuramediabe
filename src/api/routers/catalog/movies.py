@@ -151,15 +151,6 @@ def list_movies_by_series(payload: MovieSeriesListRequest):
     )
 
 
-@router.post("/series/{series_id}/metadata-imports")
-def create_series_metadata_import(series_id: int):
-    def stream():
-        for event, event_payload in MovieMetadataRefreshService.stream_import_series_movies_from_javdb(series_id):
-            yield to_sse_event(event, event_payload)
-
-    return sse_streaming_response(stream())
-
-
 @router.get("/subscribed-actors/latest", response_model=PageResponse[MovieListItemResource])
 def list_subscribed_actor_latest_movies(page: int = 1, page_size: int = 20):
     return MovieService.list_subscribed_actor_latest_movies(page=page, page_size=page_size)

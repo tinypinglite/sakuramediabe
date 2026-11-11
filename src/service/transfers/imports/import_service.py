@@ -24,6 +24,8 @@ from src.common.media_import_status import (
     FAILURE_REASON_FILE_TOO_SMALL,
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED,
     FAILURE_REASON_MEDIA_IMPORT_FAILED,
+    FAILURE_REASON_METADATA_AUTH_FAILED,
+    FAILURE_REASON_METADATA_AUTH_REQUIRED,
     FAILURE_REASON_METADATA_FETCH_FAILED,
     FAILURE_REASON_METADATA_UPSERT_FAILED,
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
@@ -37,7 +39,11 @@ from src.common.movie_numbers import (
     subtitle_matches_movie_number,
 )
 from src.common.service_helpers import emit_progress
-from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
+from src.metadata.provider import (
+    JavdbAuthError,
+    JavdbAuthRequiredError,
+    MetadataProviderError,
+)
 from src.model import (
     DownloadSubmissionRecord,
     Media,
@@ -209,11 +215,38 @@ class MediaImportService:
             movie, _created = MetadataSourceService.import_by_number(
                 movie_number, provider, self.catalog_import_service
             )
-        except (MetadataNotFoundError, MetadataRequestError, MetadataSourceError) as exc:
+        except MetadataProviderError as exc:
             logger.warning("Import metadata fetch failed movie_number={} detail={}", movie_number, exc)
+            failure_reason = (
+                FAILURE_REASON_METADATA_AUTH_REQUIRED
+                if isinstance(exc, JavdbAuthRequiredError)
+                else FAILURE_REASON_METADATA_AUTH_FAILED
+                if isinstance(exc, JavdbAuthError)
+                else FAILURE_REASON_METADATA_FETCH_FAILED
+            )
             return MetadataImportResult(
                 movie_number=movie_number,
-                failure_reason=FAILURE_REASON_METADATA_FETCH_FAILED,
+                failure_reason=failure_reason,
+                failure_detail=str(exc),
+            )
+        except MetadataSourceError as exc:
+            logger.warning(
+                "Import metadata fallback failed movie_number={} reason={} detail={}",
+                movie_number,
+                exc.code,
+                exc,
+            )
+            return MetadataImportResult(
+                movie_number=movie_number,
+                failure_reason=(
+                    exc.code
+                    if exc.code
+                    in {
+                        "metadata_auth_required",
+                        "metadata_auth_failed",
+                    }
+                    else FAILURE_REASON_METADATA_FETCH_FAILED
+                ),
                 failure_detail=str(exc),
             )
         except ImageDownloadError as exc:

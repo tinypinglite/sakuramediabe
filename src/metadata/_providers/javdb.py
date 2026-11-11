@@ -12,8 +12,18 @@ from loguru import logger
 
 from src.common.service_helpers import safe_int
 
-from .exceptions import JavdbAuthError, MetadataNotFoundError, MetadataRequestError
+from .exceptions import (
+    JavdbAuthError,
+    JavdbAuthRequiredError,
+    MetadataNotFoundError,
+    MetadataRequestError,
+)
 from .http_client import MetadataRequestClient
+from .javdb_auth import (
+    JavdbAuthManager,
+    get_javdb_auth_manager,
+    javdb_account_fingerprint,
+)
 from .models import (
     JavdbMovieActorResource,
     JavdbMovieDetailResource,
@@ -21,7 +31,6 @@ from .models import (
     JavdbMovieReviewResource,
     JavdbMovieTagResource,
     JavdbReviewMovieResource,
-    JavdbSeriesResource,
 )
 from .utils import normalize_movie_number
 
@@ -33,6 +42,10 @@ def _parse_date(value: str | None) -> date | None:
 
 
 class JavdbProvider(MetadataRequestClient):
+    REQUEST_TIMEOUT_SECONDS = 60.0
+    CONNECT_TIMEOUT_SECONDS = 10.0
+    REQUEST_MAX_RETRIES = 1
+
     SUPPORTED_RANK_VIDEO_TYPES = {"0", "1", "3"}
     SUPPORTED_RANK_PERIODS = {"daily", "weekly", "monthly"}
     # 播放榜筛选：all=热播，high_score=高评分。
@@ -51,10 +64,10 @@ class JavdbProvider(MetadataRequestClient):
     TOP250_MAX_PAGES = 5
     SUPPORTED_TOP_TYPES = {"all", "year", "video_type"}
 
-    # 登录所需的固定设备指纹，与官方 App 抓包一致，不要改动。
+    # 登录所需的通用 Android 设备指纹，不包含具体厂商和机型特征。
     DEVICE = {
-        "device_name": "meizu16sPro",
-        "device_model": "meizu/16s Pro",
+        "device_name": "Android",
+        "device_model": "Android",
         "platform": "android",
         "system_version": "9",
         "app_channel": "official",
@@ -69,19 +82,9 @@ class JavdbProvider(MetadataRequestClient):
         "sort_by": "release",
         "order_by": "desc",
     }
-    API_PARAMS_SERIES_MOVIES = {
-        "sort_by": "release",
-        "order_by": "desc",
-    }
     API_PARAMS_ACTOR_SEARCH = {
         "from_recent": "false",
         "type": "actor",
-        "page": 1,
-        "limit": 24,
-    }
-    API_PARAMS_SERIES_SEARCH = {
-        "from_recent": "false",
-        "type": "series",
         "page": 1,
         "limit": 24,
     }
@@ -108,19 +111,36 @@ class JavdbProvider(MetadataRequestClient):
         *,
         username: str | None = None,
         password: str | None = None,
+        auth_manager: JavdbAuthManager | None = None,
     ):
-        MetadataRequestClient.__init__(self)
+        MetadataRequestClient.__init__(
+            self,
+            timeout=self.REQUEST_TIMEOUT_SECONDS,
+            connect_timeout=self.CONNECT_TIMEOUT_SECONDS,
+            max_retries=self.REQUEST_MAX_RETRIES,
+        )
         self.host = host
         self.username = username
         self.password = password
-        # 登录态懒加载：token 在首次抓需登录榜单时获取，本实例只登录一次。
-        self._token: str | None = None
-        self._login_failed = False
+        if auth_manager is None:
+            from src.config.config import settings
+
+            auth_manager = get_javdb_auth_manager(
+                settings.metadata.javdb_session_path
+            )
+        self._auth_manager = auth_manager
+        self._account_fingerprint = javdb_account_fingerprint(
+            host, username, password
+        )
         logger.info(
             "JavdbProvider initialized host={} account_configured={}",
             host,
             bool(username and password),
         )
+
+    @property
+    def account_configured(self) -> bool:
+        return bool(self.username and self.password)
 
     @staticmethod
     def _normalize_image_url(url: str | None) -> str | None:
@@ -148,6 +168,101 @@ class JavdbProvider(MetadataRequestClient):
         if not query_params:
             return base_url
         return f"{base_url}?{urlencode(query_params, quote_via=quote, safe=':-')}"
+
+    @staticmethod
+    def _is_auth_required_payload(payload: dict[str, Any]) -> bool:
+        if payload.get("success") == 1:
+            return False
+        message = str(payload.get("message") or "")
+        action = str(payload.get("action") or "")
+        return action == "JWTVerificationError" or any(
+            marker in message for marker in ("請登錄", "请登录", "請先登錄", "请先登录")
+        )
+
+    def _raise_auth_required(self, payload: dict[str, Any] | None = None) -> None:
+        detail = "javdb login required"
+        if isinstance(payload, dict):
+            detail = str(payload.get("message") or payload.get("action") or detail)
+        raise JavdbAuthRequiredError(
+            detail,
+            account_configured=self.account_configured,
+        )
+
+    def _request_api_json(
+        self,
+        method: str,
+        *,
+        path: str,
+        path_params: dict[str, Any] | None = None,
+        query_params: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        auth: str = "on_demand",
+    ) -> dict[str, Any]:
+        """请求 JavDB API 并统一处理成功包络与登录态。
+
+        auth:
+        - required: 请求前先登录；
+        - on_demand: 先匿名请求，遇到认证错误再登录重试；
+        - none: 永不登录。
+        """
+
+        url = self._build_api_url(
+            path=path,
+            path_params=path_params,
+            query_params=query_params,
+        )
+        token = self._ensure_logged_in() if auth == "required" else None
+        for attempt in range(2):
+            request_headers = dict(headers or {})
+            if token:
+                request_headers["authorization"] = f"Bearer {token}"
+            try:
+                payload = self.request_json(
+                    method,
+                    url,
+                    data=data,
+                    headers=request_headers or None,
+                )
+            except MetadataRequestError as exc:
+                if exc.status_code not in (401, 403):
+                    raise
+                if auth == "none" or not self.account_configured:
+                    self._raise_auth_required()
+                if attempt == 0:
+                    self._auth_manager.invalidate(
+                        token,
+                        account_fingerprint=self._account_fingerprint,
+                    )
+                    token = self._ensure_logged_in()
+                    continue
+                self._raise_auth_required()
+
+            if not isinstance(payload, dict):
+                raise MetadataRequestError(
+                    method, url, "response is not a JSON object"
+                )
+            if self._is_auth_required_payload(payload):
+                if auth == "none" or not self.account_configured:
+                    self._raise_auth_required(payload)
+                if attempt == 0:
+                    self._auth_manager.invalidate(
+                        token,
+                        account_fingerprint=self._account_fingerprint,
+                    )
+                    token = self._ensure_logged_in()
+                    continue
+                self._raise_auth_required(payload)
+
+            if payload.get("success") != 1:
+                detail = payload.get("message") or (
+                    f"unexpected success={payload.get('success')}"
+                )
+                raise MetadataRequestError(method, url, str(detail))
+            return payload
+
+        self._raise_auth_required()
+        raise AssertionError("unreachable")
 
     def get_actor_movies(
         self, actor_name: str, page: int = 1
@@ -178,12 +293,19 @@ class JavdbProvider(MetadataRequestClient):
             **self.API_PARAMS_ACTOR_MOVIES,
             "page": page,
         }
-        url = self._build_api_url(
+        payload = self._request_api_json(
+            "GET",
             path=self.API_PATH_MOVIES_TAGS,
             query_params=query_params,
+            auth="on_demand",
         )
-        payload = self.request_json("GET", url)
-        data = payload.get("data", {})
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise MetadataRequestError(
+                "GET",
+                self._build_api_url(path=self.API_PATH_MOVIES_TAGS),
+                "missing data",
+            )
         movies = []
         for movie in data.get("movies", []):
             movies.append(self._build_movie_list_item(movie))
@@ -195,96 +317,21 @@ class JavdbProvider(MetadataRequestClient):
         )
         return movies
 
-    def get_series_movies(
-        self,
-        series_id: str,
-        series_type: int = 0,
-    ) -> list[JavdbMovieListItemResource]:
-        page = 1
-        movies = []
-        while True:
-            logger.debug(
-                "Javdb get_series_movies start series_id={} page={} series_type={}",
-                series_id,
-                page,
-                series_type,
-            )
-            query_params = {
-                "filter_by": f"{series_type}:s:{series_id}",
-                **self.API_PARAMS_SERIES_MOVIES,
-                "page": page,
-            }
-            url = self._build_api_url(
-                path=self.API_PATH_MOVIES_TAGS,
-                query_params=query_params,
-            )
-            payload = self.request_json("GET", url)
-            data = payload.get("data", {})
-            _movies = data.get("movies", [])
-            if not _movies:
-                break
-            for movie in _movies:
-                movies.append(self._build_movie_list_item(movie))
-            page += 1
-
-        return movies
-
-    def search_series(
-        self,
-        series_name: str,
-        page: int = 1,
-    ) -> list[JavdbSeriesResource]:
-        query_params = {
-            "q": series_name,
-            **self.API_PARAMS_SERIES_SEARCH,
-            "page": page,
-        }
-        url = self._build_api_url(
-            path=self.API_PATH_SEARCH,
-            query_params=query_params,
-        )
-        logger.debug("Javdb search_series query={} page={} url={}", series_name, page, url)
-        payload = self.request_json("GET", url)
-        series_list = payload.get("data", {}).get("series", [])
-        logger.debug(
-            "Javdb search_series candidates series_name={} count={}",
-            series_name,
-            len(series_list),
-        )
-        resources: list[JavdbSeriesResource] = []
-        for series in series_list:
-            series_id = series.get("id")
-            if not series_id:
-                continue
-            resources.append(
-                JavdbSeriesResource.model_validate(
-                    {
-                        "javdb_id": series_id,
-                        "javdb_type": series.get("type") or 0,
-                        "name": series.get("name") or "",
-                        "videos_count": series.get("videos_count") or 0,
-                    }
-                )
-            )
-        logger.debug(
-            "Javdb search_series success series_name={} count={}",
-            series_name,
-            len(resources),
-        )
-        return resources
-
     def _search_actor(self, actor_name: str) -> dict:
         query_params = {
             "q": actor_name,
             **self.API_PARAMS_ACTOR_SEARCH,
         }
-        url = self._build_api_url(
+        payload = self._request_api_json(
+            "GET",
             path=self.API_PATH_SEARCH,
             query_params=query_params,
+            auth="on_demand",
         )
-        logger.debug("Javdb search actor query={} url={}", actor_name, url)
-        payload = self.request_json("GET", url)
-        actors = payload.get("data", {}).get("actors", [])
+        data = payload.get("data")
+        actors = data.get("actors") if isinstance(data, dict) else None
+        if not isinstance(actors, list):
+            actors = []
         logger.debug(
             "Javdb search actor candidates actor_name={} count={}", actor_name, len(actors))
         if not actors:
@@ -331,13 +378,16 @@ class JavdbProvider(MetadataRequestClient):
             "q": actor_name,
             **self.API_PARAMS_ACTOR_SEARCH,
         }
-        url = self._build_api_url(
+        payload = self._request_api_json(
+            "GET",
             path=self.API_PATH_SEARCH,
             query_params=query_params,
+            auth="on_demand",
         )
-        logger.debug("Javdb search actors query={} url={}", actor_name, url)
-        payload = self.request_json("GET", url)
-        actors = payload.get("data", {}).get("actors", [])
+        data = payload.get("data")
+        actors = data.get("actors") if isinstance(data, dict) else None
+        if not isinstance(actors, list):
+            actors = []
         logger.debug(
             "Javdb search actors candidates actor_name={} count={}", actor_name, len(actors))
         if not actors:
@@ -392,17 +442,16 @@ class JavdbProvider(MetadataRequestClient):
             "q": normalized_number,
             **self.API_PARAMS_MOVIE_SEARCH,
         }
-        url = self._build_api_url(
+        payload = self._request_api_json(
+            "GET",
             path=self.API_PATH_SEARCH,
             query_params=query_params,
+            auth="required",
         )
-        logger.debug(
-            "Javdb search movie start movie_number={} normalized={}",
-            movie_number,
-            normalized_number,
-        )
-        payload = self.request_json("GET", url)
-        movies = payload.get("data", {}).get("movies", [])
+        data = payload.get("data")
+        movies = data.get("movies") if isinstance(data, dict) else None
+        if not isinstance(movies, list):
+            movies = []
         logger.debug("Javdb search movie candidates normalized={} count={}",
                      normalized_number, len(movies))
         for movie in sorted(movies, key=lambda m: m.get("release_date") or "", reverse=True):
@@ -508,16 +557,7 @@ class JavdbProvider(MetadataRequestClient):
         device_uuid = str(uuid.uuid5(self.DEVICE_UUID_NAMESPACE, self.username or ""))
         return {"device_uuid": device_uuid, **self.DEVICE}
 
-    def _ensure_logged_in(self) -> str:
-        # 懒登录：已有 token 直接复用；本实例曾登录失败则不再重试，避免触发风控/锁号。
-        if self._token:
-            return self._token
-        if self._login_failed:
-            raise JavdbAuthError("login already failed for this provider instance")
-        if not (self.username and self.password):
-            self._login_failed = True
-            raise JavdbAuthError("javdb account is not configured")
-
+    def _login(self) -> str:
         url = self._build_api_url(path=self.API_PATH_SESSIONS)
         payload = {
             "username": self.username,
@@ -532,19 +572,29 @@ class JavdbProvider(MetadataRequestClient):
         try:
             body = self.request_json("POST", url, data=payload, headers=headers)
         except MetadataRequestError as exc:
-            self._login_failed = True
-            raise JavdbAuthError(str(exc)) from exc
+            if exc.status_code in (401, 403):
+                raise JavdbAuthError(exc.detail) from exc
+            raise
 
         token = (body.get("data") or {}).get("token")
         if not token:
-            self._login_failed = True
             message = body.get("message") or "login response missing token"
             logger.warning("Javdb login failed detail={}", message)
             raise JavdbAuthError(message)
 
-        self._token = token
         logger.info("Javdb login success token_len={}", len(token))
         return token
+
+    def _ensure_logged_in(self) -> str:
+        if not self.account_configured:
+            raise JavdbAuthRequiredError(
+                "javdb account is not configured",
+                account_configured=False,
+            )
+        return self._auth_manager.get_token(
+            self._login,
+            account_fingerprint=self._account_fingerprint,
+        )
 
     def get_top_numbers(
         self,
@@ -557,33 +607,26 @@ class JavdbProvider(MetadataRequestClient):
             raise ValueError(f"unsupported top_type: {top_type}")
         page_count = self.TOP250_MAX_PAGES if max_pages is None else max_pages
 
-        token = self._ensure_logged_in()
         numbers: list[str] = []
         for page in range(1, page_count + 1):
+            query_params = {
+                "start_rank": 1,
+                "type": top_type,
+                "type_value": type_value,
+                "ignore_watched": "false",
+                "page": page,
+                "limit": self.TOP250_PAGE_LIMIT,
+            }
             url = self._build_api_url(
                 path=self.API_PATH_MOVIES_TOP,
-                query_params={
-                    "start_rank": 1,
-                    "type": top_type,
-                    "type_value": type_value,
-                    "ignore_watched": "false",
-                    "page": page,
-                    "limit": self.TOP250_PAGE_LIMIT,
-                },
+                query_params=query_params,
             )
-            payload = self.request_json(
-                "GET", url, headers={"authorization": f"Bearer {token}"})
-            if payload.get("success") != 1:
-                detail = payload.get(
-                    "message") or f"unexpected success={payload.get('success')}"
-                logger.warning(
-                    "Javdb top request returned unsuccessful payload top_type={} type_value={} page={} detail={}",
-                    top_type,
-                    type_value,
-                    page,
-                    detail,
-                )
-                raise MetadataRequestError("GET", url, detail)
+            payload = self._request_api_json(
+                "GET",
+                path=self.API_PATH_MOVIES_TOP,
+                query_params=query_params,
+                auth="required",
+            )
 
             data = payload.get("data")
             movies = data.get("movies") if isinstance(data, dict) else None
@@ -618,24 +661,19 @@ class JavdbProvider(MetadataRequestClient):
         if period not in self.SUPPORTED_RANK_PERIODS:
             raise ValueError(f"unsupported period: {period}")
 
+        query_params = {"filter_by": filter_by, "period": period}
         url = self._build_api_url(
             path=self.API_PATH_RANKINGS_PLAYBACK,
-            query_params={"filter_by": filter_by, "period": period},
+            query_params=query_params,
+        )
+        payload = self._request_api_json(
+            "GET",
+            path=self.API_PATH_RANKINGS_PLAYBACK,
+            query_params=query_params,
+            auth="on_demand",
         )
         logger.debug(
-            "Javdb fetch playback rank filter_by={} period={} url={}", filter_by, period, url)
-        payload = self.request_json("GET", url)
-        # playback 响应与 /api/v1/rankings 同构，带 success 包络，先校验再取 movies。
-        if payload.get("success") != 1:
-            detail = payload.get(
-                "message") or f"unexpected success={payload.get('success')}"
-            logger.warning(
-                "Javdb playback rank request returned unsuccessful payload filter_by={} period={} detail={}",
-                filter_by,
-                period,
-                detail,
-            )
-            raise MetadataRequestError("GET", url, detail)
+            "Javdb fetch playback rank filter_by={} period={}", filter_by, period)
 
         data = payload.get("data")
         movies = data.get("movies") if isinstance(data, dict) else None
@@ -700,21 +738,15 @@ class JavdbProvider(MetadataRequestClient):
         )
 
     def _get_movie_detail_payload(self, javdb_id: str) -> dict[str, Any]:
-        url = self._build_api_url(
+        payload = self._request_api_json(
+            "GET",
             path=self.API_PATH_MOVIE_DETAIL,
             path_params={"javdb_id": javdb_id},
             query_params=self.API_PARAMS_MOVIE_DETAIL,
+            auth="required",
         )
-        logger.debug(
-            "Javdb fetch movie detail javdb_id={} url={}", javdb_id, url)
-        payload = self.request_json("GET", url)
-        if payload.get("success") != 1:
-            detail = payload.get(
-                "message") or f"unexpected success={payload.get('success')}"
-            logger.warning(
-                "Javdb detail request returned unsuccessful payload javdb_id={} detail={}", javdb_id, detail)
-            raise MetadataRequestError("GET", url, detail)
-        movie = payload.get("data", {}).get("movie")
+        data = payload.get("data")
+        movie = data.get("movie") if isinstance(data, dict) else None
         logger.debug(json.dumps(payload, ensure_ascii=False))
         if not movie:
             logger.warning(
@@ -739,29 +771,25 @@ class JavdbProvider(MetadataRequestClient):
         params["limit"] = limit
         if sort_by:
             params["sort_by"] = sort_by
+        payload = self._request_api_json(
+            "GET",
+            path=self.API_PATH_MOVIE_REVIEWS,
+            path_params={"javdb_id": javdb_id},
+            query_params=params,
+            auth="on_demand",
+        )
+        logger.debug(
+            "Javdb fetch movie reviews javdb_id={} page={} limit={} sort_by={}",
+            javdb_id,
+            page,
+            limit,
+            sort_by,
+        )
         url = self._build_api_url(
             path=self.API_PATH_MOVIE_REVIEWS,
             path_params={"javdb_id": javdb_id},
             query_params=params,
         )
-        logger.debug(
-            "Javdb fetch movie reviews javdb_id={} page={} limit={} sort_by={} url={}",
-            javdb_id,
-            page,
-            limit,
-            sort_by,
-            url,
-        )
-        payload = self.request_json("GET", url)
-        if payload.get("success") != 1:
-            detail = payload.get(
-                "message") or f"unexpected success={payload.get('success')}"
-            logger.warning(
-                "Javdb reviews request returned unsuccessful payload javdb_id={} detail={}",
-                javdb_id,
-                detail,
-            )
-            raise MetadataRequestError("GET", url, detail)
         return payload, url
 
     def _extract_movie_reviews(self, payload: dict[str, Any], *, url: str) -> list[Any]:
@@ -808,23 +836,19 @@ class JavdbProvider(MetadataRequestClient):
         return JavdbMovieReviewResource.model_validate(mapped_payload)
 
     def _fetch_rank_movies(self, video_type: str, period: str) -> list[dict[str, Any]]:
+        query_params = {"type": video_type, "period": period}
         url = self._build_api_url(
             path=self.API_PATH_RANKINGS,
-            query_params={"type": video_type, "period": period},
+            query_params=query_params,
+        )
+        payload = self._request_api_json(
+            "GET",
+            path=self.API_PATH_RANKINGS,
+            query_params=query_params,
+            auth="on_demand",
         )
         logger.debug(
-            "Javdb fetch rank movies video_type={} period={} url={}", video_type, period, url)
-        payload = self.request_json("GET", url)
-        if payload.get("success") != 1:
-            detail = payload.get(
-                "message") or f"unexpected success={payload.get('success')}"
-            logger.warning(
-                "Javdb rank request returned unsuccessful payload video_type={} period={} detail={}",
-                video_type,
-                period,
-                detail,
-            )
-            raise MetadataRequestError("GET", url, detail)
+            "Javdb fetch rank movies video_type={} period={}", video_type, period)
 
         data = payload.get("data")
         movies = data.get("movies") if isinstance(data, dict) else None

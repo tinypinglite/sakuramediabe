@@ -21,14 +21,17 @@ from src.common.media_paths import media_image_root_path
 from src.i18n.text import resolve_text
 from src.metadata._providers.models import JavdbMovieDetailResource
 from src.metadata.factory import build_javdb_provider
-from src.metadata.provider import MetadataNotFoundError
+from src.metadata.provider import MetadataNotFoundError, metadata_error_code
 from src.plugins.extensions.metadata import PluginMovieMetadata
 from src.schema.transfers.media_import import (
     ImportMetadataCandidateResource,
     ImportMetadataSearchResponse,
     ImportMetadataSourceErrorResource,
 )
-from src.service.catalog.metadata_source_service import MetadataSourceService
+from src.service.catalog.metadata_source_service import (
+    MetadataSourceError,
+    MetadataSourceService,
+)
 from src.service.catalog.movie_image_service import MovieImageService
 
 
@@ -62,7 +65,7 @@ class MovieMetadataSearchService:
                     ImportMetadataSourceErrorResource(
                         source="javdb",
                         source_name="JavDB",
-                        reason=type(exc).__name__,
+                        reason=metadata_error_code(exc),
                         detail=str(exc),
                     )
                 )
@@ -105,7 +108,11 @@ class MovieMetadataSearchService:
                             ImportMetadataSourceErrorResource(
                                 source=plugin_id,
                                 source_name=resolve_text(plugin_name, plugin_name_i18n),
-                                reason=type(exc).__name__,
+                                reason=(
+                                    "metadata_fetch_failed"
+                                    if isinstance(exc, MetadataSourceError)
+                                    else metadata_error_code(exc)
+                                ),
                                 detail=str(exc),
                             )
                         )
@@ -273,8 +280,30 @@ class MovieMetadataSearchService:
         reference = cls.resolve_candidate_reference(candidate_id)
         provider = build_javdb_provider()
         if reference["source"] == "javdb":
-            detail = provider.get_movie_by_javdb_id(reference["javdb_id"])
-            cls._ensure_candidate_number(detail.movie_number, reference["movie_number"])
+            try:
+                detail = provider.get_movie_by_javdb_id(reference["javdb_id"])
+            except Exception as exc:
+                logger.warning(
+                    "JavDB candidate detail failed, trying metadata fallback movie_number={} detail={}",
+                    reference["movie_number"],
+                    exc,
+                )
+                with MetadataSourceService.fetch(
+                    reference["movie_number"], provider
+                ) as outcome:
+                    cls._ensure_candidate_number(
+                        outcome.detail.movie_number, reference["movie_number"]
+                    )
+                    yield (
+                        outcome.detail,
+                        "javdb" if outcome.source is None else "plugin",
+                        provider,
+                        outcome.source,
+                    )
+                return
+            cls._ensure_candidate_number(
+                detail.movie_number, reference["movie_number"]
+            )
             yield detail, "javdb", provider, None
             return
 

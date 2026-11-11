@@ -20,17 +20,22 @@ class MetadataRequestClient:
         self,
         *,
         timeout: float = DEFAULT_TIMEOUT,
+        connect_timeout: float | None = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
     ):
         # trust_env 保持默认 True：未显式配置 proxy，请求统一跟随容器环境变量
         # （HTTP_PROXY / HTTPS_PROXY / NO_PROXY），由部署方自行决定哪些请求走代理；
         # 显式代理配置已整体移除，不再支持 config 层代理。
         self.timeout = timeout
+        self.connect_timeout = connect_timeout if connect_timeout is not None else timeout
         self.max_retries = max_retries
-        self.client = httpx.Client(timeout=timeout)
+        self.client = httpx.Client(
+            timeout=httpx.Timeout(self.timeout, connect=self.connect_timeout)
+        )
         logger.info(
-            "MetadataRequestClient initialized timeout={} max_retries={}",
+            "MetadataRequestClient initialized timeout={} connect_timeout={} max_retries={}",
             timeout,
+            self.connect_timeout,
             max_retries,
         )
 
@@ -59,7 +64,12 @@ class MetadataRequestClient:
                 elapsed_ms = int((time.time() - start_at) * 1000)
                 logger.warning("Metadata request http error method={} url={} status={} elapsed_ms={} detail={}", method.upper(), url, exc.response.status_code, elapsed_ms, exc)
                 if exc.response.status_code not in self.RETRYABLE_STATUS_CODES:
-                    raise MetadataRequestError(method, url, str(exc)) from exc
+                    raise MetadataRequestError(
+                        method,
+                        url,
+                        str(exc),
+                        status_code=exc.response.status_code,
+                    ) from exc
             except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
                 last_exception = exc
                 elapsed_ms = int((time.time() - start_at) * 1000)

@@ -196,6 +196,8 @@
   "errors.merged_playback_need_at_least_two": "Merged playback requires at least two segments",
   "errors.merged_playback_unavailable": "Merged playback is unavailable for this media",
   "errors.metadata_candidate_mismatch": "Metadata candidate movie number does not match",
+  "errors.metadata_auth_required": "JavDB login is required",
+  "errors.metadata_auth_failed": "JavDB login failed",
   "errors.moment_collection_name_conflict": "Moment collection name already exists",
   "errors.moment_collection_not_found": "Moment collection not found",
   "errors.movie_heat_recompute_conflict": "A movie heat task is already running",

@@ -7,6 +7,7 @@ from src.common.service_helpers import emit_progress
 from src.metadata.factory import build_javdb_provider
 from src.model import Actor, Movie, MovieActor
 from src.service.catalog.catalog_import_service import CatalogImportService
+from src.service.catalog.metadata_source_service import MetadataSourceService
 
 
 class SubscribedActorMovieSyncService:
@@ -117,15 +118,26 @@ class SubscribedActorMovieSyncService:
 
                     try:
                         # 单片导入失败按影片跳过，避免阻断该演员剩余影片和后续演员的同步。
-                        detail = self.provider.get_movie_by_javdb_id(movie_item.javdb_id)
-                        self.import_service.import_movie_if_missing(detail)
+                        with MetadataSourceService.fetch(
+                            movie_item.movie_number, self.provider
+                        ) as outcome:
+                            if outcome.source is None:
+                                self.import_service.import_movie_if_missing(
+                                    outcome.detail
+                                )
+                            else:
+                                self.import_service.import_plugin_movie(
+                                    outcome.detail,
+                                    outcome.source,
+                                    self.provider,
+                                )
                         imported_movies += 1
                         logger.info(
                             "Subscribed actor sync imported actor_id={} actor_javdb_id={} movie_javdb_id={} movie_number={}",
                             actor.id,
                             actor_javdb_id,
-                            detail.javdb_id,
-                            detail.movie_number,
+                            movie_item.javdb_id,
+                            movie_item.movie_number,
                         )
                     except Exception as exc:
                         logger.warning(

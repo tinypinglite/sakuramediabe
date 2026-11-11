@@ -10,6 +10,7 @@ from loguru import logger
 
 from src.config.config import settings
 from src.metadata._providers.javdb import JavdbProvider
+from src.metadata._providers.javdb_auth import get_javdb_auth_manager
 from src.metadata.gfriends import GfriendsActorImageResolver
 
 JAVDB_HOST = "jdforrepam.com"
@@ -130,13 +131,31 @@ def build_javdb_provider(
 
     JavDB / GFriends 均不再接收显式代理配置：外部站点请求统一跟随容器
     环境变量 HTTP_PROXY / HTTPS_PROXY / NO_PROXY 分流（httpx trust_env 默认开启），
-    由部署方自行决定哪些域名走代理、哪些直连。账号只用于需登录的 TOP250 榜单，
-    由排行榜插件从自身设置读入后显式传入；宿主常规链路构建无账号实例。
+    由部署方自行决定哪些域名走代理、哪些直连。
+
+    JavDB 只支持一个宿主账号；显式传入的其他账号参数仅保留调用兼容，
+    实际始终使用 [metadata] 下的宿主级账号。
     """
+    host_username = settings.metadata.javdb_username or None
+    host_password = settings.metadata.javdb_password or None
+    requested_username = username.strip() if username is not None else None
+    if (
+        requested_username is not None
+        and requested_username != (host_username or "")
+    ) or (
+        password is not None
+        and password != (host_password or "")
+    ):
+        logger.warning(
+            "Ignoring non-host JavDB credentials; using [metadata] account"
+        )
     provider = JavdbProvider(
         host=JAVDB_HOST,
-        username=username,
-        password=password,
+        username=host_username,
+        password=host_password,
+        auth_manager=get_javdb_auth_manager(
+            settings.metadata.javdb_session_path
+        ),
     )
     return GfriendsAvatarJavdbProvider(
         provider=provider,

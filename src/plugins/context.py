@@ -1528,7 +1528,7 @@ class PluginContext:
         username: str | None = None,
         password: str | None = None,
     ):
-        """构建 JavDB provider；账号仅需登录的榜单（TOP250）需要，由插件从自身设置传入。"""
+        """构建 JavDB provider；运行时始终使用宿主 [metadata] 账号。"""
         from src.metadata.factory import build_javdb_provider
 
         return build_javdb_provider(username=username, password=password)

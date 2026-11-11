@@ -52,6 +52,9 @@ class _FakeProvider:
     def get_movie_by_javdb_id(self, javdb_id: str):
         return self.details[javdb_id]
 
+    def get_movie_by_number(self, movie_number: str):
+        return self.details[movie_number]
+
 
 def test_sync_covers_merged_source_javdb_ids(test_db):
     target = Actor.create(
@@ -64,8 +67,12 @@ def test_sync_covers_merged_source_javdb_ids(test_db):
     ActorMergeService.merge_actors(target.id, [source.id])
     provider = _FakeProvider(
         pages={
-            ("sync-canon", 1): [SimpleNamespace(javdb_id="SYNC-1")],
-            ("sync-source", 1): [SimpleNamespace(javdb_id="SYNC-2")],
+                ("sync-canon", 1): [
+                    SimpleNamespace(javdb_id="SYNC-1", movie_number="SYNC-1")
+                ],
+                ("sync-source", 1): [
+                    SimpleNamespace(javdb_id="SYNC-2", movie_number="SYNC-2")
+                ],
         },
         details={
             "SYNC-1": _build_detail(
@@ -106,8 +113,16 @@ def test_sync_incremental_continues_to_merged_source_after_existing_hit(test_db)
     MovieActor.create(movie=existing_movie, actor=target)
     provider = _FakeProvider(
         pages={
-            ("sync-canon", 1): [SimpleNamespace(javdb_id="SYNC-OLD")],
-            ("sync-source", 1): [SimpleNamespace(javdb_id="SYNC-NEW")],
+                ("sync-canon", 1): [
+                    SimpleNamespace(
+                        javdb_id="SYNC-OLD", movie_number="SYNC-OLD"
+                    )
+                ],
+                ("sync-source", 1): [
+                    SimpleNamespace(
+                        javdb_id="SYNC-NEW", movie_number="SYNC-NEW"
+                    )
+                ],
         },
         details={
             "SYNC-NEW": _build_detail(

@@ -8,6 +8,8 @@ from loguru import logger
 
 from src.api.exception.errors import ApiError
 from src.common.media_import_status import (
+    FAILURE_REASON_METADATA_AUTH_FAILED,
+    FAILURE_REASON_METADATA_AUTH_REQUIRED,
     FAILURE_REASON_METADATA_FETCH_FAILED,
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
     IMPORT_STATUS_COMPLETED,
@@ -36,6 +38,8 @@ class ImportTaskService:
         {
             FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
             FAILURE_REASON_METADATA_FETCH_FAILED,
+            FAILURE_REASON_METADATA_AUTH_REQUIRED,
+            FAILURE_REASON_METADATA_AUTH_FAILED,
         }
     )
 

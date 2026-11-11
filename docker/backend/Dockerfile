@@ -68,7 +68,7 @@ RUN chmod +x /docker-entrypoint.sh \
     && useradd --create-home --shell /bin/bash --gid app app
 
 COPY docker/backend/supervisord.conf /etc/supervisor/supervisord.conf
-# 内置插件包：本地构建为空目录（安装步骤跳过），CI 发布构建为 4 个已校验的 ZIP + 索引。
+# 内置插件包：本地构建为空目录（安装步骤跳过），CI 发布构建为已校验的 ZIP + 索引。
 COPY --from=bundled /bundled /app/bundled-plugins
 COPY src /app/src
 RUN chmod -R a+rX /app/src /app/bundled-plugins

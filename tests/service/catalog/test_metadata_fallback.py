@@ -19,6 +19,7 @@ from src.common.media_paths import (
 )
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import Plugins, settings
+from src.metadata._providers.exceptions import JavdbAuthRequiredError
 from src.metadata._providers.javdb import JavdbProvider
 from src.metadata._providers.models import (
     JavdbMovieActor,
@@ -194,23 +195,88 @@ def test_contract_rejects_missing_metadata_and_host_fields(changes):
         PluginMovieMetadata.model_validate(values | changes)
 
 
-def test_javdb_found_and_request_error_never_call_plugins(metadata_files, monkeypatch):
-    callback = Mock()
+def test_javdb_found_and_request_error_falls_back(metadata_files, monkeypatch):
+    plugin_detail = delivery(metadata_files, request="fallback")
+    callback = Mock(return_value=plugin_detail)
     register_sources(monkeypatch, {"metadata_one": callback})
     provider = metadata_files.provider
     provider.get_movie_by_number.side_effect = None
     provider.get_movie_by_number.return_value = remote_detail()
-    with MetadataSourceService.fetch("TEST-001", provider) as (detail, source):
-        assert detail.javdb_id == "real-id" and source is None
+    with MetadataSourceService.fetch("TEST-001", provider) as outcome:
+        assert outcome.detail.javdb_id == "real-id" and outcome.source is None
+        assert outcome.provider_error is None
+    callback.assert_not_called()
     provider.get_movie_by_number.side_effect = MetadataRequestError(
         "GET", "https://example.com", "timeout"
     )
+    with MetadataSourceService.fetch("TEST-001", provider) as outcome:
+        assert outcome.detail == plugin_detail
+        assert outcome.source["plugin_id"] == "metadata_one"
+        assert isinstance(outcome.provider_error, MetadataRequestError)
+    callback.assert_called_once_with("TEST-001")
+
+
+def test_javdb_auth_required_falls_back_to_plugin(metadata_files, monkeypatch):
+    plugin_detail = delivery(metadata_files, request="auth-fallback")
+    callback = Mock(return_value=plugin_detail)
+    register_sources(monkeypatch, {"metadata_one": callback})
+    metadata_files.provider.get_movie_by_number.side_effect = (
+        JavdbAuthRequiredError("請登錄帳號", account_configured=False)
+    )
+
+    with MetadataSourceService.fetch("TEST-001", metadata_files.provider) as outcome:
+        assert outcome.detail == plugin_detail
+        assert outcome.source["plugin_id"] == "metadata_one"
+        assert isinstance(outcome.provider_error, JavdbAuthRequiredError)
+
+
+def test_javdb_not_found_and_plugin_success_has_no_provider_error(
+    metadata_files, monkeypatch
+):
+    plugin_detail = delivery(metadata_files, request="not-found-fallback")
+    callback = Mock(return_value=plugin_detail)
+    register_sources(monkeypatch, {"metadata_one": callback})
+
+    with MetadataSourceService.fetch("TEST-001", metadata_files.provider) as outcome:
+        assert outcome.detail == plugin_detail
+        assert outcome.source["plugin_id"] == "metadata_one"
+        assert outcome.provider_error is None
+
+
+def test_javdb_not_found_and_plugin_failure_reports_fetch_failed(
+    metadata_files, monkeypatch
+):
+    register_sources(
+        monkeypatch,
+        {"metadata_one": Mock(side_effect=RuntimeError("plugin failed"))},
+    )
+
     with (
-        pytest.raises(MetadataRequestError),
-        MetadataSourceService.fetch("TEST-001", provider),
+        pytest.raises(MetadataSourceError) as exc_info,
+        MetadataSourceService.fetch("TEST-001", metadata_files.provider),
     ):
-        pytest.fail("request errors cannot fall back")
-    callback.assert_not_called()
+        pytest.fail("no metadata source should succeed")
+    assert exc_info.value.code == "metadata_fetch_failed"
+    assert exc_info.value.provider_error is None
+
+
+def test_javdb_auth_required_is_preserved_when_plugins_fail(
+    metadata_files, monkeypatch
+):
+    register_sources(
+        monkeypatch,
+        {"metadata_one": Mock(side_effect=RuntimeError("plugin failed"))},
+    )
+    metadata_files.provider.get_movie_by_number.side_effect = (
+        JavdbAuthRequiredError("請登錄帳號", account_configured=False)
+    )
+
+    with (
+        pytest.raises(MetadataSourceError) as exc_info,
+        MetadataSourceService.fetch("TEST-001", metadata_files.provider),
+    ):
+        pytest.fail("no metadata source should succeed")
+    assert exc_info.value.code == "metadata_auth_required"
 
 
 @pytest.mark.parametrize("failure", ["number", "missing", "outside", "other_request"])
@@ -242,12 +308,9 @@ def test_invalid_result_continues_in_order_and_cleans_delivery(
             "metadata_three": third,
         },
     )
-    with MetadataSourceService.fetch("TEST-001", metadata_files.provider) as (
-        detail,
-        source,
-    ):
-        assert detail == good
-        assert source["plugin_id"] == "metadata_two"
+    with MetadataSourceService.fetch("TEST-001", metadata_files.provider) as outcome:
+        assert outcome.detail == good
+        assert outcome.source["plugin_id"] == "metadata_two"
         assert not Path(bad.cover_image_path).exists()
         assert Path(good.cover_image_path).exists()
     assert not Path(good.cover_image_path).exists()
@@ -805,6 +868,8 @@ def test_stream_and_manual_refresh_use_plugin_then_backfill(metadata_env, monkey
     )
     assert events[-1][1]["success"]
     assert events[-1][1]["movies"][0]["javdb_id"] is None
+    movie_found = next(payload for event, payload in events if event == "movie_found")
+    assert movie_found["source_errors"] == []
     assert "metadata-tmp" not in json.dumps(events)
     metadata_env.provider.get_movie_by_number.side_effect = None
     metadata_env.provider.get_movie_by_number.return_value = remote_detail()
@@ -981,6 +1046,47 @@ def test_ranking_hit_backfills_existing_plugin_movie(metadata_env, monkeypatch):
     service.sync_board_period("test_rank", "all", None)
     assert Movie.get_by_id(movie.id).javdb_id == "real-id"
     assert Movie.select().count() == 1
+
+
+def test_ranking_detail_falls_back_to_plugin(metadata_env, monkeypatch):
+    from src.service.discovery.ranking_service import (
+        RANKING_SOURCES,
+        RankingBoardDefinition,
+        RankingSourceDefinition,
+        RankingSyncService,
+    )
+
+    plugin_detail = delivery(metadata_env, movie_number="RANK-001")
+    register_sources(
+        monkeypatch, {"metadata_one": Mock(return_value=plugin_detail)}
+    )
+    metadata_env.provider.get_movie_by_number.side_effect = JavdbAuthRequiredError(
+        "請登錄帳號", account_configured=False
+    )
+    monkeypatch.setitem(
+        RANKING_SOURCES,
+        "test_rank_fallback",
+        RankingSourceDefinition(
+            key="test_rank_fallback",
+            name="Test",
+            boards=(
+                RankingBoardDefinition(
+                    key="all",
+                    name="All",
+                    fetch_numbers=lambda _period: ["RANK-001"],
+                ),
+            ),
+        ),
+    )
+
+    stats = RankingSyncService(
+        import_service=metadata_env.service,
+        providers={"test_rank_fallback": metadata_env.provider},
+    ).sync_board_period("test_rank_fallback", "all", None)
+
+    assert stats["imported_movies"] == 1
+    movie = Movie.get(Movie.movie_number == "RANK-001")
+    assert movie.metadata_source["plugin_id"] == "metadata_one"
 
 
 @pytest.mark.parametrize("number,other", [("072625_001", "072625-001"), ("072625-001", "072625_001")])

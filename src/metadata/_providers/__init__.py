@@ -1,8 +1,11 @@
 from .exceptions import (
+    JavdbAuthError,
+    JavdbAuthRequiredError,
     MetadataNotFoundError,
     MetadataProviderError,
     MetadataProviderUnavailable,
     MetadataRequestError,
+    metadata_error_code,
 )
 from .http_client import MetadataRequestClient
 from .javdb import JavdbProvider
@@ -16,6 +19,8 @@ from .models import (
 )
 
 __all__ = [
+    "JavdbAuthError",
+    "JavdbAuthRequiredError",
     "JavdbMovieActorResource",
     "JavdbMovieDetailResource",
     "JavdbMovieListItemResource",
@@ -28,4 +33,5 @@ __all__ = [
     "MetadataProviderUnavailable",
     "MetadataRequestClient",
     "MetadataRequestError",
+    "metadata_error_code",
 ]

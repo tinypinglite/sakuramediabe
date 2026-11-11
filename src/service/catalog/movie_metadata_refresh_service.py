@@ -3,7 +3,6 @@
 从 ``MovieService`` 拆出所有与远端 JavDB 交互并写回 Movie 记录的入口：
 - ``refresh_movie_metadata``：强校验版元数据刷新；
 - ``stream_search_and_upsert_movie_from_javdb``：单番号搜索并落库（SSE）；
-- ``stream_import_series_movies_from_javdb``：按系列批量拉详情并落库（SSE）。
 """
 
 from collections.abc import Iterator
@@ -15,14 +14,23 @@ from src.common import normalize_movie_number
 from src.common.service_helpers import find_movie_by_number
 from src.metadata._providers.models import JavdbMovieDetailResource
 from src.metadata.factory import build_javdb_provider
-from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
-from src.model import Movie, MovieSeries
+from src.metadata.provider import (
+    JavdbAuthError,
+    JavdbAuthRequiredError,
+    MetadataNotFoundError,
+    MetadataRequestError,
+    metadata_error_code,
+)
+from src.model import Movie
 from src.schema.catalog.movies import MovieDetailResource, MovieListItemResource
 from src.service.catalog.catalog_import_service import (
     CatalogImportService,
     ImageDownloadError,
 )
-from src.service.catalog.metadata_source_service import MetadataSourceService
+from src.service.catalog.metadata_source_service import (
+    MetadataSourceError,
+    MetadataSourceService,
+)
 from src.service.catalog.movie_list_media_service import attach_movie_list_media
 from src.service.catalog.movie_service import MovieService
 
@@ -89,6 +97,28 @@ class MovieMetadataRefreshService:
                 "movie_metadata_not_found",
                 "影片远端元数据不存在",
                 {"movie_number": movie.movie_number, "normalized_movie_number": normalized_movie_number},
+            ) from exc
+        except JavdbAuthRequiredError as exc:
+            raise ApiError(
+                502,
+                "metadata_auth_required",
+                "JavDB 需要登录",
+                cls._build_movie_metadata_refresh_error_details(
+                    movie_number=movie.movie_number,
+                    normalized_movie_number=normalized_movie_number,
+                    detail=str(exc),
+                ),
+            ) from exc
+        except JavdbAuthError as exc:
+            raise ApiError(
+                502,
+                "metadata_auth_failed",
+                "JavDB 登录失败",
+                cls._build_movie_metadata_refresh_error_details(
+                    movie_number=movie.movie_number,
+                    normalized_movie_number=normalized_movie_number,
+                    detail=str(exc),
+                ),
             ) from exc
         except MetadataRequestError as exc:
             cls._raise_movie_metadata_refresh_failed(
@@ -243,7 +273,21 @@ class MovieMetadataRefreshService:
 
         provider = build_javdb_provider()
         try:
-            with MetadataSourceService.fetch(normalized_movie_number, provider) as (detail, source):
+            with MetadataSourceService.fetch(
+                normalized_movie_number, provider
+            ) as outcome:
+                detail = outcome.detail
+                source = outcome.source
+                source_errors = []
+                if outcome.provider_error is not None:
+                    source_errors.append(
+                        {
+                            "source": "javdb",
+                            "source_name": "JavDB",
+                            "reason": metadata_error_code(outcome.provider_error),
+                            "detail": str(outcome.provider_error),
+                        }
+                    )
                 # 先把搜索命中的原始远端信息回给前端，再开始实际落库。
                 yield "movie_found", {
                     "movies": [
@@ -255,6 +299,7 @@ class MovieMetadataRefreshService:
                         }
                     ],
                     "total": 1,
+                    "source_errors": source_errors,
                 }
                 yield "upsert_started", {"total": 1}
 
@@ -324,6 +369,7 @@ class MovieMetadataRefreshService:
                         "success": True,
                         "movies": [movie_item.model_dump(exclude={"can_play"}) for movie_item in imported_movies],
                         "failed_items": failed_items,
+                        "source_errors": source_errors,
                         "stats": stats,
                     }
                     return
@@ -333,213 +379,36 @@ class MovieMetadataRefreshService:
                     "reason": "internal_error",
                     "movies": [],
                     "failed_items": failed_items,
+                    "source_errors": source_errors,
                     "stats": stats,
                 }
 
         except MetadataNotFoundError:
             yield "completed", {"success": False, "reason": "movie_not_found", "movies": []}
+        except (JavdbAuthRequiredError, JavdbAuthError, MetadataRequestError) as exc:
+            logger.warning(
+                "Movie metadata search failed movie_number={} reason={} detail={}",
+                normalized_movie_number,
+                metadata_error_code(exc),
+                exc,
+            )
+            yield "completed", {
+                "success": False,
+                "reason": metadata_error_code(exc),
+                "movies": [],
+            }
+        except MetadataSourceError as exc:
+            logger.warning(
+                "Movie metadata search fell back to plugins and failed movie_number={} reason={} detail={}",
+                normalized_movie_number,
+                exc.code,
+                exc,
+            )
+            yield "completed", {
+                "success": False,
+                "reason": exc.code,
+                "movies": [],
+            }
         except Exception as exc:
             logger.exception("Movie metadata search failed movie_number={} detail={}", normalized_movie_number, exc)
             yield "completed", {"success": False, "reason": "internal_error", "movies": []}
-
-    @classmethod
-    def stream_import_series_movies_from_javdb(
-        cls,
-        series_id: int,
-    ) -> Iterator[tuple[str, dict]]:
-        """按 SSE 事件顺序输出系列影片抓取和导入进度。"""
-        yield "search_started", {"series_id": series_id}
-
-        local_series = MovieSeries.get_or_none(MovieSeries.id == series_id)
-        if local_series is None:
-            yield "completed", {"success": False, "reason": "local_series_not_found", "movies": []}
-            return
-
-        series_name = local_series.name.strip()
-        yield "series_found", {"series_id": local_series.id, "series_name": series_name}
-
-        provider = build_javdb_provider()
-        try:
-            series_candidates = provider.search_series(series_name)
-        except Exception as exc:
-            logger.exception("Javdb series search failed series_id={} series_name={} detail={}", series_id, series_name, exc)
-            yield "completed", {"success": False, "reason": "metadata_fetch_failed", "movies": []}
-            return
-
-        # 只接受精确同名系列，避免把相似系列误导入本地系列。
-        javdb_series = next(
-            (candidate for candidate in series_candidates if candidate.name.strip() == series_name),
-            None,
-        )
-        if javdb_series is None:
-            yield "completed", {"success": False, "reason": "javdb_series_not_found", "movies": []}
-            return
-
-        yield "javdb_series_found", {
-            "javdb_id": javdb_series.javdb_id,
-            "javdb_type": javdb_series.javdb_type,
-            "name": javdb_series.name,
-            "videos_count": javdb_series.videos_count,
-        }
-
-        try:
-            remote_movies = provider.get_series_movies(
-                javdb_series.javdb_id,
-                series_type=javdb_series.javdb_type,
-            )
-        except Exception as exc:
-            logger.exception(
-                "Javdb series movies fetch failed series_id={} javdb_series_id={} detail={}",
-                series_id,
-                javdb_series.javdb_id,
-                exc,
-            )
-            yield "completed", {"success": False, "reason": "metadata_fetch_failed", "movies": []}
-            return
-
-        deduplicated_movies = []
-        seen_movie_keys: set[str] = set()
-        for movie_item in remote_movies:
-            movie_key = movie_item.javdb_id or movie_item.movie_number
-            if movie_key in seen_movie_keys:
-                continue
-            seen_movie_keys.add(movie_key)
-            deduplicated_movies.append(movie_item)
-
-        total = len(deduplicated_movies)
-        if total == 0:
-            yield "completed", {"success": False, "reason": "javdb_series_movies_not_found", "movies": []}
-            return
-
-        yield "movie_found", {
-            "movies": [
-                {
-                    "javdb_id": movie_item.javdb_id,
-                    "movie_number": movie_item.movie_number,
-                    "title": movie_item.title,
-                    "cover_image": movie_item.cover_image,
-                }
-                for movie_item in deduplicated_movies
-            ],
-            "total": total,
-        }
-        yield "upsert_started", {"total": total}
-
-        created_count = 0
-        already_exists_count = 0
-        failed_count = 0
-        skipped_items: list[dict[str, str]] = []
-        failed_items: list[dict[str, str]] = []
-        imported_movies: list[MovieListItemResource] = []
-        import_service = cls._build_catalog_import_service()
-
-        for index, movie_item in enumerate(deduplicated_movies, start=1):
-            existing_movie = Movie.get_or_none(
-                (Movie.javdb_id == movie_item.javdb_id) | (Movie.movie_number == movie_item.movie_number)
-            )
-            if existing_movie is not None:
-                already_exists_count += 1
-                skipped_item = {
-                    "javdb_id": movie_item.javdb_id,
-                    "movie_number": movie_item.movie_number,
-                    "reason": "already_exists",
-                }
-                skipped_items.append(skipped_item)
-                yield "movie_skipped", {**skipped_item, "index": index, "total": total}
-                continue
-
-            yield "movie_upsert_started", {
-                "javdb_id": movie_item.javdb_id,
-                "movie_number": movie_item.movie_number,
-                "index": index,
-                "total": total,
-            }
-            try:
-                # 列表项信息不完整，入库前必须再拉详情复用统一导入链路；外层已跳过已存在影片。
-                detail = provider.get_movie_by_javdb_id(movie_item.javdb_id)
-                movie, _created = import_service.import_movie_if_missing(detail)
-                movie_with_cover = MovieService.movie_list_query().where(Movie.id == movie.id).get_or_none() or movie
-                attach_movie_list_media([movie_with_cover])
-                imported_movies.append(MovieListItemResource.from_attributes_model(movie_with_cover))
-                created_count += 1
-                yield "movie_upsert_finished", {
-                    "javdb_id": detail.javdb_id,
-                    "movie_number": detail.movie_number,
-                    "index": index,
-                    "total": total,
-                }
-            except ImageDownloadError as exc:
-                failed_count += 1
-                logger.warning(
-                    "Javdb series movie image download failed series_id={} javdb_id={} detail={}",
-                    series_id,
-                    movie_item.javdb_id,
-                    exc,
-                )
-                failed_items.append(
-                    {
-                        "javdb_id": movie_item.javdb_id,
-                        "movie_number": movie_item.movie_number,
-                        "reason": "image_download_failed",
-                        "detail": str(exc),
-                    }
-                )
-            except MetadataRequestError as exc:
-                failed_count += 1
-                logger.warning(
-                    "Javdb series movie metadata fetch failed series_id={} javdb_id={} detail={}",
-                    series_id,
-                    movie_item.javdb_id,
-                    exc,
-                )
-                failed_items.append(
-                    {
-                        "javdb_id": movie_item.javdb_id,
-                        "movie_number": movie_item.movie_number,
-                        "reason": "metadata_fetch_failed",
-                        "detail": str(exc),
-                    }
-                )
-            except Exception as exc:
-                failed_count += 1
-                logger.exception(
-                    "Javdb series movie import failed series_id={} javdb_id={} detail={}",
-                    series_id,
-                    movie_item.javdb_id,
-                    exc,
-                )
-                failed_items.append(
-                    {
-                        "javdb_id": movie_item.javdb_id,
-                        "movie_number": movie_item.movie_number,
-                        "reason": "upsert_failed",
-                        "detail": str(exc),
-                    }
-                )
-
-        stats = {
-            "total": total,
-            "created_count": created_count,
-            "already_exists_count": already_exists_count,
-            "failed_count": failed_count,
-        }
-        yield "upsert_finished", stats
-
-        if imported_movies or skipped_items:
-            yield "completed", {
-                "success": True,
-                "movies": [movie_item.model_dump(exclude={"can_play"}) for movie_item in imported_movies],
-                "skipped_items": skipped_items,
-                "failed_items": failed_items,
-                "stats": stats,
-            }
-            return
-
-        yield "completed", {
-            "success": False,
-            "reason": "internal_error",
-            "movies": [],
-            "skipped_items": skipped_items,
-            "failed_items": failed_items,
-            "stats": stats,
-        }

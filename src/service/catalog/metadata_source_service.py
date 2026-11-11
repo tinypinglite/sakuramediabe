@@ -2,7 +2,9 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 from peewee import fn
@@ -12,7 +14,7 @@ from src.common import normalize_movie_number
 from src.common.service_helpers import find_movie_by_number
 from src.config.config import settings
 from src.i18n.text import resolve_text
-from src.metadata.provider import MetadataNotFoundError
+from src.metadata.provider import MetadataNotFoundError, metadata_error_code
 from src.model import Actor
 from src.plugins.extensions.metadata import (
     METADATA_SOURCE_EXTENSION_KEY,
@@ -22,7 +24,23 @@ from src.plugins.extensions.metadata import (
 
 
 class MetadataSourceError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "metadata_fetch_failed",
+        provider_error: BaseException | None = None,
+    ):
+        self.code = code
+        self.provider_error = provider_error
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class MetadataFetchOutcome:
+    detail: Any
+    source: dict[str, str] | None = None
+    provider_error: BaseException | None = None
 
 
 class MetadataSourceService:
@@ -35,13 +53,16 @@ class MetadataSourceService:
         existing = find_movie_by_number(movie_number)
         if existing is not None:
             return existing, False
-        with cls.fetch(movie_number, provider) as (detail, source):
-            if source is not None:
+        with cls.fetch(movie_number, provider) as outcome:
+            if outcome.source is not None:
                 return import_service.import_plugin_movie(
-                    detail, source, provider, force_subscribed=force_subscribed
+                    outcome.detail,
+                    outcome.source,
+                    provider,
+                    force_subscribed=force_subscribed,
                 )
             return import_service.import_movie_if_missing(
-                detail, force_subscribed=force_subscribed
+                outcome.detail, force_subscribed=force_subscribed
             )
 
     @classmethod
@@ -172,12 +193,19 @@ class MetadataSourceService:
     @classmethod
     @contextmanager
     def fetch(cls, movie_number: str, provider):
+        provider_error: BaseException | None = None
         try:
             detail = provider.get_movie_by_number(movie_number)
-        except MetadataNotFoundError:
-            pass
+        except Exception as exc:
+            if not isinstance(exc, MetadataNotFoundError):
+                provider_error = exc
+                logger.warning(
+                    "JavDB metadata fetch failed, trying plugins movie_number={} error={}",
+                    movie_number,
+                    exc,
+                )
         else:
-            yield detail, None
+            yield MetadataFetchOutcome(detail=detail)
             return
 
         failures = []
@@ -191,12 +219,26 @@ class MetadataSourceService:
                 failures.append(str(exc))
                 continue
             try:
-                yield detail, source
+                yield MetadataFetchOutcome(
+                    detail=detail,
+                    source=source,
+                    provider_error=provider_error,
+                )
             finally:
                 cls._cleanup_delivery(paths)
             return
         if failures:
-            raise MetadataSourceError("; ".join(failures))
+            raise MetadataSourceError(
+                "; ".join(failures),
+                code=(
+                    metadata_error_code(provider_error)
+                    if provider_error is not None
+                    else "metadata_fetch_failed"
+                ),
+                provider_error=provider_error,
+            )
+        if provider_error is not None:
+            raise provider_error
         raise MetadataNotFoundError("movie", movie_number)
 
     @staticmethod

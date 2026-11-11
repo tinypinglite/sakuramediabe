@@ -25,6 +25,7 @@ from src.schema.discovery import (
     RankingSourceResource,
 )
 from src.service.catalog.catalog_import_service import CatalogImportService
+from src.service.catalog.metadata_source_service import MetadataSourceService
 from src.service.catalog.movie_list_media_service import attach_movie_list_media
 
 
@@ -405,13 +406,27 @@ class RankingSyncService:
             )
         return numbers
 
-    def _get_movie_detail(self, source_key: str, movie_number: str) -> Any:
-        # 排行榜排的都是 JAV 主库影片，详情统一走 JavDB provider。
+    def _get_provider(self, source_key: str) -> Any:
         provider = self.providers.get(source_key)
         if provider is None:
             provider = build_javdb_provider()
             self.providers[source_key] = provider
-        return provider.get_movie_by_number(movie_number)
+        return provider
+
+    def _import_movie_by_number(self, source_key: str, movie_number: str) -> Movie:
+        provider = self._get_provider(source_key)
+        with MetadataSourceService.fetch(movie_number, provider) as outcome:
+            if outcome.source is None:
+                movie, _created = self.import_service.import_movie_if_missing(
+                    outcome.detail
+                )
+                return movie
+            movie, _created = self.import_service.import_plugin_movie(
+                outcome.detail,
+                outcome.source,
+                provider,
+            )
+            return movie
 
     def _replace_scope_items(
         self,
@@ -466,8 +481,7 @@ class RankingSyncService:
             if movie is None:
                 # 本地没有的番号才走 JavDB 详情入库
                 try:
-                    detail = self._get_movie_detail(source_key, movie_number)
-                    movie, _created = self.import_service.import_movie_if_missing(detail)
+                    movie = self._import_movie_by_number(source_key, movie_number)
                 except Exception as exc:
                     skipped_count += 1
                     logger.warning(
@@ -485,8 +499,9 @@ class RankingSyncService:
                 local_hit_count += 1
                 if not movie.javdb_id and movie.metadata_source:
                     try:
-                        detail = self._get_movie_detail(source_key, movie_number)
-                        movie, _created = self.import_service.import_movie_if_missing(detail)
+                        movie = self._import_movie_by_number(
+                            source_key, movie_number
+                        )
                     except Exception as exc:
                         logger.warning("排行榜影片 JavDB 补录失败，保留本地条目 movie={} detail={}", movie_number, exc)
 

@@ -4,7 +4,12 @@ from types import SimpleNamespace
 import pytest
 
 from src.common.runtime_time import runtime_now
-from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
+from src.metadata.provider import (
+    JavdbAuthError,
+    JavdbAuthRequiredError,
+    MetadataNotFoundError,
+    MetadataRequestError,
+)
 from src.model import (
     PLAYLIST_KIND_RECENTLY_PLAYED,
     Actor,
@@ -381,6 +386,64 @@ def test_metadata_provider_test_endpoint_returns_request_failure_payload(
     assert payload["error"]["method"] == "GET"
     assert payload["error"]["url"] == "https://javdb.example/api"
     assert "metadata request failed" in payload["error"]["message"]
+
+
+def test_metadata_provider_test_endpoint_returns_auth_required_payload(
+    client,
+    account_user,
+    monkeypatch,
+):
+    token = _login(client, username=account_user.username)
+
+    class _FailingProvider:
+        def get_movie_by_number(self, movie_number: str):
+            raise JavdbAuthRequiredError(
+                "請登錄帳號", account_configured=False
+            )
+
+    monkeypatch.setattr(
+        "src.service.system.status_service.build_javdb_provider",
+        lambda: _FailingProvider(),
+    )
+
+    response = client.post(
+        "/metadata-providers/javdb/test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["healthy"] is False
+    assert payload["error"]["type"] == "metadata_auth_required"
+    assert "請登錄帳號" in payload["error"]["message"]
+
+
+def test_metadata_provider_test_endpoint_returns_auth_failed_payload(
+    client,
+    account_user,
+    monkeypatch,
+):
+    token = _login(client, username=account_user.username)
+
+    class _FailingProvider:
+        def get_movie_by_number(self, movie_number: str):
+            raise JavdbAuthError("bad credentials")
+
+    monkeypatch.setattr(
+        "src.service.system.status_service.build_javdb_provider",
+        lambda: _FailingProvider(),
+    )
+
+    response = client.post(
+        "/metadata-providers/javdb/test",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["healthy"] is False
+    assert payload["error"]["type"] == "metadata_auth_failed"
+    assert "bad credentials" in payload["error"]["message"]
 
 
 def test_metadata_provider_test_endpoint_returns_not_found_failure_payload(

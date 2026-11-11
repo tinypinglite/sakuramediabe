@@ -82,15 +82,17 @@ def test_javdb_actor_gender_mapping_keeps_unknown_separate_from_female():
     assert [actor.gender for actor in actors] == [1, 2, 0]
 
 
-def test_build_javdb_provider_passes_account_credentials():
-    # 账号不再属于宿主 metadata 配置，由排行榜插件显式注入；宿主默认构建无账号实例。
+def test_build_javdb_provider_uses_host_account(monkeypatch):
+    monkeypatch.setattr(settings.metadata, "javdb_username", "host-user")
+    monkeypatch.setattr(settings.metadata, "javdb_password", "host-password")
+
     provider = build_javdb_provider(
-        username="user@example.com",
-        password="secret",
+        username="plugin-user",
+        password="plugin-password",
     )
 
-    assert provider.provider.username == "user@example.com"
-    assert provider.provider.password == "secret"
+    assert provider.provider.username == "host-user"
+    assert provider.provider.password == "host-password"
 
 
 def test_javdb_adapter_prefers_gfriends_avatar():
@@ -181,10 +183,15 @@ def test_javdb_search_preserves_numeric_separator(monkeypatch, number, other, in
     from src.metadata._providers.exceptions import MetadataNotFoundError
 
     provider = JavdbProvider("example.com")
+    monkeypatch.setattr(provider, "_ensure_logged_in", lambda: "test-token")
     movies = [{"number": other, "id": "wrong", "release_date": "2026-01-02"}]
     if include_match:
         movies.append({"number": number, "id": "correct", "release_date": "2026-01-01"})
-    monkeypatch.setattr(provider, "request_json", lambda *args, **kwargs: {"data": {"movies": movies}})
+    monkeypatch.setattr(
+        provider,
+        "request_json",
+        lambda *args, **kwargs: {"success": 1, "data": {"movies": movies}},
+    )
     try:
         if include_match:
             assert provider._search_movie(number)["id"] == "correct"
