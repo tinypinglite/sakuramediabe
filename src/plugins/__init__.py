@@ -6,6 +6,9 @@ import importlib
 from typing import Any
 
 _PUBLIC_EXPORTS = {
+    "PluginActorMoviePage": "src.plugins.extensions.metadata",
+    "PluginActorMovieQuery": "src.plugins.extensions.metadata",
+    "PluginActorRef": "src.plugins.extensions.metadata",
     "PluginMovieMetadata": "src.plugins.extensions.metadata",
     "PluginMetadataActor": "src.plugins.extensions.metadata",
     "PluginMetadataSource": "src.plugins.extensions.metadata",
@@ -66,6 +69,9 @@ __all__ = [
     "MoviePage",
     "MovieQueryFilters",
     "MovieSnapshot",
+    "PluginActorMoviePage",
+    "PluginActorMovieQuery",
+    "PluginActorRef",
     "PluginBrowseEntry",
     "PluginBrowsePage",
     "PluginCollection",

@@ -109,6 +109,22 @@ def test_handler_only_job_rejects_missing_and_null_body(
     assert BackgroundTaskRun.select().count() == 0
 
 
+def test_actor_subscription_sync_accepts_mode_param(client, account_user):
+    auth_headers = _auth_headers(client, account_user.username)
+    endpoint = "/system/jobs/actor_subscription_sync/runs"
+
+    response = client.post(endpoint, json={"mode": "full"}, headers=auth_headers)
+
+    assert response.status_code == 202, response.text
+    task_run = BackgroundTaskRun.get_by_id(response.json()["task_run_id"])
+    assert task_run.params == {"mode": "full"}
+    _release_task_run(task_run)
+
+    invalid = client.post(endpoint, json={"mode": "unknown"}, headers=auth_headers)
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "invalid_job_params"
+
+
 def test_builtin_jobs_accept_parameterless_async_trigger(client, account_user):
     task_keys = (
         "subscribed_movie_auto_download",

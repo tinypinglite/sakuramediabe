@@ -55,6 +55,7 @@ def test_aps_command_invokes_scheduler_entrypoint(monkeypatch):
         "generate-daily-recommendations",
         "generate-moment-recommendations",
         "auto-download-subscribed-movies",
+        "sync-subscribed-actor-movies",
         "backfill-media-video-info",
     ],
 )
@@ -217,6 +218,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.setattr("src.start.aps.get_runtime_timezone", lambda: ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr("src.start.aps.get_runtime_timezone_name", lambda: "Asia/Shanghai")
     monkeypatch.setattr("src.start.aps.settings.scheduler.subscribed_movie_auto_download_cron", "30 2 * * *")
+    monkeypatch.setattr("src.start.aps.settings.scheduler.actor_subscription_sync_cron", "0 2 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_stats_sync_cron", "0 5 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_sync_cron", "*/15 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_auto_import_cron", "*/10 * * * *")
@@ -240,6 +242,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
             assert job is not None, f"Job {job_def.task_key} not registered"
 
     # 验证部分 cron 表达式
+    assert str(scheduler.get_job("actor_subscription_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='0']"
     assert str(scheduler.get_job("subscribed_movie_auto_download").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='30']"
     assert str(scheduler.get_job("movie_stats_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"
     assert str(scheduler.get_job("download_task_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/15']"

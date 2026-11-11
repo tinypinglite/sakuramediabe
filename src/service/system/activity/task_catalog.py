@@ -1,4 +1,5 @@
 TASK_NAME_REGISTRY = {
+    "actor_subscription_sync": "订阅演员影片同步",
     "subscribed_movie_auto_download": "已订阅缺失影片自动下载",
     "movie_stats_sync": "影片互动数与热度同步",
     "movie_similarity_recompute": "影片相似度重算",

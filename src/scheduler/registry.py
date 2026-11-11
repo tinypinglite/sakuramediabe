@@ -10,7 +10,12 @@ from src.scheduler.queue_tasks import (
     _run_gfriends_filetree_refresh,
 )
 from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
-from src.service.catalog import MovieStatsSourceService, MovieStatsSyncService
+from src.service.catalog import (
+    ActorSubscriptionSyncParams,
+    MovieStatsSourceService,
+    MovieStatsSyncService,
+    SubscribedActorMovieSyncService,
+)
 from src.service.catalog.metadata_source_service import MetadataSourceService
 from src.service.catalog.movie_asset_pack_backfill_service import (
     MovieAssetPackBackfillService,
@@ -48,6 +53,17 @@ from src.service.transfers.downloads.sync_service import DownloadSyncService
 # ---------------------------------------------------------------------------
 
 BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
+    JobDefinition(
+        task_key=SubscribedActorMovieSyncService.TASK_KEY,
+        log_name="actor-subscription-sync",
+        cli_name="sync-subscribed-actor-movies",
+        cli_help="执行一次订阅演员影片列表同步",
+        cron_setting="actor_subscription_sync_cron",
+        params_schema=ActorSubscriptionSyncParams,
+        handler=lambda reporter, params: SubscribedActorMovieSyncService().run(
+            reporter=reporter, params=params
+        ),
+    ),
     JobDefinition(
         task_key="subscribed_movie_auto_download",
         log_name="subscribed-movie-auto-download",

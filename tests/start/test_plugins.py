@@ -738,6 +738,39 @@ def test_loader_rejects_duplicate_single_value_extension_key(tmp_path):
     assert PLUGIN_LOAD_ERRORS["bad_plugin"]["stage"] == "validate_extensions"
 
 
+def test_loader_accepts_optional_actor_movie_capability(tmp_path):
+    root = tmp_path / "root"
+    source = (
+        "from src.plugins import (\n"
+        "    HOST_API_VERSION, METADATA_SOURCE_EXTENSION_KEY, PluginActorMoviePage,\n"
+        "    PluginContext, PluginExtension, PluginMetadataSource, PluginRegistration,\n"
+        ")\n"
+        "def fetch_actor_movies(query):\n"
+        "    return PluginActorMoviePage(movie_numbers=['ABP-123'])\n"
+        "def register(context):\n"
+        "    data = PluginMetadataSource(\n"
+        "        fetch_movie=lambda number: None,\n"
+        "        fetch_actor_movies=fetch_actor_movies,\n"
+        "    )\n"
+        "    return PluginRegistration(\n"
+        "        plugin_id='actor_movies', display_name='x', version='1.0.0',\n"
+        "        host_api_version=HOST_API_VERSION,\n"
+        "        extensions=(\n"
+        "            PluginExtension(key=METADATA_SOURCE_EXTENSION_KEY, data=data),\n"
+        "        ),\n"
+        "    )\n"
+    )
+    _write_plugin_dir(root, "actor_movies", init_source=source)
+
+    registrations = load_enabled_plugins(
+        Plugins(enabled=["actor_movies"]), root_dir=root
+    )
+
+    assert len(registrations) == 1
+    extension = registrations[0].extensions[0]
+    assert extension.data.fetch_actor_movies is not None
+
+
 def test_loader_accepts_multiple_ranking_sources(tmp_path):
     root = tmp_path / "root"
     _write_plugin_dir(

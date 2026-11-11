@@ -105,6 +105,15 @@ class MetadataSourceService:
         )
 
     @classmethod
+    def enabled_actor_movie_sources(cls):
+        """按启用顺序返回声明了演员影片列表能力的元数据插件。"""
+        return tuple(
+            entry
+            for entry in cls.enabled_plugin_sources()
+            if getattr(entry[3], "fetch_actor_movies", None) is not None
+        )
+
+    @classmethod
     def is_plugin_enabled(cls, plugin_id: str) -> bool:
         return any(
             current_id == plugin_id
