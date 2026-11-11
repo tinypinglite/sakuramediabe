@@ -438,7 +438,7 @@ def plugins_sync_dependencies():
     help="镜像内内置插件目录（含 official-plugins.json）。",
 )
 def plugins_install_bundled(bundle_dir: Path):
-    """启动前安装镜像内置的官方插件：只装不覆盖，失败不阻断启动。"""
+    """启动前安装或升级镜像内置的官方插件；失败不阻断启动。"""
     from src.config.config import ensure_runtime_config
     from src.plugins.bundled import (
         BundledPluginError,
@@ -462,8 +462,9 @@ def plugins_install_bundled(bundle_dir: Path):
         logger.info("No bundled plugin index under {}, skip bundled install", bundle_dir)
         return
     logger.info(
-        "Bundled plugins installed={} skipped_existing={} failed={}",
+        "Bundled plugins installed={} upgraded={} skipped_existing={} failed={}",
         list(result.installed),
+        list(result.upgraded),
         list(result.skipped_existing),
         dict(result.failed),
     )

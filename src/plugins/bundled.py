@@ -1,9 +1,10 @@
-"""镜像内置官方插件的首次安装：只装不覆盖、失败不阻断启动。
+"""镜像内置官方插件的安装与升级：缺失时安装、镜像版本更高时升级、失败不阻断启动。
 
 内置包由镜像构建期写入 ``/app/bundled-plugins``（``official-plugins.json`` + 各插件 ZIP）；
 本地手动构建的镜像该目录为空，安装步骤自动跳过。规则固定为：
 
-- 只装不覆盖：``/data/plugins/<plugin_id>`` 已存在就跳过，不比较版本、不覆盖代码、不改启停；
+- 缺失时安装并启用；已安装时仅在镜像内版本更高时升级，保留 ``data/`` 与原有启停状态；
+- 同版本或已安装版本更高时跳过，不降级、不覆盖用户本地更新的代码；
 - 失败不阻断启动：单个插件失败只落盘记录，容器继续启动；
 - 索引本身缺失/损坏属于镜像产物问题，由调用方决定如何提示。
 """
@@ -15,6 +16,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from packaging.version import Version
 
 from src.plugins.installer import compute_sha256
 from src.plugins.manager import PluginManager
@@ -46,12 +49,13 @@ class BundledPluginEntry:
 class BundledInstallResult:
     index_available: bool
     installed: tuple[str, ...] = ()
+    upgraded: tuple[str, ...] = ()
     skipped_existing: tuple[str, ...] = ()
     failed: tuple[tuple[str, str], ...] = ()
 
     @property
     def changed(self) -> bool:
-        return bool(self.installed)
+        return bool(self.installed or self.upgraded)
 
 
 def _failures_path(root_dir: Path) -> Path:
@@ -128,12 +132,11 @@ def read_bundled_index(bundle_dir: Path) -> list[BundledPluginEntry] | None:
     return entries
 
 
-def _install_entry(
+def _archive_path(
     entry: BundledPluginEntry,
     *,
     bundle_dir: Path,
-    manager: PluginManager,
-) -> None:
+) -> Path:
     archive_path = bundle_dir / entry.filename
     if not archive_path.is_file():
         raise BundledPluginError(f"bundled_archive_missing: {archive_path}")
@@ -141,10 +144,39 @@ def _install_entry(
         raise BundledPluginError(
             f"bundled_archive_checksum_mismatch: plugin_id={entry.plugin_id}"
         )
+    return archive_path
+
+
+def _install_entry(
+    entry: BundledPluginEntry,
+    *,
+    bundle_dir: Path,
+    manager: PluginManager,
+) -> None:
+    archive_path = _archive_path(entry, bundle_dir=bundle_dir)
     result = manager.install_zip(
         archive_path,
         sha256=entry.sha256,
         enable=True,
+    )
+    if result.get("plugin_id") != entry.plugin_id:
+        raise BundledPluginError(
+            "bundled_plugin_id_mismatch: "
+            f"expected={entry.plugin_id} actual={result.get('plugin_id')}"
+        )
+
+
+def _upgrade_entry(
+    entry: BundledPluginEntry,
+    *,
+    bundle_dir: Path,
+    manager: PluginManager,
+) -> None:
+    archive_path = _archive_path(entry, bundle_dir=bundle_dir)
+    result = manager.upgrade_zip(
+        entry.plugin_id,
+        archive_path,
+        sha256=entry.sha256,
     )
     if result.get("plugin_id") != entry.plugin_id:
         raise BundledPluginError(
@@ -158,7 +190,7 @@ def install_bundled_plugins(
     *,
     manager: PluginManager | None = None,
 ) -> BundledInstallResult:
-    """按索引安装尚不存在的内置插件；已存在的插件目录一律跳过。"""
+    """安装缺失的内置插件，并在镜像内版本更高时升级已安装插件。"""
 
     plugin_manager = manager or PluginManager()
     bundle_dir = Path(bundle_dir)
@@ -167,24 +199,48 @@ def install_bundled_plugins(
         return BundledInstallResult(index_available=False)
 
     installed: list[str] = []
+    upgraded: list[str] = []
     skipped: list[str] = []
     failures: dict[str, str] = {}
     for entry in entries:
-        # 只装不覆盖：目录已存在就让给用户（可能是更新的版本或本地改动）。
-        if (plugin_manager.root_dir / entry.plugin_id).exists():
-            skipped.append(entry.plugin_id)
+        # 没有有效 manifest 的已有目录可能只是保留的 data/；保持现状，避免覆盖用户目录。
+        target_exists = (plugin_manager.root_dir / entry.plugin_id).exists()
+        if not target_exists:
+            try:
+                _install_entry(entry, bundle_dir=bundle_dir, manager=plugin_manager)
+            except Exception as exc:  # 单个插件失败不能阻断容器启动
+                failures[entry.plugin_id] = str(exc)
+                continue
+            installed.append(entry.plugin_id)
             continue
+
         try:
-            _install_entry(entry, bundle_dir=bundle_dir, manager=plugin_manager)
+            installed_plugin = plugin_manager.get_plugin(entry.plugin_id)
+            if installed_plugin is None:
+                skipped.append(entry.plugin_id)
+                continue
+            installed_version = Version(installed_plugin["version"])
+            bundled_version = Version(entry.version)
         except Exception as exc:  # 单个插件失败不能阻断容器启动
             failures[entry.plugin_id] = str(exc)
             continue
-        installed.append(entry.plugin_id)
+
+        if bundled_version <= installed_version:
+            skipped.append(entry.plugin_id)
+            continue
+
+        try:
+            _upgrade_entry(entry, bundle_dir=bundle_dir, manager=plugin_manager)
+        except Exception as exc:  # 单个插件失败不能阻断容器启动
+            failures[entry.plugin_id] = str(exc)
+            continue
+        upgraded.append(entry.plugin_id)
 
     _write_failures(plugin_manager.root_dir, failures)
     return BundledInstallResult(
         index_available=True,
         installed=tuple(installed),
+        upgraded=tuple(upgraded),
         skipped_existing=tuple(skipped),
         failed=tuple(sorted(failures.items())),
     )

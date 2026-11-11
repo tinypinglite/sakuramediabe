@@ -12,13 +12,25 @@ from src.plugins.bundled import (
 
 
 class _FakePluginManager:
-    def __init__(self, root_dir):
+    def __init__(self, root_dir, *, installed_versions=None):
         self.root_dir = root_dir
+        self.installed_versions = installed_versions or {}
         self.install_calls: list[tuple[object, str, bool]] = []
+        self.upgrade_calls: list[tuple[str, object, str]] = []
+
+    def get_plugin(self, plugin_id: str):
+        version = self.installed_versions.get(plugin_id)
+        if version is None:
+            return None
+        return {"plugin_id": plugin_id, "version": version}
 
     def install_zip(self, archive_path, *, sha256, enable):
         self.install_calls.append((archive_path, sha256, enable))
         return {"plugin_id": "demo_plugin"}
+
+    def upgrade_zip(self, plugin_id, archive_path, *, sha256):
+        self.upgrade_calls.append((plugin_id, archive_path, sha256))
+        return {"plugin_id": plugin_id}
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> None:
         raise AssertionError("bundled install must not change existing enable state")
@@ -54,7 +66,18 @@ def test_read_bundled_index_ignores_force_enable(tmp_path):
     assert entries[0].plugin_id == "demo_plugin"
 
 
-def test_existing_plugin_is_only_skipped(tmp_path):
+def _prepare_bundle(tmp_path):
+    bundle_dir = tmp_path / "bundled"
+    bundle_dir.mkdir()
+    payload = b"plugin archive"
+    archive_path = bundle_dir / "demo_plugin-1.0.0.zip"
+    archive_path.write_bytes(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    _write_index(bundle_dir, sha256=digest)
+    return bundle_dir, archive_path, digest
+
+
+def test_existing_directory_without_manifest_is_skipped(tmp_path):
     bundle_dir = tmp_path / "bundled"
     _write_index(bundle_dir)
     plugin_root = tmp_path / "plugins"
@@ -65,25 +88,91 @@ def test_existing_plugin_is_only_skipped(tmp_path):
 
     assert result.skipped_existing == ("demo_plugin",)
     assert result.installed == ()
+    assert result.upgraded == ()
     assert manager.install_calls == []
 
 
 def test_new_plugin_is_installed_and_enabled(tmp_path):
-    bundle_dir = tmp_path / "bundled"
-    bundle_dir.mkdir()
-    payload = b"plugin archive"
-    archive_path = bundle_dir / "demo_plugin-1.0.0.zip"
-    archive_path.write_bytes(payload)
-    digest = hashlib.sha256(payload).hexdigest()
-    _write_index(bundle_dir, sha256=digest)
+    bundle_dir, archive_path, digest = _prepare_bundle(tmp_path)
     plugin_root = tmp_path / "plugins"
     manager = _FakePluginManager(plugin_root)
 
     result = install_bundled_plugins(bundle_dir, manager=manager)
 
     assert result.installed == ("demo_plugin",)
+    assert result.upgraded == ()
     assert result.skipped_existing == ()
     assert manager.install_calls == [(archive_path, digest, True)]
+
+
+def test_older_plugin_is_upgraded(tmp_path):
+    bundle_dir, archive_path, digest = _prepare_bundle(tmp_path)
+    plugin_root = tmp_path / "plugins"
+    (plugin_root / "demo_plugin").mkdir(parents=True)
+    manager = _FakePluginManager(
+        plugin_root,
+        installed_versions={"demo_plugin": "0.9.0"},
+    )
+
+    result = install_bundled_plugins(bundle_dir, manager=manager)
+
+    assert result.installed == ()
+    assert result.upgraded == ("demo_plugin",)
+    assert result.skipped_existing == ()
+    assert manager.install_calls == []
+    assert manager.upgrade_calls == [("demo_plugin", archive_path, digest)]
+
+
+def test_same_version_plugin_is_skipped(tmp_path):
+    bundle_dir, _, _ = _prepare_bundle(tmp_path)
+    plugin_root = tmp_path / "plugins"
+    (plugin_root / "demo_plugin").mkdir(parents=True)
+    manager = _FakePluginManager(
+        plugin_root,
+        installed_versions={"demo_plugin": "1.0.0"},
+    )
+
+    result = install_bundled_plugins(bundle_dir, manager=manager)
+
+    assert result.installed == ()
+    assert result.upgraded == ()
+    assert result.skipped_existing == ("demo_plugin",)
+    assert manager.upgrade_calls == []
+
+
+def test_newer_plugin_is_not_downgraded(tmp_path):
+    bundle_dir, _, _ = _prepare_bundle(tmp_path)
+    plugin_root = tmp_path / "plugins"
+    (plugin_root / "demo_plugin").mkdir(parents=True)
+    manager = _FakePluginManager(
+        plugin_root,
+        installed_versions={"demo_plugin": "1.1.0"},
+    )
+
+    result = install_bundled_plugins(bundle_dir, manager=manager)
+
+    assert result.installed == ()
+    assert result.upgraded == ()
+    assert result.skipped_existing == ("demo_plugin",)
+    assert manager.upgrade_calls == []
+
+
+def test_invalid_installed_version_is_recorded_as_failure(tmp_path):
+    bundle_dir, _, _ = _prepare_bundle(tmp_path)
+    plugin_root = tmp_path / "plugins"
+    (plugin_root / "demo_plugin").mkdir(parents=True)
+    manager = _FakePluginManager(
+        plugin_root,
+        installed_versions={"demo_plugin": "not-a-version"},
+    )
+
+    result = install_bundled_plugins(bundle_dir, manager=manager)
+
+    assert result.installed == ()
+    assert result.upgraded == ()
+    assert result.skipped_existing == ()
+    assert [plugin_id for plugin_id, _ in result.failed] == ["demo_plugin"]
+    assert manager.upgrade_calls == []
 
 
 def _prepare_settings(

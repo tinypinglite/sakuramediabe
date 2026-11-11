@@ -90,7 +90,7 @@ bootstrap_default_data() {
 
 install_bundled_plugins() {
     echo "Installing bundled official plugins..."
-    # 镜像内置插件只在 /data/plugins/<id> 不存在时安装；已存在的目录一律跳过（不覆盖代码与 data/）。
+    # 镜像内置插件按版本同步：缺失时安装，镜像版本更高时升级；保留 data/ 与启停状态，不降级。
     # 单个插件失败只落盘记录，命令本身保持成功，不让内置插件阻断容器启动。
     su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" -m src.start.commands plugins install-bundled" "${APP_USER}"
 }
