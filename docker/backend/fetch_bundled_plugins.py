@@ -58,9 +58,41 @@ class ResolvedPlugin:
     checksum_url: str | None
 
 
-# Host API 18 is a compatibility reset. Keep the image free of old plugin
-# releases until the official plugins publish matching Host API 18 builds.
-BUNDLED_PLUGINS: tuple[BundledPluginSpec, ...] = ()
+# Official plugins bundled into release images. Only list plugins whose latest
+# formal Release targets Host API 18.
+BUNDLED_PLUGINS: tuple[BundledPluginSpec, ...] = (
+    BundledPluginSpec(
+        "sakuramedia_javdb_metadata", "tinypinglite/sakuramedia_javdb_metadata"
+    ),
+    BundledPluginSpec(
+        "sakuramedia_javbus_metadata", "tinypinglite/sakuramedia_javbus_metadata"
+    ),
+    BundledPluginSpec(
+        "sakuramedia_local_provider", "tinypinglite/sakuramedia_local_provider"
+    ),
+    BundledPluginSpec(
+        "sakuramedia_115_provider", "tinypinglite/sakuramedia_115_provider"
+    ),
+    BundledPluginSpec(
+        "sakuramedia_guangyapan_provider",
+        "tinypinglite/sakuramedia_guangyapan_provider",
+    ),
+    BundledPluginSpec(
+        "sakuramedia_actor_metadata",
+        "tinypinglite/sakuramedia-actor-metadata",
+    ),
+    BundledPluginSpec(
+        "sakuramedia_more_rank_movies",
+        "tinypinglite/sakuramedia_more_rank_movies",
+    ),
+    BundledPluginSpec(
+        "sakuramedia_judge_collecttion_movie",
+        "tinypinglite/sakuramedia_judge_collecttion_movie",
+    ),
+    BundledPluginSpec(
+        "sakuramedia_subtitlecat", "tinypinglite/sakuramedia_subtitlecat"
+    ),
+)
 
 
 class BundledPluginError(RuntimeError):

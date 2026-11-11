@@ -440,15 +440,23 @@ def plugins_sync_dependencies():
 def plugins_install_bundled(bundle_dir: Path):
     """启动前安装镜像内置的官方插件：只装不覆盖，失败不阻断启动。"""
     from src.config.config import ensure_runtime_config
-    from src.plugins.bundled import BundledPluginError, install_bundled_plugins
+    from src.plugins.bundled import (
+        BundledPluginError,
+        install_bundled_plugins,
+        migrate_plugin_defaults,
+    )
 
     # enabled 列表要写进 config.toml，先确保运行配置已落盘。
     ensure_runtime_config()
+    result = None
     try:
         result = install_bundled_plugins(bundle_dir)
     except BundledPluginError as exc:
         # 索引损坏是镜像自身缺陷：记日志后继续启动，避免内置插件把服务卡死。
         logger.error("Bundled plugin index unusable, skip bundled install: {}", exc)
+    # 老部署也要一次性对齐官方插件默认顺序和绑定；内置索引异常时仍尝试迁移。
+    migrate_plugin_defaults()
+    if result is None:
         return
     if not result.index_available:
         logger.info("No bundled plugin index under {}, skip bundled install", bundle_dir)
