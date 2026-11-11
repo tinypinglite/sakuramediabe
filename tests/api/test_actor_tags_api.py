@@ -10,11 +10,11 @@ def _auth_headers(client, account_user):
 
 
 def test_actor_tags_return_movie_counts_scoped_to_actor(client, account_user):
-    actor = Actor.create(javdb_id="actor-tags", name="演员", gender=1)
-    other_actor = Actor.create(javdb_id="other-actor-tags", name="其他演员", gender=1)
-    first = Movie.create(javdb_id="tags-1", movie_number="TAGS-001", title="第一作")
-    second = Movie.create(javdb_id="tags-2", movie_number="TAGS-002", title="第二作")
-    other = Movie.create(javdb_id="tags-3", movie_number="TAGS-003", title="其他作品")
+    actor = Actor.create(name="演员", gender=1)
+    other_actor = Actor.create(name="其他演员", gender=1)
+    first = Movie.create(movie_number="TAGS-001", title="第一作")
+    second = Movie.create(movie_number="TAGS-002", title="第二作")
+    other = Movie.create(movie_number="TAGS-003", title="其他作品")
     shared = Tag.create(name="shared")
     unique = Tag.create(name="unique")
     other_only = Tag.create(name="other-only")

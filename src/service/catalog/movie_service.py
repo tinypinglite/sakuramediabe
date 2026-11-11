@@ -1,7 +1,7 @@
 """影片目录 service。
 
 负责影片列表、详情组装、订阅状态维护与合集标记这类"以本地记录为主"的查询和小型状态流转。
-远端元数据刷新与 JavDB 流式导入见 ``movie_metadata_refresh_service``；
+远端元数据导入见 ``movie_metadata_import_service``；
 翻译/互动/热度等异步任务见 ``movie_task_service``。
 """
 
@@ -30,9 +30,6 @@ from src.common.service_helpers import (
     with_movie_card_relations,
 )
 from src.common.text_search import split_search_terms
-from src.metadata._providers.models import JavdbMovieReviewResource
-from src.metadata.factory import build_javdb_provider
-from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import (
     PLAYLIST_KIND_FAVORITES,
     Actor,
@@ -53,6 +50,7 @@ from src.model import (
     get_database,
 )
 from src.model.catalog.movies import MOVIE_ACTOR_LIST_FIELD
+from src.plugins.extensions.reviews import PluginMovieReview
 from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
     ProviderOperationError,
@@ -92,6 +90,10 @@ from src.service.catalog.movie_ownership_gateway import (
     MovieOwnershipGateway,
 )
 from src.service.catalog.movie_resolution_service import resolution_exists_expression
+from src.service.catalog.movie_review_source_service import (
+    MovieReviewSourceService,
+    MovieReviewsUnavailable,
+)
 from src.service.catalog.rating_service import RatingService
 from src.service.collections import PlaylistService
 from src.service.discovery.ranking_service import RankingCatalogService
@@ -674,7 +676,7 @@ class MovieService:
 
     @classmethod
     def require_movie_by_normalized_number(cls, movie_number: str) -> tuple[Movie, str]:
-        # 跨服务共享：MovieMetadataRefreshService / MovieTaskService 都会用它把入参番号
+        # 跨服务共享：元数据导入与任务 service 都用它把入参番号
         # 定位到本地 Movie。第二个返回值是库内规范形态（provider 原样），后续查 provider
         # 必须用它而不是用户输入——两侧形态一致才能精确回查。
         movie = find_movie_by_number(movie_number)
@@ -711,7 +713,6 @@ class MovieService:
         return [
             MovieActorResource(
                 id=actor.id,
-                javdb_id=actor.javdb_id,
                 name=actor.name,
                 alias_name=actor.alias_name,
                 display_name=actor.display_name,
@@ -1218,35 +1219,23 @@ class MovieService:
         page: int = 1,
         page_size: int = 20,
         sort: MovieReviewSort = MovieReviewSort.RECENTLY,
-    ) -> list[JavdbMovieReviewResource]:
-        movie = cls._require_movie(movie_number)
+    ) -> list[PluginMovieReview]:
+        cls._require_movie(movie_number)
         sort_value = sort.value if isinstance(sort, MovieReviewSort) else str(sort)
-        if not movie.javdb_id:
-            return []
         try:
-            return build_javdb_provider().get_movie_reviews_by_javdb_id(
-                movie.javdb_id,
+            return MovieReviewSourceService.fetch(
+                movie_number,
                 page=page,
-                limit=page_size,
-                sort_by=sort_value,
+                page_size=page_size,
+                sort=sort_value,
             )
-        except MetadataNotFoundError as exc:
-            # 本地影片已存在但远端评论接口返回 not found 时，仍统一映射为影片不存在。
-            raise ApiError(
-                404,
-                "movie_not_found",
-                "影片不存在",
-                {"movie_number": movie_number, "javdb_id": movie.javdb_id},
-            ) from exc
-        except MetadataRequestError as exc:
-            # 保留 javdb_id 与原始错误信息，方便定位远端请求失败原因。
+        except MovieReviewsUnavailable as exc:
             raise ApiError(
                 502,
                 "movie_review_fetch_failed",
                 "影片评论拉取失败",
                 {
                     "movie_number": movie_number,
-                    "javdb_id": movie.javdb_id,
                     "detail": str(exc),
                 },
             ) from exc

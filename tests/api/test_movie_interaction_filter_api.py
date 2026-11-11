@@ -15,7 +15,6 @@ def _login(client, username: str) -> dict[str, str]:
 
 def _create_movie(number: str, **interactions) -> Movie:
     return Movie.create(
-        javdb_id=f"javdb-{number}",
         movie_number=number,
         title=number,
         **interactions,

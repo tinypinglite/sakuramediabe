@@ -24,8 +24,6 @@ from src.common.media_import_status import (
     FAILURE_REASON_FILE_TOO_SMALL,
     FAILURE_REASON_IMAGE_DOWNLOAD_FAILED,
     FAILURE_REASON_MEDIA_IMPORT_FAILED,
-    FAILURE_REASON_METADATA_AUTH_FAILED,
-    FAILURE_REASON_METADATA_AUTH_REQUIRED,
     FAILURE_REASON_METADATA_FETCH_FAILED,
     FAILURE_REASON_METADATA_UPSERT_FAILED,
     FAILURE_REASON_MOVIE_NUMBER_NOT_FOUND,
@@ -39,11 +37,7 @@ from src.common.movie_numbers import (
     subtitle_matches_movie_number,
 )
 from src.common.service_helpers import emit_progress
-from src.metadata.provider import (
-    JavdbAuthError,
-    JavdbAuthRequiredError,
-    MetadataProviderError,
-)
+from src.metadata.provider import MetadataProviderError
 from src.model import (
     DownloadSubmissionRecord,
     Media,
@@ -200,12 +194,6 @@ class MediaImportService:
 
     def _import_movie_metadata(self, movie_number: str) -> MetadataImportResult:
         self._ensure_worker_database_ready()
-        provider = getattr(self._worker_local, "metadata_provider", None)
-        if provider is None:
-            from src.metadata.factory import build_javdb_provider
-
-            provider = build_javdb_provider()
-            self._worker_local.metadata_provider = provider
         try:
             from src.service.catalog.metadata_source_service import (
                 MetadataSourceError,
@@ -213,40 +201,24 @@ class MediaImportService:
             )
 
             movie, _created = MetadataSourceService.import_by_number(
-                movie_number, provider, self.catalog_import_service
+                movie_number, self.catalog_import_service
             )
         except MetadataProviderError as exc:
             logger.warning("Import metadata fetch failed movie_number={} detail={}", movie_number, exc)
-            failure_reason = (
-                FAILURE_REASON_METADATA_AUTH_REQUIRED
-                if isinstance(exc, JavdbAuthRequiredError)
-                else FAILURE_REASON_METADATA_AUTH_FAILED
-                if isinstance(exc, JavdbAuthError)
-                else FAILURE_REASON_METADATA_FETCH_FAILED
-            )
             return MetadataImportResult(
                 movie_number=movie_number,
-                failure_reason=failure_reason,
+                failure_reason=FAILURE_REASON_METADATA_FETCH_FAILED,
                 failure_detail=str(exc),
             )
         except MetadataSourceError as exc:
             logger.warning(
-                "Import metadata fallback failed movie_number={} reason={} detail={}",
+                "Import metadata failed movie_number={} detail={}",
                 movie_number,
-                exc.code,
                 exc,
             )
             return MetadataImportResult(
                 movie_number=movie_number,
-                failure_reason=(
-                    exc.code
-                    if exc.code
-                    in {
-                        "metadata_auth_required",
-                        "metadata_auth_failed",
-                    }
-                    else FAILURE_REASON_METADATA_FETCH_FAILED
-                ),
+                failure_reason=FAILURE_REASON_METADATA_FETCH_FAILED,
                 failure_detail=str(exc),
             )
         except ImageDownloadError as exc:
@@ -866,8 +838,6 @@ class MediaImportService:
 
         with MovieMetadataSearchService.fetch_candidate(candidate_id) as (
             detail,
-            source_kind,
-            metadata_provider,
             metadata_source,
         ):
             staged: StagedMedia | None = None
@@ -887,16 +857,10 @@ class MediaImportService:
                         "provider_invalid_response",
                         "媒体提供方返回了无效暂存结果",
                     )
-                if source_kind == "plugin":
-                    movie, _created = self.catalog_import_service.import_plugin_movie(
-                        detail,
-                        metadata_source,
-                        metadata_provider,
-                    )
-                else:
-                    movie, _created = self.catalog_import_service.import_movie_if_missing(
-                        detail,
-                    )
+                movie, _created = self.catalog_import_service.import_movie(
+                    detail,
+                    metadata_source,
+                )
                 media = self._create_media(
                     storage=storage,
                     movie=movie,

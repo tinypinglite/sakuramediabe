@@ -32,10 +32,10 @@ class _SearchEmbedder:
 
 def test_plot_image_search_returns_dedicated_result_and_paginates(test_db):
     first_movie = Movie.create(
-        movie_number="PLOT-001", javdb_id="plot-1", title="first"
+        movie_number="PLOT-001", title="first"
     )
     second_movie = Movie.create(
-        movie_number="PLOT-002", javdb_id="plot-2", title="second"
+        movie_number="PLOT-002", title="second"
     )
     first = _create_plot_image(first_movie, "movies/plot-1.jpg")
     second = _create_plot_image(second_movie, "movies/plot-2.jpg")

@@ -94,30 +94,6 @@ def test_config_updates_merge_from_disk_and_survive_plugin_updates(tmp_path, mon
         Settings.model_config["toml_file"] = original_config_path
 
 
-def test_config_updates_javdb_account_fields(tmp_path, monkeypatch):
-    config_path = tmp_path / "config.toml"
-    original_config_path = Settings.model_config["toml_file"]
-    monkeypatch.setitem(Settings.model_config, "toml_file", config_path)
-
-    try:
-        result = ConfigService.update_config(
-            {
-                "metadata": {
-                    "javdb_username": " user@example.com ",
-                    "javdb_password": "secret value ",
-                }
-            }
-        )
-        persisted = toml.load(config_path)
-        assert persisted["metadata"]["javdb_username"] == "user@example.com"
-        assert persisted["metadata"]["javdb_password"] == "secret value "
-        assert result.values["metadata"]["javdb_username"] == "user@example.com"
-        assert result.values["metadata"]["javdb_password"] == "secret value "
-        assert result.restart_required == ["api", "aps"]
-    finally:
-        Settings.model_config["toml_file"] = original_config_path
-
-
 def test_settings_load_config_written_by_v06_with_obsolete_keys(tmp_path, monkeypatch):
     """v0.6.x 写盘时残留的旧键必须能原样加载，不影响升到 v0.7.0。"""
     config_path = tmp_path / "config.toml"

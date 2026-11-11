@@ -44,3 +44,17 @@ class PluginSettingsUpdateResource(PluginSettingsResource):
     """插件配置写入结果；配置在 api/aps import 期读取，必须重启两个进程。"""
 
     pending_restart: list[str]
+
+
+class MetadataSourceResource(SchemaModel):
+    plugin_id: str
+    display_name: str
+
+
+class MetadataSourceOrderRequest(SchemaModel):
+    plugin_ids: list[str]
+
+
+class MetadataSourceOrderResource(SchemaModel):
+    items: list[MetadataSourceResource]
+    pending_restart: list[str]

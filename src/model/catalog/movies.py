@@ -1,7 +1,7 @@
 import peewee
 from peewee import SQL
 
-from src.model.base import BaseModel, CaseSensitiveCharField, JsonbField
+from src.model.base import BaseModel, JsonbField
 from src.model.catalog.actors import Actor
 from src.model.catalog.images import Image
 from src.model.catalog.tags import Tag
@@ -50,9 +50,7 @@ class MovieSeries(TimestampedMixin, BaseModel):
 
 
 class Movie(TimestampedMixin, BaseModel):
-    javdb_id = CaseSensitiveCharField(max_length=64, unique=True, index=True, null=True, verbose_name="JavDB ID")
     metadata_source = JsonbField(null=True)
-    javdb_next_check_at = peewee.DateTimeField(null=True, index=True)
     movie_number = peewee.CharField(max_length=255, unique=True, index=True, verbose_name="番号")
     title = peewee.TextField(verbose_name="标题")
     release_date = peewee.DateTimeField(verbose_name="发布时间", index=True, null=True)
@@ -86,8 +84,6 @@ class Movie(TimestampedMixin, BaseModel):
     director_name = peewee.CharField(max_length=255, verbose_name="导演名称", null=True)
     want_watch_count = peewee.IntegerField(default=0)
     comment_count = peewee.IntegerField(default=0)
-    # 互动数刷新节奏属于影片领域；不再借通用资源任务投影保存成功时间。
-    interaction_synced_at = peewee.DateTimeField(null=True, index=True)
     heat = peewee.IntegerField(null=False, default=0)
     is_collection = peewee.BooleanField(null=False, default=False, index=True)
     is_subscribed = peewee.BooleanField(null=False, default=False, index=True)
@@ -145,11 +141,10 @@ class Movie(TimestampedMixin, BaseModel):
         return super().create(**query)
 
     def save(self, *args, **kwargs):
-        # movie_number 存 provider（JavDB）给出的规范原样，只去首尾空白、不做任何归一化改写：
+        # movie_number 存元数据插件给出的规范原样，只去首尾空白、不做任何归一化改写：
         # 分隔符与大小写都是有效信息（一本道 072625_001 与加勒比 072625-001 是两部不同影片，
         # 东热 n0646 的规范写法就是小写）。系统内部各处番号副本列只允许拷贝本列；
         # 人工输入的匹配统一走 service_helpers.find_movie_by_number（大小写不敏感 + 分隔符候选）。
-        self.javdb_id = (self.javdb_id or "").strip() or None
         self.movie_number = (self.movie_number or "").strip()
         self._guard_protected_field_write(
             only=kwargs.get("only"),

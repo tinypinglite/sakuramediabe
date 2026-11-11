@@ -120,7 +120,6 @@ def test_download_tasks_returns_movie_cover_image(client, account_user):
     thin_cover = Image.create(origin="/files/images/thin-cover.jpg")
     Movie.create(
         movie_number="ABP-001",
-        javdb_id="download-task-abp-001",
         title="下载任务影片",
         cover_image=cover,
         thin_cover_image=thin_cover,

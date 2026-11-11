@@ -12,7 +12,7 @@ from src.model.catalog.actors import (
     Actor,
 )
 
-JAVDB_ACTOR_FIELD_OWNER = "host:javdb"
+HOST_METADATA_FIELD_OWNER = "host:metadata"
 MANUAL_ACTOR_FIELD_OWNER = "host:manual"
 
 
@@ -57,9 +57,6 @@ class ActorOwnershipGateway:
             raise ValueError("expected_revision 必须是非负整数")
         owner = f"plugin:{plugin_id}"
         assignments = ", ".join(f"{name} = %s" for name in fields)
-        if "gender" in fields:
-            # 旧版插件或未来插件写性别后，让回填重新评估。
-            assignments += ", gender_checked_at = NULL, gender_next_check_at = NULL"
         conditions = " AND ".join(
             "(field_owners->>%s IS NULL OR field_owners->>%s = %s)" for _ in fields
         )
@@ -86,16 +83,13 @@ class ActorOwnershipGateway:
         actor_id: int,
         fields: dict[str, Any],
         *,
-        owner: str = JAVDB_ACTOR_FIELD_OWNER,
+        owner: str = HOST_METADATA_FIELD_OWNER,
     ) -> bool:
         """宿主权威来源更新字段；可替换插件 owner，但不覆盖人工 owner。"""
         fields = cls._normalize_fields(fields)
         if not isinstance(owner, str) or not owner.startswith("host:") or owner == MANUAL_ACTOR_FIELD_OWNER:
             raise ValueError("owner 必须是非人工的宿主来源 owner")
         assignments = ", ".join(f"{name} = %s" for name in fields)
-        if "gender" in fields:
-            # 性别被宿主其他链路改写后，必须让回填重新评估，避免 checked_at 把新值锁死。
-            assignments += ", gender_checked_at = NULL, gender_next_check_at = NULL"
         owner_conditions = " AND ".join(
             "(field_owners->>%s IS NULL OR field_owners->>%s <> %s)" for _ in fields
         )

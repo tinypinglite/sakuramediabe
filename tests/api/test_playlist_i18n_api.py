@@ -63,7 +63,7 @@ def test_playlists_list_keeps_chinese_names_without_english_header(
 
 def test_movie_detail_localizes_system_playlist_names(client, account_user):
     favorites, _custom = _seed_playlists()
-    movie = Movie.create(movie_number="PL-001", javdb_id="pl-1", title="pl")
+    movie = Movie.create(movie_number="PL-001", title="pl")
     PlaylistMovie.create(playlist=favorites, movie=movie)
 
     response = client.get(

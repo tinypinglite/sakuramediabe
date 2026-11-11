@@ -4,7 +4,6 @@ from src.service.catalog.movie_task_service import MovieTaskService
 
 def test_recompute_movie_heat_enqueues_a_parameterized_task(test_db):
     movie = Movie.create(
-        javdb_id="javdb-heat-task",
         movie_number="ABP-001",
         title="热度任务",
     )

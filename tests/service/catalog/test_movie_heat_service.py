@@ -4,7 +4,6 @@ from src.service.catalog.movie_heat_service import MovieHeatService
 
 def _create_movie(movie_number: str, **counts) -> Movie:
     return Movie.create(
-        javdb_id=f"javdb-{movie_number}",
         movie_number=movie_number,
         title=movie_number,
         **counts,

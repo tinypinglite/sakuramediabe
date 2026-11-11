@@ -389,7 +389,6 @@ def _task_for_selector(movie: Movie, *, state: str, import_status: str) -> Downl
 def test_auto_selector_allows_replacement_with_completed_history(test_db):
     movie = Movie.create(
         movie_number="REPLACE-001",
-        javdb_id="replace-001",
         title="replace",
         is_subscribed=True,
         media_replacement_pending=True,
@@ -402,7 +401,6 @@ def test_auto_selector_allows_replacement_with_completed_history(test_db):
 def test_auto_selector_keeps_zero_output_import_blocked_without_replacement(test_db):
     movie = Movie.create(
         movie_number="REPLACE-002",
-        javdb_id="replace-002",
         title="zero output",
         is_subscribed=True,
     )
@@ -414,7 +412,6 @@ def test_auto_selector_keeps_zero_output_import_blocked_without_replacement(test
 def test_auto_selector_keeps_active_task_blocked_during_replacement(test_db):
     movie = Movie.create(
         movie_number="REPLACE-003",
-        javdb_id="replace-003",
         title="active",
         is_subscribed=True,
         media_replacement_pending=True,
@@ -427,7 +424,6 @@ def test_auto_selector_keeps_active_task_blocked_during_replacement(test_db):
 def test_auto_selector_keeps_unfinished_import_blocked_during_replacement(test_db):
     movie = Movie.create(
         movie_number="REPLACE-004",
-        javdb_id="replace-004",
         title="unfinished import",
         is_subscribed=True,
         media_replacement_pending=True,
@@ -440,7 +436,6 @@ def test_auto_selector_keeps_unfinished_import_blocked_during_replacement(test_d
 def test_auto_selector_allows_retry_after_failed_download(test_db):
     movie = Movie.create(
         movie_number="RETRY-001",
-        javdb_id="retry-001",
         title="failed download",
         is_subscribed=True,
     )
@@ -455,7 +450,6 @@ def test_auto_download_exhausts_old_movie_after_configured_no_candidate_budget(
 ):
     movie = Movie.create(
         movie_number="STATE-001",
-        javdb_id="state-001",
         title="state",
         is_subscribed=True,
     )
@@ -485,7 +479,6 @@ def test_auto_download_exhausts_old_movie_after_configured_no_candidate_budget(
 def test_auto_download_policy_filter_does_not_consume_retry_budget(test_db):
     movie = Movie.create(
         movie_number="POLICY-001",
-        javdb_id="policy-001",
         title="policy",
         is_subscribed=True,
     )

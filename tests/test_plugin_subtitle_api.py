@@ -19,8 +19,8 @@ from src.service.catalog import movie_subtitle_service
 @pytest.fixture
 def library(test_db, tmp_path, monkeypatch):
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "assets"))
-    movie = Movie.create(javdb_id="one", movie_number="ABC-001", title="影片", summary="")
-    other = Movie.create(javdb_id="two", movie_number="ABC-002", title="其他影片")
+    movie = Movie.create(movie_number="ABC-001", title="影片", summary="")
+    other = Movie.create(movie_number="ABC-002", title="其他影片")
     root = movie_subtitle_dir(movie.movie_number)
     root.mkdir(parents=True)
     context = PluginContext("subtitle_demo", {}, tmp_path / "plugin-data")

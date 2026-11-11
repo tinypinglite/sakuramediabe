@@ -16,7 +16,7 @@ from tests.conftest import TEST_FILE_SIGNATURE_EXPIRES, TEST_FILE_SIGNATURE_SECR
 
 def _media(test_name: str):
     library = MediaLibrary.create(name=f"{test_name}-library", provider_key="demo", provider_config={})
-    movie = Movie.create(movie_number=f"{test_name}-001", javdb_id=f"{test_name}-1", title=test_name)
+    movie = Movie.create(movie_number=f"{test_name}-001", title=test_name)
     return Media.create(movie=movie, library=library, file_name="media.mp4")
 
 

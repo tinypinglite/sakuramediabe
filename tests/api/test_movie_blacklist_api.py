@@ -13,7 +13,6 @@ def _login(client, username: str) -> str:
 
 def _create_movie(movie_number: str, *, is_subscribed: bool = False) -> Movie:
     return Movie.create(
-        javdb_id=f"javdb-{movie_number}",
         movie_number=movie_number,
         title=f"title-{movie_number}",
         is_subscribed=is_subscribed,

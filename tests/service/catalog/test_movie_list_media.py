@@ -39,7 +39,7 @@ from src.service.discovery.ranking_service import (
 
 @pytest.fixture()
 def media_movies(test_db):
-    actor = Actor.create(javdb_id="actor-media", name="Actor", is_subscribed=True)
+    actor = Actor.create(name="Actor", is_subscribed=True)
     series = MovieSeries.create(name="Media series")
     tag = Tag.create(name="media tag")
     playlist = Playlist.create(name="Media playlist")
@@ -52,7 +52,7 @@ def media_movies(test_db):
     movies = []
     for i in range(3):
         movie = Movie.create(
-            movie_number=f"MEDIA-{i:03d}", javdb_id=f"media-{i}", title=f"Movie {i}",
+            movie_number=f"MEDIA-{i:03d}", title=f"Movie {i}",
             series=series, is_collection=False,
         )
         movies.append(movie)
@@ -154,11 +154,11 @@ def test_rankings_reuse_media_query(media_movies, monkeypatch):
 
 def test_movie_media_queries_stay_constant_and_preserve_pagination(test_db):
     library = MediaLibrary.create(name="Bulk", provider_key="not-installed")
-    actor = Actor.create(javdb_id="bulk-actor", name="Bulk actor", is_subscribed=True)
+    actor = Actor.create(name="Bulk actor", is_subscribed=True)
     series = MovieSeries.create(name="Bulk series")
     with test_db.atomic():
         for i in range(100):
-            movie = Movie.create(movie_number=f"BULK-{i:03d}", javdb_id=f"bulk-{i}", title="Bulk", series=series, is_collection=False)
+            movie = Movie.create(movie_number=f"BULK-{i:03d}", title="Bulk", series=series, is_collection=False)
             MovieActor.create(movie=movie, actor=actor)
             for copy in range(2):
                 Media.create(movie=movie, library=library, file_name=f"{i}-{copy}.mp4")
@@ -239,7 +239,7 @@ def test_movie_and_playlist_resolution_use_highest_valid_media(test_db, resoluti
         ["1920x1080", "3840x2160"], ["1920x1080"], ["3840x2160", "7680x4320"],
         ["3840x2160"], [None], ["unknown"], [],
     ]):
-        movie = Movie.create(movie_number=f"RES-{index}", javdb_id=f"res-{index}", title="Resolution")
+        movie = Movie.create(movie_number=f"RES-{index}", title="Resolution")
         PlaylistMovie.create(playlist=playlist, movie=movie)
         for i, value in enumerate(values):
             Media.create(movie=movie, library=library, file_name=f"{index}-{i}.mp4", resolution=value)
@@ -278,7 +278,7 @@ def test_movie_and_playlist_resolution_use_highest_valid_media(test_db, resoluti
 def test_resolution_width_tiers_match_filters_and_playlist_options(test_db, values, expected):
     library = MediaLibrary.create(name="Width tiers", provider_key="not-installed")
     playlist = Playlist.create(name="Width tiers")
-    movie = Movie.create(movie_number="WIDTH-1", javdb_id="width-1", title="Width tiers")
+    movie = Movie.create(movie_number="WIDTH-1", title="Width tiers")
     PlaylistMovie.create(playlist=playlist, movie=movie)
     for index, value in enumerate(values):
         Media.create(movie=movie, library=library, file_name=f"{index}.mp4", resolution=value)

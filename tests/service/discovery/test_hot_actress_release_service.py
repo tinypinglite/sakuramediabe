@@ -10,7 +10,7 @@ TODAY = date(2026, 8, 23)
 
 
 def _create_actor(name: str, gender: int = 1) -> Actor:
-    return Actor.create(javdb_id=f"actor-{name}", name=name, gender=gender)
+    return Actor.create(name=name, gender=gender)
 
 
 def _create_movie(
@@ -22,7 +22,6 @@ def _create_movie(
     is_collection: bool = False,
 ) -> Movie:
     movie = Movie.create(
-        javdb_id=f"movie-{movie_number}",
         movie_number=movie_number,
         title=movie_number,
         release_date=datetime.combine(release_date, time.min),

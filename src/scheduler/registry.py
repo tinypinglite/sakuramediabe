@@ -11,21 +11,14 @@ from src.scheduler.queue_tasks import (
 )
 from src.scheduler.ranking_plugin_adapter import apply_plugin_ranking_sources
 from src.service.catalog import (
-    ActorGenderBackfillService,
     MovieHeatService,
-    MovieInteractionSyncService,
     MovieTaskService,
-    SubscribedActorMovieSyncService,
 )
 from src.service.catalog.metadata_source_service import MetadataSourceService
 from src.service.catalog.movie_asset_pack_backfill_service import (
     MovieAssetPackBackfillService,
 )
-from src.service.catalog.movie_cover_refresh_service import (
-    MovieCoverRefreshParams,
-    MovieCoverRefreshService,
-)
-from src.service.catalog.movie_javdb_backfill_service import MovieJavdbBackfillService
+from src.service.catalog.movie_review_source_service import MovieReviewSourceService
 from src.service.catalog.movie_subscription_search_state_service import (
     MovieSubscriptionSearchStateService,
 )
@@ -67,32 +60,6 @@ def _run_movie_heat(reporter, params):
 
 BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
     JobDefinition(
-        task_key="movie_javdb_backfill",
-        log_name="movie-javdb-backfill",
-        cli_name="backfill-movie-javdb",
-        cli_help="尝试从 JavDB 补录插件影片",
-        cron_setting="movie_javdb_backfill_cron",
-        handler=lambda reporter, _params: MovieJavdbBackfillService().run(reporter=reporter),
-    ),
-    JobDefinition(
-        task_key=ActorGenderBackfillService.TASK_KEY,
-        log_name="actor-gender-backfill",
-        cli_name="backfill-actor-genders",
-        cli_help="按影片元数据修正演员性别",
-        manual_only=True,
-        handler=lambda reporter, _params: ActorGenderBackfillService().run(reporter=reporter),
-    ),
-    JobDefinition(
-        task_key="actor_subscription_sync",
-        log_name="actor-subscription-sync",
-        cli_name="sync-subscribed-actor-movies",
-        cli_help="执行一次订阅女优影片抓取",
-        cron_setting="actor_subscription_sync_cron",
-        handler=lambda reporter, _params: SubscribedActorMovieSyncService().sync_subscribed_actor_movies(
-            progress_callback=reporter.progress_callback,
-        ),
-    ),
-    JobDefinition(
         task_key="subscribed_movie_auto_download",
         log_name="subscribed-movie-auto-download",
         cli_name="auto-download-subscribed-movies",
@@ -112,14 +79,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="执行一次影片热度重算",
         cron_setting="movie_heat_cron",
         handler=_run_movie_heat,
-    ),
-    JobDefinition(
-        task_key="movie_interaction_sync",
-        log_name="movie-interaction-sync",
-        cli_name="sync-movie-interactions",
-        cli_help="执行一次影片互动数同步",
-        cron_setting="movie_interaction_sync_cron",
-        handler=lambda reporter, _params: MovieInteractionSyncService().run(reporter=reporter),
     ),
     JobDefinition(
         task_key="download_task_sync",
@@ -205,18 +164,6 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         manual_only=True,
         handler=lambda reporter, _params: MovieAssetPackBackfillService.backfill(
             reporter=reporter,
-        ),
-    ),
-    JobDefinition(
-        task_key=MovieCoverRefreshService.TASK_KEY,
-        log_name="movie-cover-refresh",
-        cli_name="refresh-movie-covers",
-        cli_help="封面刷新回填（历史网页 CDN 带水印封面 → JavDB app CDN 干净原图）",
-        manual_only=True,
-        params_schema=MovieCoverRefreshParams,
-        handler=lambda reporter, params: MovieCoverRefreshService().run(
-            reporter=reporter,
-            params=MovieCoverRefreshParams.model_validate(params or {}),
         ),
     ),
     JobDefinition(
@@ -371,4 +318,5 @@ _ACTIVE_PLUGINS = tuple(
 )
 refresh_media_provider_registry(_ACTIVE_PLUGINS)
 MetadataSourceService.register(_ACTIVE_PLUGINS)
+MovieReviewSourceService.register(_ACTIVE_PLUGINS)
 JOB_REGISTRY_BY_KEY: dict[str, JobDefinition] = {job.task_key: job for job in JOB_REGISTRY}

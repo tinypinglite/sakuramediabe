@@ -1,21 +1,19 @@
-"""JavDB 优先；插件结果只在本次调用期间交付给宿主。"""
+"""按启用顺序调用元数据插件，并在调用期间校验交付文件。"""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
-from peewee import fn
 from PIL import Image as PillowImage
 
 from src.common import normalize_movie_number
 from src.common.service_helpers import find_movie_by_number
 from src.config.config import settings
+from src.i18n import translate
 from src.i18n.text import resolve_text
-from src.metadata.provider import MetadataNotFoundError, metadata_error_code
-from src.model import Actor
+from src.metadata.provider import MetadataNotFoundError
 from src.plugins.extensions.metadata import (
     METADATA_SOURCE_EXTENSION_KEY,
     PluginMovieMetadata,
@@ -23,24 +21,37 @@ from src.plugins.extensions.metadata import (
 )
 
 
+@dataclass(frozen=True)
+class MetadataSourceFailure:
+    plugin_id: str
+    source_name: str
+    detail: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "source": self.plugin_id,
+            "source_name": self.source_name,
+            "reason": "metadata_fetch_failed",
+            "detail": self.detail,
+        }
+
+
 class MetadataSourceError(RuntimeError):
     def __init__(
         self,
         message: str,
         *,
-        code: str = "metadata_fetch_failed",
-        provider_error: BaseException | None = None,
+        failures: tuple[MetadataSourceFailure, ...] = (),
     ):
-        self.code = code
-        self.provider_error = provider_error
+        self.failures = failures
         super().__init__(message)
 
 
 @dataclass(frozen=True)
 class MetadataFetchOutcome:
-    detail: Any
-    source: dict[str, str] | None = None
-    provider_error: BaseException | None = None
+    detail: PluginMovieMetadata
+    source: dict[str, str | None]
+    source_errors: tuple[MetadataSourceFailure, ...] = ()
 
 
 class MetadataSourceService:
@@ -48,21 +59,20 @@ class MetadataSourceService:
 
     @classmethod
     def import_by_number(
-        cls, movie_number, provider, import_service, *, force_subscribed=False
+        cls,
+        movie_number,
+        import_service,
+        *,
+        force_subscribed=False,
     ):
         existing = find_movie_by_number(movie_number)
         if existing is not None:
             return existing, False
-        with cls.fetch(movie_number, provider) as outcome:
-            if outcome.source is not None:
-                return import_service.import_plugin_movie(
-                    outcome.detail,
-                    outcome.source,
-                    provider,
-                    force_subscribed=force_subscribed,
-                )
-            return import_service.import_movie_if_missing(
-                outcome.detail, force_subscribed=force_subscribed
+        with cls.fetch(movie_number) as outcome:
+            return import_service.import_movie(
+                outcome.detail,
+                outcome.source,
+                force_subscribed=force_subscribed,
             )
 
     @classmethod
@@ -141,6 +151,7 @@ class MetadataSourceService:
         if source_entry is None:
             raise MetadataSourceError(f"元数据插件未启用或未注册: {plugin_id}")
         name, name_i18n, source = source_entry
+        display_name = resolve_text(name, name_i18n)
         paths: set[Path] = set()
         try:
             result = source.fetch_movie(movie_number)
@@ -169,13 +180,25 @@ class MetadataSourceService:
             raise
         except Exception as exc:
             cls._cleanup_delivery(paths)
-            logger.warning("元数据插件失败 plugin={} detail={}", plugin_id, exc)
+            logger.warning(
+                "元数据插件失败 plugin={} movie_number={} detail={}",
+                plugin_id,
+                movie_number,
+                exc,
+            )
             raise MetadataSourceError(
-                f"{plugin_id}: 元数据查询或交付校验失败 ({type(exc).__name__})"
+                f"{display_name}: {type(exc).__name__}: {exc}",
+                failures=(
+                    MetadataSourceFailure(
+                        plugin_id=plugin_id,
+                        source_name=display_name,
+                        detail=str(exc),
+                    ),
+                ),
             ) from exc
         return detail, {
             "plugin_id": plugin_id,
-            "display_name": resolve_text(name, name_i18n),
+            "display_name": display_name,
             "source_id": detail.source_id,
             "source_url": detail.source_url,
         }, paths
@@ -192,101 +215,31 @@ class MetadataSourceService:
 
     @classmethod
     @contextmanager
-    def fetch(cls, movie_number: str, provider):
-        provider_error: BaseException | None = None
-        try:
-            detail = provider.get_movie_by_number(movie_number)
-        except Exception as exc:
-            if not isinstance(exc, MetadataNotFoundError):
-                provider_error = exc
-                logger.warning(
-                    "JavDB metadata fetch failed, trying plugins movie_number={} error={}",
-                    movie_number,
-                    exc,
-                )
-        else:
-            yield MetadataFetchOutcome(detail=detail)
-            return
-
-        failures = []
-        # enabled 是宿主有序配置，同时确保已停用的插件不再被调用。
-        for plugin_id, _name, _name_i18n, _source in cls.enabled_plugin_sources():
+    def fetch(cls, movie_number: str):
+        failures: list[MetadataSourceFailure] = []
+        sources = cls.enabled_plugin_sources()
+        if not sources:
+            raise MetadataSourceError(translate("errors.metadata_source_unavailable"))
+        for plugin_id, _name, _name_i18n, _source in sources:
             try:
                 detail, source, paths = cls._load_plugin(plugin_id, movie_number)
             except MetadataNotFoundError:
                 continue
             except MetadataSourceError as exc:
-                failures.append(str(exc))
+                failures.extend(exc.failures)
                 continue
             try:
                 yield MetadataFetchOutcome(
                     detail=detail,
                     source=source,
-                    provider_error=provider_error,
+                    source_errors=tuple(failures),
                 )
             finally:
                 cls._cleanup_delivery(paths)
             return
         if failures:
             raise MetadataSourceError(
-                "; ".join(failures),
-                code=(
-                    metadata_error_code(provider_error)
-                    if provider_error is not None
-                    else "metadata_fetch_failed"
-                ),
-                provider_error=provider_error,
+                "; ".join(item.detail for item in failures),
+                failures=tuple(failures),
             )
-        if provider_error is not None:
-            raise provider_error
         raise MetadataNotFoundError("movie", movie_number)
-
-    @staticmethod
-    def match_actors(actors, provider, import_service) -> list[Actor]:
-        matched = {}
-        for actor in actors:
-            names = {
-                value.strip().casefold()
-                for value in [actor.name, *actor.alias_names]
-                if value.strip()
-            }
-            condition = fn.LOWER(Actor.name).in_(names)
-            for name in names:
-                condition |= fn.LOWER(Actor.alias_name).contains(name)
-            candidates = {
-                item.javdb_id: item
-                for item in Actor.select().where(
-                    condition, Actor.merged_into.is_null()
-                )
-                if names
-                & {
-                    value.strip().casefold()
-                    for value in [item.name, *item.alias_name.split("/")]
-                }
-            }
-            if len(candidates) == 1:
-                matched.update(candidates)
-                continue
-            if len(candidates) > 1:
-                continue
-            try:
-                candidates = {
-                    item.javdb_id: item
-                    for item in provider.search_actors(actor.name)
-                    if item.javdb_id
-                    and names
-                    & {
-                        value.strip().casefold()
-                        for value in [item.name, *item.alias_names]
-                    }
-                }
-                if len(candidates) == 1:
-                    javdb_id, candidate = next(iter(candidates.items()))
-                    matched[javdb_id] = import_service.upsert_actor_from_javdb_resource(
-                        candidate
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "元数据演员匹配失败，已过滤 name={} detail={}", actor.name, exc
-                )
-        return list(matched.values())

@@ -38,8 +38,6 @@ BOOTSTRAP_QUEUE_TASK_KEYS = frozenset(
     {
         "gfriends_filetree_refresh",
         "movie_similarity_recompute",
-        # 新部署首启时由 APS 主动触发一次，尽快完成首批影片入库。
-        "sakuramedia_javdb_ranking_sync",
     }
 )
 

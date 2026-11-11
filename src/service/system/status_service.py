@@ -1,5 +1,4 @@
 import os
-import time
 from datetime import date, datetime, timedelta
 
 from peewee import fn
@@ -17,13 +16,6 @@ from src.common.runtime_time import (
     utc_now_for_db,
 )
 from src.config.config import settings
-from src.metadata.factory import build_javdb_provider
-from src.metadata.provider import (
-    JavdbAuthError,
-    JavdbAuthRequiredError,
-    MetadataNotFoundError,
-    MetadataRequestError,
-)
 from src.model import (
     SYSTEM_PLAYLIST_KINDS,
     Actor,
@@ -57,8 +49,6 @@ from src.schema.system.status import (
     StatusMediaFileSummary,
     StatusMediaLibrarySummary,
     StatusMediaLibraryUsage,
-    StatusMetadataProviderTestError,
-    StatusMetadataProviderTestResource,
     StatusMovieSummary,
     StatusResource,
     StatusThumbnailSummary,
@@ -87,7 +77,6 @@ class StatusService:
     FEMALE_GENDER = 1
     BACKEND_VERSION_ENV_KEY = "SAKURAMEDIA_BACKEND_VERSION"
     BACKEND_VERSION_DEFAULT = "dev-local"
-    METADATA_PROVIDER_TEST_MOVIE_NUMBER = "SSNI-888"
     # 下载任务六分类字段名，作为分桶结果的唯一真相源。
     DOWNLOAD_TASK_BUCKETS = (
         "downloading",
@@ -446,103 +435,6 @@ class StatusService:
                 is_rebuilding=cls._is_image_search_rebuilding(),
             ),
         )
-
-    @classmethod
-    def test_metadata_provider(cls, provider: str) -> StatusMetadataProviderTestResource:
-        normalized_provider = provider.strip().lower()
-        start_at = time.time()
-        try:
-            if normalized_provider == "javdb":
-                return cls._test_javdb_provider(start_at=start_at)
-            raise ValueError(f"unsupported metadata provider: {provider}")
-        except MetadataNotFoundError as exc:
-            return cls._build_metadata_provider_failure(
-                provider=normalized_provider,
-                start_at=start_at,
-                error=StatusMetadataProviderTestError(
-                    type="metadata_not_found",
-                    message=str(exc),
-                    resource=exc.resource,
-                    lookup_value=exc.lookup_value,
-                ),
-            )
-        except JavdbAuthRequiredError as exc:
-            return cls._build_metadata_provider_failure(
-                provider=normalized_provider,
-                start_at=start_at,
-                error=StatusMetadataProviderTestError(
-                    type="metadata_auth_required",
-                    message=str(exc),
-                ),
-            )
-        except JavdbAuthError as exc:
-            return cls._build_metadata_provider_failure(
-                provider=normalized_provider,
-                start_at=start_at,
-                error=StatusMetadataProviderTestError(
-                    type="metadata_auth_failed",
-                    message=str(exc),
-                ),
-            )
-        except MetadataRequestError as exc:
-            return cls._build_metadata_provider_failure(
-                provider=normalized_provider,
-                start_at=start_at,
-                error=StatusMetadataProviderTestError(
-                    type="metadata_request_error",
-                    message=str(exc),
-                    method=exc.method,
-                    url=exc.url,
-                ),
-            )
-        except Exception as exc:
-            return cls._build_metadata_provider_failure(
-                provider=normalized_provider,
-                start_at=start_at,
-                error=StatusMetadataProviderTestError(
-                    type="unexpected_error",
-                    message=str(exc),
-                ),
-            )
-
-    @classmethod
-    def _test_javdb_provider(cls, *, start_at: float) -> StatusMetadataProviderTestResource:
-        # JavDB 联通性以真实按番号搜索并拉取详情为准；JavDB 请求永远直连（不叠 metadata proxy）。
-        detail = build_javdb_provider().get_movie_by_number(
-            cls.METADATA_PROVIDER_TEST_MOVIE_NUMBER
-        )
-        return StatusMetadataProviderTestResource(
-            healthy=True,
-            checked_at=utc_now_for_db(),
-            provider="javdb",
-            movie_number=cls.METADATA_PROVIDER_TEST_MOVIE_NUMBER,
-            elapsed_ms=cls._elapsed_ms(start_at),
-            javdb_id=detail.javdb_id,
-            title=detail.title,
-            actors_count=len(detail.actors),
-            tags_count=len(detail.tags),
-        )
-
-    @classmethod
-    def _build_metadata_provider_failure(
-        cls,
-        *,
-        provider: str,
-        start_at: float,
-        error: StatusMetadataProviderTestError,
-    ) -> StatusMetadataProviderTestResource:
-        return StatusMetadataProviderTestResource(
-            healthy=False,
-            checked_at=utc_now_for_db(),
-            provider=provider,
-            movie_number=cls.METADATA_PROVIDER_TEST_MOVIE_NUMBER,
-            elapsed_ms=cls._elapsed_ms(start_at),
-            error=error,
-        )
-
-    @staticmethod
-    def _elapsed_ms(start_at: float) -> int:
-        return int((time.time() - start_at) * 1000)
 
     @classmethod
     def _probe_embedding_service(cls) -> StatusEmbeddingServiceSummary:

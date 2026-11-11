@@ -16,7 +16,7 @@ def test_invalid_clip_placeholder_is_removed_and_regenerated(
 ):
     monkeypatch.setattr(settings.media, "media_clip_root_path", str(tmp_path))
     library = MediaLibrary.create(name="clip-library", provider_key="demo", provider_config={})
-    movie = Movie.create(movie_number="CLIP-001", javdb_id="clip-1", title="clip")
+    movie = Movie.create(movie_number="CLIP-001", title="clip")
     media = Media.create(movie=movie, library=library, file_name="clip.mp4")
     first_image = Image.create(origin="clip-first.webp")
     second_image = Image.create(origin="clip-second.webp")

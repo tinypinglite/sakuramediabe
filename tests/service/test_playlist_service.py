@@ -17,7 +17,6 @@ from src.service.collections.playlist_service import PlaylistService
 def _create_movie(number: str = "FAV-001") -> Movie:
     return Movie.create(
         movie_number=number,
-        javdb_id=f"javdb-{number}",
         title=number,
     )
 

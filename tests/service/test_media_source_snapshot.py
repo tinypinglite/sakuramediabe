@@ -208,11 +208,11 @@ def test_failed_item_retry_restores_source_snapshot(test_db, monkeypatch):
         "src.service.catalog.movie_metadata_search_service."
         "MovieMetadataSearchService.fetch_candidate",
         lambda _candidate_id: nullcontext(
-            (SimpleNamespace(movie_number="SNAP-002"), "javdb", object(), None)
+            (SimpleNamespace(movie_number="SNAP-002"), {"plugin_id": "demo"})
         ),
     )
     catalog = SimpleNamespace(
-        import_movie_if_missing=lambda _detail, force_subscribed=False: (movie, False)
+        import_movie=lambda _detail, _source, force_subscribed=False: (movie, False)
     )
     monkeypatch.setattr(
         MediaImportService,
@@ -236,7 +236,7 @@ def test_failed_item_retry_restores_source_snapshot(test_db, monkeypatch):
         catalog_import_service=catalog,
     ).retry_failed_file(
         failure_item,
-        "javdb:SNAP-002:source",
+        "plugin:demo:SNAP-002",
         operation_key="retry-source-snapshot",
     )
 

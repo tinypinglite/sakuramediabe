@@ -42,7 +42,7 @@ def media_image_root_path() -> Path:
 
 
 def normalize_asset_dir_name(owner_key: str) -> str:
-    """把番号 / javdb_id 等 owner key 归一成安全目录名。
+    """把番号等 owner key 归一成安全目录名。
 
     封面、剧照、缩略图、字幕四类资产必须走同一个归一化，否则同一部影片会散到两个目录。
     """

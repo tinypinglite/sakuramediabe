@@ -22,7 +22,7 @@ from src.api.routers.system import (
     batch_operations,
     indexer_settings,
     logs,
-    metadata_providers,
+    metadata_sources,
     plugins,
     status,
 )
@@ -55,7 +55,7 @@ from src.api.routers.videos import items as video_items
         (activity.router, (deps.db_deps, deps.get_current_user)),
         (batch_operations.router, (deps.db_deps, deps.get_current_user)),
         (indexer_settings.router, (deps.db_deps,)),
-        (metadata_providers.router, (deps.db_deps, deps.get_current_user)),
+        (metadata_sources.router, (deps.db_deps, deps.get_current_user)),
         (plugins.router, (deps.db_deps, deps.get_current_user)),
         (logs.router, (deps.db_deps, deps.get_current_user)),
         (system_config.router, (deps.db_deps,)),
@@ -227,7 +227,10 @@ def test_create_app_registers_image_search_routes():
     assert "/tags" in paths
     assert "/movies/{movie_number}/subtitles" in paths
     assert "/movies/{movie_number}/collection-status" in paths
-    assert "/movies/{movie_number}/metadata-refresh" in paths
+    assert "/movies/{movie_number}/reviews" in paths
+    assert "/actors/gfriends/search" in paths
+    assert "/actors/gfriends/import" in paths
+    assert "/system/metadata-sources" in paths
     # 翻译链路已删除；互动同步由常规定时任务负责。
     assert "/movies/{movie_number}/desc-translation" not in paths
     assert "/movies/{movie_number}/interaction-sync" not in paths
@@ -236,7 +239,7 @@ def test_create_app_registers_image_search_routes():
     assert "/movies/interaction-filter-options" in paths
     assert "/movies/series/{series_id}/metadata-imports" not in paths
     assert "/movies/metadata-imports" in paths
-    assert "/actors/metadata-imports" in paths
+    assert "/actors/metadata-imports" not in paths
     # 翻译链路已整体下线：设置探测端点一并移除。
     assert "/movie-desc-translation-settings/test" not in paths
     assert "/system/activity/bootstrap" in paths
@@ -247,7 +250,7 @@ def test_create_app_registers_image_search_routes():
     assert "/system/events/stream" not in paths
     assert "/status/insights" in paths
     assert "/status/watch-trend" in paths
-    assert "/metadata-providers/{provider}/test" in paths
+    assert "/metadata-providers/{provider}/test" not in paths
     assert "/import-sources/browse" in paths
     assert "/imports" in paths
     assert not any(path.startswith("/import-jobs") for path in paths if path)
@@ -376,7 +379,7 @@ def test_create_app_registers_operation_endpoints():
     assert ("/media/thumbnails/reset", "POST") in route_methods
     assert ("/media-points", "POST") in route_methods
     assert ("/indexer-settings/test", "POST") in route_methods
-    assert ("/metadata-providers/{provider}/test", "POST") in route_methods
+    assert ("/system/metadata-sources/order", "PUT") in route_methods
 
 
 def test_create_app_registers_download_task_center_routes():

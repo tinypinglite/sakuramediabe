@@ -88,7 +88,7 @@ def test_provider_plugin_removal_is_blocked_while_library_is_in_use(
     manager.install(_make_media_provider_plugin(tmp_path), enable=False)
     library = MediaLibrary.create(name="受保护媒体库", provider_key="test-storage")
     movie = Movie.create(
-        movie_number="REMOVE-001", javdb_id="remove-001", title="remove"
+        movie_number="REMOVE-001", title="remove"
     )
     Media.create(movie=movie, library=library, file_name="remove.mp4")
     DownloadClient.create(name="受保护下载器", library=library)

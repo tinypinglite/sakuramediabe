@@ -40,7 +40,6 @@ def _create_jav_point(index: int, movie_number: str | None = None) -> MediaPoint
     number = movie_number or f"POINTFILTER-{index:03d}"
     movie = Movie.create(
         movie_number=number,
-        javdb_id=f"point-filter-{index}",
         title=f"Point filter {index}",
     )
     media = Media.create(movie=movie, library=_library(), file_name=f"point-{index}.mp4")

@@ -32,7 +32,6 @@ def test_duplicate_media_groups_are_global_across_libraries_and_kind_specific(
     )
     movie = Movie.create(
         movie_number="DUP-001",
-        javdb_id="duplicate-jav-001",
         title="duplicate jav",
     )
     first_video = VideoItem.create(title="duplicate video one")

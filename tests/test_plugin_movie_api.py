@@ -18,7 +18,6 @@ from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
 
 def _create_movie(test_db, **overrides) -> Movie:
     fields = {
-        "javdb_id": "javdb-1",
         "movie_number": "ABP-001",
         "title": "旧标题",
         "summary": "旧简介",
@@ -71,7 +70,7 @@ def test_movies_get_returns_snapshot_or_none(test_db):
 
 def test_movies_find_by_numbers_preserves_numeric_separator(test_db):
     _create_movie(test_db, movie_number="ABP-001")
-    _create_movie(test_db, javdb_id="javdb-2", movie_number="072625_001")
+    _create_movie(test_db, movie_number="072625_001")
     api = MovieApi("demo_plugin")
 
     # 大小写不敏感 + 下划线/连字符候选，与人工输入点查同语义。
@@ -79,7 +78,7 @@ def test_movies_find_by_numbers_preserves_numeric_separator(test_db):
     assert [snapshot.values["movie_number"] for snapshot in snapshots] == ["ABP-001"]
 
     assert api.find_by_numbers(["072625-001"]) == []
-    _create_movie(test_db, javdb_id="javdb-3", movie_number="072625-001")
+    _create_movie(test_db, movie_number="072625-001")
     snapshots = api.find_by_numbers(["072625-001", "072625_001"])
     assert [snapshot.values["movie_number"] for snapshot in snapshots] == ["072625-001", "072625_001"]
     assert api.find_by_numbers(["abp_001"])[0].values["movie_number"] == "ABP-001"
@@ -97,7 +96,6 @@ def test_movies_query_filters_by_single_year(test_db):
     _create_movie(test_db, release_date=datetime(2024, 5, 1))
     _create_movie(
         test_db,
-        javdb_id="javdb-2",
         movie_number="ABP-002",
         release_date=datetime(2023, 5, 1),
     )
@@ -112,12 +110,10 @@ def test_movies_list_page_walks_full_library_by_id_cursor(test_db):
     first = _create_movie(test_db, movie_number="ABP-001")
     second = _create_movie(
         test_db,
-        javdb_id="javdb-2",
         movie_number="ABP-002",
     )
     third = _create_movie(
         test_db,
-        javdb_id="javdb-3",
         movie_number="ABP-003",
     )
     api = MovieApi("demo_plugin")
@@ -162,11 +158,11 @@ def test_movies_patch_goes_through_gateway(test_db):
 def test_movie_page_batches_relations_without_cross_movie_leaks(test_db):
     from playhouse.test_utils import count_queries
 
-    actor = Actor.create(javdb_id="actor-1", name="演员", height_cm=168)
+    actor = Actor.create(name="演员", height_cm=168)
     tag = Tag.create(name="标签")
     movies = [
         _create_movie(
-            test_db, javdb_id=f"j-{i}", movie_number=f"ABP-{i}",
+            test_db, movie_number=f"ABP-{i}",
             series_name="系列", is_blacklisted=True,
         )
         for i in range(5)
@@ -189,34 +185,23 @@ def test_movie_page_batches_relations_without_cross_movie_leaks(test_db):
 
 
 def test_import_movie_by_number_returns_snapshot(test_db, monkeypatch):
-    from types import SimpleNamespace
-
-    import src.plugins.context as context_module
-
     movie = Movie.create(
-        javdb_id="javdb-1",
         movie_number="ABP-001",
         title="导入标题",
         summary="导入简介",
     )
-    actor = Actor.create(javdb_id="import-actor", name="导入演员")
+    actor = Actor.create(name="导入演员")
     tag = Tag.create(name="导入标签")
     MovieActor.create(movie=movie, actor=actor)
     MovieTag.create(movie=movie, tag=tag)
 
-    def fake_provider(self):
-        return provider
+    from src.service.catalog.metadata_source_service import MetadataSourceService
 
-    def fake_import_service(self):
-        return importer
-
-    provider = SimpleNamespace(get_movie_by_number=lambda number: {"title": number})
-    importer = SimpleNamespace(
-        import_movie_if_missing=lambda detail, force_subscribed=False: (movie, True)
+    monkeypatch.setattr(
+        MetadataSourceService,
+        "import_by_number",
+        lambda movie_number, importer, force_subscribed=False: (movie, True),
     )
-
-    monkeypatch.setattr(context_module.PluginContext, "build_javdb_provider", fake_provider)
-    monkeypatch.setattr(context_module.PluginContext, "build_catalog_import_service", fake_import_service)
 
     from src.plugins.context import PluginContext
 

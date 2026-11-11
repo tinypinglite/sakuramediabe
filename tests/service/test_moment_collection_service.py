@@ -10,7 +10,6 @@ def _create_point(index: int) -> MediaPoint:
     )[0]
     movie = Movie.create(
         movie_number=f"MOMENT-COLLECTION-{index:03d}",
-        javdb_id=f"moment-collection-{index}",
         title=f"Moment collection {index}",
     )
     media = Media.create(movie=movie, library=library, file_name=f"moment-{index}.mp4")

@@ -39,6 +39,10 @@ from src.plugins.extensions.ranking import (
     RANKING_MULTI_SOURCE_HOST_API_VERSION,
     RANKING_SOURCE_EXTENSION_KEY,
 )
+from src.plugins.extensions.reviews import (
+    REVIEWS_EXTENSION_KEY,
+    REVIEWS_HOST_API_VERSION,
+)
 from src.plugins.i18n import validate_plugin_catalogs
 from src.plugins.manifest import MANIFEST_FILENAME, load_manifest_from_file
 from src.plugins.provider_protocol import refresh_media_provider_registry
@@ -405,6 +409,18 @@ def _load_plugin_dir(
             "元数据来源插件的 manifest 必须声明 Host API "
             f"{METADATA_SOURCE_HOST_API_VERSION} 或更高版本",
             min_version=METADATA_SOURCE_HOST_API_VERSION,
+        )
+    if (
+        any(ext.key == REVIEWS_EXTENSION_KEY for ext in registration.extensions)
+        and manifest.host_api_version < REVIEWS_HOST_API_VERSION
+    ):
+        raise _load_error(
+            plugin_id,
+            "validate_extensions",
+            "plugins.load_error.movie_reviews_host_api_too_low",
+            "电影评论插件的 manifest 必须声明 Host API "
+            f"{REVIEWS_HOST_API_VERSION} 或更高版本",
+            min_version=REVIEWS_HOST_API_VERSION,
         )
     if (
         sum(

@@ -209,7 +209,6 @@ def test_media_tag_manual_assignment_takeover_reset_and_media_list_fields(
     )
     movie = Movie.create(
         movie_number="TAG-ASSIGN-001",
-        javdb_id="tag-assign-001",
         title="assignment",
     )
     media = Media.create(
@@ -306,7 +305,6 @@ def test_media_tag_assignment_rejects_video_missing_and_invalid_ids(
 
     movie = Movie.create(
         movie_number="TAG-ASSIGN-002",
-        javdb_id="tag-assign-002",
         title="invalid",
     )
     jav_media = Media.create(
@@ -362,7 +360,6 @@ def test_media_tag_assignment_rejects_invalid_media(
     )
     movie = Movie.create(
         movie_number="TAG-ASSIGN-003",
-        javdb_id="tag-assign-003",
         title="invalid media",
     )
     media = Media.create(

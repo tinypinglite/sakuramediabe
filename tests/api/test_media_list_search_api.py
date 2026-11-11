@@ -25,7 +25,6 @@ def test_media_list_search_matches_filename_across_kinds(
     )
     movie = Movie.create(
         movie_number="SEARCH-JAV-001",
-        javdb_id="search-jav-001",
         title="Search JAV",
     )
     video = VideoItem.create(title="Search video")
@@ -75,7 +74,6 @@ def test_media_list_search_is_filename_only_and_combines_filters(
     )
     movie = Movie.create(
         movie_number="FILENAME-ONLY-001",
-        javdb_id="filename-only-001",
         title="Title Needle",
     )
     video = VideoItem.create(title="Title Needle Video")

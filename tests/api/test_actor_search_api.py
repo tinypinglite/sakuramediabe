@@ -26,21 +26,20 @@ def _item_ids(body: dict) -> list[int]:
 @pytest.fixture()
 def search_actors(test_db):
     sanshang = Actor.create(
-        javdb_id="actor-sanshang",
         name="三上悠亞",
         alias_name="鬼头桃菜",
         gender=1,
         height_cm=160,
     )
     simplified = Actor.create(
-        javdb_id="actor-simplified", name="三上悠亚", gender=1, height_cm=170
+        name="三上悠亚", gender=1, height_cm=170
     )
-    exact = Actor.create(javdb_id="actor-exact", name="三上", gender=1)
+    exact = Actor.create(name="三上", gender=1)
     alias_only = Actor.create(
-        javdb_id="actor-alias", name="別名俳優", alias_name="鬼头桃菜", gender=1
+        name="別名俳優", alias_name="鬼头桃菜", gender=1
     )
-    unrelated = Actor.create(javdb_id="actor-unrelated", name="無関係", gender=1)
-    male = Actor.create(javdb_id="actor-male", name="三上男", gender=2)
+    unrelated = Actor.create(name="無関係", gender=1)
+    male = Actor.create(name="三上男", gender=2)
     return sanshang, simplified, exact, alias_only, unrelated, male
 
 

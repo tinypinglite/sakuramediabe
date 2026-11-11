@@ -135,7 +135,7 @@ def test_retry_failed_file_validates_before_metadata_and_staging(test_db):
             provider=Storage(), catalog_import_service=object()
         ).retry_failed_file(
             failure_item,
-            "javdb:ABC-001:javdb-001",
+            "plugin:demo:ABC-001",
             operation_key="retry-operation",
         )
 

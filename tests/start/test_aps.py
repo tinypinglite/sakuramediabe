@@ -46,9 +46,7 @@ def test_aps_command_invokes_scheduler_entrypoint(monkeypatch):
 @pytest.mark.parametrize(
     "cli_name",
     [
-        "sync-subscribed-actor-movies",
         "update-movie-heat",
-        "sync-movie-interactions",
         "generate-media-thumbnails",
         "scan-media-files",
         "cleanup-activity-records",
@@ -58,7 +56,6 @@ def test_aps_command_invokes_scheduler_entrypoint(monkeypatch):
         "generate-moment-recommendations",
         "auto-download-subscribed-movies",
         "backfill-media-video-info",
-        "backfill-actor-genders",
     ],
 )
 def test_aps_cli_commands_run_job(monkeypatch, cli_name):
@@ -191,8 +188,8 @@ def test_aps_manual_subcommand_exits_with_click_error_when_task_conflicts(monkey
         (),
         {
             "id": 9,
-            "task_key": "actor_subscription_sync",
-            "task_name": "订阅演员影片同步",
+            "task_key": "movie_heat_update",
+            "task_name": "影片热度更新",
             "trigger_type": "scheduled",
             "started_at": None,
         },
@@ -202,10 +199,10 @@ def test_aps_manual_subcommand_exits_with_click_error_when_task_conflicts(monkey
         lambda *args, **kwargs: (_ for _ in ()).throw(TaskRunConflictError(blocking_task_run)),
     )
 
-    result = runner.invoke(main, ["aps", "sync-subscribed-actor-movies"])
+    result = runner.invoke(main, ["aps", "update-movie-heat"])
 
     assert result.exit_code != 0
-    assert "任务“订阅演员影片同步”已在运行中" in result.output
+    assert "任务“影片热度更新”已在运行中" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -219,12 +216,10 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
     monkeypatch.delenv(TelemetryService.ENABLED_ENV_KEY, raising=False)
     monkeypatch.setattr("src.start.aps.get_runtime_timezone", lambda: ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr("src.start.aps.get_runtime_timezone_name", lambda: "Asia/Shanghai")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.actor_subscription_sync_cron", "0 2 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.subscribed_movie_auto_download_cron", "30 2 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.movie_heat_cron", "15 0 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_sync_cron", "*/15 * * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.download_task_auto_import_cron", "*/10 * * * *")
-    monkeypatch.setattr("src.start.aps.settings.scheduler.movie_interaction_sync_cron", "0 5 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_file_hash_backfill_cron", "0 3 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_file_scan_cron", "0 */6 * * *")
     monkeypatch.setattr("src.start.aps.settings.scheduler.media_thumbnail_cron", "*/5 * * * *")
@@ -245,9 +240,7 @@ def test_build_scheduler_registers_all_jobs(monkeypatch):
             assert job is not None, f"Job {job_def.task_key} not registered"
 
     # 验证部分 cron 表达式
-    assert str(scheduler.get_job("actor_subscription_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='0']"
     assert str(scheduler.get_job("subscribed_movie_auto_download").trigger) == "cron[month='*', day='*', day_of_week='*', hour='2', minute='30']"
-    assert str(scheduler.get_job("movie_interaction_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='5', minute='0']"
     assert str(scheduler.get_job("movie_heat_update").trigger) == "cron[month='*', day='*', day_of_week='*', hour='0', minute='15']"
     assert str(scheduler.get_job("download_task_sync").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/15']"
     assert str(scheduler.get_job("download_task_auto_import").trigger) == "cron[month='*', day='*', day_of_week='*', hour='*', minute='*/10']"
@@ -359,7 +352,7 @@ def test_gfriends_bootstrap_explicit_params_preserve_force_false_and_cron_null_h
         str(tmp_path / "missing-gfriends-filetree.json"),
     )
     monkeypatch.setattr(
-        "src.metadata.factory.refresh_gfriends_filetree",
+        "src.metadata.gfriends.refresh_gfriends_filetree",
         fake_refresh_gfriends_filetree,
     )
     scheduler = build_scheduler()
@@ -783,10 +776,10 @@ def test_run_job_scheduled_delegates_to_enqueue(monkeypatch):
         lambda job_def: captured.append(job_def.task_key) or marker,
     )
 
-    result = run_job(JOB_REGISTRY_BY_KEY["actor_subscription_sync"])
+    result = run_job(JOB_REGISTRY_BY_KEY["movie_heat_update"])
 
     assert result is marker
-    assert captured == ["actor_subscription_sync"]
+    assert captured == ["movie_heat_update"]
 
 
 # ---------------------------------------------------------------------------

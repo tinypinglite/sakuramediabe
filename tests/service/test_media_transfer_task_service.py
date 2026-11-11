@@ -813,7 +813,7 @@ def test_request_rejects_boolean_ids(payload):
 
 
 def test_movie_and_external_subtitle_remain_attached(move, tmp_path):
-    movie = Movie.create(javdb_id="move-test", movie_number="MOVE-001", title="movie")
+    movie = Movie.create(movie_number="MOVE-001", title="movie")
     subtitle_path = tmp_path / "movie.srt"
     subtitle_path.write_text("original subtitle")
     subtitle = Subtitle.create(movie=movie, file_path=str(subtitle_path))

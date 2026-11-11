@@ -21,7 +21,6 @@ def _login(client, username: str) -> dict[str, str]:
 def _create_signal_movies() -> None:
     playlist = Playlist.create(kind=PLAYLIST_KIND_RECENTLY_PLAYED, name="最近播放")
     actress = Actor.create(
-        javdb_id="api-actress",
         name="测试女优",
         gender=1,
         cup="C",
@@ -30,7 +29,6 @@ def _create_signal_movies() -> None:
     tag = Tag.create(name="剧情")
     for movie_number in ("API-001", "API-002"):
         movie = Movie.create(
-            javdb_id=f"api-{movie_number}",
             movie_number=movie_number,
             title=movie_number,
         )

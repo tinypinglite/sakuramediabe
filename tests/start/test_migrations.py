@@ -64,6 +64,7 @@ from src.start.migrations.runner import (
     PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
     PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
     REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
+    REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
     REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME,
     TASK_RUN_SCOPE_KEY_MIGRATION_NAME,
     USER_LANGUAGE_MIGRATION_NAME,
@@ -179,6 +180,7 @@ def test_current_migrations_are_discoverable_in_order():
         MEDIA_CONTENT_GCID_MIGRATION_NAME,
         MULTI_VERSION_PROCESSED_MIGRATION_NAME,
             DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
+        REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
     ]
 
 
@@ -286,21 +288,6 @@ def test_media_source_snapshot_migration_adds_columns_idempotently(clean_db):
     )
 
 
-def test_plugin_metadata_migration_preserves_movies_and_allows_multiple_null_ids(clean_db):
-    clean_db.create_tables(TEST_MODELS)
-    _drop_columns(clean_db, "movie", ("metadata_source", "javdb_next_check_at"))
-    clean_db.execute_sql("ALTER TABLE movie ALTER COLUMN javdb_id SET NOT NULL")
-    existing = Movie.create(movie_number="OLD-001", javdb_id="real-id", title="Original")
-    module = _load_migration_module(Path(f"{PLUGIN_MOVIE_METADATA_MIGRATION_NAME}.py"))
-    module.migrate(clean_db)
-    current = Movie.get_by_id(existing.id)
-    assert current.javdb_id == "real-id" and current.title == "Original"
-    assert current.metadata_source is None and current.javdb_next_check_at is None
-    for number in ("NEW-001", "NEW-002"):
-        Movie.create(movie_number=number, javdb_id=None, title="Plugin", metadata_source={"plugin_id": "test"})
-    assert Movie.select().where(Movie.javdb_id.is_null()).count() == 2
-
-
 def test_plugin_collection_ownership_migration_adds_columns_without_losing_rows(clean_db):
     clean_db.create_tables(TEST_MODELS)
     existing = Playlist.create(name="existing-plugin-migration")
@@ -315,23 +302,6 @@ def test_plugin_collection_ownership_migration_adds_columns_without_losing_rows(
     for table in ("playlist", "moment_collection", "clip_collection"):
         assert {"owner_plugin_id", "plugin_key"} <= _column_names(clean_db, table)
     assert Playlist.get_by_id(existing.id).name == "existing-plugin-migration"
-
-
-def test_allow_local_actor_migration_drops_javdb_id_not_null(clean_db):
-    clean_db.create_tables(TEST_MODELS)
-    clean_db.execute_sql("ALTER TABLE actor ALTER COLUMN javdb_id SET NOT NULL")
-    existing = Actor.create(javdb_id="remote-actor", name="远端演员")
-
-    migration = _load_migration_module(
-        Path(f"{ALLOW_LOCAL_ACTOR_MIGRATION_NAME}.py")
-    )
-    migration.migrate(clean_db)
-
-    assert Actor.get_by_id(existing.id).javdb_id == "remote-actor"
-    first = Actor.create(javdb_id=None, name="本地女优一")
-    second = Actor.create(javdb_id=None, name="本地女优二")
-    assert first.javdb_id is None and second.javdb_id is None
-    assert Actor.select().where(Actor.javdb_id.is_null()).count() == 2
 
 
 def test_run_pending_migrations_rejects_v0421_base(clean_db):
@@ -445,6 +415,10 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
                 name=DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
                 applied=True,
             ),
+            MigrationExecution(
+                name=REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
+                applied=True,
+            ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -492,7 +466,8 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         MEDIA_CONTENT_HASHES_MIGRATION_NAME,
         MEDIA_CONTENT_GCID_MIGRATION_NAME,
         MULTI_VERSION_PROCESSED_MIGRATION_NAME,
-            DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
+        DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
+        REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
     ]
 
 
@@ -546,25 +521,6 @@ def test_task_run_scope_key_migration_backfills_active_library_tasks(clean_db):
     assert BackgroundTaskRun.get_by_id(completed.id).scope_key is None
 
 
-def test_actor_gender_checked_at_migration_adds_columns_idempotently_and_preserves_rows(
-    clean_db,
-):
-    clean_db.create_tables(TEST_MODELS)
-    existing = Actor.create(javdb_id="migration-gender", name="保留")
-    _drop_columns(clean_db, "actor", ("gender_checked_at", "gender_next_check_at"))
-
-    migration = _load_migration_module(
-        Path(f"{ACTOR_GENDER_CHECKED_AT_MIGRATION_NAME}.py")
-    )
-    migration.migrate(clean_db)
-    migration.migrate(clean_db)
-
-    column_names = _column_names(clean_db, "actor")
-    assert "gender_checked_at" in column_names
-    assert "gender_next_check_at" in column_names
-    assert Actor.get_by_id(existing.id).name == "保留"
-
-
 def test_download_task_remote_seen_migration_backfills_existing_rows(clean_db):
     clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
     clean_db.create_tables(TEST_MODELS)
@@ -611,7 +567,6 @@ def test_movie_media_replacement_migration_adds_false_default(clean_db):
     clean_db.create_tables(TEST_MODELS)
     movie = Movie.create(
         movie_number="REPLACE-MIGRATION-001",
-        javdb_id="replace-migration-001",
         title="replacement migration",
     )
     _drop_columns(clean_db, "movie", ("media_replacement_pending",))
@@ -771,7 +726,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         provider_key="test",
         provider_config={},
     )
-    movie = Movie.create(movie_number="ABP-001", javdb_id="movie-1", title="title")
+    movie = Movie.create(movie_number="ABP-001", title="title")
     clean_db.execute_sql(
         "UPDATE movie SET is_collection_overridden = TRUE WHERE id = %s",
         (movie.id,),
@@ -817,6 +772,9 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         clean_db,
         "download_task",
         ("import_task_run_id",),
+    )
+    clean_db.execute_sql(
+        "ALTER TABLE movie ADD COLUMN interaction_synced_at TIMESTAMP NULL"
     )
     _drop_columns(
         clean_db,
@@ -898,10 +856,8 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 45
-    assert clean_db.execute_sql(
-        "SELECT interaction_synced_at FROM movie WHERE id = %s", (movie.id,)
-    ).fetchone()[0] == datetime(2026, 8, 20, 1, 2, 3)
+    assert summary.applied_count == 46
+    assert "interaction_synced_at" not in _column_names(clean_db, "movie")
     media_state = clean_db.execute_sql(
         """
         SELECT thumbnail_generation_state, thumbnail_attempt_count,
@@ -969,7 +925,7 @@ def test_remove_media_special_tags_migration_drops_data_and_virtual_playlists(cl
     clean_db.execute_sql(
         "ALTER TABLE media ADD COLUMN special_tags VARCHAR(255) NOT NULL DEFAULT '普通'"
     )
-    movie = Movie.create(movie_number="TAG-001", javdb_id="tag-movie", title="tag movie")
+    movie = Movie.create(movie_number="TAG-001", title="tag movie")
     recently_played = Playlist.create(kind="recently_played", name="最近播放")
     custom_playlist = Playlist.create(kind="custom", name="自定义列表")
     virtual_playlist = Playlist.create(kind="vr", name="VR")
@@ -1154,88 +1110,6 @@ def _set_movie_extra(database, movie_id: int, extra) -> None:
             movie_id,
         ),
     )
-
-
-def test_actor_gender_backfill_migration_handles_old_and_new_movie_extra_shapes(clean_db):
-    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
-    clean_db.create_tables(TEST_MODELS)
-    # 当前模型已移除 extra 列；临时重建旧列，覆盖历史迁移读取旧 schema 的路径。
-    clean_db.execute_sql("ALTER TABLE movie ADD COLUMN IF NOT EXISTS extra TEXT")
-
-    female = Actor.create(javdb_id="actor-female", name="female", gender=0)
-    male = Actor.create(javdb_id="actor-male", name="male", gender=1)
-    unknown = Actor.create(javdb_id="actor-unknown", name="unknown", gender=1)
-    untouched = Actor.create(javdb_id="actor-untouched", name="untouched", gender=2)
-
-    old_movie = Movie.create(movie_number="OLD-001", javdb_id="old-movie", title="old")
-    _set_movie_extra(
-        clean_db,
-        old_movie.id,
-        {
-            "data": {
-                "movie": {
-                    "actors": [
-                        {"id": female.javdb_id, "gender": 1},
-                        {"id": male.javdb_id, "gender": 1},
-                    ]
-                }
-            }
-        },
-    )
-    new_movie = Movie.create(movie_number="NEW-001", javdb_id="new-movie", title="new")
-    _set_movie_extra(
-        clean_db,
-        new_movie.id,
-        {
-            "data": {
-                "movie": {
-                    "actors": [
-                        # 最新影片的值胜出，验证同一演员去重后的确定性。
-                        {"id": female.javdb_id, "gender": 0},
-                        {"id": unknown.javdb_id},
-                        {"id": "actor-missing", "gender": 0},
-                    ]
-                }
-            }
-        },
-    )
-    empty_movie = Movie.create(
-        movie_number="EMPTY-001", javdb_id="empty-movie", title="empty"
-    )
-    _set_movie_extra(
-        clean_db, empty_movie.id, {"data": {"movie": {"actors": "legacy-scalar"}}}
-    )
-    null_movie = Movie.create(movie_number="NULL-001", javdb_id="null-movie", title="null")
-    _set_movie_extra(clean_db, null_movie.id, None)
-
-    migration = _load_migration_module(
-        Path(
-            "src/start/migrations/versions/"
-            "20260823_02_backfill_actor_gender_from_movie_extra.py"
-        )
-    )
-    migration.migrate(clean_db)
-
-    assert Actor.get_by_id(female.id).gender == 1
-    assert Actor.get_by_id(male.id).gender == 2
-    assert Actor.get_by_id(unknown.id).gender == 1
-    assert Actor.get_by_id(untouched.id).gender == 2
-
-
-def test_actor_gender_backfill_migration_skips_when_extra_column_absent(clean_db):
-    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
-    clean_db.create_tables(TEST_MODELS)
-    actor = Actor.create(javdb_id="actor-guard", name="guard", gender=1)
-
-    migration = _load_migration_module(
-        Path(
-            "src/start/migrations/versions/"
-            "20260823_02_backfill_actor_gender_from_movie_extra.py"
-        )
-    )
-    migration.migrate(clean_db)
-
-    assert Actor.get_by_id(actor.id).gender == 1
 
 
 def test_drop_movie_extra_migration_removes_column(clean_db):
@@ -1614,3 +1488,52 @@ def test_detach_user_asset_images_migration(clean_db, monkeypatch, tmp_path):
         MediaPoint.get_by_id(orphan_point.id).image_id,
         VideoItem.get_by_id(video.id).cover_image_id,
     ) == reused_image_ids
+
+
+def test_remove_javdb_identity_migration_drops_fields_and_rewrites_owner(clean_db):
+    clean_db.create_tables(TEST_MODELS)
+    for column, definition in (
+        ("javdb_id", "VARCHAR(64) NULL"),
+        ("javdb_type", "INTEGER NOT NULL DEFAULT 0"),
+        ("gender_checked_at", "TIMESTAMP NULL"),
+        ("gender_next_check_at", "TIMESTAMP NULL"),
+        ("subscribed_movies_synced_at", "TIMESTAMP NULL"),
+        ("subscribed_movies_full_synced_at", "TIMESTAMP NULL"),
+    ):
+        clean_db.execute_sql(f"ALTER TABLE actor ADD COLUMN {column} {definition}")
+    for column, definition in (
+        ("javdb_id", "VARCHAR(64) NULL"),
+        ("javdb_next_check_at", "TIMESTAMP NULL"),
+        ("interaction_synced_at", "TIMESTAMP NULL"),
+    ):
+        clean_db.execute_sql(f"ALTER TABLE movie ADD COLUMN {column} {definition}")
+
+    actor = Actor.create(name="保留演员")
+    movie = Movie.create(movie_number="KEEP-001", title="保留影片")
+    clean_db.execute_sql(
+        "UPDATE actor SET javdb_id = %s, javdb_type = 1, "
+        "field_owners = %s::jsonb WHERE id = %s",
+        ("actor-1", json.dumps({"height_cm": "host:javdb"}), actor.id),
+    )
+    clean_db.execute_sql(
+        "UPDATE movie SET javdb_id = %s, interaction_synced_at = now() WHERE id = %s",
+        ("movie-1", movie.id),
+    )
+
+    migration = _load_migration_module(
+        Path(f"{REMOVE_JAVDB_IDENTITY_MIGRATION_NAME}.py")
+    )
+    migration.migrate(clean_db)
+    migration.migrate(clean_db)
+
+    actor_columns = _column_names(clean_db, "actor")
+    movie_columns = _column_names(clean_db, "movie")
+    assert "javdb_id" not in actor_columns
+    assert "javdb_type" not in actor_columns
+    assert "gender_checked_at" not in actor_columns
+    assert "javdb_id" not in movie_columns
+    assert "javdb_next_check_at" not in movie_columns
+    assert "interaction_synced_at" not in movie_columns
+    assert Actor.get_by_id(actor.id).name == "保留演员"
+    assert Actor.get_by_id(actor.id).field_owners == {"height_cm": "host:metadata"}
+    assert Movie.get_by_id(movie.id).title == "保留影片"

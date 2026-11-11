@@ -19,7 +19,6 @@ from src.service.discovery.taste_profile_service import TasteProfileService
 
 def _create_movie(movie_number: str, **kwargs) -> Movie:
     return Movie.create(
-        javdb_id=f"movie-{movie_number}",
         movie_number=movie_number,
         title=movie_number,
         **kwargs,
@@ -35,7 +34,6 @@ def _create_actor(
     merged_into: Actor | None = None,
 ) -> Actor:
     return Actor.create(
-        javdb_id=f"actor-{name}",
         name=name,
         gender=gender,
         cup=cup,

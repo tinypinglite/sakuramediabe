@@ -11,7 +11,7 @@ def test_create_media_persists_provider_file_hash(test_db):
         provider_key="test",
         provider_config={},
     )
-    movie = Movie.create(movie_number="HASH-001", javdb_id="hash-1", title="hash")
+    movie = Movie.create(movie_number="HASH-001", title="hash")
     source = ImportFile(
         source_ref={"path": "source.mp4"},
         name="HASH-001.mp4",

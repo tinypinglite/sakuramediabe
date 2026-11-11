@@ -77,6 +77,9 @@ MULTI_VERSION_PROCESSED_MIGRATION_NAME = (
 DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME = (
     "20261103_01_add_download_source_identity"
 )
+REMOVE_JAVDB_IDENTITY_MIGRATION_NAME = (
+    "20261112_01_remove_javdb_identity"
+)
 
 
 @dataclass(frozen=True)

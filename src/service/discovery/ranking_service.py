@@ -15,7 +15,6 @@ from src.common.service_helpers import (
     with_movie_card_relations,
 )
 from src.i18n.text import resolve_text
-from src.metadata.factory import build_javdb_provider
 from src.model import Movie, RankingItem, get_database
 from src.schema.catalog.movies import MovieListItemResource, MovieRankingResource
 from src.schema.discovery import (
@@ -383,10 +382,8 @@ class RankingSyncService:
     def __init__(
         self,
         import_service: CatalogImportService | None = None,
-        providers: dict[str, Any] | None = None,
     ) -> None:
         self.import_service = import_service or CatalogImportService()
-        self.providers = providers or {}
 
     def _get_rank_numbers(
         self,
@@ -406,25 +403,10 @@ class RankingSyncService:
             )
         return numbers
 
-    def _get_provider(self, source_key: str) -> Any:
-        provider = self.providers.get(source_key)
-        if provider is None:
-            provider = build_javdb_provider()
-            self.providers[source_key] = provider
-        return provider
-
-    def _import_movie_by_number(self, source_key: str, movie_number: str) -> Movie:
-        provider = self._get_provider(source_key)
-        with MetadataSourceService.fetch(movie_number, provider) as outcome:
-            if outcome.source is None:
-                movie, _created = self.import_service.import_movie_if_missing(
-                    outcome.detail
-                )
-                return movie
-            movie, _created = self.import_service.import_plugin_movie(
-                outcome.detail,
-                outcome.source,
-                provider,
+    def _import_movie_by_number(self, movie_number: str) -> Movie:
+        with MetadataSourceService.fetch(movie_number) as outcome:
+            movie, _created = self.import_service.import_movie(
+                outcome.detail, outcome.source
             )
             return movie
 
@@ -461,13 +443,13 @@ class RankingSyncService:
         )
 
         # 批量查本地已有影片：榜单上大多数番号都已入库，命中后直接复用 Movie.id 写榜单条目，
-        # 避免逐部走 JavDB 详情接口。watched/want/comment/score 等会变化的热度字段由
-        # sync-movie-interactions 任务负责刷新，排行榜任务不再重复拉详情。
+        # 避免逐部走元数据插件。watched/want/comment/score 等会变化的互动字段由
+        # 对应的来源插件任务负责刷新，排行榜任务不再重复拉详情。
         existing_movies: dict[str, Movie] = {}
         if movie_numbers:
             existing_movies = {
                 movie.movie_number: movie
-                for movie in Movie.select(Movie.id, Movie.movie_number, Movie.javdb_id, Movie.metadata_source).where(
+                for movie in Movie.select(Movie.id, Movie.movie_number, Movie.metadata_source).where(
                     Movie.movie_number.in_(movie_numbers)
                 )
             }
@@ -479,9 +461,9 @@ class RankingSyncService:
         for rank, movie_number in enumerate(movie_numbers, start=1):
             movie = existing_movies.get(movie_number)
             if movie is None:
-                # 本地没有的番号才走 JavDB 详情入库
+                # 本地没有的番号才走元数据插件链入库
                 try:
-                    movie = self._import_movie_by_number(source_key, movie_number)
+                    movie = self._import_movie_by_number(movie_number)
                 except Exception as exc:
                     skipped_count += 1
                     logger.warning(
@@ -497,14 +479,6 @@ class RankingSyncService:
                 imported_count += 1
             else:
                 local_hit_count += 1
-                if not movie.javdb_id and movie.metadata_source:
-                    try:
-                        movie = self._import_movie_by_number(
-                            source_key, movie_number
-                        )
-                    except Exception as exc:
-                        logger.warning("排行榜影片 JavDB 补录失败，保留本地条目 movie={} detail={}", movie_number, exc)
-
             insert_rows.append(
                 {
                     "source_key": source_key,
@@ -594,7 +568,7 @@ class RankingSyncService:
             progress_callback,
             current=0,
             total=total_targets,
-            text_key="tasks.sakuramedia_javdb_ranking_sync.progress.starting",
+            text_key="tasks.ranking_sync.progress.starting",
             summary_patch=stats,
         )
         for source, board, period in targets:
@@ -618,7 +592,7 @@ class RankingSyncService:
                     progress_callback,
                     current=completed_targets,
                     total=total_targets,
-                    text_key="tasks.sakuramedia_javdb_ranking_sync.progress.failed",
+                    text_key="tasks.ranking_sync.progress.failed",
                     text_params={
                         "source": resolve_text(source.name, source.name_i18n),
                         "board": resolve_text(board.name, board.name_i18n),
@@ -638,7 +612,7 @@ class RankingSyncService:
                 progress_callback,
                 current=completed_targets,
                 total=total_targets,
-                text_key="tasks.sakuramedia_javdb_ranking_sync.progress.synced",
+                text_key="tasks.ranking_sync.progress.synced",
                 text_params={
                     "source": resolve_text(source.name, source.name_i18n),
                     "board": resolve_text(board.name, board.name_i18n),

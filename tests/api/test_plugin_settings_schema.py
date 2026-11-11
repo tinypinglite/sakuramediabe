@@ -11,6 +11,7 @@ from src.api.exception.exception import api_error_handler
 from src.api.routers.deps import db_deps, get_current_user
 from src.api.routers.system.plugins import router
 from src.config.config import settings
+from src.plugins import HOST_API_VERSION
 from src.plugins.loader import _clear_plugin_modules
 
 
@@ -28,7 +29,7 @@ def settings_client(tmp_path, monkeypatch):
         directory.mkdir()
         (directory / "manifest.json").write_text(json.dumps({
             "plugin_id": name, "display_name": name, "version": "1.0.0",
-            "host_api_version": 6,
+            "host_api_version": HOST_API_VERSION,
             **({"settings_model": "Settings"} if name == "form_plugin" else {}),
         }))
         (directory / "__init__.py").write_text(
@@ -43,7 +44,7 @@ def settings_client(tmp_path, monkeypatch):
     directory.mkdir()
     (directory / "manifest.json").write_text(json.dumps({
         "plugin_id": "complex_plugin", "display_name": "配置协议测试", "version": "1.0.0",
-        "host_api_version": 6, "settings_model": "Settings",
+        "host_api_version": HOST_API_VERSION, "settings_model": "Settings",
     }))
     (directory / "__init__.py").write_text('''from pydantic import BaseModel, ConfigDict, Field, model_validator
 class Nested(BaseModel):

@@ -7,7 +7,7 @@ def test_movie_resolution_filter_and_invalid_value(client, account_user):
     }).json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
     library = MediaLibrary.create(name="Resolution", provider_key="not-installed")
-    movie = Movie.create(movie_number="RES-001", javdb_id="res-001", title="Resolution")
+    movie = Movie.create(movie_number="RES-001", title="Resolution")
     Media.create(movie=movie, library=library, file_name="4k.mp4", resolution="3840x2160")
     Media.create(movie=movie, library=library, file_name="1080.mp4", resolution="1920x1080")
     for resolution, total in [("4K", 1), ("1080P", 0), ("8K", 0)]:

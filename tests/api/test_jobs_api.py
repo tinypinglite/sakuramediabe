@@ -113,9 +113,6 @@ def test_builtin_jobs_accept_parameterless_async_trigger(client, account_user):
     task_keys = (
         "subscribed_movie_auto_download",
         "movie_heat_update",
-        "movie_interaction_sync",
-        "movie_javdb_backfill",
-        "actor_gender_backfill",
         "media_file_hash_backfill",
         "media_file_scan",
         "media_video_info_backfill",

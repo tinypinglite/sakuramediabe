@@ -75,10 +75,9 @@ class ImportFailedItemResource(SchemaModel):
 
 class ImportMetadataCandidateResource(SchemaModel):
     candidate_id: str
-    source: Literal["javdb", "plugin"]
+    plugin_id: str
     source_name: str
     source_id: str | None = None
-    javdb_id: str | None = None
     movie_number: str
     title: str
     cover_url: str | None = None

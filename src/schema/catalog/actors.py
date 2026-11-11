@@ -36,8 +36,6 @@ class ImageResource(SchemaModel):
 
 class ActorResource(SchemaModel):
     id: int
-    # JavDB 演员为远端 ID；用户自建女优没有远端身份，保持 None。
-    javdb_id: str | None = None
     name: str
     alias_name: str
     display_name: str
@@ -72,7 +70,6 @@ def _actor_resource_payload(actor) -> dict:
     field_owners = actor.field_owners or {}
     return {
         "id": actor.id,
-        "javdb_id": actor.javdb_id,
         "name": actor.name,
         "alias_name": actor.alias_name,
         "display_name": actor.display_name,
@@ -104,7 +101,7 @@ def _actor_resource_payload(actor) -> dict:
 
 
 class ActorCreateRequest(SchemaModel):
-    """创建用户自建女优；没有 JavDB 身份，默认按女优处理。"""
+    """创建本地女优，默认按女优处理。"""
 
     name: str = Field(min_length=1, max_length=255)
     alias_name: str | None = Field(default=None, max_length=1024)
@@ -134,7 +131,7 @@ class ActorCreateRequest(SchemaModel):
 
 
 class ActorUpdateRequest(SchemaModel):
-    # name / alias_name 只允许本地女优修改，JavDB 演员由远端同步维护。
+    # 演员是本地实体，名称和别名的变更由电影导入时的名称匹配合并。
     name: str | None = Field(default=None, max_length=255)
     alias_name: str | None = Field(default=None, max_length=1024)
     display_name_override: str | None = Field(default=None, max_length=255)
@@ -219,15 +216,23 @@ class YearResource(SchemaModel):
     movie_count: int
 
 
-class ActorMetadataImportRequest(SchemaModel):
-    actor_name: str = Field(min_length=1)
+class GfriendsActorCandidateResource(SchemaModel):
+    candidate_id: str
+    name: str
+    alias_names: list[str] = Field(default_factory=list)
+    avatar_url: str | None = None
+    existing_actor_id: int | None = None
 
-    @field_validator("actor_name")
+
+class GfriendsActorImportRequest(SchemaModel):
+    candidate_id: str = Field(min_length=1, max_length=64)
+
+    @field_validator("candidate_id")
     @classmethod
-    def validate_actor_name(cls, value: str) -> str:
+    def validate_candidate_id(cls, value: str) -> str:
         normalized = value.strip()
         if not normalized:
-            raise ValueError("actor_name cannot be blank")
+            raise ValueError("candidate_id cannot be blank")
         return normalized
 
 

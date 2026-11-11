@@ -376,6 +376,28 @@ class PluginManager:
         with plugin_operation_lock(self.root_dir):
             self._set_enabled_checked(plugin_id, enabled)
 
+    def reorder_enabled_metadata_sources(
+        self,
+        *,
+        plugin_ids: list[str],
+        metadata_plugin_ids: set[str],
+    ) -> None:
+        """只调整元数据插件在 enabled 列表中的相对顺序。"""
+        if len(plugin_ids) != len(set(plugin_ids)):
+            raise ValueError("元数据源顺序不能包含重复插件")
+        if set(plugin_ids) != metadata_plugin_ids:
+            raise ValueError("元数据源顺序必须完整覆盖当前已加载的元数据插件")
+        current = Settings.model_validate(settings.model_dump())
+        order = iter(plugin_ids)
+        reordered = [
+            next(order) if plugin_id in metadata_plugin_ids else plugin_id
+            for plugin_id in current.plugins.enabled
+        ]
+        if reordered == current.plugins.enabled:
+            return
+        current.plugins.enabled = reordered
+        update_settings(current)
+
     def _set_enabled_checked(self, plugin_id: str, enabled: bool) -> None:
         if not (self._plugin_dir(plugin_id) / MANIFEST_FILENAME).is_file():
             raise ValueError(f"插件未安装: {plugin_id}")

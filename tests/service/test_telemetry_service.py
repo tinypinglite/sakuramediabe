@@ -59,12 +59,10 @@ def test_build_payload_reports_only_valid_managed_media(test_db, monkeypatch):
     library = MediaLibrary.create(name="telemetry-library", provider_key="test", provider_config={})
     valid_movie = Movie.create(
         movie_number="TELEMETRY-001",
-        javdb_id="telemetry-1",
         title="valid media",
     )
     invalid_movie = Movie.create(
         movie_number="TELEMETRY-002",
-        javdb_id="telemetry-2",
         title="invalid media",
     )
     Media.create(

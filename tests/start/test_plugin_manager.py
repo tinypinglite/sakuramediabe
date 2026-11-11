@@ -210,7 +210,7 @@ def test_manager_install_zip_publishes_plugin(tmp_path):
     assert manager.get_plugin("demo_plugin")["enabled"] is False
 
 
-def test_manager_install_zip_accepts_v4_manifest_on_v5_host(tmp_path):
+def test_manager_install_zip_accepts_current_manifest_on_current_host(tmp_path):
     root = tmp_path / "root"
     manager = PluginManager(root_dir=root)
 

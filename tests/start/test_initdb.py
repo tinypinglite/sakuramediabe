@@ -164,8 +164,8 @@ def test_create_tables_creates_videos_domain_tables_and_decoupled_media(clean_db
 def test_create_tables_creates_daily_recommendation_unique_constraints(clean_db, monkeypatch):
     create_tables()
 
-    first_movie = Movie.create(movie_number="ABP-001", javdb_id="daily-1", title="Daily 1")
-    second_movie = Movie.create(movie_number="ABP-002", javdb_id="daily-2", title="Daily 2")
+    first_movie = Movie.create(movie_number="ABP-001", title="Daily 1")
+    second_movie = Movie.create(movie_number="ABP-002", title="Daily 2")
     DailyRecommendationItem.create(
         snapshot_date=date(2026, 5, 8),
         movie=first_movie,
@@ -201,8 +201,8 @@ def test_create_tables_creates_daily_recommendation_unique_constraints(clean_db,
 def test_create_tables_creates_moment_recommendation_unique_constraints(clean_db, monkeypatch):
     create_tables()
 
-    first_movie = Movie.create(movie_number="ABP-101", javdb_id="moment-1", title="Moment 1")
-    second_movie = Movie.create(movie_number="ABP-102", javdb_id="moment-2", title="Moment 2")
+    first_movie = Movie.create(movie_number="ABP-101", title="Moment 1")
+    second_movie = Movie.create(movie_number="ABP-102", title="Moment 2")
     library = MediaLibrary.create(
         name="moment-library",
         provider_key="demo",
@@ -286,7 +286,7 @@ def test_create_tables_creates_current_schema_columns(clean_db, monkeypatch):
     # v2-lite 字段主权两列：新库按模型渲染出 JSONB / BIGINT + 服务端默认值
     # （与 v0.5.0 收敛迁移的 ALTER 同构，裸 INSERT 也有兜底）。
     movie_columns = _column_names(database, "movie")
-    assert "interaction_synced_at" in movie_columns
+    assert "interaction_synced_at" not in movie_columns
     assert "field_owners" in movie_columns
     assert "mutation_revision" in movie_columns
     assert "multi_version_processed_snapshot" in movie_columns

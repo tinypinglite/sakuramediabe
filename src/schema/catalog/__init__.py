@@ -3,8 +3,9 @@ from .actors import (
     ActorListGender,
     ActorListSubscriptionStatus,
     ActorMergeRequest,
-    ActorMetadataImportRequest,
     ActorResource,
+    GfriendsActorCandidateResource,
+    GfriendsActorImportRequest,
     ImageResource,
     MovieIdResource,
     YearResource,
@@ -16,6 +17,7 @@ from .movies import (
     MovieMetadataImportRequest,
     MovieNumberParseRequest,
     MovieNumberParseResponse,
+    MovieReviewResource,
     TagListItemResource,
 )
 
@@ -24,8 +26,9 @@ __all__ = [
     "ActorListGender",
     "ActorListSubscriptionStatus",
     "ActorMergeRequest",
-    "ActorMetadataImportRequest",
     "ActorResource",
+    "GfriendsActorCandidateResource",
+    "GfriendsActorImportRequest",
     "ImageResource",
     "MovieActorResource",
     "MovieDetailResource",
@@ -34,6 +37,7 @@ __all__ = [
     "MovieMetadataImportRequest",
     "MovieNumberParseRequest",
     "MovieNumberParseResponse",
+    "MovieReviewResource",
     "TagListItemResource",
     "YearResource",
 ]

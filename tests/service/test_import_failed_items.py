@@ -117,11 +117,15 @@ def test_retry_is_enqueued_and_worker_marks_original_item_resolved(test_db, monk
         "src.service.transfers.imports.import_service.MediaImportService.retry_failed_file",
         retry_failed_file,
     )
+    monkeypatch.setattr(
+        "src.service.catalog.metadata_source_service.MetadataSourceService.is_plugin_enabled",
+        lambda _plugin_id: True,
+    )
 
     accepted = ImportTaskService.enqueue_failed_item_retry(
         task.id,
         "failure-1",
-        "javdb:ABC-001:javdb-001",
+        "plugin:demo:ABC-001",
     )
 
     retry_task = BackgroundTaskRun.get_by_id(accepted.task_run_id)
@@ -145,7 +149,7 @@ def test_retry_is_enqueued_and_worker_marks_original_item_resolved(test_db, monk
     assert result["movie_id"] == 11
     assert len(retry_calls) == 1
     assert retry_calls[0][0]["source_ref"] == {"file": "opaque-file-ref"}
-    assert retry_calls[0][1] == "javdb:ABC-001:javdb-001"
+    assert retry_calls[0][1] == "plugin:demo:ABC-001"
     assert retry_calls[0][2].startswith(f"task:{retry_task.id}:")
     stored_original = BackgroundTaskRun.get_by_id(task.id)
     resolved = stored_original.result_summary["failed_files"][0]

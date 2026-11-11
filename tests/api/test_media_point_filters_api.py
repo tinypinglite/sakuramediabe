@@ -42,7 +42,6 @@ def _create_point(media: Media, index: int) -> MediaPoint:
 def _create_jav_point(index: int, movie_number: str) -> MediaPoint:
     movie = Movie.create(
         movie_number=movie_number,
-        javdb_id=f"point-filter-api-{index}",
         title=f"Point filter api {index}",
     )
     media = Media.create(

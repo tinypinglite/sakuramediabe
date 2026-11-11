@@ -33,7 +33,6 @@ def _create_clip(
     )[0]
     movie = Movie.create(
         movie_number=movie_number,
-        javdb_id=f"clip-filter-api-{index}",
         title=title or movie_number,
     )
     media = Media.create(movie=movie, library=library, file_name=f"clip-api-{index}.mp4")

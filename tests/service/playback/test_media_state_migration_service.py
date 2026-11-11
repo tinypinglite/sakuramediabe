@@ -22,7 +22,7 @@ from src.service.playback.media_state_migration_service import (
 
 
 def _movie(number: str = "STATE-001") -> Movie:
-    return Movie.create(movie_number=number, javdb_id=number.lower(), title=number)
+    return Movie.create(movie_number=number, title=number)
 
 
 def _library(name: str, provider_key: str = "demo") -> MediaLibrary:

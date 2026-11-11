@@ -15,7 +15,6 @@ from src.service.catalog.movie_ownership_gateway import MovieOwnershipGateway
 
 def _create_movie(test_db, **overrides) -> Movie:
     fields = {
-        "javdb_id": "javdb-1",
         "movie_number": "ABP-001",
         "title": "旧标题",
         "summary": "旧简介",

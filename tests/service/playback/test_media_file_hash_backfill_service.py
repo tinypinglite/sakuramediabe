@@ -21,7 +21,7 @@ class Reporter:
 
 
 def _media(library: MediaLibrary, number: str, *, file_hash: str | None) -> Media:
-    movie = Movie.create(movie_number=number, javdb_id=f"javdb-{number}", title=number)
+    movie = Movie.create(movie_number=number, title=number)
     return Media.create(
         movie=movie,
         library=library,

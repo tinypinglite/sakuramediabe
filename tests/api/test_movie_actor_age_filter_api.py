@@ -15,7 +15,6 @@ def _login(client, username: str) -> dict[str, str]:
 
 def _create_movie(number: str, release_date: datetime | None) -> Movie:
     return Movie.create(
-        javdb_id=f"javdb-{number}",
         movie_number=number,
         title=number,
         release_date=release_date,
@@ -23,13 +22,12 @@ def _create_movie(number: str, release_date: datetime | None) -> Movie:
 
 
 def _create_actor(
-    javdb_id: str,
+    actor_key: str,
     birthday: date | None,
     gender: int = 1,
 ) -> Actor:
     return Actor.create(
-        javdb_id=javdb_id,
-        name=javdb_id,
+        name=actor_key,
         gender=gender,
         birthday=birthday,
     )

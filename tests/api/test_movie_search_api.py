@@ -22,7 +22,6 @@ def _create_movie(
     movie_number: str, title: str, *, release_date: datetime | None = None
 ) -> Movie:
     return Movie.create(
-        javdb_id=f"javdb-{movie_number}",
         movie_number=movie_number,
         title=title,
         release_date=release_date,
@@ -51,7 +50,7 @@ def _search(client, headers, **params) -> dict:
 @pytest.fixture()
 def search_movies(test_db):
     actor = Actor.create(
-        javdb_id="actor-sanshang", name="三上悠亞", alias_name="鬼头桃菜"
+        name="三上悠亞", alias_name="鬼头桃菜"
     )
     tag = Tag.create(name="痴女")
     onsen = _create_movie(

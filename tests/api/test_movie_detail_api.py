@@ -33,7 +33,7 @@ def test_movie_detail_exposes_media_playback_deliveries(
     monkeypatch,
 ):
     library = MediaLibrary.create(name="detail-library", provider_key="demo", provider_config={})
-    movie = Movie.create(movie_number="DETAIL-001", javdb_id="detail-1", title="detail")
+    movie = Movie.create(movie_number="DETAIL-001", title="detail")
     media = Media.create(movie=movie, library=library, file_name="detail.mp4")
     monkeypatch.setattr(
         MEDIA_PROVIDER_REGISTRY,
@@ -63,7 +63,7 @@ def test_movie_detail_exposes_media_tags_and_source_snapshot(
         provider_key="demo",
         provider_config={},
     )
-    movie = Movie.create(movie_number="DETAIL-TAG-001", javdb_id="detail-tag-1", title="detail")
+    movie = Movie.create(movie_number="DETAIL-TAG-001", title="detail")
     media = Media.create(
         movie=movie,
         library=library,
@@ -99,7 +99,7 @@ def test_movie_detail_exposes_media_tags_and_source_snapshot(
 
 
 def test_movie_detail_exposes_ranking_placements(client, account_user, monkeypatch):
-    movie = Movie.create(movie_number="RANK-001", javdb_id="rank-1", title="rank")
+    movie = Movie.create(movie_number="RANK-001", title="rank")
     for period, rank in (("weekly", 12), ("daily", 3)):
         RankingItem.create(
             source_key="javdb",
@@ -159,7 +159,7 @@ def test_movie_detail_exposes_merge_playback_candidate_for_supported_library(
     monkeypatch,
 ):
     library = MediaLibrary.create(name="merge-library", provider_key="demo", provider_config={})
-    movie = Movie.create(movie_number="MERGE-001", javdb_id="merge-1", title="merge")
+    movie = Movie.create(movie_number="MERGE-001", title="merge")
     first = Media.create(movie=movie, library=library, file_name="merge-cd1.mp4")
     second = Media.create(movie=movie, library=library, file_name="merge-cd2.mp4")
     monkeypatch.setattr(
@@ -195,7 +195,7 @@ def test_merged_playback_url_uses_ordered_same_library_media(
     library = MediaLibrary.create(
         name="merge-url-library", provider_key="demo", provider_config={}
     )
-    movie = Movie.create(movie_number="MERGE-URL-001", javdb_id="merge-url-1", title="merge")
+    movie = Movie.create(movie_number="MERGE-URL-001", title="merge")
     first = Media.create(movie=movie, library=library, file_name="merge-cd1.mp4")
     second = Media.create(movie=movie, library=library, file_name="merge-cd2.mp4")
     monkeypatch.setattr(
@@ -231,7 +231,7 @@ def test_merged_playback_url_rejects_provider_preflight_failure(
         name="merge-preflight-library", provider_key="demo", provider_config={}
     )
     movie = Movie.create(
-        movie_number="MERGE-PREFLIGHT-001", javdb_id="merge-preflight-1", title="merge"
+        movie_number="MERGE-PREFLIGHT-001", title="merge"
     )
     Media.create(movie=movie, library=library, file_name="merge-cd1.mp4")
     Media.create(movie=movie, library=library, file_name="merge-cd2.mp4")
@@ -270,7 +270,7 @@ def test_movie_detail_omits_play_url_for_invalid_media(client, account_user, mon
         name="detail-validity-library", provider_key="demo", provider_config={}
     )
     movie = Movie.create(
-        movie_number="DETAIL-VALID-001", javdb_id="detail-valid-1", title="validity"
+        movie_number="DETAIL-VALID-001", title="validity"
     )
     invalid_media = Media.create(
         movie=movie, library=library, file_name="invalid.mp4", valid=False

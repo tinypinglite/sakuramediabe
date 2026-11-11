@@ -4,6 +4,9 @@ name = "20260905_02_add_plugin_movie_metadata"
 
 
 def migrate(database) -> None:
+    columns = {column.name for column in database.get_columns("movie")}
+    if "javdb_id" not in columns:
+        return
     database.execute_sql("ALTER TABLE movie ALTER COLUMN javdb_id DROP NOT NULL")
     database.execute_sql(
         "ALTER TABLE movie ADD COLUMN IF NOT EXISTS metadata_source JSONB NULL, "

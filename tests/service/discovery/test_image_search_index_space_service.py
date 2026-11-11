@@ -72,7 +72,6 @@ def test_existing_space_state_blocks_indexing_when_service_changes(test_db):
 def test_legacy_completed_index_without_space_state_requires_rebuild(test_db):
     movie = Movie.create(
         movie_number="SPACE-001",
-        javdb_id="space-1",
         title="space",
     )
     image = Image.create(origin="movies/space.jpg")

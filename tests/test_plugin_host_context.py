@@ -27,7 +27,6 @@ from src.plugins import (
 
 def _movie(**overrides) -> Movie:
     values = {
-        "javdb_id": f"javdb-{overrides.get('movie_number', 'ABP-001')}",
         "movie_number": "ABP-001",
         "title": "测试影片",
         "summary": "简介",
@@ -125,7 +124,7 @@ def test_plugin_notifications_are_deduplicated_per_plugin(test_db, tmp_path):
 
 def test_plugin_collections_are_keyed_and_owned(test_db, tmp_path, monkeypatch):
     first = _movie(movie_number="ABP-020")
-    second = _movie(movie_number="ABP-021", javdb_id="javdb-ABP-021")
+    second = _movie(movie_number="ABP-021")
     context = PluginContext("collection_demo", {}, tmp_path)
 
     playlist = context.collections.ensure_playlist("daily", "每日推荐")

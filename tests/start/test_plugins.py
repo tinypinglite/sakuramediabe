@@ -17,7 +17,6 @@ from src.plugins.contracts import (
     PluginRegistration,
 )
 from src.plugins.extensions.ranking import (
-    RANKING_MULTI_SOURCE_HOST_API_VERSION,
     RANKING_SOURCE_EXTENSION_KEY,
     PluginRankingBoard,
     PluginRankingSource,
@@ -454,7 +453,7 @@ def test_job_definition_rejects_non_object_params():
         job_def.build_executor(["invalid"])
 
 
-@pytest.mark.parametrize("version", (4, 11, HOST_API_VERSION))
+@pytest.mark.parametrize("version", (HOST_API_VERSION,))
 def test_host_api_version_accepts_released_range(version):
     from src.plugins.contracts import PluginRegistration
 
@@ -467,7 +466,7 @@ def test_host_api_version_accepts_released_range(version):
     assert registration.host_api_version == version
 
 
-@pytest.mark.parametrize("version", (3, HOST_API_VERSION + 1))
+@pytest.mark.parametrize("version", (HOST_API_VERSION - 1, HOST_API_VERSION + 1))
 def test_host_api_version_rejects_out_of_range(version):
     from src.plugins.contracts import PluginRegistration
 
@@ -756,22 +755,19 @@ def test_loader_accepts_multiple_ranking_sources(tmp_path):
     ]
 
 
-def test_loader_requires_host_api_10_for_multiple_ranking_sources(tmp_path):
+def test_loader_accepts_multiple_ranking_sources_on_current_host(tmp_path):
     root = tmp_path / "root"
     _write_plugin_dir(
         root,
         "multi_rank",
-        host_api_version=RANKING_MULTI_SOURCE_HOST_API_VERSION - 1,
+        host_api_version=HOST_API_VERSION,
         init_source=_MULTI_RANKING_REGISTER_SOURCE,
     )
 
-    load_enabled_plugins(Plugins(enabled=["multi_rank"]), root_dir=root)
+    loaded = load_enabled_plugins(Plugins(enabled=["multi_rank"]), root_dir=root)
 
-    assert PLUGIN_LOAD_ERRORS["multi_rank"]["stage"] == "validate_extensions"
-    assert (
-        f"Host API {RANKING_MULTI_SOURCE_HOST_API_VERSION}"
-        in PLUGIN_LOAD_ERRORS["multi_rank"]["message"]
-    )
+    assert [plugin.plugin_id for plugin in loaded] == ["multi_rank"]
+    assert "multi_rank" not in PLUGIN_LOAD_ERRORS
 
 
 def test_loader_rejects_bad_ranking_extension_payload(tmp_path):

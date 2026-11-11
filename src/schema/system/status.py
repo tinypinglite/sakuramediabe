@@ -91,28 +91,6 @@ class ImageSearchResetResource(SchemaModel):
     task_run_id: int
 
 
-class StatusMetadataProviderTestError(SchemaModel):
-    type: str
-    message: str
-    method: str | None = None
-    url: str | None = None
-    resource: str | None = None
-    lookup_value: str | None = None
-
-
-class StatusMetadataProviderTestResource(SchemaModel):
-    healthy: bool
-    checked_at: datetime
-    provider: str
-    movie_number: str
-    elapsed_ms: int
-    error: StatusMetadataProviderTestError | None = None
-    javdb_id: str | None = None
-    title: str | None = None
-    actors_count: int | None = None
-    tags_count: int | None = None
-
-
 class StatusWatchTrendRange(str, Enum):
     """观看趋势时间范围；粒度随范围推导：7d/30d/90d 按天，1y/all 按月。"""
 

@@ -358,7 +358,6 @@ def test_submission_failure_is_recorded(downloads):
 def test_successful_submission_clears_media_replacement_pending(downloads):
     Movie.create(
         movie_number="TEST-001",
-        javdb_id="replacement-success",
         title="replacement",
         is_subscribed=True,
         media_replacement_pending=True,
@@ -373,7 +372,6 @@ def test_failed_submission_keeps_media_replacement_pending(downloads):
     _client, provider = downloads
     movie = Movie.create(
         movie_number="TEST-001",
-        javdb_id="replacement-failure",
         title="replacement",
         is_subscribed=True,
         media_replacement_pending=True,
@@ -395,7 +393,6 @@ def test_failed_submission_keeps_media_replacement_pending(downloads):
 def test_reused_submission_keeps_media_replacement_pending(downloads):
     movie = Movie.create(
         movie_number="TEST-001",
-        javdb_id="replacement-reuse",
         title="replacement",
         is_subscribed=True,
         media_replacement_pending=True,

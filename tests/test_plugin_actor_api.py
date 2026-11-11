@@ -8,16 +8,10 @@ from threading import Barrier
 import pytest
 from click.testing import CliRunner
 
-from src.metadata._providers.models import JavdbMovieActorResource
 from src.model import Actor
 from src.model.catalog.actors import PROTECTED_ACTOR_FIELDS
 from src.plugins import PluginContext
 from src.service.catalog.actor_ownership_gateway import ActorOwnershipGateway
-from src.service.catalog.actor_service import ActorService
-from src.service.catalog.catalog_import_service import CatalogImportService
-from src.service.catalog.subscribed_actor_movie_sync_service import (
-    SubscribedActorMovieSyncService,
-)
 
 
 @pytest.fixture
@@ -26,7 +20,7 @@ def actors(test_db, tmp_path):
 
 
 def test_actor_snapshot_and_cursor_pages(actors):
-    rows = [Actor.create(javdb_id=f"actor-{i}", name=f"演员{i}") for i in range(3)]
+    rows = [Actor.create(name=f"演员{i}") for i in range(3)]
     page = actors.list_page(limit=2)
     assert [item.actor_id for item in page.items] == [row.id for row in rows[:2]]
     assert page.next_cursor == rows[1].id
@@ -35,14 +29,14 @@ def test_actor_snapshot_and_cursor_pages(actors):
     assert last.next_cursor is None
     assert actors.list_page(after_id=rows[-1].id).items == ()
     snapshot = actors.get(rows[0].id)
-    assert snapshot.values["javdb_id"] == "actor-0"
+    assert snapshot.values["name"] == "演员0"
     assert actors.get(999999) is None
     with pytest.raises(TypeError):
         snapshot.values["name"] = "不能修改"
 
 
 def test_patch_ownership_conflict_null_and_release(actors, tmp_path):
-    actor = Actor.create(javdb_id="actor-1", name="演员")
+    actor = Actor.create(name="演员")
     other = PluginContext("other", {}, tmp_path).actors
     assert actors.patch(actor.id, {"birthday": "1993-08-16", "height_cm": 159}, 0)
     snapshot = actors.get(actor.id)
@@ -67,7 +61,7 @@ def test_patch_ownership_conflict_null_and_release(actors, tmp_path):
 
 
 def test_plugin_can_patch_gender_and_rejects_unknown_value(actors):
-    actor = Actor.create(javdb_id="actor-gender", name="演员")
+    actor = Actor.create(name="演员")
     assert actors.patch(actor.id, {"gender": 1}, 0)
     snapshot = actors.get(actor.id)
     assert snapshot.values["gender"] == 1
@@ -78,7 +72,7 @@ def test_plugin_can_patch_gender_and_rejects_unknown_value(actors):
 
 
 def test_gender_is_guarded_for_direct_model_writes():
-    actor = Actor.create(javdb_id="actor-guarded-gender", name="演员")
+    actor = Actor.create(name="演员")
     actor.gender = 1
     with pytest.raises(RuntimeError, match="gender"):
         actor.save(only=[Actor.gender])
@@ -91,7 +85,7 @@ def test_gender_is_guarded_for_direct_model_writes():
     {"gender": 3},
 ])
 def test_invalid_patch_is_rejected_without_changes(actors, fields):
-    actor = Actor.create(javdb_id="actor-1", name="演员")
+    actor = Actor.create(name="演员")
     with pytest.raises(ValueError):
         actors.patch(actor.id, fields, 0)
     assert actors.get(actor.id).revision == 0
@@ -99,7 +93,7 @@ def test_invalid_patch_is_rejected_without_changes(actors, fields):
 
 
 def test_concurrent_patches_have_one_winner(actors, test_db, tmp_path):
-    actor = Actor.create(javdb_id="actor-1", name="演员")
+    actor = Actor.create(name="演员")
     barrier = Barrier(2)
 
     def patch(plugin_id):
@@ -114,37 +108,8 @@ def test_concurrent_patches_have_one_winner(actors, test_db, tmp_path):
     assert actors.get(actor.id).revision == 1
 
 
-def test_host_writes_preserve_plugin_metadata(actors):
-    actor = Actor.create(javdb_id="actor-1", name="旧名字")
-    # 订阅同步在 HTTP 请求前已读入旧 ORM 对象，模拟期间插件完成更新。
-    class Provider:
-        def get_actor_movies_by_javdb(self, **kwargs):
-            assert actors.patch(actor.id, {"height_cm": 159}, 0)
-            return []
-
-    SubscribedActorMovieSyncService(provider=Provider())._sync_actor(actor)
-    resource = JavdbMovieActorResource(javdb_id="actor-1", name="新名字", gender=1)
-    importer = CatalogImportService()
-    importer.upsert_actor_from_javdb_resource(resource, update_gender=True)
-    importer._refresh_actor_from_javdb_resource_strict(
-        actor_resource=resource, profile_image_task=None, replace_images=True
-    )
-    ActorService.set_subscription(actor.id, True)
-    snapshot = actors.get(actor.id)
-    assert snapshot.values["height_cm"] == 159
-    assert snapshot.values["name"] == "新名字"
-    assert snapshot.values["gender"] == 1
-    assert snapshot.values["is_subscribed"] is True
-    assert snapshot.owners["gender"] == "host:javdb"
-    assert snapshot.revision == 2
-    with pytest.raises(RuntimeError):
-        actor.save()
-    with pytest.raises(RuntimeError):
-        Actor.update(field_owners={})
-
-
 def test_detail_exposes_profile_and_computes_age(actors, monkeypatch, client, account_user):
-    actor = Actor.create(javdb_id="actor-1", name="演员")
+    actor = Actor.create(name="演员")
     fields = {
         "birthday": "1993-08-16", "height_cm": 159, "bust_cm": 84,
         "waist_cm": 58, "hips_cm": 88, "cup": "F", "birthplace": "出生地", "blood_type": "O",
@@ -190,7 +155,7 @@ def test_actor_migration_preserves_rows_and_is_idempotent(clean_db):
 def test_cli_releases_actor_ownership(actors, monkeypatch):
     from src.start.commands import main
 
-    actor = Actor.create(javdb_id="actor-1", name="演员")
+    actor = Actor.create(name="演员")
     assert actors.patch(actor.id, {"height_cm": 159}, 0)
     monkeypatch.setattr("src.start.commands._ensure_database_ready", lambda: None)
     result = CliRunner().invoke(main, [
@@ -205,8 +170,8 @@ def test_cli_releases_actor_ownership(actors, monkeypatch):
 def test_actor_api_resolves_merged_actor(actors, test_db):
     from src.service.catalog.actor_merge_service import ActorMergeService
 
-    target = Actor.create(javdb_id="merged-target", name="新名")
-    source = Actor.create(javdb_id="merged-source", name="旧名")
+    target = Actor.create(name="新名")
+    source = Actor.create(name="旧名")
     ActorMergeService.merge_actors(target.id, [source.id])
 
     snapshot = actors.get(source.id)

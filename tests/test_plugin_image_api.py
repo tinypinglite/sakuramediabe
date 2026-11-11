@@ -30,7 +30,6 @@ def image_env(test_db, tmp_path, monkeypatch):
         settings.media, "import_image_root_path", str(tmp_path / "assets")
     )
     movie = Movie.create(
-        javdb_id="javdb-image-1",
         movie_number="ABC-001",
         title="影片",
         summary="",
@@ -175,7 +174,7 @@ def test_set_plot_images_empty_clears_and_takes_ownership(test_db, image_env):
 
 
 def test_set_profile_image_writes_override_and_clear_restores_base(test_db, image_env):
-    actor = Actor.create(javdb_id="actor-image-1", name="演员")
+    actor = Actor.create(name="演员")
     base_image = Image.create(origin="actors/actor-image-1.jpg")
     actor.profile_image = base_image
     actor.save(only=[Actor.profile_image])
@@ -204,7 +203,7 @@ def test_set_profile_image_writes_override_and_clear_restores_base(test_db, imag
 
 
 def test_profile_image_conflicts_keep_manual_and_other_plugins(test_db, image_env):
-    actor = Actor.create(javdb_id="actor-image-2", name="演员")
+    actor = Actor.create(name="演员")
     png = BytesIO()
     PillowImage.new("RGB", (200, 300), "purple").save(png, format="PNG")
     ActorService.upload_profile_image(
@@ -226,7 +225,7 @@ def test_profile_image_conflicts_keep_manual_and_other_plugins(test_db, image_en
 @pytest.mark.parametrize("revision", [-1, "1", 1.5, True])
 def test_image_writes_reject_invalid_revision(test_db, image_env, revision):
     """版本必须是整数：布尔/字符串会被 Postgres 隐式转成整数，匹配上错误版本。"""
-    actor = Actor.create(javdb_id="actor-revision", name="演员")
+    actor = Actor.create(name="演员")
     source = delivered(image_env, "cover_plugin", "cover.png")
     movie = image_env.movie
 

@@ -16,10 +16,10 @@ def test_media_list_exposes_and_filters_thumbnail_terminal_state(client, account
         provider_config={},
     )
     terminal_movie = Movie.create(
-        movie_number="THAPI-001", javdb_id="thapi-1", title="terminal"
+        movie_number="THAPI-001", title="terminal"
     )
     pending_movie = Movie.create(
-        movie_number="THAPI-002", javdb_id="thapi-2", title="pending"
+        movie_number="THAPI-002", title="pending"
     )
     terminal_media = Media.create(
         movie=terminal_movie,
@@ -55,7 +55,7 @@ def test_reset_media_thumbnail_terminal_state(client, account_user):
         provider_config={},
     )
     movie = Movie.create(
-        movie_number="THRESET-001", javdb_id="threset-1", title="reset"
+        movie_number="THRESET-001", title="reset"
     )
     media = Media.create(
         movie=movie,

@@ -10,11 +10,10 @@ def _auth_headers(client, account_user):
 
 
 def test_merge_actor_api_merges_and_resolves_old_identity(client, account_user):
-    target = Actor.create(javdb_id="api-merge-target", name="新名", gender=1)
-    source = Actor.create(javdb_id="api-merge-source", name="旧名", gender=1)
+    target = Actor.create(name="新名", gender=1)
+    source = Actor.create(name="旧名", gender=1)
     movie = Movie.create(
         movie_number="API-MERGE-1",
-        javdb_id="javdb-API-MERGE-1",
         title="API-MERGE-1",
     )
     MovieActor.create(movie=movie, actor=source)
@@ -57,7 +56,7 @@ def test_merge_actor_api_merges_and_resolves_old_identity(client, account_user):
 
 
 def test_merge_actor_api_validation(client, account_user):
-    actor = Actor.create(javdb_id="api-merge-actor", name="演员")
+    actor = Actor.create(name="演员")
     headers = _auth_headers(client, account_user)
 
     self_merge = client.post(

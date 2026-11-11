@@ -24,7 +24,6 @@ def _auth_headers(client, account_user) -> dict[str, str]:
 
 def _create_movie(movie_number: str) -> Movie:
     return Movie.create(
-        javdb_id=f"javdb-{movie_number}",
         movie_number=movie_number,
         title=f"title-{movie_number}",
     )
@@ -41,7 +40,7 @@ def _record(client, headers, entity_type: str, entity_id: int):
 def test_view_history_records_and_lists_movies_and_actors(client, account_user):
     headers = _auth_headers(client, account_user)
     movie = _create_movie("VH-001")
-    actor = Actor.create(javdb_id="actor-vh-1", name="view actress", gender=0)
+    actor = Actor.create(name="view actress", gender=0)
     MovieActor.create(movie=movie, actor=actor)
 
     assert _record(client, headers, "movie", movie.id).status_code == 204
@@ -71,7 +70,7 @@ def test_view_history_records_and_lists_movies_and_actors(client, account_user):
 def test_view_history_dedupes_and_refreshes_last_viewed_at(client, account_user):
     headers = _auth_headers(client, account_user)
     movie = _create_movie("VH-002")
-    actor = Actor.create(javdb_id="actor-vh-2", name="second actress", gender=0)
+    actor = Actor.create(name="second actress", gender=0)
 
     assert _record(client, headers, "movie", movie.id).status_code == 204
     assert _record(client, headers, "actor", actor.id).status_code == 204
@@ -121,8 +120,8 @@ def test_view_history_filters_deleted_entities(client, account_user):
 
 def test_view_history_resolves_merged_actor_to_canonical(client, account_user):
     headers = _auth_headers(client, account_user)
-    target = Actor.create(javdb_id="actor-vh-merge-target", name="canonical", gender=0)
-    source = Actor.create(javdb_id="actor-vh-merge-source", name="merged", gender=0)
+    target = Actor.create(name="canonical", gender=0)
+    source = Actor.create(name="merged", gender=0)
 
     assert _record(client, headers, "actor", source.id).status_code == 204
     merged = client.post(
@@ -140,8 +139,8 @@ def test_view_history_resolves_merged_actor_to_canonical(client, account_user):
 
 def test_view_history_dedupes_merged_actor_entries(client, account_user):
     headers = _auth_headers(client, account_user)
-    target = Actor.create(javdb_id="actor-vh-dedupe-target", name="canonical", gender=0)
-    source = Actor.create(javdb_id="actor-vh-dedupe-source", name="merged", gender=0)
+    target = Actor.create(name="canonical", gender=0)
+    source = Actor.create(name="merged", gender=0)
 
     assert _record(client, headers, "actor", source.id).status_code == 204
     assert _record(client, headers, "actor", target.id).status_code == 204

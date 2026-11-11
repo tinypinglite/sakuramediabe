@@ -35,8 +35,8 @@ from src.plugins.provider_protocol import (
 )
 
 
-def test_plugin_protocol_uses_host_api_v17():
-    assert HOST_API_VERSION == 17
+def test_plugin_protocol_uses_host_api_v18():
+    assert HOST_API_VERSION == 18
 
 
 def test_import_source_validation_is_optional_provider_capability():
@@ -514,18 +514,24 @@ def test_loader_isolates_duplicate_media_provider_key(tmp_path):
     assert PLUGIN_LOAD_ERRORS["second"]["stage"] == "provider_registry"
 
 
-@pytest.mark.parametrize("api_version, supports_progress", [(6, False), (7, True)])
-def test_scan_progress_uses_manifest_version(tmp_path, api_version, supports_progress):
+def test_scan_progress_is_enabled_for_host_api_18(tmp_path):
+    _write_bundle_plugin(tmp_path, "scan_plugin", "scan")
+    loaded = load_enabled_plugins(Plugins(enabled=["scan_plugin"]), root_dir=tmp_path)
+    assert len(loaded) == 1
+    assert loaded[0].host_api_version == 18
+    registry = MediaProviderRegistry()
+    registry.replace(loaded)
+    assert registry.supports_scan_progress("scan") is True
+    registry.replace(())
+    assert not registry.supports_scan_progress("scan")
+
+
+@pytest.mark.parametrize("api_version", (6, 7, 17))
+def test_old_host_api_versions_are_rejected(tmp_path, api_version):
     _write_bundle_plugin(tmp_path, "scan_plugin", "scan")
     manifest_path = tmp_path / "scan_plugin" / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["host_api_version"] = api_version
     manifest_path.write_text(json.dumps(manifest))
-    loaded = load_enabled_plugins(Plugins(enabled=["scan_plugin"]), root_dir=tmp_path)
-    assert len(loaded) == 1
-    assert loaded[0].host_api_version == api_version
-    registry = MediaProviderRegistry()
-    registry.replace(loaded)
-    assert registry.supports_scan_progress("scan") is supports_progress
-    registry.replace(())
-    assert not registry.supports_scan_progress("scan")
+
+    assert load_enabled_plugins(Plugins(enabled=["scan_plugin"]), root_dir=tmp_path) == ()

@@ -94,7 +94,7 @@ def _create_image(origin: str) -> Image:
 
 
 def _prepare_images(tmp_path: Path, *, thumbnail_count: int, plot_count: int):
-    movie = Movie.create(movie_number="INDEX-001", javdb_id="index-1", title="movie")
+    movie = Movie.create(movie_number="INDEX-001", title="movie")
     library = MediaLibrary.create(
         name="index-library", provider_key="test", provider_config={}
     )

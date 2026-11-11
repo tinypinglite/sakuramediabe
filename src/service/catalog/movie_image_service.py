@@ -4,7 +4,7 @@
 与 Image 记录持久化。本 service 只处理图片，不写 Movie 元数据：薄封面记录由本服务
 持久化并返回，``Movie.thin_cover_image`` 的回写留在编排层（CatalogImportService）。
 
-阅读入口建议从图片任务的构建（``build_movie_import_image_tasks``）开始，再看下载、
+阅读入口建议从图片任务的构建（``_build_movie_image_tasks``）开始，再看下载、
 薄封面解析（``resolve_thin_cover_*``）和入库 helper（``persist_*``）。
 """
 
@@ -37,7 +37,6 @@ from src.common.media_paths import (
 )
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import backoff_delay
-from src.metadata._providers.models import JavdbMovieActorResource
 from src.model import Image, Movie, MoviePlotImage
 from src.service.catalog.image_cleanup_service import ImageCleanupService
 
@@ -391,28 +390,6 @@ class MovieImageService:
             return plot_images_by_index.get(resolution.selected_plot_index)
         return None
 
-    def build_movie_import_image_tasks(
-        self,
-        movie_number: str,
-        cover_image_url: str | None,
-        plot_urls: list[str],
-        actors: list[JavdbMovieActorResource],
-    ) -> tuple[ImagePersistTask | None, list[ImagePersistTask], dict[str, ImagePersistTask]]:
-        cover_task, plot_tasks = self._build_movie_image_tasks(movie_number, cover_image_url, plot_urls)
-        actor_image_tasks_by_javdb_id: dict[str, ImagePersistTask] = {}
-        for actor_resource in actors:
-            if actor_resource.javdb_id in actor_image_tasks_by_javdb_id:
-                continue
-            image_task = self._build_image_task(
-                owner_type="actor",
-                owner_key=actor_resource.javdb_id,
-                image_url=actor_resource.avatar_url,
-            )
-            if image_task is None:
-                continue
-            actor_image_tasks_by_javdb_id[actor_resource.javdb_id] = image_task
-        return cover_task, plot_tasks, actor_image_tasks_by_javdb_id
-
     def _build_movie_image_tasks(
         self, movie_number: str, cover_image_url: str | None, plot_urls: list[str]
     ) -> tuple[ImagePersistTask | None, list[ImagePersistTask]]:
@@ -494,11 +471,10 @@ class MovieImageService:
         self,
         cover_task: ImagePersistTask | None,
         plot_tasks: list[ImagePersistTask],
-        actor_image_tasks_by_javdb_id: dict[str, ImagePersistTask],
     ) -> list[ImagePersistTask]:
         tasks: list[ImagePersistTask] = []
         seen_relative_paths: set[str] = set()
-        for image_task in [cover_task, *plot_tasks, *actor_image_tasks_by_javdb_id.values()]:
+        for image_task in [cover_task, *plot_tasks]:
             if image_task is None or image_task.relative_path in seen_relative_paths:
                 continue
             seen_relative_paths.add(image_task.relative_path)
@@ -620,7 +596,6 @@ class MovieImageService:
         movie_number,
         cover,
         plots,
-        actors=(),
         *,
         local=False,
         generate_thin_cover=True,
@@ -630,10 +605,10 @@ class MovieImageService:
         ``generate_thin_cover=False`` 供"显式替换后重算薄封面"的调用方使用：
         薄封面需要在新引用落库之后再计算，这里跳过可省一次无效切割。
         """
-        cover_task, plot_tasks, actor_tasks = self.build_movie_import_image_tasks(
-            movie_number, cover, list(dict.fromkeys(plots)), list(actors)
+        cover_task, plot_tasks = self._build_movie_image_tasks(
+            movie_number, cover, list(dict.fromkeys(plots))
         )
-        tasks = self.collect_image_tasks(cover_task, plot_tasks, actor_tasks)
+        tasks = self.collect_image_tasks(cover_task, plot_tasks)
         root = media_image_root_path()
         root.mkdir(parents=True, exist_ok=True)
         temp_root = Path(tempfile.mkdtemp(prefix="metadata-", dir=root))
@@ -666,7 +641,7 @@ class MovieImageService:
                 item.image_task.absolute_path = root / relative
                 final_paths.append(relative.as_posix())
             self.finalize_prepared_image_files(prepared)
-            yield cover_task, plot_tasks, actor_tasks, thin
+            yield cover_task, plot_tasks, {}, thin
         finally:
             shutil.rmtree(temp_root, ignore_errors=True)
             # 事务回滚或并发查重跳过时，不留下本次未使用的目标图片。

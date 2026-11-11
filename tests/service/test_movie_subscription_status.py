@@ -40,10 +40,8 @@ def client(test_db):
 
 
 def _subscribe(movie_number: str) -> Movie:
-    # javdb_id 有唯一约束且默认空串，同一用例建多部片时必须各给一个值，否则第二条就撞键。
     return Movie.create(
         movie_number=movie_number,
-        javdb_id=f"javdb-{movie_number}",
         title=f"title {movie_number}",
         is_subscribed=True,
     )

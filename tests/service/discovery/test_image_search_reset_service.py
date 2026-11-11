@@ -18,7 +18,7 @@ from src.service.system.task_queue_service import TaskQueueService
 
 
 def _prepare_image_search_data():
-    movie = Movie.create(movie_number="RESET-001", javdb_id="reset-1", title="movie")
+    movie = Movie.create(movie_number="RESET-001", title="movie")
     library = MediaLibrary.create(
         name="reset-library", provider_key="test", provider_config={}
     )

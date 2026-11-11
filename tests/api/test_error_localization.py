@@ -82,9 +82,9 @@ def test_translate_for_display_never_falls_back_to_chinese(monkeypatch):
     monkeypatch.setattr(catalog_module, "current_language", lambda: "ja")
     assert (
         catalog_module.translate_for_display(
-            "tasks.actor_subscription_sync.name", locale="ja"
+            "tasks.movie_heat_update.name", locale="ja"
         )
-        == "Subscribed actor movie sync"
+        == "Movie heat update"
     )
     assert (
         catalog_module.translate_for_display(

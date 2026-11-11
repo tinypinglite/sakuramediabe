@@ -40,7 +40,7 @@ def _library(name: str = "archive-library") -> MediaLibrary:
 
 
 def _movie(number: str) -> Movie:
-    return Movie.create(movie_number=number, javdb_id=number.lower(), title=number)
+    return Movie.create(movie_number=number, title=number)
 
 
 def _media(

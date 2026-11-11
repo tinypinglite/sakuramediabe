@@ -10,7 +10,6 @@ from src.service.playback.media_service import MediaService
 def _create_movie(movie_number: str, *, subscribed: bool) -> Movie:
     return Movie.create(
         movie_number=movie_number,
-        javdb_id=f"javdb-{movie_number}",
         title=movie_number,
         is_subscribed=subscribed,
     )
@@ -42,7 +41,7 @@ def test_delete_media_cleans_host_record_when_provider_reports_missing(
         provider_key="demo",
         provider_config={},
     )
-    movie = Movie.create(movie_number="DELETE-001", javdb_id="delete-1", title="delete")
+    movie = Movie.create(movie_number="DELETE-001", title="delete")
     media = Media.create(movie=movie, library=library, file_name="delete.mp4")
 
     class Storage:

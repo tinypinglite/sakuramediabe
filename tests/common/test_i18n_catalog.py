@@ -484,7 +484,7 @@ def test_zh_cn_sample_text_matches_existing_code_strings():
     assert zh["notifications.task_failed.content"] == "后台任务执行失败"
     assert zh["notifications.task_completed.title"] == "{task_name}已完成"
     assert zh["notifications.task_completed.content"] == "后台任务已完成"
-    assert zh["tasks.actor_subscription_sync.progress.start"] == "开始同步已订阅演员影片"
+    assert zh["tasks.movie_heat_update.name"] == "影片热度更新"
 
 
 def test_plural_selection_uses_count():
@@ -508,10 +508,10 @@ def test_translate_interpolates_params():
 def test_translate_falls_back_to_default_language_for_tasks():
     assert (
         translate(
-            "tasks.movie_javdb_backfill.name",
+            "tasks.movie_heat_update.name",
             locale="en",
         )
-        == "JavDB movie backfill"
+        == "Movie heat update"
     )
 
 

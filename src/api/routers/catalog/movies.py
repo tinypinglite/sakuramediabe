@@ -8,7 +8,6 @@ from src.api.routers._utils import (
     to_sse_event,
 )
 from src.api.routers.deps import db_deps, get_current_user
-from src.metadata._providers.models import JavdbMovieReviewResource
 from src.schema.catalog.movies import (
     MovieBlacklistBatchRequest,
     MovieCollectionMarkRequest,
@@ -25,6 +24,7 @@ from src.schema.catalog.movies import (
     MovieNumberParseRequest,
     MovieNumberParseResponse,
     MovieNumberSource,
+    MovieReviewResource,
     MovieReviewSort,
     MovieSeriesListRequest,
     MovieSubscriptionBatchRequest,
@@ -37,7 +37,7 @@ from src.schema.common.pagination import PageResponse
 from src.schema.system.jobs import ManualJobTriggerResponse
 from src.service.catalog import (
     MovieActorService,
-    MovieMetadataRefreshService,
+    MovieMetadataImportService,
     MovieService,
     MovieSubtitleService,
     MovieTaskService,
@@ -196,7 +196,7 @@ def unblacklist_movies(payload: MovieBlacklistBatchRequest):
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.get("/{movie_number}/reviews", response_model=list[JavdbMovieReviewResource])
+@router.get("/{movie_number}/reviews", response_model=list[MovieReviewResource])
 def get_movie_reviews(
     movie_number: str,
     page: int = Query(default=1, ge=1),
@@ -230,25 +230,14 @@ def list_similar_movies(
 @router.post("/metadata-imports")
 def create_movie_metadata_import(payload: MovieMetadataImportRequest):
     def stream():
-        for event, event_payload in MovieMetadataRefreshService.stream_search_and_upsert_movie_from_javdb(
-            payload.movie_number
+        for event, event_payload in (
+            MovieMetadataImportService.stream_search_and_upsert_movie(
+                payload.movie_number
+            )
         ):
             yield to_sse_event(event, event_payload)
 
     return sse_streaming_response(stream())
-
-
-@router.post("/{movie_number}/metadata-refresh", response_model=MovieDetailResource)
-def refresh_movie_metadata(
-    movie_number: str,
-    refresh_images: bool = Query(
-        default=False,
-        description="强制整批替换封面/剧照/头像；默认只补缺图。",
-    ),
-):
-    return MovieMetadataRefreshService.refresh_movie_metadata(
-        movie_number, replace_images=refresh_images
-    )
 
 
 # 影片单片翻译端点已删除；互动同步由常规定时任务负责。

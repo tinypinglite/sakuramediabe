@@ -342,6 +342,16 @@ class MovieApi:
             expected_revision,
         )
 
+    @staticmethod
+    def update_stats(movie_id: int, stats: Any) -> bool:
+        """写入互动数；数值会校验，写入后由宿主重算热度。"""
+        from src.plugins.extensions.stats import PluginMovieStats
+        from src.service.catalog.movie_stats_service import MovieStatsService
+
+        return MovieStatsService.update(
+            movie_id, PluginMovieStats.model_validate(stats)
+        )
+
     def set_cover(
         self, movie_id: int, image_path: str, expected_revision: int
     ) -> bool:
@@ -1524,16 +1534,6 @@ class PluginContext:
         return SubtitleApi()
 
     @staticmethod
-    def build_javdb_provider(
-        username: str | None = None,
-        password: str | None = None,
-    ):
-        """构建 JavDB provider；运行时始终使用宿主 [metadata] 账号。"""
-        from src.metadata.factory import build_javdb_provider
-
-        return build_javdb_provider(username=username, password=password)
-
-    @staticmethod
     def build_catalog_import_service():
         """构造目录导入服务。"""
         from src.service.catalog import CatalogImportService
@@ -1546,18 +1546,18 @@ class PluginContext:
         *,
         force_subscribed: bool = False,
     ) -> MovieSnapshot:
-        """按 JavDB 优先规则导入，未找到时调用元数据来源插件；本地已存在则复用。
+        """按启用元数据插件顺序导入；本地已存在则复用。
 
         返回不可变 MovieSnapshot（不暴露 ORM 对象）；插件要更新既有字段，必须
         重新取得 snapshot 并单独调用 ``context.movies.patch``。
-        批量任务应分别构造并复用 provider/importer，避免每个番号重复创建客户端。
+        批量任务应复用同一个 importer，避免每个番号重复初始化图片服务。
         """
-        provider = self.build_javdb_provider()
         importer = self.build_catalog_import_service()
         from src.service.catalog.metadata_source_service import MetadataSourceService
 
         movie, _created = MetadataSourceService.import_by_number(
-            movie_number, provider, importer,
+            movie_number,
+            importer,
             force_subscribed=force_subscribed,
         )
         return MovieApi._to_snapshot(movie)

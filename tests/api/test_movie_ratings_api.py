@@ -15,7 +15,6 @@ def _auth_headers(client, account_user) -> dict[str, str]:
 
 def _create_movie(movie_number: str, **fields) -> Movie:
     return Movie.create(
-        javdb_id=f"javdb-{movie_number}",
         movie_number=movie_number,
         title=f"title-{movie_number}",
         **fields,

@@ -8,4 +8,6 @@ name = "20261025_01_allow_local_actor_without_javdb_id"
 
 
 def migrate(database) -> None:
+    if "javdb_id" not in {column.name for column in database.get_columns("actor")}:
+        return
     database.execute_sql("ALTER TABLE actor ALTER COLUMN javdb_id DROP NOT NULL")

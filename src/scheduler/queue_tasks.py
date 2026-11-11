@@ -59,7 +59,7 @@ def _recover_media_storage_transfers() -> dict[str, int]:
 
 
 def _run_gfriends_filetree_refresh(_reporter, params: dict[str, Any]) -> dict:
-    from src.metadata.factory import refresh_gfriends_filetree
+    from src.metadata.gfriends import refresh_gfriends_filetree
 
     # cron 的 NULL 参数表示强制刷新；启动预热显式传 false。
     force = params.get("force", True)

@@ -11,8 +11,6 @@ from loguru import logger
 import src.common.logging as app_logging
 from src.common.logging import configure_logging
 from src.config.config import settings
-from src.metadata.factory import build_javdb_provider
-from src.metadata.provider import MetadataNotFoundError, MetadataRequestError
 from src.model import init_database
 from src.plugins.bundled import DEFAULT_BUNDLE_DIR
 from src.plugins.manager import PluginManager
@@ -111,32 +109,6 @@ def _fail_command(*, output_json: bool, message: str, error: dict | None = None)
         _echo_json(payload)
         raise click.exceptions.Exit(1)
     raise click.ClickException(normalized_message)
-
-
-def _fail_for_metadata_error(*, exc: Exception, output_json: bool) -> None:
-    if isinstance(exc, MetadataNotFoundError):
-        _fail_command(
-            output_json=output_json,
-            message=str(exc),
-            error={
-                "type": "metadata_not_found",
-                "resource": exc.resource,
-                "lookup_value": exc.lookup_value,
-                "message": str(exc),
-            },
-        )
-    if isinstance(exc, MetadataRequestError):
-        _fail_command(
-            output_json=output_json,
-            message=str(exc),
-            error={
-                "type": "metadata_request_error",
-                "method": exc.method,
-                "url": exc.url,
-                "message": str(exc),
-            },
-        )
-    raise exc
 
 
 def _emit_command_success(
@@ -258,47 +230,6 @@ def wait_db(timeout_seconds: float, interval_seconds: float):
                 f"database not ready after {timeout_seconds}s ({attempt} attempts): {last_error}"
             )
         time.sleep(interval_seconds)
-
-
-@main.command(name="test-javdb")
-@click.option("--movie-number", required=True, type=str, help="Movie number to query from JavDB.")
-@click.option("--json", "output_json", is_flag=True, help="Print structured JSON output.")
-def test_javdb(movie_number: str, output_json: bool):
-    with _suppress_logs_for_json_output(output_json):
-        if not output_json:
-            logger.info("CLI test-javdb start movie_number={}", movie_number)
-        provider = build_javdb_provider()
-        try:
-            detail = provider.get_movie_by_number(movie_number)
-        except (MetadataNotFoundError, MetadataRequestError) as exc:
-            _fail_for_metadata_error(exc=exc, output_json=output_json)
-            return
-
-        summary_excerpt = (detail.summary or "").strip()
-        payload = {
-            "ok": True,
-            "service": "javdb",
-            "movie_number": detail.movie_number,
-            "javdb_id": detail.javdb_id,
-            "title": detail.title,
-            "actors_count": len(detail.actors),
-            "tags_count": len(detail.tags),
-            "summary": summary_excerpt,
-            "release_date": detail.release_date,
-        }
-        _emit_command_success(
-            output_json=output_json,
-            payload=payload,
-            summary_title="javdb test succeeded:",
-            inline_fields=[
-                ("movie_number", detail.movie_number),
-                ("javdb_id", detail.javdb_id),
-                ("title", detail.title),
-                ("actors", len(detail.actors)),
-                ("tags", len(detail.tags)),
-            ],
-            multiline_fields=[("summary", summary_excerpt)],
-        )
 
 
 class _LazyApsGroup(click.Group):

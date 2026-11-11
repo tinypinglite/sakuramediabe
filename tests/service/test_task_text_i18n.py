@@ -23,11 +23,11 @@ def _language(locale: str):
 
 def _host_job() -> JobDefinition:
     return JobDefinition(
-        task_key="movie_javdb_backfill",
-        log_name="movie_javdb_backfill",
-        cli_name="movie_javdb_backfill",
-        cli_help="JavDB 影片补录",
-        cron_setting="movie_javdb_backfill",
+        task_key="movie_heat_update",
+        log_name="movie_heat_update",
+        cli_name="movie_heat_update",
+        cli_help="影片热度更新",
+        cron_setting="movie_heat",
         handler=lambda reporter, params: None,
     )
 
@@ -47,10 +47,10 @@ def _plugin_job() -> JobDefinition:
 
 def test_resolve_task_name_translates_host_task():
     with _language("en"):
-        assert resolve_task_name("movie_javdb_backfill") == "JavDB movie backfill"
+        assert resolve_task_name("movie_heat_update") == "Movie heat update"
         assert (
-            resolve_task_name("movie_javdb_backfill", "JavDB 影片补录")
-            == "JavDB movie backfill"
+            resolve_task_name("movie_heat_update", "影片热度更新")
+            == "Movie heat update"
         )
 
 
@@ -63,7 +63,7 @@ def test_every_registered_task_has_english_name():
 def test_resolve_task_name_preserves_dynamic_name():
     with _language("en"):
         assert (
-            resolve_task_name("movie_javdb_backfill", "动态导入 #42")
+            resolve_task_name("movie_heat_update", "动态导入 #42")
             == "动态导入 #42"
         )
 
@@ -83,8 +83,8 @@ def test_plugin_job_text_uses_cli_help_i18n():
 
 def test_failed_task_notification_is_written_in_english(test_db):
     task_run = BackgroundTaskRun.create(
-        task_key="movie_javdb_backfill",
-        task_name="JavDB 影片补录",
+        task_key="movie_heat_update",
+        task_name="影片热度更新",
         trigger_type="scheduled",
         state="failed",
         error_message="内部错误",
@@ -95,14 +95,14 @@ def test_failed_task_notification_is_written_in_english(test_db):
         NotificationService.notify_task_result(task_run, failed=True)
 
     notification = SystemNotification.get(SystemNotification.dedupe_key == f"task_run_result:{task_run.id}")
-    assert notification.title == "JavDB movie backfill failed"
+    assert notification.title == "Movie heat update failed"
     assert notification.content == "Background task failed"
 
 
 def test_failed_task_notification_keeps_chinese_behavior(test_db):
     task_run = BackgroundTaskRun.create(
-        task_key="movie_javdb_backfill",
-        task_name="JavDB 影片补录",
+        task_key="movie_heat_update",
+        task_name="影片热度更新",
         trigger_type="scheduled",
         state="failed",
         error_message="内部错误",
@@ -113,14 +113,14 @@ def test_failed_task_notification_keeps_chinese_behavior(test_db):
         NotificationService.notify_task_result(task_run, failed=True)
 
     notification = SystemNotification.get(SystemNotification.dedupe_key == f"task_run_result:{task_run.id}")
-    assert notification.title == "JavDB 影片补录执行失败"
+    assert notification.title == "影片热度更新执行失败"
     assert notification.content == "内部错误"
 
 
 def test_completed_with_failures_notification_is_written_in_english(test_db):
     task_run = BackgroundTaskRun.create(
-        task_key="movie_javdb_backfill",
-        task_name="JavDB 影片补录",
+        task_key="movie_heat_update",
+        task_name="影片热度更新",
         trigger_type="scheduled",
         state="completed",
         result_text="failed=1",
@@ -131,5 +131,5 @@ def test_completed_with_failures_notification_is_written_in_english(test_db):
         NotificationService.notify_task_result(task_run, failed=False)
 
     notification = SystemNotification.get(SystemNotification.dedupe_key == f"task_run_result:{task_run.id}")
-    assert notification.title == "JavDB movie backfill completed"
+    assert notification.title == "Movie heat update completed"
     assert notification.content == "Background task completed"

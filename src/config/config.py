@@ -96,21 +96,11 @@ class Media(BaseModel):
 class Metadata(BaseModel):
     # 不再提供显式代理配置：所有外部站点请求统一跟随容器环境变量
     # HTTP_PROXY / HTTPS_PROXY / NO_PROXY 分流（httpx trust_env 默认开启）。
-    # JavDB 搜索与详情需要登录；空账号表示未配置，认证失败时由元数据插件兜底。
-    javdb_username: str = ""
-    javdb_password: str = ""
-    # API、APS 和 CLI 共用的 JavDB 登录态文件。
-    javdb_session_path: str = "/data/cache/javdb/session.json"
     gfriends_filetree_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends/Filetree.json"
     gfriends_cdn_base_url: str = "https://cdn.jsdelivr.net/gh/xinxin8816/gfriends"
     gfriends_filetree_cache_path: str = "/data/cache/gfriends/gfriends-filetree.json"
     gfriends_filetree_cache_ttl_hours: int = 24 * 7
     import_metadata_max_workers: int = 3
-
-    @field_validator("javdb_username")
-    @classmethod
-    def _strip_javdb_username(cls, value: str) -> str:
-        return value.strip()
 
     @field_validator("gfriends_filetree_url", "gfriends_cdn_base_url")
     @classmethod
@@ -162,13 +152,10 @@ class Scheduler(BaseModel):
     enabled: bool = True
     worker_default_concurrency: int = Field(default=4, ge=1, le=32)
     log_dir: str = "/data/logs"
-    actor_subscription_sync_cron: str = "0 2 * * *"
     subscribed_movie_auto_download_cron: str = "30 2 * * *"
     download_task_sync_cron: str = "* * * * *"
     download_task_auto_import_cron: str = "* * * * *"
     movie_heat_cron: str = "15 0 * * *"
-    movie_interaction_sync_cron: str = "0 5 * * *"
-    movie_javdb_backfill_cron: str = "30 5 * * *"
     media_file_hash_backfill_cron: str = "0 3 * * *"
     # 115 使用整库远端清单对账；每天一次且 Provider 内部限速，避免逐条探测触发风控。
     media_file_scan_cron: str = "0 4 * * *"

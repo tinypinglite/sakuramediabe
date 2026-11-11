@@ -3,7 +3,6 @@ from src.model import Movie, MovieTag, Tag
 
 def test_tag_movies_uses_base_movie_list_response(client, account_user):
     movie = Movie.create(
-        javdb_id="javdb-TAG-001",
         movie_number="TAG-001",
         title="title",
     )

@@ -3,7 +3,7 @@ from datetime import date
 import peewee
 
 from src.common.runtime_time import utc_now_for_db
-from src.model.base import BaseModel, CaseSensitiveCharField, JsonbField
+from src.model.base import BaseModel, JsonbField
 from src.model.catalog.images import Image
 from src.model.mixins import TimestampedMixin
 
@@ -64,10 +64,6 @@ _GUARDED_FIELDS = PROTECTED_ACTOR_FIELDS | {
 
 
 class Actor(TimestampedMixin, BaseModel):
-    # 本地女优没有 JavDB 身份：javdb_id 允许为空；PostgreSQL 唯一约束允许多个 NULL。
-    javdb_id = CaseSensitiveCharField(
-        max_length=64, unique=True, index=True, null=True, verbose_name="JavDB ID"
-    )
     name = peewee.CharField(index=True, verbose_name="演员名字")
     alias_name = peewee.TextField(default="", verbose_name="别名")
     merged_into = peewee.ForeignKeyField(
@@ -97,16 +93,9 @@ class Actor(TimestampedMixin, BaseModel):
         null=True,
         verbose_name="本地显示名称",
     )
-    javdb_type = peewee.IntegerField(default=0, verbose_name="JavDB 类型")
     gender = peewee.IntegerField(default=0, verbose_name="性别")
-    gender_checked_at = peewee.DateTimeField(null=True, verbose_name="性别回填检查时间")
-    gender_next_check_at = peewee.DateTimeField(
-        null=True, verbose_name="性别回填下次检查时间"
-    )
     is_subscribed = peewee.BooleanField(default=False, index=True)
     subscribed_at = peewee.DateTimeField(null=True, index=True)
-    subscribed_movies_synced_at = peewee.DateTimeField(null=True, index=True)
-    subscribed_movies_full_synced_at = peewee.DateTimeField(null=True, index=True)
     birthday = peewee.DateField(null=True)
     height_cm = peewee.IntegerField(null=True)
     bust_cm = peewee.IntegerField(null=True)
@@ -124,7 +113,6 @@ class Actor(TimestampedMixin, BaseModel):
             if not only:
                 raise RuntimeError("已持久化 Actor 的 save() 必须传 only")
             self._guard_fields(only)
-        self.javdb_id = (self.javdb_id or "").strip() or None
         self.name = (self.name or "").strip()
         self.alias_name = (self.alias_name or "").strip()
         if self.display_name_override is not None:

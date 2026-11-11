@@ -25,7 +25,7 @@ def _media(
     storage_ref: dict | None = None,
     valid: bool = True,
 ) -> Media:
-    movie = Movie.create(movie_number=number, javdb_id=f"javdb-{number}", title=number)
+    movie = Movie.create(movie_number=number, title=number)
     return Media.create(
         movie=movie,
         library=library,

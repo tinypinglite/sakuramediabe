@@ -30,7 +30,6 @@ def _register_board(monkeypatch) -> None:
 
 def _create_movie(number: str, rank: int, **interactions) -> Movie:
     movie = Movie.create(
-        javdb_id=f"javdb-{number}",
         movie_number=number,
         title=number,
         **interactions,

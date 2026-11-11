@@ -24,7 +24,6 @@ def test_media_list_returns_pornbox_collections(client, account_user):
     )
     movie = Movie.create(
         movie_number="COLLECTION-JAV-001",
-        javdb_id="collection-jav-001",
         title="Collection JAV",
     )
     video = VideoItem.create(title="Collection video")

@@ -43,16 +43,16 @@ def test_retry_uses_persisted_file_ref_and_associates_media(test_db, monkeypatch
     monkeypatch.setattr(
         "src.service.catalog.movie_metadata_search_service.MovieMetadataSearchService.fetch_candidate",
         lambda _candidate_id: nullcontext(
-            (SimpleNamespace(movie_number="ABC-001"), "javdb", object(), None)
+            (SimpleNamespace(movie_number="ABC-001"), {"plugin_id": "demo"})
         ),
     )
     captured_force_subscribed = []
 
-    def import_movie_if_missing(_detail, force_subscribed=False):
+    def import_movie(_detail, _source, force_subscribed=False):
         captured_force_subscribed.append(force_subscribed)
         return movie, False
 
-    catalog = SimpleNamespace(import_movie_if_missing=import_movie_if_missing)
+    catalog = SimpleNamespace(import_movie=import_movie)
     failure_item = {
         "source_ref": {"file": "opaque-file"},
         "name": "ABC-001.mp4",
@@ -68,7 +68,7 @@ def test_retry_uses_persisted_file_ref_and_associates_media(test_db, monkeypatch
         provider=Storage(), catalog_import_service=catalog
     ).retry_failed_file(
         failure_item,
-        "javdb:ABC-001:javdb-001",
+        "plugin:demo:ABC-001",
         operation_key="retry-operation",
     )
 
@@ -115,7 +115,7 @@ def test_retry_in_place_requires_provider_capability(test_db):
     with pytest.raises(ApiError) as exc:
         MediaImportService(provider=Storage(), catalog_import_service=object()).retry_failed_file(
             failure_item,
-            "javdb:ABC-001:javdb-001",
+            "plugin:demo:ABC-001",
             operation_key="retry-in-place",
         )
 

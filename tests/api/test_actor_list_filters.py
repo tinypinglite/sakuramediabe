@@ -20,7 +20,6 @@ def actors(test_db, monkeypatch):
         lambda: datetime(2026, 9, 10),
     )
     young = Actor.create(
-        javdb_id="young",
         name="年轻",
         gender=1,
         is_subscribed=True,
@@ -32,7 +31,6 @@ def actors(test_db, monkeypatch):
         cup="B",
     )
     older = Actor.create(
-        javdb_id="older",
         name="年长",
         gender=1,
         is_subscribed=True,
@@ -44,7 +42,6 @@ def actors(test_db, monkeypatch):
         cup="C",
     )
     unknown = Actor.create(
-        javdb_id="unknown",
         name="资料缺失",
         gender=1,
         is_subscribed=True,
@@ -52,7 +49,6 @@ def actors(test_db, monkeypatch):
         cup=" b ",
     )
     Actor.create(
-        javdb_id="male",
         name="男优",
         gender=2,
         is_subscribed=True,
@@ -214,29 +210,28 @@ def test_actor_list_filters_playable_movies_and_sorts_by_count(
 ):
     library = MediaLibrary.create(name="Playable", provider_key="not-installed")
     unsubscribed_actor = Actor.create(
-        javdb_id="unsubscribed", name="未订阅可播放", gender=1, is_subscribed=False
+        name="未订阅可播放", gender=1, is_subscribed=False
     )
     invalid_actor = Actor.create(
-        javdb_id="invalid", name="无有效媒体", gender=1, is_subscribed=True
+        name="无有效媒体", gender=1, is_subscribed=True
     )
     empty_actor = Actor.create(
-        javdb_id="empty", name="无作品", gender=1, is_subscribed=True
+        name="无作品", gender=1, is_subscribed=True
     )
     playable_actor = Actor.create(
-        javdb_id="playable", name="可播放", gender=1, is_subscribed=True
+        name="可播放", gender=1, is_subscribed=True
     )
 
     for index in range(2):
         movie = Movie.create(
             movie_number=f"PLAY-UNSUB-{index}",
-            javdb_id=f"play-unsub-{index}",
             title="Playable",
         )
         MovieActor.create(movie=movie, actor=unsubscribed_actor)
         Media.create(movie=movie, library=library, file_name=f"unsub-{index}.mp4")
 
     playable_movie = Movie.create(
-        movie_number="PLAY-PLAYABLE", javdb_id="play-playable", title="Playable"
+        movie_number="PLAY-PLAYABLE", title="Playable"
     )
     MovieActor.create(movie=playable_movie, actor=playable_actor)
     for index in range(2):
@@ -245,7 +240,7 @@ def test_actor_list_filters_playable_movies_and_sorts_by_count(
         )
 
     invalid_movie = Movie.create(
-        movie_number="PLAY-INVALID", javdb_id="play-invalid", title="Invalid"
+        movie_number="PLAY-INVALID", title="Invalid"
     )
     MovieActor.create(movie=invalid_movie, actor=invalid_actor)
     Media.create(
@@ -306,7 +301,7 @@ def test_actor_list_filters_playable_movies_and_sorts_by_count(
 
 def test_list_actors_includes_subscribed_local_actor(client, account_user):
     local_actor = Actor.create(
-        javdb_id=None, name="本地收藏女优", gender=1, is_subscribed=True
+        name="本地收藏女优", gender=1, is_subscribed=True
     )
     headers = _headers(client, account_user)
 
@@ -320,5 +315,4 @@ def test_list_actors_includes_subscribed_local_actor(client, account_user):
     item = next(
         item for item in response.json()["items"] if item["id"] == local_actor.id
     )
-    assert item["javdb_id"] is None
     assert item["is_subscribed"] is True

@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, File, Query, Response, UploadFile, status
 
 from src.api.exception.errors import ApiError
-from src.api.routers._utils import sse_streaming_response, to_sse_event
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.catalog.actors import (
     ActorCreateRequest,
@@ -10,9 +9,10 @@ from src.schema.catalog.actors import (
     ActorListGender,
     ActorListSubscriptionStatus,
     ActorMergeRequest,
-    ActorMetadataImportRequest,
     ActorResource,
     ActorUpdateRequest,
+    GfriendsActorCandidateResource,
+    GfriendsActorImportRequest,
     YearResource,
 )
 from src.schema.catalog.movies import TagListItemResource
@@ -77,7 +77,7 @@ def list_actors(
     status_code=status.HTTP_201_CREATED,
 )
 def create_local_actor(payload: ActorCreateRequest):
-    """创建没有 JavDB 身份的用户自建女优。"""
+    """创建本地女优。"""
     return ActorService.create_local_actor(payload)
 
 
@@ -95,18 +95,24 @@ def get_actor_filter_options(
     )
 
 
-@router.post("/metadata-imports")
-def create_actor_metadata_import(
-    payload: ActorMetadataImportRequest,
+@router.get(
+    "/gfriends/search",
+    response_model=list[GfriendsActorCandidateResource],
+)
+def search_gfriends_actors(
+    query: str = Query(min_length=1, max_length=255),
+    limit: int = Query(default=20, ge=1, le=50),
 ):
-    def stream():
-        for (
-            event,
-            event_payload,
-        ) in ActorService.stream_search_and_upsert_actor_from_javdb(payload.actor_name):
-            yield to_sse_event(event, event_payload)
+    return ActorService.search_gfriends(query, limit=limit)
 
-    return sse_streaming_response(stream())
+
+@router.post(
+    "/gfriends/import",
+    response_model=ActorDetailResource,
+    response_model_by_alias=False,
+)
+def import_gfriends_actor(payload: GfriendsActorImportRequest):
+    return ActorService.import_gfriends_candidate(payload)
 
 
 @router.get(

@@ -30,7 +30,7 @@ def library(test_db):
 
 
 def _media(library, number, **values):
-    movie = Movie.create(movie_number=number, javdb_id=f"javdb-{number}", title=number)
+    movie = Movie.create(movie_number=number, title=number)
     return Media.create(
         movie=movie,
         library=library,

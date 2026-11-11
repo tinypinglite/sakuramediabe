@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.plugins.contracts import PluginExtension
 
 METADATA_SOURCE_EXTENSION_KEY = "catalog.metadata_source"
-METADATA_SOURCE_HOST_API_VERSION = 6
+METADATA_SOURCE_HOST_API_VERSION = 18
 
 
 class PluginMetadataActor(BaseModel):

@@ -55,15 +55,6 @@ class ActorMergeService:
                 )
 
             if active_sources:
-                if target.javdb_id is None and any(
-                    source.javdb_id is not None for source in active_sources
-                ):
-                    raise ApiError(
-                        422,
-                        "invalid_actor_merge",
-                        "不能把 JavDB 演员合并到本地女优",
-                        {"reason": "remote_into_local_target"},
-                    )
                 cls._apply_merge(target, active_sources)
 
         return ActorService.get_actor_detail(target.id)
@@ -167,9 +158,6 @@ class ActorMergeService:
             "subscribed_at = %s",
         ]
         params: list[Any] = [merged_alias_name, is_subscribed, subscribed_at]
-        if is_subscribed:
-            # 同步任务会覆盖墓碑的 javdb_id，强制下一次全量以补齐来源 ID 的历史影片。
-            assignments.append("subscribed_movies_full_synced_at = NULL")
         for field, value in field_updates.items():
             assignments.append(f"{field} = %s")
             params.append(value)
@@ -178,10 +166,6 @@ class ActorMergeService:
             params.append(json.dumps(owner_updates, ensure_ascii=False))
         if field_updates:
             assignments.append("mutation_revision = mutation_revision + 1")
-        if "gender" in field_updates:
-            # 合并可能把源演员的旧性别带给目标；让回填重新评估。
-            assignments.append("gender_checked_at = NULL")
-            assignments.append("gender_next_check_at = NULL")
         if profile_image_id != target.profile_image_id:
             assignments.append("profile_image_id = %s")
             params.append(profile_image_id)

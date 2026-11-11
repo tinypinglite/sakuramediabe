@@ -10,7 +10,6 @@ from src.plugins import PluginContext, PluginMediaPresence, PluginMediaSnapshot
 
 def _movie(number: str) -> Movie:
     return Movie.create(
-        javdb_id=f"javdb-{number}",
         movie_number=number,
         title=f"影片 {number}",
         summary="",

@@ -9,11 +9,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from src.metadata._providers.models import (
-    JavdbMovieActor,
-    JavdbMovieDetail,
-    JavdbMovieTag,
-)
 from src.schema.catalog.subtitles import (
     SubtitleAsset,
     SubtitleContent,
@@ -46,7 +41,7 @@ MOVIE_SNAPSHOT_FIELDS: tuple[str, ...] = (
 )
 
 ACTOR_SNAPSHOT_FIELDS: tuple[str, ...] = (
-    "javdb_id", "javdb_type", "name", "alias_name", "gender", "is_subscribed",
+    "name", "alias_name", "gender", "is_subscribed",
     "birthday", "height_cm", "bust_cm", "waist_cm", "hips_cm", "cup",
     "birthplace", "blood_type",
 )
@@ -334,9 +329,6 @@ __all__ = [
     "ActorPage",
     "ActorSnapshot",
     "ImageDownloadError",
-    "JavdbMovieActor",
-    "JavdbMovieDetail",
-    "JavdbMovieTag",
     "MoviePage",
     "MovieQueryFilters",
     "MovieSnapshot",

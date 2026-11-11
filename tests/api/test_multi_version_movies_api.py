@@ -14,14 +14,14 @@ def _headers(client, user):
 def test_groups_by_jav_movie_across_libraries_without_hash_requirement(client, account_user):
     local = MediaLibrary.create(name='local', provider_key='local')
     cloud = MediaLibrary.create(name='cloud', provider_key='cloud115')
-    movie = Movie.create(movie_number='MULTI-001', javdb_id='multi-001', title='Two versions')
+    movie = Movie.create(movie_number='MULTI-001', title='Two versions')
     first = Media.create(movie=movie, library=local, file_name='4k.mp4', file_hash='a',
                          resolution='2160p', duration_seconds=7200, file_size_bytes=123456)
     second = Media.create(movie=movie, library=cloud, file_name='hd.mp4', file_hash='b')
     third = Media.create(movie=movie, library=local, file_name='missing.mp4', valid=False)
-    single = Movie.create(movie_number='SINGLE-001', javdb_id='single-001', title='Single')
+    single = Movie.create(movie_number='SINGLE-001', title='Single')
     Media.create(movie=single, library=local, file_hash='a')
-    Movie.create(movie_number='EMPTY-001', javdb_id='empty-001', title='Empty')
+    Movie.create(movie_number='EMPTY-001', title='Empty')
     video = VideoItem.create(title='Non JAV')
     Media.create(video_item=video, library=local)
     Media.create(video_item=video, library=cloud)
@@ -51,7 +51,7 @@ def test_pagination_excludes_vr_numbers_and_returns_all_versions(test_db):
         'VR-001', 'AAA-VR-001', 'AAA-001vr', 'AAA-Vr-002',
         'TAGGED-001', 'TAGGED-002', 'FC2-001',
     ]:
-        movie = Movie.create(movie_number=number, javdb_id=number, title=number)
+        movie = Movie.create(movie_number=number, title=number)
         if number.startswith('TAGGED'):
             tag = Tag.create(name='VR' if number.endswith('001') else 'vr')
             MovieTag.create(movie=movie, tag=tag)

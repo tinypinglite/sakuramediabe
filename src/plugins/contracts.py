@@ -17,16 +17,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.scheduler.contracts import JobDefinition
 
-# 11：新增图片写入能力（context.movies.set_cover / set_plot_images、
-# context.actors.set_profile_image / clear_profile_image）。
-# 12：新增插件 i18n 能力（context.i18n.t、ranking/provider config 可选 i18n）。
-# 13：新增插件种子文件提交能力（context.downloads.submit_torrent）。
-# 14：迁移来源可携带完整 MD5/SHA-1，目标 provider 可复用宿主缓存的 SHA-1。
-# 15：迁移来源可携带 GCID，目标 provider 可复用宿主缓存的 GCID。
-# 16：媒体 Provider 可声明 WebView 登录规则并解析登录凭据。
-# 17：下载 Provider 可声明支持的来源类型，下载提交携带规范化 source identity。
-HOST_API_VERSION = 17
-MIN_SUPPORTED_HOST_API_VERSION = 4
+# 18：移除宿主 JavDB 特权，新增电影评论扩展点与互动数写入能力。
+# 该版本是新的兼容基线；旧版本插件不再加载。
+HOST_API_VERSION = 18
+MIN_SUPPORTED_HOST_API_VERSION = 18
 
 
 def validate_host_api_version(version: int) -> None:

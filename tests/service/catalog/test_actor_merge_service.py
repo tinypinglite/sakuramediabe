@@ -3,7 +3,6 @@ from datetime import date, datetime
 import pytest
 
 from src.api.exception.errors import ApiError
-from src.common.runtime_time import utc_now_for_db
 from src.model import Actor, Image, Movie, MovieActor
 from src.service.catalog import ActorMergeService, ActorService, MovieService
 from src.service.system.status_service import StatusService
@@ -12,7 +11,6 @@ from src.service.system.status_service import StatusService
 def _create_movie(number: str) -> Movie:
     return Movie.create(
         movie_number=number,
-        javdb_id=f"javdb-{number}",
         title=number,
         release_date=datetime(2024, 5, 1),
     )
@@ -23,8 +21,8 @@ def _create_image(path: str) -> Image:
 
 
 def test_merge_moves_movie_links_and_dedupes_shared_movies(test_db):
-    target = Actor.create(javdb_id="merge-target", name="三上悠亚")
-    source = Actor.create(javdb_id="merge-source", name="鬼头桃菜")
+    target = Actor.create(name="三上悠亚")
+    source = Actor.create(name="鬼头桃菜")
     shared = _create_movie("MERGE-001")
     only_source = _create_movie("MERGE-002")
     MovieActor.create(movie=shared, actor=target)
@@ -45,17 +43,13 @@ def test_merge_moves_movie_links_and_dedupes_shared_movies(test_db):
     assert tombstone.is_subscribed is False
 
 
-def test_merge_combines_alias_subscription_and_resets_sync_marker(test_db):
+def test_merge_combines_alias_and_subscription(test_db):
     earlier = datetime(2024, 1, 1, 8, 0, 0)
-    later = datetime(2024, 6, 1, 8, 0, 0)
     target = Actor.create(
-        javdb_id="merge-target",
         name="三上悠亚",
         alias_name="三上悠亞",
-        subscribed_movies_full_synced_at=later,
     )
     source = Actor.create(
-        javdb_id="merge-source",
         name="鬼头桃菜",
         alias_name="鬼頭桃菜 / きとうももな",
         display_name_override="桃子",
@@ -68,7 +62,6 @@ def test_merge_combines_alias_subscription_and_resets_sync_marker(test_db):
     merged = Actor.get_by_id(target.id)
     assert merged.is_subscribed is True
     assert merged.subscribed_at == earlier
-    assert merged.subscribed_movies_full_synced_at is None
     assert merged.alias_name.split(" / ")[0] == "三上悠亚"
     for name in ("三上悠亞", "鬼头桃菜", "鬼頭桃菜", "きとうももな", "桃子"):
         assert name in merged.alias_name
@@ -78,14 +71,13 @@ def test_merge_combines_alias_subscription_and_resets_sync_marker(test_db):
 
 
 def test_merge_gap_fills_profile_and_skips_manual_source_fields(test_db):
-    target = Actor.create(javdb_id="merge-target", name="保留", gender=0)
+    target = Actor.create(name="保留", gender=0)
     source = Actor.create(
-        javdb_id="merge-source",
         name="来源",
         birthday=date(1998, 4, 12),
         height_cm=160,
         cup="F",
-        field_owners={"birthday": "host:manual", "height_cm": "host:javdb"},
+        field_owners={"birthday": "host:manual", "height_cm": "host:metadata"},
     )
 
     ActorMergeService.merge_actors(target.id, [source.id])
@@ -94,21 +86,13 @@ def test_merge_gap_fills_profile_and_skips_manual_source_fields(test_db):
     assert merged.birthday is None
     assert merged.height_cm == 160
     assert merged.cup == "F"
-    assert merged.field_owners.get("height_cm") == "host:javdb"
+    assert merged.field_owners.get("height_cm") == "host:metadata"
     assert merged.mutation_revision == 1
 
 
-def test_merge_copied_gender_clears_backfill_state(test_db):
-    checked_at = utc_now_for_db()
-    target = Actor.create(
-        javdb_id="merge-gender-target",
-        name="保留",
-        gender=0,
-        gender_checked_at=checked_at,
-        gender_next_check_at=checked_at,
-    )
+def test_merge_copies_gender(test_db):
+    target = Actor.create(name="保留", gender=0)
     source = Actor.create(
-        javdb_id="merge-gender-source",
         name="来源",
         gender=1,
     )
@@ -117,17 +101,15 @@ def test_merge_copied_gender_clears_backfill_state(test_db):
 
     merged = Actor.get_by_id(target.id)
     assert merged.gender == 1
-    assert merged.gender_checked_at is None
-    assert merged.gender_next_check_at is None
 
 
 def test_merge_takes_over_source_image_only_when_target_has_none(test_db):
     source_image = _create_image("actors/merge-source.webp")
     target_with_image = _create_image("actors/merge-target.webp")
 
-    target = Actor.create(javdb_id="merge-a", name="无头像")
+    target = Actor.create(name="无头像")
     source = Actor.create(
-        javdb_id="merge-b", name="有头像", profile_image_override=source_image
+        name="有头像", profile_image_override=source_image
     )
     ActorMergeService.merge_actors(target.id, [source.id])
 
@@ -136,10 +118,10 @@ def test_merge_takes_over_source_image_only_when_target_has_none(test_db):
     assert Actor.get_by_id(source.id).profile_image_override_id is None
 
     target_full = Actor.create(
-        javdb_id="merge-c", name="已带头像", profile_image=target_with_image
+        name="已带头像", profile_image=target_with_image
     )
     source_skip = Actor.create(
-        javdb_id="merge-d", name="来源头像", profile_image_override=source_image
+        name="来源头像", profile_image_override=source_image
     )
     ActorMergeService.merge_actors(target_full.id, [source_skip.id])
 
@@ -148,9 +130,9 @@ def test_merge_takes_over_source_image_only_when_target_has_none(test_db):
 
 
 def test_merge_cascades_existing_tombstones(test_db):
-    first = Actor.create(javdb_id="merge-1", name="第一")
-    second = Actor.create(javdb_id="merge-2", name="第二")
-    third = Actor.create(javdb_id="merge-3", name="第三")
+    first = Actor.create(name="第一")
+    second = Actor.create(name="第二")
+    third = Actor.create(name="第三")
     ActorMergeService.merge_actors(first.id, [second.id])
 
     ActorMergeService.merge_actors(third.id, [first.id])
@@ -160,8 +142,8 @@ def test_merge_cascades_existing_tombstones(test_db):
 
 
 def test_merge_validation_and_idempotency(test_db):
-    target = Actor.create(javdb_id="merge-target", name="保留")
-    other = Actor.create(javdb_id="merge-other", name="来源")
+    target = Actor.create(name="保留")
+    other = Actor.create(name="来源")
 
     with pytest.raises(ApiError) as self_error:
         ActorMergeService.merge_actors(target.id, [target.id])
@@ -176,15 +158,15 @@ def test_merge_validation_and_idempotency(test_db):
     again = ActorMergeService.merge_actors(target.id, [other.id])
     assert again.id == target.id
 
-    third = Actor.create(javdb_id="merge-third", name="另一个保留")
+    third = Actor.create(name="另一个保留")
     with pytest.raises(ApiError) as merged_error:
         ActorMergeService.merge_actors(third.id, [other.id])
     assert merged_error.value.details["reason"] == "source_already_merged"
 
 
 def test_tombstone_hidden_and_resolved_across_queries(test_db):
-    target = Actor.create(javdb_id="merge-target", name="新名", gender=1)
-    source = Actor.create(javdb_id="merge-source", name="旧名", gender=1)
+    target = Actor.create(name="新名", gender=1)
+    source = Actor.create(name="旧名", gender=1)
     movie = _create_movie("MERGE-READ-1")
     MovieActor.create(movie=movie, actor=source)
 

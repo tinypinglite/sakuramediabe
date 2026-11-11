@@ -18,7 +18,7 @@ def test_uninstalled_media_provider_defers_without_consuming_failure_attempt(
         provider_key="missing",
         provider_config={},
     )
-    movie = Movie.create(movie_number="THUMB-001", javdb_id="thumb-1", title="thumb")
+    movie = Movie.create(movie_number="THUMB-001", title="thumb")
     media = Media.create(
         movie=movie,
         library=library,
@@ -51,7 +51,7 @@ def test_retryable_provider_unavailable_defers_without_consuming_failure_attempt
         provider_key="demo",
         provider_config={},
     )
-    movie = Movie.create(movie_number="THUMB-002", javdb_id="thumb-2", title="thumb")
+    movie = Movie.create(movie_number="THUMB-002", title="thumb")
     media = Media.create(
         movie=movie,
         library=library,

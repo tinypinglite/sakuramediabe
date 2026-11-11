@@ -1,7 +1,7 @@
 """演员目录 service。
 
-负责演员列表、详情、关联影片标识/标签/年份查询，以及按演员名从 JavDB 搜索并导入。
-阅读入口建议从 ``list_actors``、``get_actor_movie_ids``、``stream_search_and_upsert_actor_from_javdb`` 开始。
+负责演员列表、详情、关联影片标识/标签/年份查询，以及 GFriends 演员搜索与导入。
+阅读入口建议从 ``list_actors``、``get_actor_movie_ids``、``search_gfriends`` 开始。
 """
 
 import json
@@ -9,14 +9,13 @@ import operator
 import shutil
 import tempfile
 from calendar import monthrange
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from datetime import date
 from functools import reduce
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
-from loguru import logger
 from peewee import JOIN, Case, fn
 from PIL import Image as PillowImage
 from PIL import ImageOps, UnidentifiedImageError
@@ -31,9 +30,7 @@ from src.common.service_helpers import (
     resolve_sort_expression,
 )
 from src.common.text_search import split_search_terms
-from src.metadata._providers.models import JavdbMovieActorResource
-from src.metadata.factory import build_javdb_provider
-from src.metadata.provider import MetadataNotFoundError
+from src.metadata.gfriends import get_gfriends_directory
 from src.model import Actor, Image, Movie, MovieActor, MovieTag, Tag, get_database
 from src.model.catalog.actors import (
     merge_actor_alias_name,
@@ -50,6 +47,8 @@ from src.schema.catalog.actors import (
     ActorListSubscriptionStatus,
     ActorResource,
     ActorUpdateRequest,
+    GfriendsActorCandidateResource,
+    GfriendsActorImportRequest,
     YearResource,
 )
 from src.schema.catalog.movies import TagListItemResource
@@ -58,10 +57,7 @@ from src.service.catalog.actor_ownership_gateway import (
     MANUAL_ACTOR_FIELD_OWNER,
     ActorOwnershipGateway,
 )
-from src.service.catalog.catalog_import_service import (
-    CatalogImportService,
-    ImageDownloadError,
-)
+from src.service.catalog.actor_resolution_service import ActorResolutionService
 from src.service.catalog.image_cleanup_service import ImageCleanupService
 
 
@@ -70,7 +66,7 @@ class _ProfileImageWriteConflict(Exception):
 
 
 class ActorService:
-    """聚合 Actor 查询和 JavDB 演员导入流程。"""
+    """聚合 Actor 查询和本地/GFriends 导入流程。"""
 
     ACTOR_PROFILE_IMAGE_MAX_BYTES = 10 * 1024 * 1024
     ACTOR_PROFILE_IMAGE_MAX_DIMENSION = 4096
@@ -93,7 +89,7 @@ class ActorService:
             "blood_type",
         }
     )
-    # 本地女优没有远端身份，姓名/别名允许人工维护；JavDB 演员仍由同步覆盖。
+    # 演员已是本地实体，姓名/别名允许人工维护。
     LOCAL_ACTOR_IDENTITY_FIELDS = frozenset({"name", "alias_name"})
 
     FEMALE_GENDER = 1
@@ -445,178 +441,47 @@ class ActorService:
         )
 
     @classmethod
-    def _build_catalog_import_service(cls) -> CatalogImportService:
-        return CatalogImportService()
+    def search_gfriends(
+        cls,
+        query: str,
+        *,
+        limit: int = 20,
+    ) -> list[GfriendsActorCandidateResource]:
+        normalized_query = query.strip()
+        if not normalized_query:
+            raise ApiError(422, "invalid_actor_query", "演员搜索词不能为空")
+        directory = get_gfriends_directory()
+        resources: list[GfriendsActorCandidateResource] = []
+        for candidate in directory.search(normalized_query, limit=limit):
+            names = [candidate.name, *candidate.alias_names]
+            existing = ActorResolutionService.find_existing(names)
+            resources.append(
+                GfriendsActorCandidateResource(
+                    candidate_id=candidate.candidate_id,
+                    name=candidate.name,
+                    alias_names=list(candidate.alias_names),
+                    avatar_url=candidate.avatar_url,
+                    existing_actor_id=existing.id if existing is not None else None,
+                )
+            )
+        return resources
 
     @classmethod
-    def stream_search_and_upsert_actor_from_javdb(
+    def import_gfriends_candidate(
         cls,
-        actor_name: str,
-    ) -> Iterator[tuple[str, dict]]:
-        """按 SSE 事件顺序输出演员搜索和导入进度。"""
-        normalized_name = actor_name.strip()
-        yield "search_started", {"actor_name": normalized_name}
-
+        payload: GfriendsActorImportRequest,
+    ) -> ActorDetailResource:
         try:
-            actor_resources = build_javdb_provider().search_actors(normalized_name)
-        except MetadataNotFoundError:
-            yield (
-                "completed",
-                {"success": False, "reason": "actor_not_found", "actors": []},
+            actor = ActorResolutionService.import_gfriends_candidate(
+                payload.candidate_id
             )
-            return
-        except Exception as exc:
-            logger.exception(
-                "Javdb actor search failed actor_name={} detail={}",
-                normalized_name,
-                exc,
-            )
-            yield (
-                "completed",
-                {"success": False, "reason": "internal_error", "actors": []},
-            )
-            return
-
-        # JavDB 搜索结果可能包含重复演员卡片，这里先按 javdb_id 去重，再进入导入阶段。
-        deduplicated_resources: list[JavdbMovieActorResource] = []
-        seen_javdb_ids: set[str] = set()
-        for actor_resource in actor_resources:
-            if actor_resource.javdb_id in seen_javdb_ids:
-                continue
-            seen_javdb_ids.add(actor_resource.javdb_id)
-            deduplicated_resources.append(actor_resource)
-
-        total = len(deduplicated_resources)
-        yield (
-            "actor_found",
-            {
-                "actors": [
-                    {
-                        "javdb_id": actor_resource.javdb_id,
-                        "name": actor_resource.name,
-                        "avatar_url": actor_resource.avatar_url,
-                    }
-                    for actor_resource in deduplicated_resources
-                ],
-                "total": total,
-            },
-        )
-
-        yield "upsert_started", {"total": total}
-
-        created_count = 0
-        already_exists_count = 0
-        failed_count = 0
-        failed_items: list[dict] = []
-        imported_actors: list[ActorResource] = []
-        import_service = cls._build_catalog_import_service()
-
-        for index, actor_resource in enumerate(deduplicated_resources, start=1):
-            # 图片下载是前端最关心的慢步骤，单独发事件便于展示进度。
-            yield (
-                "image_download_started",
-                {
-                    "javdb_id": actor_resource.javdb_id,
-                    "index": index,
-                    "total": total,
-                },
-            )
-            existed_before_upsert = (
-                Actor.get_or_none(Actor.javdb_id == actor_resource.javdb_id) is not None
-            )
-            try:
-                actor = import_service.upsert_actor_from_javdb_resource(actor_resource)
-                actor_with_profile = (
-                    cls.actor_query().where(Actor.id == actor.id).get_or_none()
-                    or actor
-                )
-                imported_actors.append(
-                    ActorResource.from_actor(actor_with_profile)
-                )
-                if existed_before_upsert:
-                    already_exists_count += 1
-                else:
-                    created_count += 1
-                yield (
-                    "image_download_finished",
-                    {
-                        "javdb_id": actor_resource.javdb_id,
-                        "index": index,
-                        "total": total,
-                        "has_avatar": bool(actor_resource.avatar_url),
-                    },
-                )
-            except ImageDownloadError as exc:
-                failed_count += 1
-                logger.warning(
-                    "Javdb actor image download failed actor_name={} javdb_id={} detail={}",
-                    normalized_name,
-                    actor_resource.javdb_id,
-                    exc,
-                )
-                failed_items.append(
-                    {
-                        "javdb_id": actor_resource.javdb_id,
-                        "reason": "image_download_failed",
-                        "detail": str(exc),
-                    }
-                )
-            except Exception as exc:
-                failed_count += 1
-                logger.exception(
-                    "Javdb actor upsert failed actor_name={} javdb_id={} detail={}",
-                    normalized_name,
-                    actor_resource.javdb_id,
-                    exc,
-                )
-                failed_items.append(
-                    {
-                        "javdb_id": actor_resource.javdb_id,
-                        "reason": "upsert_failed",
-                        "detail": str(exc),
-                    }
-                )
-
-        # JavDB 的不同演员条目可能都已合并到同一保留记录，这里按 canonical id 再去重一次。
-        deduplicated_actors: list[ActorResource] = []
-        seen_actor_ids: set[int] = set()
-        for actor in imported_actors:
-            if actor.id in seen_actor_ids:
-                continue
-            seen_actor_ids.add(actor.id)
-            deduplicated_actors.append(actor)
-        imported_actors = deduplicated_actors
-
-        stats = {
-            "total": total,
-            "created_count": created_count,
-            "already_exists_count": already_exists_count,
-            "failed_count": failed_count,
-        }
-        yield "upsert_finished", stats
-
-        if imported_actors:
-            yield (
-                "completed",
-                {
-                    "success": True,
-                    "actors": [actor.model_dump() for actor in imported_actors],
-                    "failed_items": failed_items,
-                    "stats": stats,
-                },
-            )
-            return
-
-        yield (
-            "completed",
-            {
-                "success": False,
-                "reason": "internal_error",
-                "actors": [],
-                "failed_items": failed_items,
-                "stats": stats,
-            },
-        )
+        except ValueError as exc:
+            raise ApiError(
+                422,
+                "invalid_actor_candidate",
+                str(exc),
+            ) from exc
+        return cls.get_actor_detail(actor.id)
 
     @classmethod
     def get_actor_detail(cls, actor_id: int) -> ActorDetailResource:
@@ -625,9 +490,8 @@ class ActorService:
 
     @classmethod
     def create_local_actor(cls, payload: ActorCreateRequest) -> ActorDetailResource:
-        """创建没有 JavDB 身份的用户自建女优。"""
+        """创建本地女优。"""
         actor = Actor.create(
-            javdb_id=None,
             name=payload.name,
             alias_name=merge_actor_alias_name(
                 primary_name=payload.name,
@@ -635,8 +499,6 @@ class ActorService:
                 existing_alias_name="",
             ),
             gender=payload.gender,
-            javdb_type=0,
-            # 性别由用户决定，后续性别回填不应覆盖。
             field_owners={"gender": MANUAL_ACTOR_FIELD_OWNER},
         )
         return cls.get_actor_detail(actor.id)
@@ -653,12 +515,6 @@ class ActorService:
             )
             if actor is None:
                 raise ApiError(404, "actor_not_found", "演员不存在")
-            if actor.javdb_id is not None:
-                raise ApiError(
-                    422,
-                    "actor_not_local",
-                    "只能删除用户自建的女优",
-                )
             if actor.merged_into_id is not None:
                 raise ApiError(
                     422,
@@ -731,13 +587,6 @@ class ActorService:
             )
 
         identity_fields = set(changes) & cls.LOCAL_ACTOR_IDENTITY_FIELDS
-        if identity_fields and actor.javdb_id is not None:
-            raise ApiError(
-                422,
-                "invalid_actor_update",
-                "JavDB 演员的姓名和别名由远端同步维护",
-                {"fields": sorted(identity_fields)},
-            )
         if identity_fields:
             effective_name = changes.get("name") or actor.name
             alias_names = split_actor_alias_name(
@@ -944,8 +793,7 @@ class ActorService:
     def set_subscription(cls, actor_id: int, subscribed: bool) -> None:
         actor = cls._require_actor(actor_id)
 
-        # 本地女优同样允许订阅：没有 JavDB 身份时订阅仅作为收藏标记，
-        # 女优上新同步任务会按 javdb_id IS NOT NULL 自动跳过。
+        # 演员订阅当前作为收藏标记；远端上新同步能力后续由独立来源提供。
         if subscribed:
             actor.is_subscribed = True
             if actor.subscribed_at is None:

@@ -4,12 +4,6 @@ from types import SimpleNamespace
 import pytest
 
 from src.common.runtime_time import runtime_now
-from src.metadata.provider import (
-    JavdbAuthError,
-    JavdbAuthRequiredError,
-    MetadataNotFoundError,
-    MetadataRequestError,
-)
 from src.model import (
     PLAYLIST_KIND_RECENTLY_PLAYED,
     Actor,
@@ -40,10 +34,9 @@ def _login(client, username="account", password="password123"):
     return response.json()["access_token"]
 
 
-def _create_movie(movie_number: str, javdb_id: str, **kwargs):
+def _create_movie(movie_number: str, **kwargs):
     payload = {
         "movie_number": movie_number,
-        "javdb_id": javdb_id,
         "title": kwargs.pop("title", movie_number),
     }
     payload.update(kwargs)
@@ -57,7 +50,6 @@ def _create_movie(movie_number: str, javdb_id: str, **kwargs):
         ("GET", "/status/insights"),
         ("GET", "/status/watch-trend"),
         ("GET", "/status/image-search"),
-        ("POST", "/metadata-providers/javdb/test"),
     ],
 )
 def test_status_endpoints_require_authentication(client, method, path):
@@ -105,14 +97,14 @@ def test_status_endpoint_returns_aggregated_summary(client, account_user, monkey
     monkeypatch.setenv(StatusService.BACKEND_VERSION_ENV_KEY, "v9.9.9")
     token = _login(client, username=account_user.username)
 
-    Actor.create(name="actor-1", javdb_id="ActorA1", gender=1, is_subscribed=True)
-    Actor.create(name="actor-2", javdb_id="ActorA2", gender=1, is_subscribed=False)
-    Actor.create(name="actor-3", javdb_id="ActorA3", gender=2, is_subscribed=True)
-    Actor.create(name="actor-4", javdb_id="ActorA4", gender=0, is_subscribed=True)
+    Actor.create(name="actor-1", gender=1, is_subscribed=True)
+    Actor.create(name="actor-2", gender=1, is_subscribed=False)
+    Actor.create(name="actor-3", gender=2, is_subscribed=True)
+    Actor.create(name="actor-4", gender=0, is_subscribed=True)
 
-    movie_a = _create_movie("ABC-001", "MovieA1", is_subscribed=True)
-    movie_b = _create_movie("ABC-002", "MovieA2", is_subscribed=False)
-    movie_c = _create_movie("ABC-003", "MovieA3", is_subscribed=True)
+    movie_a = _create_movie("ABC-001", is_subscribed=True)
+    movie_b = _create_movie("ABC-002", is_subscribed=False)
+    movie_c = _create_movie("ABC-003", is_subscribed=True)
 
     library_main = MediaLibrary.create(name="Main", provider_key="test", provider_config={})
     library_archive = MediaLibrary.create(
@@ -314,180 +306,6 @@ def test_image_search_reset_endpoint_queues_background_rebuild(client, account_u
     assert task_run.params == {"reset": True}
 
 
-def test_metadata_provider_test_endpoint_returns_javdb_success_payload(
-    client,
-    account_user,
-    monkeypatch,
-):
-    token = _login(client, username=account_user.username)
-    requested_movie_numbers = []
-
-    class _FakeJavdbProvider:
-        def get_movie_by_number(self, movie_number: str):
-            requested_movie_numbers.append(movie_number)
-
-            class _Detail:
-                javdb_id = "javdb-ssni-888"
-                title = "SSNI-888 标题"
-                actors = [object(), object()]
-                tags = [object(), object(), object()]
-
-            return _Detail()
-
-    monkeypatch.setattr(
-        "src.service.system.status_service.build_javdb_provider",
-        lambda: _FakeJavdbProvider(),
-    )
-
-    response = client.post(
-        "/metadata-providers/javdb/test",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert requested_movie_numbers == [StatusService.METADATA_PROVIDER_TEST_MOVIE_NUMBER]
-    assert payload["healthy"] is True
-    assert payload["provider"] == "javdb"
-    assert payload["movie_number"] == "SSNI-888"
-    assert payload["javdb_id"] == "javdb-ssni-888"
-    assert payload["title"] == "SSNI-888 标题"
-    assert payload["actors_count"] == 2
-    assert payload["tags_count"] == 3
-    assert payload["error"] is None
-
-
-def test_metadata_provider_test_endpoint_returns_request_failure_payload(
-    client,
-    account_user,
-    monkeypatch,
-):
-    token = _login(client, username=account_user.username)
-
-    class _FailingProvider:
-        def get_movie_by_number(self, movie_number: str):
-            raise MetadataRequestError("GET", "https://javdb.example/api", "timeout")
-
-    monkeypatch.setattr(
-        "src.service.system.status_service.build_javdb_provider",
-        lambda: _FailingProvider(),
-    )
-
-    response = client.post(
-        "/metadata-providers/javdb/test",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["healthy"] is False
-    assert payload["provider"] == "javdb"
-    assert payload["error"]["type"] == "metadata_request_error"
-    assert payload["error"]["method"] == "GET"
-    assert payload["error"]["url"] == "https://javdb.example/api"
-    assert "metadata request failed" in payload["error"]["message"]
-
-
-def test_metadata_provider_test_endpoint_returns_auth_required_payload(
-    client,
-    account_user,
-    monkeypatch,
-):
-    token = _login(client, username=account_user.username)
-
-    class _FailingProvider:
-        def get_movie_by_number(self, movie_number: str):
-            raise JavdbAuthRequiredError(
-                "請登錄帳號", account_configured=False
-            )
-
-    monkeypatch.setattr(
-        "src.service.system.status_service.build_javdb_provider",
-        lambda: _FailingProvider(),
-    )
-
-    response = client.post(
-        "/metadata-providers/javdb/test",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    payload = response.json()
-    assert response.status_code == 200
-    assert payload["healthy"] is False
-    assert payload["error"]["type"] == "metadata_auth_required"
-    assert "請登錄帳號" in payload["error"]["message"]
-
-
-def test_metadata_provider_test_endpoint_returns_auth_failed_payload(
-    client,
-    account_user,
-    monkeypatch,
-):
-    token = _login(client, username=account_user.username)
-
-    class _FailingProvider:
-        def get_movie_by_number(self, movie_number: str):
-            raise JavdbAuthError("bad credentials")
-
-    monkeypatch.setattr(
-        "src.service.system.status_service.build_javdb_provider",
-        lambda: _FailingProvider(),
-    )
-
-    response = client.post(
-        "/metadata-providers/javdb/test",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    payload = response.json()
-    assert response.status_code == 200
-    assert payload["healthy"] is False
-    assert payload["error"]["type"] == "metadata_auth_failed"
-    assert "bad credentials" in payload["error"]["message"]
-
-
-def test_metadata_provider_test_endpoint_returns_not_found_failure_payload(
-    client,
-    account_user,
-    monkeypatch,
-):
-    token = _login(client, username=account_user.username)
-
-    class _FailingProvider:
-        def get_movie_by_number(self, movie_number: str):
-            raise MetadataNotFoundError("movie", movie_number)
-
-    monkeypatch.setattr(
-        "src.service.system.status_service.build_javdb_provider",
-        lambda: _FailingProvider(),
-    )
-
-    response = client.post(
-        "/metadata-providers/javdb/test",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["healthy"] is False
-    assert payload["provider"] == "javdb"
-    assert payload["error"]["type"] == "metadata_not_found"
-    assert payload["error"]["resource"] == "movie"
-    assert payload["error"]["lookup_value"] == "SSNI-888"
-
-
-def test_metadata_provider_test_endpoint_rejects_invalid_provider(client, account_user):
-    token = _login(client, username=account_user.username)
-
-    response = client.post(
-        "/metadata-providers/unknown/test",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "invalid_metadata_provider"
-
-
 def _watched_at(local_date):
     # 测试统一锁定 TZ=UTC（conftest.fixed_runtime_timezone），本地中午即 DB naive UTC 中午。
     return datetime.combine(local_date, time(12, 0))
@@ -506,8 +324,8 @@ def test_status_insights_and_watch_trend_endpoints(client, account_user):
     assert client.get("/status/watch-trend?range=all", headers=headers).json()["buckets"] == []
 
     library = MediaLibrary.create(name="Main", provider_key="test", provider_config={})
-    movie_a = _create_movie("ABC-001", "MovieA1")
-    movie_b = _create_movie("ABC-002", "MovieA2")
+    movie_a = _create_movie("ABC-001")
+    movie_b = _create_movie("ABC-002")
     media_a = Media.create(movie=movie_a, library=library, file_name="a.mp4", file_size_bytes=100)
     media_b = Media.create(movie=movie_b, library=library, file_name="b.mp4", file_size_bytes=200)
     # 库容量口径含失效媒体。

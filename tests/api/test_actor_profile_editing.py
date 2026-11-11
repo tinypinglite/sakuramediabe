@@ -3,9 +3,7 @@ from io import BytesIO
 from PIL import Image as PillowImage
 
 from src.config.config import settings
-from src.metadata._providers.models import JavdbMovieActorResource
 from src.model import Actor, Image
-from src.service.catalog.catalog_import_service import CatalogImportService
 
 
 def _auth_headers(client, account_user):
@@ -30,7 +28,6 @@ def _gif_bytes() -> bytes:
 
 def test_actor_display_name_falls_back_to_source_name(client, account_user):
     actor = Actor.create(
-        javdb_id="actor-display-name-fallback",
         name="来源名称",
         alias_name="来源别名",
     )
@@ -46,7 +43,6 @@ def test_patch_actor_profile_preserves_source_identity_and_marks_manual_fields(
     client, account_user
 ):
     actor = Actor.create(
-        javdb_id="actor-local-profile",
         name="来源名称",
         alias_name="来源别名",
         gender=1,
@@ -73,25 +69,10 @@ def test_patch_actor_profile_preserves_source_identity_and_marks_manual_fields(
     assert payload["mutation_revision"] == 1
     assert payload["manual_fields"] == ["birthday", "height_cm"]
 
-    CatalogImportService().upsert_actor_from_javdb_resource(
-        JavdbMovieActorResource(
-            javdb_id=actor.javdb_id,
-            name="来源新名称",
-            alias_names=["来源新别名"],
-        )
-    )
-    refreshed = client.get(f"/actors/{actor.id}", headers=headers)
-
-    assert refreshed.status_code == 200
-    assert refreshed.json()["name"] == "来源新名称"
-    assert refreshed.json()["display_name"] == "我的显示名"
-    assert refreshed.json()["gender"] == 1
-
-
 def test_patch_actor_profile_uses_last_write_wins_for_local_display_name(
     client, account_user
 ):
-    actor = Actor.create(javdb_id="actor-revision", name="演员")
+    actor = Actor.create(name="演员")
     headers = _auth_headers(client, account_user)
 
     first = client.patch(
@@ -117,7 +98,6 @@ def test_actor_profile_image_upload_and_clear_restore_source_image(
     monkeypatch.setattr(settings.media, "import_image_root_path", str(tmp_path / "assets"))
     source_image = Image.create(origin="actors/source.webp")
     actor = Actor.create(
-        javdb_id="actor-avatar",
         name="演员",
         profile_image=source_image,
     )
@@ -150,7 +130,7 @@ def test_actor_profile_image_upload_and_clear_restore_source_image(
 
 
 def test_actor_profile_image_rejects_gif(client, account_user):
-    actor = Actor.create(javdb_id="actor-gif", name="演员")
+    actor = Actor.create(name="演员")
     headers = _auth_headers(client, account_user)
 
     response = client.put(
