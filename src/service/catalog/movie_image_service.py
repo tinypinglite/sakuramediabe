@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from uuid import uuid4
 
 import httpx
@@ -39,6 +39,10 @@ from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import backoff_delay
 from src.model import Image, Movie, MoviePlotImage
 from src.service.catalog.image_cleanup_service import ImageCleanupService
+
+GFRIENDS_JSDELIVR_OWNER = "xinxin8816"
+GFRIENDS_JSDELIVR_REPO = "gfriends"
+GFRIENDS_RAW_HOST = "raw.githubusercontent.com"
 
 # 这些番号的封面都是单张横图（FC2 / HEYZO / 欧美流媒体日期命名 / 素人纯数字编号），
 # 不存在实体盘双页合订结构；按"合订封面书脊"裁出的右半只是普通切片，禁止生成薄封面。
@@ -808,6 +812,8 @@ class MovieImageService:
                 )
                 return
 
+        fallback_url = self._gfriends_raw_fallback_url(image_url)
+        fallback_attempted = False
         last_error: Exception | None = None
         for attempt in range(1, self.IMAGE_DOWNLOAD_MAX_RETRIES + 1):
             request_url = (
@@ -822,6 +828,48 @@ class MovieImageService:
             )
             try:
                 response = self.http_client.request("GET", request_url)
+                if (
+                    response.status_code == 403
+                    and fallback_url
+                    and not fallback_attempted
+                ):
+                    fallback_attempted = True
+                    logger.warning(
+                        "Import image download got 403; retrying once via GitHub raw "
+                        "url={} fallback={} target={}",
+                        request_url,
+                        fallback_url,
+                        str(target_path),
+                    )
+                    try:
+                        fallback_response = self.http_client.request(
+                            "GET", fallback_url
+                        )
+                        if fallback_response.status_code != 200:
+                            raise ImageDownloadError(
+                                "fallback_unexpected_status_code:"
+                                f"{fallback_response.status_code}"
+                            )
+                        content = deobfuscate_image_bytes(fallback_response.content)
+                        self._validate_image_bytes(content)
+                        target_path.write_bytes(content)
+                        logger.debug(
+                            "Import image download success via fallback url={} "
+                            "target={} size_bytes={}",
+                            fallback_url,
+                            str(target_path),
+                            len(content),
+                        )
+                        return
+                    except (httpx.HTTPError, ImageDownloadError) as fallback_exc:
+                        last_error = fallback_exc
+                        logger.warning(
+                            "Import image fallback failed url={} target={} detail={}",
+                            fallback_url,
+                            str(target_path),
+                            fallback_exc,
+                        )
+                        break
                 if response.status_code != 200:
                     raise ImageDownloadError(f"unexpected_status_code:{response.status_code}")
 
@@ -852,6 +900,45 @@ class MovieImageService:
                     time.sleep(backoff_delay(attempt, step=0.3, cap=1.0))
 
         raise ImageDownloadError(f"download_failed:{image_url}:{last_error}")
+
+    @staticmethod
+    def _gfriends_raw_fallback_url(image_url: str) -> str | None:
+        """把 GFriends 的 jsDelivr 图片地址映射到同路径的 GitHub raw 地址。"""
+        parsed = urlparse(image_url)
+        if parsed.scheme != "https" or parsed.hostname != "cdn.jsdelivr.net":
+            return None
+        path_parts = parsed.path.split("/")
+        if (
+            len(path_parts) < 5
+            or path_parts[1] != "gh"
+            or path_parts[2] != GFRIENDS_JSDELIVR_OWNER
+            or (
+                path_parts[3] != GFRIENDS_JSDELIVR_REPO
+                and not path_parts[3].startswith(f"{GFRIENDS_JSDELIVR_REPO}@")
+            )
+        ):
+            return None
+
+        ref = "HEAD"
+        repo_segment = path_parts[3]
+        if "@" in repo_segment:
+            ref = repo_segment.split("@", 1)[1]
+        if not ref:
+            return None
+        relative_path = "/".join(path_parts[4:])
+        return urlunparse(
+            (
+                "https",
+                GFRIENDS_RAW_HOST,
+                (
+                    f"/{GFRIENDS_JSDELIVR_OWNER}/{GFRIENDS_JSDELIVR_REPO}/"
+                    f"{ref}/{relative_path}"
+                ),
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
 
     @staticmethod
     def _validate_image_bytes(content: bytes) -> None:
