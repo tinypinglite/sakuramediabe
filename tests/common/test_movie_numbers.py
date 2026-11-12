@@ -108,6 +108,8 @@ class TestNormalizeMovieNumber:
     def test_strips_ppv_prefix(self):
         # 有损折叠：仅用于两侧同时折叠后的比较（字幕配对、provider 一致性校验）。
         assert normalize_movie_number("FC2-PPV-1234567") == "FC2-1234567"
+        assert normalize_movie_number("FC2PPV-1234567") == "FC2-1234567"
+        assert normalize_movie_number("FC2_1234567") == "FC2-1234567"
 
     def test_empty_input(self):
         assert normalize_movie_number("") == ""
@@ -130,6 +132,24 @@ class TestMovieNumberLookupValues:
 
     def test_no_separator_yields_single_candidate(self):
         assert movie_number_lookup_values("ABC123") == ["ABC123"]
+
+    def test_fc2_forms_include_ppv_alias(self):
+        assert movie_number_lookup_values("FC2-1234567") == [
+            "FC2-1234567",
+            "FC2_1234567",
+            "FC2-PPV-1234567",
+            "FC2_PPV_1234567",
+            "FC2PPV-1234567",
+            "FC2PPV_1234567",
+        ]
+        assert movie_number_lookup_values("FC2-PPV-1234567") == [
+            "FC2-PPV-1234567",
+            "FC2_PPV_1234567",
+            "FC2-1234567",
+            "FC2_1234567",
+            "FC2PPV-1234567",
+            "FC2PPV_1234567",
+        ]
 
     def test_empty_input(self):
         assert movie_number_lookup_values("") == []

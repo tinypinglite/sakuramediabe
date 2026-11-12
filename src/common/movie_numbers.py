@@ -124,6 +124,13 @@ _DOMAIN_PATTERN = re.compile(
 # 发片组水印（hhb / hhb1 / hhb2 是常见的压制组标记，会粘在番号数字后面）。
 _SOURCE_TAG_PATTERN = re.compile(r"(?i)hhb\d*")
 
+# FC2 的官方展示形态是 FC2-PPV-{id}，JavDB 等榜单常用 FC2-{id}；
+# 两种形态指向同一部影片，查库时需要互相补齐候选。
+_FC2_LOOKUP_PATTERN = re.compile(
+    r"^FC2(?:[-_. ]?PPV)?[-_. ]?(\d{1,9})$",
+    re.IGNORECASE,
+)
+
 
 def remove_disturb(value: str) -> str:
     return _SOURCE_TAG_PATTERN.sub("", _DOMAIN_PATTERN.sub("", value))
@@ -162,13 +169,19 @@ def normalize_movie_number(value: str) -> str:
     normalized = normalized.replace(" ", "")
     if re.fullmatch(r"\d+[-_]\d+", normalized):
         return normalized
+    fc2_match = _FC2_LOOKUP_PATTERN.fullmatch(normalized)
+    if fc2_match:
+        return f"FC2-{fc2_match.group(1)}"
     normalized = normalized.replace("_", "-")
     normalized = normalized.replace("PPV-", "")
     return normalized
 
 
 def movie_number_lookup_values(value: str) -> list[str]:
-    """人工输入的等值候选集；纯数字番号不互换分隔符，其他番号先原形后互换。"""
+    """人工输入的等值候选集；纯数字番号不互换分隔符，其他番号先原形后互换。
+
+    FC2 的 ``FC2-{id}`` 与 ``FC2-PPV-{id}`` 指向同一部影片，会互相补齐候选。
+    """
     stripped = (value or "").strip().upper()
     if not stripped:
         return []
@@ -178,6 +191,19 @@ def movie_number_lookup_values(value: str) -> list[str]:
     for swapped in (stripped.replace("_", "-"), stripped.replace("-", "_")):
         if swapped not in candidates:
             candidates.append(swapped)
+    fc2_match = _FC2_LOOKUP_PATTERN.fullmatch(stripped)
+    if fc2_match:
+        video_id = fc2_match.group(1)
+        for variant in (
+            f"FC2-{video_id}",
+            f"FC2_{video_id}",
+            f"FC2-PPV-{video_id}",
+            f"FC2_PPV_{video_id}",
+            f"FC2PPV-{video_id}",
+            f"FC2PPV_{video_id}",
+        ):
+            if variant not in candidates:
+                candidates.append(variant)
     return candidates
 
 

@@ -8,6 +8,10 @@ import peewee
 from loguru import logger
 
 from src.api.exception.errors import ApiError
+from src.common.movie_numbers import (
+    movie_number_lookup_values,
+    normalize_movie_number,
+)
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     apply_numeric_range_filters,
@@ -405,19 +409,31 @@ class RankingSyncService:
         # 对应的来源插件任务负责刷新，排行榜任务不再重复拉详情。
         existing_movies: dict[str, Movie] = {}
         if movie_numbers:
-            existing_movies = {
-                movie.movie_number: movie
-                for movie in Movie.select(Movie.id, Movie.movie_number, Movie.metadata_source).where(
-                    Movie.movie_number.in_(movie_numbers)
-                )
-            }
+            # 榜单源与元数据插件可能使用不同番号形态（如 FC2-* / FC2-PPV-*），
+            # 用归一化 key 命中本地影片，避免同一部影片反复走元数据导入链。
+            lookup_values = sorted(
+                {
+                    candidate.upper()
+                    for movie_number in movie_numbers
+                    for candidate in movie_number_lookup_values(movie_number)
+                }
+            )
+            if lookup_values:
+                existing_movies = {
+                    normalize_movie_number(movie.movie_number) or movie.movie_number: movie
+                    for movie in Movie.select(
+                        Movie.id, Movie.movie_number, Movie.metadata_source
+                    ).where(peewee.fn.UPPER(Movie.movie_number).in_(lookup_values))
+                }
 
         local_hit_count = 0
         imported_count = 0
         skipped_count = 0
         insert_rows: list[dict[str, Any]] = []
         for rank, movie_number in enumerate(movie_numbers, start=1):
-            movie = existing_movies.get(movie_number)
+            movie = existing_movies.get(
+                normalize_movie_number(movie_number) or movie_number
+            )
             if movie is None:
                 # 本地没有的番号才走元数据插件链入库
                 try:
