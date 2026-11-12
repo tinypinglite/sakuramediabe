@@ -65,10 +65,10 @@ BUNDLED_PLUGINS: tuple[BundledPluginSpec, ...] = (
         "sakuramedia_javbus_metadata", "tinypinglite/sakuramedia_javbus_metadata"
     ),
     BundledPluginSpec(
-        "sakuramedia_fc2_metadata", "tinypinglite/sakuramedia_fc2_metadata"
+        "sakuramedia_dmm_metadata", "tinypinglite/sakuramedia_dmm_metadata"
     ),
     BundledPluginSpec(
-        "sakuramedia_dmm_metadata", "tinypinglite/sakuramedia_dmm_metadata"
+        "sakuramedia_fc2_metadata", "tinypinglite/sakuramedia_fc2_metadata"
     ),
     BundledPluginSpec(
         "sakuramedia_fc2cmadb_metadata",
@@ -83,10 +83,6 @@ BUNDLED_PLUGINS: tuple[BundledPluginSpec, ...] = (
     BundledPluginSpec(
         "sakuramedia_guangyapan_provider",
         "tinypinglite/sakuramedia_guangyapan_provider",
-    ),
-    BundledPluginSpec(
-        "sakuramedia_actor_metadata",
-        "tinypinglite/sakuramedia-actor-metadata",
     ),
     BundledPluginSpec(
         "sakuramedia_more_rank_movies",

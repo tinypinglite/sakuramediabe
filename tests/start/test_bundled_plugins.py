@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
+import sys
+from pathlib import Path
 
 from src.plugins.bundled import (
     DEFAULT_BINDINGS_MARKER_FILENAME,
@@ -9,6 +12,42 @@ from src.plugins.bundled import (
     migrate_plugin_defaults,
     read_bundled_index,
 )
+
+
+def _load_fetch_bundled_plugins_module():
+    script_path = (
+        Path(__file__).resolve().parents[2]
+        / "docker"
+        / "backend"
+        / "fetch_bundled_plugins.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "test_fetch_bundled_plugins", script_path
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    previous_module = sys.modules.get(spec.name)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous_module is None:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous_module
+    return module
+
+
+def test_bundled_metadata_plugin_order_startup_default():
+    module = _load_fetch_bundled_plugins_module()
+
+    assert [spec.plugin_id for spec in module.BUNDLED_PLUGINS[:4]] == [
+        "sakuramedia_javbus_metadata",
+        "sakuramedia_dmm_metadata",
+        "sakuramedia_fc2_metadata",
+        "sakuramedia_fc2cmadb_metadata",
+    ]
 
 
 class _FakePluginManager:
