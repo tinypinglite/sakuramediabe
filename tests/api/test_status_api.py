@@ -22,7 +22,13 @@ from src.plugins.provider_protocol import (
     MEDIA_PROVIDER_REGISTRY,
     StorageSpaceUsage,
 )
+from src.schema.system.announcements import (
+    AnnouncementLevel,
+    StatusAnnouncementResource,
+    StatusAnnouncementsResource,
+)
 from src.service.discovery.embedding_client import EmbeddingClientError
+from src.service.system.announcement_service import announcement_service
 from src.service.system.status_service import StatusService
 
 
@@ -47,6 +53,7 @@ def _create_movie(movie_number: str, **kwargs):
     ("method", "path"),
     [
         ("GET", "/status"),
+        ("GET", "/status/announcements"),
         ("GET", "/status/insights"),
         ("GET", "/status/watch-trend"),
         ("GET", "/status/image-search"),
@@ -91,6 +98,36 @@ def test_status_endpoint_returns_zero_summary_when_library_is_empty(client, acco
             "total": 0,
         },
     }
+
+
+def test_announcements_endpoint_returns_service_items(
+    client, account_user, monkeypatch
+):
+    token = _login(client, username=account_user.username)
+    item = StatusAnnouncementResource(
+        id="announcement-1",
+        level=AnnouncementLevel.WARNING,
+        title_i18n={"zh-CN": "标题", "en": "Title"},
+        body_i18n={"zh-CN": "正文", "en": "Body"},
+        published_at=runtime_now(),
+        link="https://example.test/notice",
+    )
+    monkeypatch.setattr(
+        announcement_service,
+        "get_active",
+        lambda: StatusAnnouncementsResource(items=[item]),
+    )
+
+    response = client.get(
+        "/status/announcements",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["id"] == "announcement-1"
+    assert response.json()["items"][0]["level"] == "warning"
+    assert response.json()["items"][0]["title_i18n"]["en"] == "Title"
+    assert response.json()["items"][0]["published_at"].endswith("+00:00")
 
 
 def test_status_endpoint_returns_aggregated_summary(client, account_user, monkeypatch):

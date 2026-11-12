@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Query, status
 
 from src.api.routers.deps import db_deps, get_current_user
+from src.schema.system.announcements import StatusAnnouncementsResource
 from src.schema.system.status import (
     ImageSearchResetResource,
     StatusImageSearchResource,
@@ -10,6 +11,7 @@ from src.schema.system.status import (
     StatusWatchTrendResource,
 )
 from src.service.discovery.image_search_reset_service import ImageSearchResetService
+from src.service.system.announcement_service import announcement_service
 from src.service.system.optional_services import capabilities
 from src.service.system.status_service import StatusService
 
@@ -27,6 +29,11 @@ def get_capabilities():
 @router.get("/status", response_model=StatusResource)
 def get_status():
     return StatusService.get_status()
+
+
+@router.get("/status/announcements", response_model=StatusAnnouncementsResource)
+def get_announcements():
+    return announcement_service.get_active()
 
 
 @router.get("/status/insights", response_model=StatusInsightsResource)
