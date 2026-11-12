@@ -43,6 +43,7 @@ from src.service.playback.media_video_info_backfill_service import (
     MediaVideoInfoBackfillService,
 )
 from src.service.system import ActivityCleanupService
+from src.service.system.plugin_test_service import PluginTestService
 from src.service.transfers.downloads.auto_subscribed.auto_download_service import (
     SubscribedMovieAutoDownloadService,
 )
@@ -327,4 +328,5 @@ refresh_media_provider_registry(_ACTIVE_PLUGINS)
 MetadataSourceService.register(_ACTIVE_PLUGINS)
 MovieReviewSourceService.register(_ACTIVE_PLUGINS)
 MovieStatsSourceService.register(_ACTIVE_PLUGINS)
+PluginTestService.register(_ACTIVE_PLUGINS)
 JOB_REGISTRY_BY_KEY: dict[str, JobDefinition] = {job.task_key: job for job in JOB_REGISTRY}

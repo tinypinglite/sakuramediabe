@@ -1,10 +1,14 @@
 """插件管理接口的响应模型。"""
 
-from typing import Any
+from datetime import date
+from typing import Any, Literal
 
 from pydantic import Field
 
 from src.schema.common.base import SchemaModel
+
+PluginTestCapability = Literal["metadata", "stats", "reviews"]
+PluginTestStatus = Literal["ok", "empty", "failed"]
 
 
 class PluginSummaryResource(SchemaModel):
@@ -16,6 +20,8 @@ class PluginSummaryResource(SchemaModel):
     load_status: str = "ok"
     load_error: str | None = None
     release_api_url: str | None = None
+    test_capabilities: list[PluginTestCapability] = Field(default_factory=list)
+    test_movie_number: str | None = None
 
 
 class PluginDetailResource(PluginSummaryResource):
@@ -98,3 +104,42 @@ class PluginBindingUpdateRequest(SchemaModel):
 
 class PluginBindingUpdateResource(PluginBindingResource):
     pending_restart: list[str]
+
+
+class PluginTestRequest(SchemaModel):
+    capability: PluginTestCapability
+
+
+class PluginTestMetadataSummary(SchemaModel):
+    movie_number: str
+    title: str
+    release_date: date
+    duration_minutes: int
+    actor_count: int
+    tag_count: int
+    image_count: int
+    source_url: str | None = None
+
+
+class PluginTestStatsSummary(SchemaModel):
+    heat: int
+    field_count: int
+    values: dict[str, int | float] = Field(default_factory=dict)
+
+
+class PluginTestReviewsSummary(SchemaModel):
+    item_count: int
+    first_username: str | None = None
+    first_excerpt: str | None = None
+
+
+class PluginTestResultResource(SchemaModel):
+    capability: PluginTestCapability
+    status: PluginTestStatus
+    movie_number: str
+    duration_ms: int
+    metadata: PluginTestMetadataSummary | None = None
+    stats: PluginTestStatsSummary | None = None
+    reviews: PluginTestReviewsSummary | None = None
+    error_type: str | None = None
+    error_message: str | None = None

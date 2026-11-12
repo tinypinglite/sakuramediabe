@@ -17,6 +17,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, Request, UploadFile
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
+from src.i18n import translate
 from src.i18n.text import resolve_text
 from src.plugins.installer import MAX_ARCHIVE_BYTES
 from src.plugins.manager import PluginManager, PluginSettingsValidationError
@@ -30,6 +31,8 @@ from src.schema.system.plugins import (
     PluginSettingsResource,
     PluginSettingsUpdateResource,
     PluginSummaryResource,
+    PluginTestRequest,
+    PluginTestResultResource,
     StatsFieldResource,
 )
 from src.service.system.plugin_binding_service import PluginBindingService
@@ -37,6 +40,11 @@ from src.service.system.plugin_removal_service import (
     PluginBindingInUseError,
     PluginInUseError,
     PluginRemovalService,
+)
+from src.service.system.plugin_test_service import (
+    PluginTestCapabilityUnsupported,
+    PluginTestService,
+    PluginTestUnavailable,
 )
 
 router = APIRouter(
@@ -77,9 +85,27 @@ def _upload_temp_path(manager: PluginManager) -> Path:
     return upload_dir / f"{uuid.uuid4().hex}.zip"
 
 
+def _plugin_summary(data: dict[str, Any]) -> PluginSummaryResource:
+    capabilities, movie_number = PluginTestService.describe(data["plugin_id"])
+    return PluginSummaryResource(
+        **data,
+        test_capabilities=list(capabilities),
+        test_movie_number=movie_number,
+    )
+
+
+def _plugin_detail(data: dict[str, Any]) -> PluginDetailResource:
+    capabilities, movie_number = PluginTestService.describe(data["plugin_id"])
+    return PluginDetailResource(
+        **data,
+        test_capabilities=list(capabilities),
+        test_movie_number=movie_number,
+    )
+
+
 @router.get("", response_model=list[PluginSummaryResource])
 def list_plugins():
-    return PluginManager().list_plugins()
+    return [_plugin_summary(item) for item in PluginManager().list_plugins()]
 
 
 def _binding_resource() -> PluginBindingResource:
@@ -162,7 +188,41 @@ def get_plugin(plugin_id: str):
     detail = PluginManager().get_plugin(plugin_id)
     if detail is None:
         raise ApiError(404, "plugin_not_found", f"未知插件 plugin_id={plugin_id}")
-    return detail
+    return _plugin_detail(detail)
+
+
+@router.post("/{plugin_id}/test", response_model=PluginTestResultResource)
+def test_plugin(plugin_id: str, payload: PluginTestRequest):
+    manager = PluginManager()
+    detail = manager.get_plugin(plugin_id)
+    if detail is None:
+        raise ApiError(404, "plugin_not_found", f"未知插件 plugin_id={plugin_id}")
+    if not detail["enabled"]:
+        raise ApiError(
+            409,
+            "plugin_test_disabled",
+            translate("errors.plugin_test_disabled"),
+        )
+    if detail["load_status"] != "ok":
+        raise ApiError(
+            409,
+            "plugin_test_unavailable",
+            translate("errors.plugin_test_unavailable"),
+        )
+    try:
+        return PluginTestService.run(plugin_id, payload.capability)
+    except PluginTestCapabilityUnsupported as exc:
+        raise ApiError(
+            422,
+            "plugin_test_unsupported",
+            translate("errors.plugin_test_unsupported"),
+        ) from exc
+    except PluginTestUnavailable as exc:
+        raise ApiError(
+            409,
+            "plugin_test_unavailable",
+            translate("errors.plugin_test_unavailable"),
+        ) from exc
 
 
 @router.get("/{plugin_id}/settings", response_model=PluginSettingsResource, response_model_exclude_none=True)
@@ -258,16 +318,7 @@ def set_plugin_enabled(plugin_id: str, enabled: bool):
     except ValueError as exc:
         raise ApiError(404, "plugin_not_found", str(exc)) from exc
     detail = manager.get_plugin(plugin_id)
-    return PluginSummaryResource(
-        plugin_id=detail["plugin_id"],
-        display_name=detail["display_name"],
-        version=detail["version"],
-        host_api_version=detail["host_api_version"],
-        enabled=detail["enabled"],
-        load_status=detail["load_status"],
-        load_error=detail["load_error"],
-        release_api_url=detail["release_api_url"],
-    )
+    return _plugin_summary(detail)
 
 
 @router.delete("/{plugin_id}", response_model=PluginInstallResponse)

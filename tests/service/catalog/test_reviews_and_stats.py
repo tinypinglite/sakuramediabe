@@ -1,10 +1,15 @@
 from types import SimpleNamespace
 
+import pytest
+
 from src.config.config import settings
 from src.model import Movie
 from src.plugins.extensions.reviews import PluginMovieReview
 from src.plugins.extensions.stats import PluginMovieStatsSnapshot
-from src.service.catalog.movie_review_source_service import MovieReviewSourceService
+from src.service.catalog.movie_review_source_service import (
+    MovieReviewSourceService,
+    MovieReviewsUnavailable,
+)
 from src.service.catalog.movie_stats_service import MovieStatsService
 
 
@@ -17,31 +22,14 @@ def _install_review_sources(monkeypatch, sources):
     monkeypatch.setattr(settings.plugins, "review_source", None)
 
 
-def test_review_source_none_continues_empty_wins_and_errors_continue(monkeypatch):
+def test_review_source_none_returns_empty_without_calling_sources(monkeypatch):
     calls: list[str] = []
-
-    class EmptySource:
-        def fetch_reviews(self, *_args):
-            calls.append("empty")
-            return []
-
-    class ErrorSource:
-        def fetch_reviews(self, *_args):
-            calls.append("error")
-            raise RuntimeError("boom")
-
-    class LaterSource:
-        def fetch_reviews(self, *_args):
-            calls.append("later")
-            return [PluginMovieReview(id=1, content="later")]
 
     _install_review_sources(
         monkeypatch,
         [
             ("missing", SimpleNamespace(fetch_reviews=lambda *_args: None)),
-            ("error", ErrorSource()),
-            ("empty", EmptySource()),
-            ("later", LaterSource()),
+            ("enabled", SimpleNamespace(fetch_reviews=lambda *_args: [])),
         ],
     )
 
@@ -50,7 +38,7 @@ def test_review_source_none_continues_empty_wins_and_errors_continue(monkeypatch
     )
 
     assert result == []
-    assert calls == ["error", "empty"]
+    assert calls == []
 
 
 def test_review_source_uses_bound_plugin_only(monkeypatch):
@@ -78,6 +66,45 @@ def test_review_source_uses_bound_plugin_only(monkeypatch):
 
     assert [item.id for item in result] == [2]
     assert calls == ["bound"]
+
+
+def test_review_source_bound_none_result_does_not_fall_back(monkeypatch):
+    calls: list[str] = []
+
+    class BoundSource:
+        def fetch_reviews(self, *_args):
+            calls.append("bound")
+
+    class OtherSource:
+        def fetch_reviews(self, *_args):
+            calls.append("other")
+            return [PluginMovieReview(id=1, content="other")]
+
+    _install_review_sources(
+        monkeypatch,
+        [("bound", BoundSource()), ("other", OtherSource())],
+    )
+    monkeypatch.setattr(settings.plugins, "review_source", "bound")
+
+    result = MovieReviewSourceService.fetch(
+        "ABP-001", page=1, page_size=20, sort="recently"
+    )
+
+    assert result == []
+    assert calls == ["bound"]
+
+
+def test_review_source_bound_plugin_unavailable_raises(monkeypatch):
+    _install_review_sources(
+        monkeypatch,
+        [("enabled", SimpleNamespace(fetch_reviews=lambda *_args: []))],
+    )
+    monkeypatch.setattr(settings.plugins, "review_source", "missing")
+
+    with pytest.raises(MovieReviewsUnavailable):
+        MovieReviewSourceService.fetch(
+            "ABP-001", page=1, page_size=20, sort="recently"
+        )
 
 
 def test_stats_snapshot_replaces_values_and_heat(test_db):

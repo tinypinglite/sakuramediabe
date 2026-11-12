@@ -11,6 +11,8 @@ import pytest
 
 from src.config.config import settings
 from src.plugins import HOST_API_VERSION
+from src.schema.system.plugins import PluginTestResultResource
+from src.service.system.plugin_test_service import PluginTestService
 
 
 @pytest.fixture(autouse=True)
@@ -142,6 +144,62 @@ def test_install_plugin_rejects_invalid_zip(
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "plugin_install_failed"
+
+
+def test_plugin_test_endpoint_returns_capability_result(
+    client,
+    account_user,
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "plugins"
+    monkeypatch.setattr("src.plugins.manager._plugin_root", lambda: root)
+    monkeypatch.setattr(
+        "src.plugins.manager.update_settings",
+        lambda new_settings: setattr(
+            settings.plugins, "enabled", list(new_settings.plugins.enabled)
+        ),
+    )
+    monkeypatch.setattr(
+        PluginTestService,
+        "describe",
+        classmethod(lambda cls, _plugin_id: (("metadata",), "SSIS-001")),
+    )
+    monkeypatch.setattr(
+        PluginTestService,
+        "run",
+        staticmethod(
+            lambda _plugin_id, capability: PluginTestResultResource(
+                capability=capability,
+                status="ok",
+                movie_number="SSIS-001",
+                duration_ms=12,
+            )
+        ),
+    )
+    token = _login(client, username=account_user.username)
+    headers = {"Authorization": f"Bearer {token}"}
+    response = client.post(
+        "/system/plugins",
+        headers=headers,
+        files={"file": ("demo.zip", _zip_bytes(), "application/zip")},
+        data={"enable": "true"},
+    )
+    assert response.status_code == 201, response.text
+
+    response = client.get("/system/plugins", headers=headers)
+    assert response.status_code == 200
+    assert response.json()[0]["test_capabilities"] == ["metadata"]
+    assert response.json()[0]["test_movie_number"] == "SSIS-001"
+
+    response = client.post(
+        "/system/plugins/api_plugin/test",
+        headers=headers,
+        json={"capability": "metadata"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "ok"
+    assert response.json()["movie_number"] == "SSIS-001"
 
 
 def test_install_plugin_with_dependencies_requires_container_restart(

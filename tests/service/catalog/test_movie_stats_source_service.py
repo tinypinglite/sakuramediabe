@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import timedelta
 
 from src.common.runtime_time import utc_now_for_db
 from src.config.config import settings
@@ -108,7 +108,7 @@ def test_stats_sync_rechecks_rows_with_stale_heat_version(test_db, monkeypatch):
     movie = Movie.create(
         movie_number="STATS-VERSION-001",
         title="stats version",
-        release_date=date(2020, 1, 1),
+        release_date=utc_now_for_db().date() - timedelta(days=365),
         stats_source="stats_plugin",
         stats_updated_at=utc_now_for_db(),
         heat_version="old-v1",
@@ -125,6 +125,50 @@ def test_stats_sync_rechecks_rows_with_stale_heat_version(test_db, monkeypatch):
     stored = Movie.get_by_id(movie.id)
     assert stored.heat == 4567
     assert stored.heat_version == "test-v1"
+
+
+def test_stats_sync_initializes_unsynced_old_movies(test_db, monkeypatch):
+    movie = Movie.create(
+        movie_number="STATS-OLD-001",
+        title="old stats",
+        release_date=utc_now_for_db().date() - timedelta(days=365),
+    )
+    _install_source(
+        monkeypatch,
+        plugin_id="stats_plugin",
+        result=PluginMovieStatsSnapshot(values={"score": 4.8}, heat=4567),
+    )
+
+    result = MovieStatsSyncService.run(reporter=_Reporter())
+
+    assert result["candidate_movies"] == 1
+    stored = Movie.get_by_id(movie.id)
+    assert stored.interaction_stats == {"score": 4.8}
+    assert stored.heat == 4567
+    assert stored.stats_updated_at is not None
+
+
+def test_stats_sync_refreshes_old_movies_periodically(test_db, monkeypatch):
+    movie = Movie.create(
+        movie_number="STATS-OLD-SYNCED-001",
+        title="old synced stats",
+        release_date=utc_now_for_db().date() - timedelta(days=365),
+        stats_source="stats_plugin",
+        stats_updated_at=utc_now_for_db() - timedelta(days=31),
+        heat_version="test-v1",
+    )
+    _install_source(
+        monkeypatch,
+        plugin_id="stats_plugin",
+        result=PluginMovieStatsSnapshot(values={"score": 4.8}, heat=4567),
+    )
+
+    result = MovieStatsSyncService.run(reporter=_Reporter())
+
+    assert result["candidate_movies"] == 1
+    stored = Movie.get_by_id(movie.id)
+    assert stored.interaction_stats == {"score": 4.8}
+    assert stored.heat == 4567
 
 
 def test_stats_sync_skips_when_no_source_bound(test_db, monkeypatch):

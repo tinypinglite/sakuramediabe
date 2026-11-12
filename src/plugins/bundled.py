@@ -26,9 +26,7 @@ from src.plugins.manifest import PLUGIN_ID_PATTERN
 BUNDLED_INDEX_NAME = "official-plugins.json"
 BUNDLED_FAILURES_FILENAME = "bundled-plugin-failures.json"
 DEFAULT_BUNDLE_DIR = Path("/app/bundled-plugins")
-DEFAULT_STATS_SOURCE = "sakuramedia_javdb_metadata"
 DEFAULT_REVIEW_SOURCE = "sakuramedia_javdb_metadata"
-DEFAULT_METADATA_FALLBACK = "sakuramedia_javbus_metadata"
 DEFAULT_BINDINGS_MARKER_FILENAME = "plugin-defaults-v1.json"
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 
@@ -261,23 +259,8 @@ def _write_defaults_marker(root_dir: Path) -> None:
     temporary_path.replace(path)
 
 
-def _move_plugin_before(
-    plugin_ids: list[str],
-    *,
-    plugin_id: str,
-    before_id: str,
-) -> list[str]:
-    if plugin_id not in plugin_ids or before_id not in plugin_ids:
-        return plugin_ids
-    if plugin_ids.index(plugin_id) < plugin_ids.index(before_id):
-        return plugin_ids
-    reordered = [item for item in plugin_ids if item != plugin_id]
-    reordered.insert(reordered.index(before_id), plugin_id)
-    return reordered
-
-
 def migrate_plugin_defaults() -> None:
-    """一次性统一 JavDB/JavBus 顺序与 JavDB 绑定；执行后写标记。"""
+    """一次性把 JavDB 设为默认评论来源；执行后写标记。"""
 
     from src.config.config import Settings, settings, update_settings
 
@@ -285,27 +268,13 @@ def migrate_plugin_defaults() -> None:
     root_dir = Path(current.plugins.root_dir)
     if _defaults_marker_path(root_dir).exists():
         return
-    if DEFAULT_STATS_SOURCE not in current.plugins.enabled:
+    if DEFAULT_REVIEW_SOURCE not in current.plugins.enabled:
         return
-    if not (root_dir / DEFAULT_STATS_SOURCE).is_dir():
+    if not (root_dir / DEFAULT_REVIEW_SOURCE).is_dir():
         return
 
-    changed = False
-    reordered = _move_plugin_before(
-        list(current.plugins.enabled),
-        plugin_id=DEFAULT_STATS_SOURCE,
-        before_id=DEFAULT_METADATA_FALLBACK,
-    )
-    if reordered != current.plugins.enabled:
-        current.plugins.enabled = reordered
-        changed = True
-    if current.plugins.stats_source != DEFAULT_STATS_SOURCE:
-        current.plugins.stats_source = DEFAULT_STATS_SOURCE
-        changed = True
     if current.plugins.review_source != DEFAULT_REVIEW_SOURCE:
         current.plugins.review_source = DEFAULT_REVIEW_SOURCE
-        changed = True
-    if changed:
         update_settings(current)
     _write_defaults_marker(root_dir)
 
@@ -315,9 +284,7 @@ __all__ = [
     "BUNDLED_INDEX_NAME",
     "DEFAULT_BINDINGS_MARKER_FILENAME",
     "DEFAULT_BUNDLE_DIR",
-    "DEFAULT_METADATA_FALLBACK",
     "DEFAULT_REVIEW_SOURCE",
-    "DEFAULT_STATS_SOURCE",
     "BundledInstallResult",
     "BundledPluginEntry",
     "BundledPluginError",

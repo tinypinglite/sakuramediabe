@@ -73,26 +73,23 @@ class MovieReviewSourceService:
         page_size: int,
         sort: str,
     ) -> list[PluginMovieReview]:
-        failures: list[str] = []
         bound = cls.bound_source()
-        sources = (bound,) if bound is not None else cls.enabled_sources()
-        for plugin_id, name, name_i18n, source in sources:
-            display_name = resolve_text(name, name_i18n)
-            try:
-                result = source.fetch_reviews(
-                    movie_number, page, page_size, sort
-                )
-                if result is None:
-                    continue
-                return [PluginMovieReview.model_validate(item) for item in result]
-            except Exception as exc:
-                failures.append(f"{display_name}: {type(exc).__name__}")
-                logger.warning(
-                    "Movie review source failed plugin={} movie_number={} detail={}",
-                    plugin_id,
-                    movie_number,
-                    exc,
-                )
-        if failures:
-            raise MovieReviewsUnavailable("; ".join(failures))
-        return []
+        if bound is None:
+            return []
+        plugin_id, name, name_i18n, source = bound
+        display_name = resolve_text(name, name_i18n)
+        try:
+            result = source.fetch_reviews(movie_number, page, page_size, sort)
+        except Exception as exc:
+            logger.warning(
+                "Movie review source failed plugin={} movie_number={} detail={}",
+                plugin_id,
+                movie_number,
+                exc,
+            )
+            raise MovieReviewsUnavailable(
+                f"{display_name}: {type(exc).__name__}"
+            ) from exc
+        if result is None:
+            return []
+        return [PluginMovieReview.model_validate(item) for item in result]

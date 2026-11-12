@@ -204,7 +204,7 @@ def _capture_updates(monkeypatch, settings):
     return updates
 
 
-def test_plugin_defaults_migrate_existing_install_once(monkeypatch, tmp_path):
+def test_plugin_defaults_bind_review_source_once(monkeypatch, tmp_path):
     enabled = [
         "sakuramedia_javbus_metadata",
         "sakuramedia_javdb_metadata",
@@ -229,11 +229,11 @@ def test_plugin_defaults_migrate_existing_install_once(monkeypatch, tmp_path):
     assert len(updates) == 1
     migrated = updates[0]
     assert migrated.enabled == [
-        "sakuramedia_javdb_metadata",
         "sakuramedia_javbus_metadata",
+        "sakuramedia_javdb_metadata",
         "other_plugin",
     ]
-    assert migrated.stats_source == "sakuramedia_javdb_metadata"
+    assert migrated.stats_source == "sakuramedia_javbus_metadata"
     assert migrated.review_source == "sakuramedia_javdb_metadata"
     assert (
         tmp_path / ".runtime" / DEFAULT_BINDINGS_MARKER_FILENAME

@@ -59,6 +59,71 @@ def test_search_actors_matches_alias(client, account_user, search_actors):
     assert set(_item_ids(body)) == {sanshang.id, alias_only.id}
 
 
+def test_search_actors_matches_display_name_override(
+    client, account_user, test_db
+):
+    exact = Actor.create(
+        name="来源名称",
+        display_name_override="本地显示名",
+        gender=1,
+    )
+    prefix = Actor.create(
+        name="另一个来源",
+        display_name_override="本地显示名字",
+        gender=1,
+    )
+    headers = _login(client, account_user.username)
+
+    body = _search(client, headers, query="本地显示名")
+    assert _item_ids(body) == [exact.id, prefix.id]
+    assert body["items"][0]["display_name"] == "本地显示名"
+
+    source_name_body = _search(client, headers, query="来源名称")
+    assert _item_ids(source_name_body) == [exact.id]
+
+
+def test_search_actors_matches_simplified_japanese_and_traditional_forms(
+    client, account_user, test_db
+):
+    simplified = Actor.create(name="亚美", gender=1)
+    japanese = Actor.create(name="亜美", gender=1)
+    traditional = Actor.create(name="亞美", gender=1)
+    alias_only = Actor.create(name="别名演员", alias_name="亚美", gender=1)
+    display_override = Actor.create(
+        name="显示名演员",
+        display_name_override="亜美",
+        gender=1,
+    )
+    headers = _login(client, account_user.username)
+    expected_ids = {
+        simplified.id,
+        japanese.id,
+        traditional.id,
+        alias_only.id,
+        display_override.id,
+    }
+
+    for query in ("亚美", "亜美", "亞美"):
+        body = _search(client, headers, query=query)
+        assert set(_item_ids(body)) == expected_ids
+
+    assert _item_ids(_search(client, headers, query="亚美"))[0] == simplified.id
+    assert _item_ids(_search(client, headers, query="亜美"))[0] == japanese.id
+    assert _item_ids(_search(client, headers, query="亞美"))[0] == traditional.id
+
+
+def test_search_actors_han_variants_keep_multi_word_and_semantics(
+    client, account_user, test_db
+):
+    matching = Actor.create(name="亜美 東京", gender=1)
+    Actor.create(name="大阪演员", gender=1)
+    headers = _login(client, account_user.username)
+
+    body = _search(client, headers, query="亚美 东京")
+
+    assert _item_ids(body) == [matching.id]
+
+
 def test_search_actors_combines_with_existing_filters(
     client, account_user, search_actors
 ):

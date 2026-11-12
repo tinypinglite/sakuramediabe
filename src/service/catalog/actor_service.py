@@ -21,6 +21,7 @@ from PIL import Image as PillowImage
 from PIL import ImageOps, UnidentifiedImageError
 
 from src.api.exception.errors import ApiError
+from src.common.han_variants import han_script_variants
 from src.common.media_paths import media_image_root_path, normalize_asset_dir_name
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
@@ -157,31 +158,49 @@ class ActorService:
             "cup": cls._normalized_cup_expression(),
         }
 
+    @staticmethod
+    def _actor_display_name_expression():
+        return fn.COALESCE(
+            fn.NULLIF(fn.BTRIM(Actor.display_name_override), ""),
+            Actor.name,
+        )
+
     @classmethod
-    def _actor_search_score_expression(cls, search_terms: Sequence[str]):
-        """演员检索相关度：完整姓名 0、姓名前缀 1、姓名包含 2、别名包含 3。"""
-        term_scores = []
-        for term in search_terms:
-            term_scores.append(
-                Case(
-                    None,
+    def _actor_search_score_expression(
+        cls, search_term_groups: Sequence[Sequence[str]]
+    ):
+        """演员检索相关度：精确、前缀、包含、别名包含；同级别优先原形。"""
+        display_name = cls._actor_display_name_expression()
+        group_scores = []
+        for terms in search_term_groups:
+            branches = []
+            for variant_index, term in enumerate(terms):
+                branches.extend(
                     [
-                        (fn.UPPER(Actor.name) == term.upper(), 0),
-                        (Actor.name.startswith(term), 1),
-                        (Actor.name.contains(term), 2),
-                        (Actor.alias_name.contains(term), 3),
-                    ],
+                        (fn.UPPER(display_name) == term.upper(), variant_index),
+                        (fn.UPPER(Actor.name) == term.upper(), variant_index),
+                        (display_name.startswith(term), 4 + variant_index),
+                        (Actor.name.startswith(term), 4 + variant_index),
+                        (display_name.contains(term), 8 + variant_index),
+                        (Actor.name.contains(term), 8 + variant_index),
+                        (Actor.alias_name.contains(term), 12 + variant_index),
+                    ]
                 )
-            )
-        return reduce(operator.add, term_scores)
+            group_scores.append(Case(None, sorted(branches, key=lambda item: item[1])))
+        return reduce(operator.add, group_scores)
 
     @classmethod
     def _build_actor_list_sort(
-        cls, sort: str | None, search_terms: Sequence[str] = ()
+        cls,
+        sort: str | None,
+        search_term_groups: Sequence[Sequence[str]] = (),
     ) -> Sequence:
         """解析演员列表排序表达式，并补充稳定的 id 次级排序。"""
-        if search_terms and (sort is None or not sort.strip()):
-            return [cls._actor_search_score_expression(search_terms), Actor.id.asc()]
+        if search_term_groups and (sort is None or not sort.strip()):
+            return [
+                cls._actor_search_score_expression(search_term_groups),
+                Actor.id.asc(),
+            ]
 
         def _age_order(_field_name: str, direction: str) -> list:
             inverse_direction = "desc" if direction == "asc" else "asc"
@@ -253,13 +272,22 @@ class ActorService:
         return date(year, today.month, min(today.day, monthrange(year, today.month)[1]))
 
     @classmethod
-    def _actor_search_conditions(cls, search_terms: Sequence[str]):
-        """多词检索：词之间 AND，词内姓名/别名 OR。"""
+    def _actor_search_conditions(cls, search_term_groups: Sequence[Sequence[str]]):
+        """多词检索：词之间 AND，词内姓名/显示名/别名 OR。"""
+        display_name = cls._actor_display_name_expression()
         return reduce(
             operator.and_,
             (
-                (Actor.name.contains(term)) | (Actor.alias_name.contains(term))
-                for term in search_terms
+                reduce(
+                    operator.or_,
+                    (
+                        (Actor.name.contains(term))
+                        | (Actor.alias_name.contains(term))
+                        | (display_name.contains(term))
+                        for term in terms
+                    ),
+                )
+                for terms in search_term_groups
             ),
         )
 
@@ -274,7 +302,7 @@ class ActorService:
         height_max: int | None = None,
         cups: Sequence[str] | None = None,
         has_playable_movies: bool = False,
-        search_terms: Sequence[str] = (),
+        search_term_groups: Sequence[Sequence[str]] = (),
     ):
         """演员列表筛选统一收口到这里，保证 count 和 items 逻辑一致。"""
         if age_min is not None and age_max is not None and age_min > age_max:
@@ -314,8 +342,8 @@ class ActorService:
             query = query.where(cls._normalized_cup_expression().in_(cups))
         if has_playable_movies:
             query = query.where(cls._has_playable_movie_expression())
-        if search_terms:
-            query = query.where(cls._actor_search_conditions(search_terms))
+        if search_term_groups:
+            query = query.where(cls._actor_search_conditions(search_term_groups))
 
         return query
 
@@ -357,6 +385,9 @@ class ActorService:
     ) -> PageResponse[ActorResource]:
         start = max(page - 1, 0) * page_size
         search_terms = split_search_terms(query, error_code="invalid_actor_filter")
+        search_term_groups = [
+            han_script_variants(term) for term in search_terms
+        ]
         filter_kwargs = {
             "gender": gender,
             "subscription_status": subscription_status,
@@ -366,12 +397,12 @@ class ActorService:
             "height_max": height_max,
             "cups": cups,
             "has_playable_movies": has_playable_movies,
-            "search_terms": search_terms,
+            "search_term_groups": search_term_groups,
         }
         total = cls._filtered_actors(**filter_kwargs).count()
         actors = list(
             cls._filtered_actors(**filter_kwargs)
-            .order_by(*cls._build_actor_list_sort(sort, search_terms))
+            .order_by(*cls._build_actor_list_sort(sort, search_term_groups))
             .offset(start)
             .limit(page_size)
         )

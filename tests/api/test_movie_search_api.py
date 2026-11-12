@@ -107,6 +107,32 @@ def test_search_matches_actor_name_and_alias(client, account_user, search_movies
     }
 
 
+def test_search_matches_actor_display_name_override(
+    client, account_user, test_db
+):
+    actor = Actor.create(
+        name="来源名称",
+        display_name_override="本地显示名",
+        gender=1,
+    )
+    movie = _create_movie("ABC-999", "無関係な作品")
+    MovieActor.create(movie=movie, actor=actor)
+    headers = _login(client, account_user.username)
+
+    body = _search(client, headers, query="本地显示名")
+    assert _item_ids(body) == [movie.id]
+
+
+def test_search_matches_actor_han_script_variants(client, account_user, test_db):
+    actor = Actor.create(name="亜美", gender=1)
+    movie = _create_movie("ABC-998", "無関係な作品")
+    MovieActor.create(movie=movie, actor=actor)
+    headers = _login(client, account_user.username)
+
+    for query in ("亚美", "亜美", "亞美"):
+        assert _item_ids(_search(client, headers, query=query)) == [movie.id]
+
+
 def test_search_matches_tag_name(client, account_user, search_movies):
     _onsen, _kiss, fc2, tagged, _actor, _tag = search_movies
     headers = _login(client, account_user.username)

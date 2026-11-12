@@ -12,6 +12,7 @@ from typing import Any
 
 from loguru import logger
 
+from src.common.han_variants import han_script_variants
 from src.metadata.provider import MetadataRequestClient
 
 
@@ -22,6 +23,14 @@ class GfriendsActorCandidate:
     alias_names: tuple[str, ...]
     relative_path: str
     avatar_url: str
+
+
+@dataclass(frozen=True)
+class _GfriendsDirectoryEntry:
+    name: str
+    alias_names: tuple[str, ...]
+    name_forms: tuple[str, ...]
+    alias_forms: tuple[str, ...]
 
 
 class GfriendsActorImageResolver(MetadataRequestClient):
@@ -59,7 +68,8 @@ class GfriendsActorImageResolver(MetadataRequestClient):
             ).resolve()
         self.cache_ttl_seconds = max(cache_ttl_hours, 1) * 3600
         self._index: dict[str, str] | None = None
-        self._entries: dict[str, tuple[str, tuple[str, ...]]] = {}
+        self._variant_index: dict[str, str] = {}
+        self._entries: dict[str, _GfriendsDirectoryEntry] = {}
         self._candidate_paths: dict[str, str] = {}
         self._disk_hydrated: bool = False
         self._hydrated_mtime: float | None = None
@@ -78,42 +88,62 @@ class GfriendsActorImageResolver(MetadataRequestClient):
             relative_path = index.get(normalized_name)
             if relative_path:
                 return self._avatar_url(relative_path)
+        for candidate_name in candidate_names:
+            for normalized_variant in self._normalize_name_variants(candidate_name):
+                relative_path = self._variant_index.get(normalized_variant)
+                if relative_path:
+                    return self._avatar_url(relative_path)
         return None
 
     def search(self, query: str, *, limit: int = 20) -> list[GfriendsActorCandidate]:
         """按姓名/别名搜索候选，按头像路径去重并保留 exact→prefix→contains 顺序。"""
         self._read_index_lazy()
-        normalized_query = self._normalize_name(query)
-        if not normalized_query or not self._entries:
+        query_variants = self._normalize_name_variants(query)
+        if not query_variants or not self._entries:
             return []
 
-        ranked: list[tuple[int, int, str]] = []
-        for relative_path, (name, alias_names) in self._entries.items():
-            normalized_name = self._normalize_name(name)
-            normalized_aliases = [
-                self._normalize_name(alias) for alias in alias_names if alias
-            ]
-            score: int | None = None
-            if normalized_name == normalized_query:
-                score = 0
-            elif normalized_query in normalized_aliases:
-                score = 1
-            elif normalized_name.startswith(normalized_query):
-                score = 2
-            elif any(alias.startswith(normalized_query) for alias in normalized_aliases):
-                score = 3
-            elif normalized_query in normalized_name:
-                score = 4
-            elif any(normalized_query in alias for alias in normalized_aliases):
-                score = 5
-            if score is not None:
-                ranked.append((score, len(name), relative_path))
+        ranked: list[tuple[int, int, int, str]] = []
+        for relative_path, entry in self._entries.items():
+            best_match: tuple[int, int] | None = None
+            for variant_index, normalized_query in enumerate(query_variants):
+                for form in entry.name_forms:
+                    if form == normalized_query:
+                        score = 0
+                    elif form.startswith(normalized_query):
+                        score = 2
+                    elif normalized_query in form:
+                        score = 4
+                    else:
+                        continue
+                    best_match = self._better_match(
+                        best_match, (score, variant_index)
+                    )
+                for form in entry.alias_forms:
+                    if form == normalized_query:
+                        score = 1
+                    elif form.startswith(normalized_query):
+                        score = 3
+                    elif normalized_query in form:
+                        score = 5
+                    else:
+                        continue
+                    best_match = self._better_match(
+                        best_match, (score, variant_index)
+                    )
+            if best_match is not None:
+                ranked.append(
+                    (
+                        best_match[0],
+                        best_match[1],
+                        len(entry.name),
+                        relative_path,
+                    )
+                )
 
-        ranked.sort(key=lambda item: (item[0], item[1], item[2]))
+        ranked.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
         candidates: list[GfriendsActorCandidate] = []
-        for _score, _name_len, relative_path in ranked[:limit]:
-            name, alias_names = self._entries[relative_path]
-            candidates.append(self._candidate(relative_path, name, alias_names))
+        for _score, _variant_index, _name_len, relative_path in ranked[:limit]:
+            candidates.append(self._candidate_from_entry(relative_path))
         return candidates
 
     def candidate(self, candidate_id: str) -> GfriendsActorCandidate | None:
@@ -121,8 +151,7 @@ class GfriendsActorImageResolver(MetadataRequestClient):
         relative_path = self._candidate_paths.get(candidate_id)
         if relative_path is None:
             return None
-        name, alias_names = self._entries[relative_path]
-        return self._candidate(relative_path, name, alias_names)
+        return self._candidate_from_entry(relative_path)
 
     def refresh(self, *, force: bool = False) -> dict[str, Any]:
         """拉取 Filetree、写 disk cache 并更新内存索引。"""
@@ -174,6 +203,7 @@ class GfriendsActorImageResolver(MetadataRequestClient):
                     self._next_disk_check = now_ts + self._DISK_RECHECK_INTERVAL_SECONDS
                     if self._cache_mtime() != self._hydrated_mtime:
                         self._index = None
+                        self._variant_index = {}
                         self._entries = {}
                         self._candidate_paths = {}
                         self._disk_hydrated = False
@@ -270,14 +300,21 @@ class GfriendsActorImageResolver(MetadataRequestClient):
 
     def _build_directory(self, payload: Any) -> None:
         index: dict[str, str] = {}
+        variant_index: dict[str, str] = {}
+        variant_cache: dict[str, tuple[str, ...]] = {}
+
+        def variants_for(value: str) -> tuple[str, ...]:
+            variants = variant_cache.get(value)
+            if variants is None:
+                variants = self._normalize_name_variants(value)
+                variant_cache[value] = variants
+            return variants
+
         grouped: dict[str, list[str]] = {}
         for display_name, relative_path in self._extract_file_entries(payload):
             grouped.setdefault(relative_path, []).append(Path(display_name).stem)
-            normalized_name = self._normalize_name(Path(display_name).stem)
-            if normalized_name and normalized_name not in index:
-                index[normalized_name] = relative_path
 
-        entries: dict[str, tuple[str, tuple[str, ...]]] = {}
+        entries: dict[str, _GfriendsDirectoryEntry] = {}
         candidate_paths: dict[str, str] = {}
         for relative_path, names in grouped.items():
             canonical_name = self._display_name_from_path(relative_path)
@@ -291,12 +328,35 @@ class GfriendsActorImageResolver(MetadataRequestClient):
                     continue
                 seen_aliases.add(key)
                 aliases.append(cleaned)
-            entries[relative_path] = (canonical_name, tuple(aliases))
+            for name in (canonical_name, *aliases):
+                normalized_name = self._normalize_name(name)
+                if normalized_name and normalized_name not in index:
+                    index[normalized_name] = relative_path
+                for normalized_variant in variants_for(name):
+                    if normalized_variant and normalized_variant not in variant_index:
+                        variant_index[normalized_variant] = relative_path
+            entries[relative_path] = _GfriendsDirectoryEntry(
+                name=canonical_name,
+                alias_names=tuple(aliases),
+                name_forms=variants_for(canonical_name),
+                alias_forms=tuple(
+                    dict.fromkeys(
+                        variant
+                        for alias in aliases
+                        for variant in variants_for(alias)
+                    )
+                ),
+            )
             candidate_paths[self._candidate_id(relative_path)] = relative_path
 
         self._index = index
+        self._variant_index = variant_index
         self._entries = entries
         self._candidate_paths = candidate_paths
+
+    def _candidate_from_entry(self, relative_path: str) -> GfriendsActorCandidate:
+        entry = self._entries[relative_path]
+        return self._candidate(relative_path, entry.name, entry.alias_names)
 
     def _candidate(
         self,
@@ -311,6 +371,13 @@ class GfriendsActorImageResolver(MetadataRequestClient):
             relative_path=relative_path,
             avatar_url=self._avatar_url(relative_path),
         )
+
+    @staticmethod
+    def _better_match(
+        current: tuple[int, int] | None,
+        candidate: tuple[int, int],
+    ) -> tuple[int, int]:
+        return candidate if current is None or candidate < current else current
 
     def _candidate_id(self, relative_path: str) -> str:
         return hashlib.sha256(relative_path.encode("utf-8")).hexdigest()[:16]
@@ -372,6 +439,16 @@ class GfriendsActorImageResolver(MetadataRequestClient):
         normalized = unicodedata.normalize("NFKC", value or "")
         normalized = normalized.strip().lower()
         return re.sub(r"\s+", "", normalized)
+
+    @classmethod
+    def _normalize_name_variants(cls, value: str) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                normalized
+                for variant in han_script_variants(value)
+                if (normalized := cls._normalize_name(variant))
+            )
+        )
 
 
 _DIRECTORY: GfriendsActorImageResolver | None = None

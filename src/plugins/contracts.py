@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from src.scheduler.contracts import JobDefinition
 
@@ -67,6 +67,8 @@ class PluginRegistration(BaseModel):
     display_name_i18n: dict[str, str] = Field(default_factory=dict)
     version: str = Field(min_length=1)
     host_api_version: int = HOST_API_VERSION
+    # 可选：插件自己的默认测试番号；宿主未配置时回退到统一默认值。
+    test_movie_number: str | None = Field(default=None, min_length=1, max_length=255)
     # 任务不要求至少一个：插件可以是纯能力型（未来扩展），零任务同样合法。
     jobs: tuple[JobDefinition, ...] = Field(default_factory=tuple)
     # 扩展点声明；默认空。核心不解释 data，领域校验由 extensions 目录登记。
@@ -76,3 +78,11 @@ class PluginRegistration(BaseModel):
     def _validate_host_api_version(self):
         validate_host_api_version(self.host_api_version)
         return self
+
+    @field_validator("test_movie_number", mode="before")
+    @classmethod
+    def _strip_test_movie_number(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value

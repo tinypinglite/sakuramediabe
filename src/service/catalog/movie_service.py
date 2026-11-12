@@ -19,6 +19,7 @@ from src.common import (
     build_signed_merged_media_url,
     parse_movie_number_from_text,
 )
+from src.common.han_variants import han_script_variants
 from src.common.runtime_time import utc_now_for_db
 from src.common.service_helpers import (
     apply_numeric_range_filters,
@@ -333,14 +334,19 @@ class MovieService:
         return expression, key
 
     @staticmethod
-    def _matching_actor_ids(term: str) -> list[int]:
-        """按姓名或别名找出命中检索词的演员 ID，供影片查询做关联匹配。"""
+    def _matching_actor_ids(terms: Sequence[str]) -> list[int]:
+        """按姓名、显示名或别名找出命中检索词的演员 ID，供影片查询做关联匹配。"""
         return [
             actor.id
             for actor in Actor.select(Actor.id).where(
-                (
-                    (Actor.name.contains(term))
-                    | (Actor.alias_name.contains(term))
+                reduce(
+                    operator.or_,
+                    (
+                        (Actor.name.contains(term))
+                        | (Actor.alias_name.contains(term))
+                        | (Actor.display_name_override.contains(term))
+                        for term in terms
+                    ),
                 )
                 & Actor.merged_into.is_null()
             )
@@ -357,7 +363,7 @@ class MovieService:
         number_expression, number_key = cls._number_search_target(term)
         if number_expression is not None:
             conditions.append(number_expression.contains(number_key))
-        actor_ids = cls._matching_actor_ids(term)
+        actor_ids = cls._matching_actor_ids(han_script_variants(term))
         if actor_ids:
             conditions.append(
                 Movie.id.in_(
