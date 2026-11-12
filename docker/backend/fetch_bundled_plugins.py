@@ -62,10 +62,17 @@ class ResolvedPlugin:
 # formal Release targets Host API 18.
 BUNDLED_PLUGINS: tuple[BundledPluginSpec, ...] = (
     BundledPluginSpec(
-        "sakuramedia_javdb_metadata", "tinypinglite/sakuramedia_javdb_metadata"
+        "sakuramedia_javbus_metadata", "tinypinglite/sakuramedia_javbus_metadata"
     ),
     BundledPluginSpec(
-        "sakuramedia_javbus_metadata", "tinypinglite/sakuramedia_javbus_metadata"
+        "sakuramedia_fc2_metadata", "tinypinglite/sakuramedia_fc2_metadata"
+    ),
+    BundledPluginSpec(
+        "sakuramedia_dmm_metadata", "tinypinglite/sakuramedia_dmm_metadata"
+    ),
+    BundledPluginSpec(
+        "sakuramedia_fc2cmadb_metadata",
+        "tinypinglite/sakuramedia_fc2cmadb_metadata",
     ),
     BundledPluginSpec(
         "sakuramedia_local_provider", "tinypinglite/sakuramedia_local_provider"
