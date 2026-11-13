@@ -85,6 +85,10 @@ BUNDLED_PLUGINS: tuple[BundledPluginSpec, ...] = (
         "tinypinglite/sakuramedia_guangyapan_provider",
     ),
     BundledPluginSpec(
+        "sakuramedia_javdb_ranking",
+        "tinypinglite/sakuramedia_javdb_ranking",
+    ),
+    BundledPluginSpec(
         "sakuramedia_more_rank_movies",
         "tinypinglite/sakuramedia_more_rank_movies",
     ),

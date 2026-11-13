@@ -7,9 +7,7 @@ import sys
 from pathlib import Path
 
 from src.plugins.bundled import (
-    DEFAULT_BINDINGS_MARKER_FILENAME,
     install_bundled_plugins,
-    migrate_plugin_defaults,
     read_bundled_index,
 )
 
@@ -48,6 +46,14 @@ def test_bundled_metadata_plugin_order_startup_default():
         "sakuramedia_fc2_metadata",
         "sakuramedia_fc2cmadb_metadata",
     ]
+
+
+def test_javdb_ranking_plugin_is_bundled():
+    module = _load_fetch_bundled_plugins_module()
+
+    plugin_ids = [spec.plugin_id for spec in module.BUNDLED_PLUGINS]
+
+    assert plugin_ids.count("sakuramedia_javdb_ranking") == 1
 
 
 class _FakePluginManager:
@@ -212,87 +218,3 @@ def test_invalid_installed_version_is_recorded_as_failure(tmp_path):
     assert result.skipped_existing == ()
     assert [plugin_id for plugin_id, _ in result.failed] == ["demo_plugin"]
     assert manager.upgrade_calls == []
-
-
-def _prepare_settings(
-    monkeypatch,
-    tmp_path,
-    *,
-    enabled,
-    stats_source=None,
-    review_source=None,
-):
-    from src.config.config import settings
-
-    monkeypatch.setattr(settings, "plugins", settings.plugins.model_copy(deep=True))
-    settings.plugins.root_dir = str(tmp_path)
-    settings.plugins.enabled = list(enabled)
-    settings.plugins.stats_source = stats_source
-    settings.plugins.review_source = review_source
-    return settings
-
-
-def _capture_updates(monkeypatch, settings):
-    updates = []
-
-    def fake_update_settings(new_settings):
-        updates.append(new_settings.plugins.model_copy(deep=True))
-        monkeypatch.setattr(settings, "plugins", new_settings.plugins)
-
-    monkeypatch.setattr("src.config.config.update_settings", fake_update_settings)
-    return updates
-
-
-def test_plugin_defaults_bind_review_source_once(monkeypatch, tmp_path):
-    enabled = [
-        "sakuramedia_javbus_metadata",
-        "sakuramedia_javdb_metadata",
-        "other_plugin",
-    ]
-    settings = _prepare_settings(
-        monkeypatch,
-        tmp_path,
-        enabled=enabled,
-        stats_source="sakuramedia_javbus_metadata",
-        review_source="other_review_source",
-    )
-    for plugin_id in (
-        "sakuramedia_javdb_metadata",
-        "sakuramedia_javbus_metadata",
-    ):
-        (tmp_path / plugin_id).mkdir()
-    updates = _capture_updates(monkeypatch, settings)
-
-    migrate_plugin_defaults()
-
-    assert len(updates) == 1
-    migrated = updates[0]
-    assert migrated.enabled == [
-        "sakuramedia_javbus_metadata",
-        "sakuramedia_javdb_metadata",
-        "other_plugin",
-    ]
-    assert migrated.stats_source == "sakuramedia_javbus_metadata"
-    assert migrated.review_source == "sakuramedia_javdb_metadata"
-    assert (
-        tmp_path / ".runtime" / DEFAULT_BINDINGS_MARKER_FILENAME
-    ).is_file()
-
-    migrate_plugin_defaults()
-
-    assert len(updates) == 1
-
-
-def test_plugin_defaults_skip_without_javdb(monkeypatch, tmp_path):
-    settings = _prepare_settings(
-        monkeypatch,
-        tmp_path,
-        enabled=["sakuramedia_javbus_metadata"],
-    )
-    (tmp_path / "sakuramedia_javbus_metadata").mkdir()
-    updates = _capture_updates(monkeypatch, settings)
-
-    migrate_plugin_defaults()
-
-    assert updates == []
-    assert not (tmp_path / ".runtime" / DEFAULT_BINDINGS_MARKER_FILENAME).exists()

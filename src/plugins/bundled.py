@@ -26,8 +26,6 @@ from src.plugins.manifest import PLUGIN_ID_PATTERN
 BUNDLED_INDEX_NAME = "official-plugins.json"
 BUNDLED_FAILURES_FILENAME = "bundled-plugin-failures.json"
 DEFAULT_BUNDLE_DIR = Path("/app/bundled-plugins")
-DEFAULT_REVIEW_SOURCE = "sakuramedia_javdb_metadata"
-DEFAULT_BINDINGS_MARKER_FILENAME = "plugin-defaults-v1.json"
 _SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
@@ -244,51 +242,13 @@ def install_bundled_plugins(
     )
 
 
-def _defaults_marker_path(root_dir: Path) -> Path:
-    return Path(root_dir) / ".runtime" / DEFAULT_BINDINGS_MARKER_FILENAME
-
-
-def _write_defaults_marker(root_dir: Path) -> None:
-    path = _defaults_marker_path(root_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_suffix(".tmp")
-    temporary_path.write_text(
-        json.dumps({"version": 1}, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    temporary_path.replace(path)
-
-
-def migrate_plugin_defaults() -> None:
-    """一次性把 JavDB 设为默认评论来源；执行后写标记。"""
-
-    from src.config.config import Settings, settings, update_settings
-
-    current = Settings.model_validate(settings.model_dump())
-    root_dir = Path(current.plugins.root_dir)
-    if _defaults_marker_path(root_dir).exists():
-        return
-    if DEFAULT_REVIEW_SOURCE not in current.plugins.enabled:
-        return
-    if not (root_dir / DEFAULT_REVIEW_SOURCE).is_dir():
-        return
-
-    if current.plugins.review_source != DEFAULT_REVIEW_SOURCE:
-        current.plugins.review_source = DEFAULT_REVIEW_SOURCE
-        update_settings(current)
-    _write_defaults_marker(root_dir)
-
-
 __all__ = [
     "BUNDLED_FAILURES_FILENAME",
     "BUNDLED_INDEX_NAME",
-    "DEFAULT_BINDINGS_MARKER_FILENAME",
     "DEFAULT_BUNDLE_DIR",
-    "DEFAULT_REVIEW_SOURCE",
     "BundledInstallResult",
     "BundledPluginEntry",
     "BundledPluginError",
     "install_bundled_plugins",
-    "migrate_plugin_defaults",
     "read_bundled_index",
 ]
