@@ -4,6 +4,7 @@ from .actor_service import ActorService
 from .catalog_import_service import CatalogImportService, ImageDownloadError
 from .movie_actor_service import MovieActorService
 from .movie_metadata_import_service import MovieMetadataImportService
+from .movie_metadata_refresh_service import MovieMetadataRefreshService
 from .movie_service import MovieService
 from .movie_stats_service import MovieStatsService
 from .movie_stats_source_service import MovieStatsSourceService
@@ -28,6 +29,7 @@ __all__ = [
     "ImageDownloadError",
     "MovieActorService",
     "MovieMetadataImportService",
+    "MovieMetadataRefreshService",
     "MovieService",
     "MovieStatsService",
     "MovieStatsSourceService",

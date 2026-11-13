@@ -9,6 +9,7 @@
   "errors.invalid_plugin_binding": "插件绑定无效",
   "errors.invalid_metadata_source_order": "元数据源顺序无效",
   "errors.metadata_source_unavailable": "未启用任何元数据插件",
+  "errors.movie_metadata_refresh_failed": "影片元数据刷新失败",
   "errors.plugin_test_disabled": "插件未启用，无法测试",
   "errors.plugin_test_unavailable": "插件尚未加载，请重启后端后重试",
   "errors.plugin_test_unsupported": "插件未声明该测试能力",

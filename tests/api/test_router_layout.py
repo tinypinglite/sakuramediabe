@@ -240,6 +240,7 @@ def test_create_app_registers_image_search_routes():
     assert "/movies/interaction-filter-options" in paths
     assert "/movies/series/{series_id}/metadata-imports" not in paths
     assert "/movies/metadata-imports" in paths
+    assert "/movies/{movie_number}/metadata-refresh" in paths
     assert "/actors/metadata-imports" not in paths
     # 翻译链路已整体下线：设置探测端点一并移除。
     assert "/movie-desc-translation-settings/test" not in paths

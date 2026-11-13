@@ -37,6 +37,7 @@ from src.schema.common.pagination import PageResponse
 from src.service.catalog import (
     MovieActorService,
     MovieMetadataImportService,
+    MovieMetadataRefreshService,
     MovieService,
     MovieSubtitleService,
 )
@@ -216,6 +217,14 @@ def create_movie_metadata_import(payload: MovieMetadataImportRequest):
             yield to_sse_event(event, event_payload)
 
     return sse_streaming_response(stream())
+
+
+@router.post(
+    "/{movie_number}/metadata-refresh",
+    response_model=MovieDetailResource,
+)
+def refresh_movie_metadata(movie_number: str):
+    return MovieMetadataRefreshService.refresh_movie_metadata(movie_number)
 
 
 # 影片单片翻译端点已删除；互动数由绑定插件通过 movie_stats_sync 定时刷新。
