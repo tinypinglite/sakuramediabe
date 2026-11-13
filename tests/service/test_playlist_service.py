@@ -45,6 +45,28 @@ def test_favorites_playlist_allows_member_changes(test_db):
     )
 
 
+def test_batch_add_movies_updates_existing_members_and_skips_missing(test_db):
+    playlist = Playlist.create(name="批量片单")
+    existing = _create_movie("BATCH-EXIST-001")
+    added = _create_movie("BATCH-NEW-001")
+    PlaylistMovie.create(playlist=playlist, movie=existing)
+
+    result = PlaylistService.add_movies_to_playlist(
+        playlist.id,
+        [existing.movie_number, "BATCH-MISSING", added.movie_number],
+    )
+
+    assert result.requested_count == 3
+    assert result.updated_count == 2
+    assert result.skipped_count == 1
+    assert result.skipped[0].movie_number == "BATCH-MISSING"
+    assert result.skipped[0].reason == "movie_not_found"
+    assert {
+        link.movie.movie_number
+        for link in PlaylistMovie.select().where(PlaylistMovie.playlist == playlist)
+    } == {"BATCH-EXIST-001", "BATCH-NEW-001"}
+
+
 def test_recently_played_playlist_rejects_member_changes(test_db):
     playlist = Playlist.create(
         kind=PLAYLIST_KIND_RECENTLY_PLAYED,

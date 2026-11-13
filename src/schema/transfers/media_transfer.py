@@ -6,10 +6,11 @@ from pydantic import Field, field_validator
 from pydantic_core import PydanticCustomError
 
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 
 
 class MediaStorageTransferSelectionRequest(SchemaModel):
-    media_ids: list[int] = Field(min_length=1, max_length=1000)
+    media_ids: list[int] = Field(min_length=1, max_length=MAX_BATCH_ITEMS)
 
     @field_validator("media_ids", mode="before")
     @classmethod

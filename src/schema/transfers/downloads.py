@@ -6,6 +6,7 @@ from pydantic import Field, computed_field
 from src.common.media_import_status import describe_import_status
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 
 if TYPE_CHECKING:
     from src.model import Movie
@@ -280,7 +281,7 @@ class DownloadTaskImportResponse(SchemaModel):
 
 
 class DownloadTaskBatchImportRequest(SchemaModel):
-    task_ids: list[int] = Field(min_length=1, max_length=100)
+    task_ids: list[int] = Field(min_length=1, max_length=MAX_BATCH_ITEMS)
 
 
 class DownloadTaskBatchImportResponse(SchemaModel):

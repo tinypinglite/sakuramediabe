@@ -7,6 +7,7 @@ from enum import Enum
 from pydantic import Field, field_validator, model_validator
 
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 
 
 class BatchOperationType(str, Enum):
@@ -39,7 +40,7 @@ class BatchOperationRequest(SchemaModel):
     operation: BatchOperationType
     # 各操作的 ids 语义：媒体/切片/时刻/视频/下载任务的单实体 id；
     # 合集成员操作统一为成员实体 id：clip_id / point_id / video_item_id（add 与 remove 同键）。
-    ids: list[int] = Field(min_length=1, max_length=1000)
+    ids: list[int] = Field(min_length=1, max_length=MAX_BATCH_ITEMS)
     target_collection_id: int | None = Field(default=None, gt=0)
     delete_files: bool = False
 

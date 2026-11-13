@@ -7,11 +7,12 @@
 from datetime import date, datetime
 from enum import Enum
 
-from pydantic import computed_field, field_validator
+from pydantic import Field, computed_field, field_validator
 
 from src.common.media_import_status import describe_import_status
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 
 
 class MovieSubscriptionStatus(str, Enum):
@@ -107,7 +108,7 @@ class MovieSubscriptionStatusCountsResource(SchemaModel):
 class MovieSubscriptionSearchResetRequest(SchemaModel):
     """省略 movie_ids 时重开全部已放弃订阅；传入时只重开指定影片。"""
 
-    movie_ids: list[int] | None = None
+    movie_ids: list[int] | None = Field(default=None, max_length=MAX_BATCH_ITEMS)
 
 
 class MovieSubscriptionSearchResetResponse(SchemaModel):

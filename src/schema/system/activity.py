@@ -1,9 +1,10 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 from src.schema.common.pagination import PageResponse
 
 
@@ -60,7 +61,7 @@ class NotificationReadResponse(SchemaModel):
 
 class NotificationUpdateRequest(SchemaModel):
     # 批量设置已读状态：ids 指定目标通知，或 all=true 全量，二者互斥。
-    ids: list[int] | None = None
+    ids: list[int] | None = Field(default=None, max_length=MAX_BATCH_ITEMS)
     all: bool = False
     is_read: bool
 

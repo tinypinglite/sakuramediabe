@@ -4,6 +4,7 @@ from pydantic import Field, field_validator
 
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 from src.schema.videos.items import VideoItemListItemResource
 
 
@@ -72,4 +73,7 @@ class VideoCollectionUpdateRequest(SchemaModel):
 
 class VideoCollectionSetVideosRequest(SchemaModel):
     # 幂等地把合集成员设置为这个有序列表，既覆盖重排也覆盖批量设置成员。
-    video_item_ids: list[int] = Field(min_length=1)
+    video_item_ids: list[int] = Field(
+        min_length=1,
+        max_length=MAX_BATCH_ITEMS,
+    )

@@ -4,6 +4,7 @@ from pydantic import Field, field_validator
 
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 from src.schema.playback.clips import MediaClipResource
 
 
@@ -52,4 +53,4 @@ class ClipCollectionClipItemResource(MediaClipResource):
 
 class ClipCollectionSetClipsRequest(SchemaModel):
     # 幂等地把合集成员设置为这个有序列表，既覆盖重排也覆盖批量设置成员。
-    clip_ids: list[int]
+    clip_ids: list[int] = Field(max_length=MAX_BATCH_ITEMS)

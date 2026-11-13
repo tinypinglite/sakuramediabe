@@ -6,6 +6,7 @@ from pydantic import Field, field_validator
 
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 from src.schema.common.media import MediaSummaryResource
 from src.schema.common.playlists import PlaylistSummaryResource
 
@@ -237,7 +238,7 @@ class MovieSeriesListRequest(SchemaModel):
 
 
 class MovieCollectionMarkRequest(SchemaModel):
-    movie_numbers: list[str] = Field(min_length=1)
+    movie_numbers: list[str] = Field(min_length=1, max_length=MAX_BATCH_ITEMS)
     collection_type: MovieCollectionMarkType
 
     @field_validator("movie_numbers")
@@ -263,7 +264,7 @@ class MovieCollectionStatusResource(SchemaModel):
 
 
 class MovieSubscriptionBatchRequest(SchemaModel):
-    movie_numbers: list[str] = Field(min_length=1)
+    movie_numbers: list[str] = Field(min_length=1, max_length=MAX_BATCH_ITEMS)
 
     @field_validator("movie_numbers")
     @classmethod
@@ -278,7 +279,7 @@ class MovieSubscriptionBatchRequest(SchemaModel):
 
 
 class MovieBlacklistBatchRequest(SchemaModel):
-    movie_numbers: list[str] = Field(min_length=1, max_length=1000)
+    movie_numbers: list[str] = Field(min_length=1, max_length=MAX_BATCH_ITEMS)
 
     @field_validator("movie_numbers")
     @classmethod

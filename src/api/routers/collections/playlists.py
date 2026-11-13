@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from src.api.routers.deps import db_deps, get_current_user
 from src.schema.collections.playlists import (
     PlaylistCreateRequest,
+    PlaylistMovieBatchAddRequest,
+    PlaylistMovieBatchAddResponse,
     PlaylistMovieListItemResource,
     PlaylistResolutionOption,
     PlaylistResource,
@@ -64,6 +66,21 @@ def list_playlist_movies(
         page_size=page_size,
         sort=sort,
         resolution=resolution,
+    )
+
+
+@router.post(
+    "/{playlist_id}/movies",
+    response_model=PlaylistMovieBatchAddResponse,
+)
+def add_movies_to_playlist(
+    playlist_id: int,
+    payload: PlaylistMovieBatchAddRequest,
+    current_user=Depends(get_current_user),
+):
+    return PlaylistService.add_movies_to_playlist(
+        playlist_id,
+        payload.movie_numbers,
     )
 
 

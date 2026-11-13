@@ -31,9 +31,12 @@ from src.model import (
     Movie,
     Playlist,
     PlaylistMovie,
+    get_database,
 )
 from src.schema.collections.playlists import (
     PlaylistCreateRequest,
+    PlaylistMovieBatchAddResponse,
+    PlaylistMovieBatchAddSkippedItem,
     PlaylistMovieListItemResource,
     PlaylistResolutionOption,
     PlaylistResource,
@@ -427,6 +430,69 @@ class PlaylistService:
             playlist_movie.save(only=[PlaylistMovie.updated_at])
         # 无论是新加还是重新加入，都把列表本身更新时间往前推，便于 UI 按最近活跃排序。
         cls._touch_playlist(playlist, touched_at)
+
+    @classmethod
+    def add_movies_to_playlist(
+        cls,
+        playlist_id: int,
+        movie_numbers: list[str],
+    ) -> PlaylistMovieBatchAddResponse:
+        """批量加入影片；不存在的番号跳过，其余成员幂等写入。"""
+        playlist = cls._require_member_mutable_playlist(playlist_id)
+        movies = list(Movie.select().where(Movie.movie_number.in_(movie_numbers)))
+        movies_by_number = {movie.movie_number: movie for movie in movies}
+        found_numbers = [
+            movie_number
+            for movie_number in movie_numbers
+            if movie_number in movies_by_number
+        ]
+        skipped = [
+            PlaylistMovieBatchAddSkippedItem(
+                movie_number=movie_number,
+                reason="movie_not_found",
+            )
+            for movie_number in movie_numbers
+            if movie_number not in movies_by_number
+        ]
+        if found_numbers:
+            touched_at = utc_now_for_db()
+            movie_ids = [movies_by_number[number].id for number in found_numbers]
+            with get_database().atomic():
+                existing_movie_ids = {
+                    link.movie_id
+                    for link in PlaylistMovie.select().where(
+                        PlaylistMovie.playlist == playlist,
+                        PlaylistMovie.movie.in_(movie_ids),
+                    )
+                }
+                missing_movie_ids = [
+                    movie_id
+                    for movie_id in movie_ids
+                    if movie_id not in existing_movie_ids
+                ]
+                if missing_movie_ids:
+                    PlaylistMovie.insert_many(
+                        [
+                            {
+                                "playlist": playlist.id,
+                                "movie": movie_id,
+                                "created_at": touched_at,
+                                "updated_at": touched_at,
+                            }
+                            for movie_id in missing_movie_ids
+                        ]
+                    ).on_conflict_ignore().execute()
+                PlaylistMovie.update(updated_at=touched_at).where(
+                    PlaylistMovie.playlist == playlist,
+                    PlaylistMovie.movie.in_(movie_ids),
+                ).execute()
+                cls._touch_playlist(playlist, touched_at)
+        return PlaylistMovieBatchAddResponse(
+            requested_count=len(movie_numbers),
+            updated_count=len(found_numbers),
+            skipped_count=len(skipped),
+            skipped=skipped,
+        )
 
     @classmethod
     def remove_movie_from_playlist(cls, playlist_id: int, movie_number: str) -> None:

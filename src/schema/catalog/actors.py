@@ -6,6 +6,7 @@ from pydantic import Field, field_validator, model_validator
 from src.common import build_signed_image_url
 from src.model.catalog.actors import ACTOR_IMAGE_FIELDS
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 
 
 class ActorListGender(str, Enum):
@@ -237,7 +238,10 @@ class GfriendsActorImportRequest(SchemaModel):
 
 
 class ActorMergeRequest(SchemaModel):
-    source_actor_ids: list[int] = Field(min_length=1)
+    source_actor_ids: list[int] = Field(
+        min_length=1,
+        max_length=MAX_BATCH_ITEMS,
+    )
 
     @field_validator("source_actor_ids")
     @classmethod

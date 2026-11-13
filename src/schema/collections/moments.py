@@ -4,6 +4,7 @@ from pydantic import Field, field_validator
 
 from src.schema.catalog.actors import ImageResource
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 from src.schema.playback.media import MediaPointListItemResource
 
 
@@ -50,7 +51,7 @@ class MomentCollectionPointItemResource(MediaPointListItemResource):
 
 
 class MomentCollectionSetPointsRequest(SchemaModel):
-    point_ids: list[int]
+    point_ids: list[int] = Field(max_length=MAX_BATCH_ITEMS)
 
 
 class MomentCollectionSummary(SchemaModel):

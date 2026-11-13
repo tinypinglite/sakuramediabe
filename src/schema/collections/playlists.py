@@ -10,6 +10,7 @@ from src.i18n.playlist_names import (
 from src.model import PLAYLIST_KIND_CUSTOM, SYSTEM_PLAYLIST_KINDS
 from src.schema.catalog.movies import MovieListItemResource
 from src.schema.common.base import SchemaModel
+from src.schema.common.batch import MAX_BATCH_ITEMS
 
 
 class PlaylistResource(SchemaModel):
@@ -76,6 +77,37 @@ class PlaylistUpdateRequest(SchemaModel):
 
 class PlaylistMovieListItemResource(MovieListItemResource):
     playlist_item_updated_at: datetime
+
+
+class PlaylistMovieBatchAddRequest(SchemaModel):
+    movie_numbers: list[str] = Field(min_length=1, max_length=MAX_BATCH_ITEMS)
+
+    @field_validator("movie_numbers")
+    @classmethod
+    def validate_movie_numbers(cls, value: list[str]) -> list[str]:
+        normalized_numbers: list[str] = []
+        seen: set[str] = set()
+        for movie_number in value:
+            normalized = (movie_number or "").strip()
+            if not normalized:
+                raise ValueError("movie_numbers item cannot be blank")
+            if normalized in seen:
+                raise ValueError("movie_numbers 不可重复")
+            seen.add(normalized)
+            normalized_numbers.append(normalized)
+        return normalized_numbers
+
+
+class PlaylistMovieBatchAddSkippedItem(SchemaModel):
+    movie_number: str
+    reason: str
+
+
+class PlaylistMovieBatchAddResponse(SchemaModel):
+    requested_count: int
+    updated_count: int
+    skipped_count: int = 0
+    skipped: list[PlaylistMovieBatchAddSkippedItem] = Field(default_factory=list)
 
 
 class PlaylistResolutionOption(SchemaModel):
