@@ -61,12 +61,15 @@ def test_collection_keeps_members_when_one_provider_is_missing(monkeypatch):
     assert unavailable.play_url is None
     assert unavailable.video.can_play is False
     assert unavailable.first_media_id == 101
+    assert unavailable.play_provider_key == "missing"
     assert playable.video.can_play is True
+    assert playable.play_provider_key == "local"
     url = urlsplit(playable.play_url)
     assert url.path == "/media/102/play/"
     assert parse_qs(url.query)["delivery"] == ["proxy"]
     assert empty.play_url is None
     assert empty.video.can_play is False
+    assert empty.play_provider_key is None
 
 
 def test_collection_items_prefer_first_valid_media_for_play_url(test_db, monkeypatch):
@@ -113,10 +116,12 @@ def test_collection_items_prefer_first_valid_media_for_play_url(test_db, monkeyp
     assert invalid_first.id < valid_second.id
     mixed_item, empty_item = result.items
     assert mixed_item.first_media_id == valid_second.id
+    assert mixed_item.play_provider_key == "demo"
     assert mixed_item.play_url is not None
     assert f"/media/{valid_second.id}/play/" in mixed_item.play_url
     assert mixed_item.video.can_play is True
     # 全部失效：无播放地址、无首媒体、不可播，三者语义一致。
     assert empty_item.first_media_id is None
     assert empty_item.play_url is None
+    assert empty_item.play_provider_key is None
     assert empty_item.video.can_play is False

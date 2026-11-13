@@ -37,6 +37,9 @@ class VideoCollectionItemResource(SchemaModel):
     # 面板按此调 GET /media/{id}/thumbnails 拉该集关键帧；与 play_url 同源、恒返回（不依赖
     # include_play_url）。
     first_media_id: int | None = None
+    # 与 play_url 同源的首个媒体 provider；连播页据此为每一集选择播放请求头。
+    # 成员无媒体时为 None。
+    play_provider_key: str | None = None
 
 
 class VideoCollectionCreateRequest(SchemaModel):

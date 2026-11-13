@@ -307,6 +307,7 @@ class VideoCollectionService:
                     play_url=play_url,
                     # 0 为「无媒体」哨兵，归一为 None。
                     first_media_id=link.play_media_id or None,
+                    play_provider_key=link.play_provider_key or None,
                     video=VideoItemService._to_list_item(
                         link.video_item,
                         media_count,
