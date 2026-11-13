@@ -99,6 +99,10 @@ BUNDLED_PLUGINS: tuple[BundledPluginSpec, ...] = (
     BundledPluginSpec(
         "sakuramedia_subtitlecat", "tinypinglite/sakuramedia_subtitlecat"
     ),
+    BundledPluginSpec(
+        "sakuramedia_actor_metadata",
+        "tinypinglite/sakuramedia-actor-metadata",
+    ),
 )
 
 
