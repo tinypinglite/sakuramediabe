@@ -1,0 +1,19 @@
+{
+  "plugin_id": "example_reviews_stats",
+  "display_name": "示例评论与互动数",
+  "display_name_i18n": {
+    "zh-CN": "示例评论与互动数",
+    "en": "Example Reviews and Stats"
+  },
+  "description": "SakuraMedia 插件开发示例：注册静态评论来源和互动数来源。",
+  "description_i18n": {
+    "zh-CN": "SakuraMedia 插件开发示例：注册静态评论来源和互动数来源。",
+    "en": "SakuraMedia plugin SDK example: registers static movie reviews and stats sources."
+  },
+  "version": "1.0.0",
+  "host_api_version": 18,
+  "requires_python": ">=3.10,<3.11",
+  "dependencies": [],
+  "author": "SakuraMedia",
+  "homepage": "https://github.com/tinypinglite/sakuramediabe/tree/main/plugin-sdk/examples/example_reviews_stats"
+}

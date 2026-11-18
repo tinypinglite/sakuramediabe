@@ -1,0 +1,298 @@
+"""片段合集 service。
+
+负责片段合集（跨影片、有序、可连续播放）的增删改查与成员维护。
+成员资源构建复用 ``MediaClipService``，封面/串流 URL 与片段接口保持一致。
+阅读入口建议从 ``list_collections``、``list_collection_clips``、``set_clips`` 开始。
+"""
+
+
+from peewee import IntegrityError, fn
+
+from src.api.exception.errors import ApiError
+from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import require_by_id, validate_page
+from src.model import ClipCollection, ClipCollectionItem, MediaClip
+from src.model.base import get_database
+from src.schema.catalog.actors import ImageResource
+from src.schema.collections.clips import (
+    ClipCollectionClipItemResource,
+    ClipCollectionCreateRequest,
+    ClipCollectionResource,
+    ClipCollectionUpdateRequest,
+)
+from src.schema.common.pagination import PageResponse
+from src.service.playback.media_clip_service import MediaClipService
+
+
+class ClipCollectionService:
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        normalized = name.strip()
+        if not normalized:
+            raise ApiError(422, "validation_error", "Clip collection name cannot be empty")
+        return normalized
+
+    @staticmethod
+    def _normalize_description(description: str | None) -> str:
+        if description is None:
+            return ""
+        return description.strip()
+
+    @classmethod
+    def _ensure_name_available(cls, name: str, exclude_id: int | None = None) -> None:
+        query = ClipCollection.select().where(ClipCollection.name == name)
+        if exclude_id is not None:
+            query = query.where(ClipCollection.id != exclude_id)
+        if query.exists():
+            raise ApiError(
+                409,
+                "clip_collection_name_conflict",
+                "Clip collection name already exists",
+                {"name": name},
+            )
+
+    @staticmethod
+    def _require_collection(collection_id: int) -> ClipCollection:
+        return require_by_id(
+            ClipCollection,
+            collection_id,
+            "clip_collection",
+            error_message="Clip collection not found",
+            error_details_key="collection_id",
+        )
+
+    @staticmethod
+    def _require_clip(clip_id: int) -> MediaClip:
+        return require_by_id(MediaClip, clip_id, "media_clip", error_message="Media clip not found", error_details_key="clip_id")
+
+    @classmethod
+    def _valid_collection_items(cls, collection_ids: list[int]) -> list[ClipCollectionItem]:
+        if not collection_ids:
+            return []
+        items = list(
+            ClipCollectionItem.select(ClipCollectionItem, MediaClip)
+            .join(MediaClip)
+            .where(ClipCollectionItem.collection.in_(collection_ids))
+        )
+        valid_clip_ids = {
+            clip.id for clip in MediaClipService.valid_clips([item.clip for item in items])
+        }
+        return [item for item in items if item.clip_id in valid_clip_ids]
+
+    @classmethod
+    def _collection_overviews(
+        cls, collection_ids: list[int]
+    ) -> tuple[dict[int, int], dict[int, ImageResource | None]]:
+        """一次取所有合集的成员计数与封面，供列表/详情页避免逐合集查询（N+1）。
+
+        成员只加载一遍；封面取每个合集按 position/id 最前的有效片段的区间首帧。
+        """
+        items = cls._valid_collection_items(collection_ids)
+        counts: dict[int, int] = {}
+        first_items: dict[int, ClipCollectionItem] = {}
+        for item in items:
+            counts[item.collection_id] = counts.get(item.collection_id, 0) + 1
+            current = first_items.get(item.collection_id)
+            if current is None or (item.position, item.id) < (
+                current.position,
+                current.id,
+            ):
+                first_items[item.collection_id] = item
+        cover_map = MediaClipService.load_cover_map(
+            [item.clip for item in first_items.values()]
+        )
+        covers = {
+            collection_id: cover_map.get(
+                (item.clip.media_id, item.clip.start_offset_seconds)
+            )
+            for collection_id, item in first_items.items()
+        }
+        return counts, covers
+
+    @classmethod
+    def _to_resource(
+        cls,
+        collection: ClipCollection,
+        clip_count: int,
+        cover_image: ImageResource | None = None,
+    ) -> ClipCollectionResource:
+        return ClipCollectionResource(
+            id=collection.id,
+            name=collection.name,
+            description=collection.description,
+            clip_count=clip_count,
+            cover_image=cover_image if clip_count else None,
+            created_at=collection.created_at,
+            updated_at=collection.updated_at,
+        )
+
+    @classmethod
+    def list_collections(cls) -> list[ClipCollectionResource]:
+        collections = list(
+            ClipCollection.select().order_by(
+                ClipCollection.updated_at.desc(), ClipCollection.id.desc()
+            )
+        )
+        counts, covers = cls._collection_overviews(
+            [collection.id for collection in collections]
+        )
+        return [
+            cls._to_resource(
+                collection,
+                counts.get(collection.id, 0),
+                covers.get(collection.id),
+            )
+            for collection in collections
+        ]
+
+    @classmethod
+    def create_collection(cls, payload: ClipCollectionCreateRequest) -> ClipCollectionResource:
+        name = cls._normalize_name(payload.name)
+        description = cls._normalize_description(payload.description)
+        cls._ensure_name_available(name)
+        collection = ClipCollection.create(name=name, description=description)
+        return cls._to_resource(collection, 0)
+
+    @classmethod
+    def get_collection(cls, collection_id: int) -> ClipCollectionResource:
+        collection = cls._require_collection(collection_id)
+        counts, covers = cls._collection_overviews([collection.id])
+        return cls._to_resource(
+            collection, counts.get(collection.id, 0), covers.get(collection.id)
+        )
+
+    @classmethod
+    def update_collection(
+        cls, collection_id: int, payload: ClipCollectionUpdateRequest
+    ) -> ClipCollectionResource:
+        collection = cls._require_collection(collection_id)
+        update_data = payload.model_dump(exclude_unset=True, by_alias=False)
+        if not update_data:
+            raise ApiError(422, "validation_error", "At least one field must be provided")
+
+        if "name" in update_data:
+            name = cls._normalize_name(update_data["name"])
+            if name != collection.name:
+                cls._ensure_name_available(name, exclude_id=collection.id)
+            collection.name = name
+        if "description" in update_data:
+            collection.description = cls._normalize_description(update_data["description"])
+
+        collection.updated_at = utc_now_for_db()
+        collection.save()
+        return cls.get_collection(collection.id)
+
+    @classmethod
+    def delete_collection(cls, collection_id: int) -> None:
+        collection = cls._require_collection(collection_id)
+        # 仅删合集，成员关系 ClipCollectionItem 由外键 CASCADE 清理，不动片段本体。
+        collection.delete_instance()
+
+    @classmethod
+    def list_collection_clips(
+        cls,
+        collection_id: int,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> PageResponse[ClipCollectionClipItemResource]:
+        cls._require_collection(collection_id)
+        validate_page(page, page_size, error_code="invalid_clip_collection_filter")
+        items = cls._valid_collection_items([collection_id])
+        items.sort(key=lambda item: (item.position, item.id))
+        total = len(items)
+        start = (page - 1) * page_size
+        items = items[start : start + page_size]
+        clips = [item.clip for item in items]
+        cover_map = MediaClipService.load_cover_map(clips)
+        resources = [
+            ClipCollectionClipItemResource(
+                **MediaClipService.clip_resource_fields(
+                    item.clip,
+                    cover_map.get((item.clip.media_id, item.clip.start_offset_seconds)),
+                ),
+                position=item.position,
+            )
+            for item in items
+        ]
+        return PageResponse[ClipCollectionClipItemResource](
+            items=resources,
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    @classmethod
+    def add_clip(cls, collection_id: int, clip_id: int) -> None:
+        collection = cls._require_collection(collection_id)
+        clip = cls._require_clip(clip_id)
+        existing = ClipCollectionItem.get_or_none(
+            ClipCollectionItem.collection == collection,
+            ClipCollectionItem.clip == clip,
+        )
+        if existing is not None:
+            return
+        touched_at = utc_now_for_db()
+        try:
+            with get_database().atomic():
+                next_position = (
+                    ClipCollectionItem.select(fn.COALESCE(fn.MAX(ClipCollectionItem.position), -1))
+                    .where(ClipCollectionItem.collection == collection)
+                    .scalar()
+                ) + 1
+                ClipCollectionItem.create(
+                    collection=collection,
+                    clip=clip,
+                    position=next_position,
+                    created_at=touched_at,
+                    updated_at=touched_at,
+                )
+                collection.updated_at = touched_at
+                collection.save(only=[ClipCollection.updated_at])
+        except IntegrityError:
+            # 与上方去重判断并发：该片段已被加入（唯一约束 (collection, clip) 命中），幂等返回。
+            return
+
+    @classmethod
+    def remove_clip(cls, collection_id: int, clip_id: int) -> None:
+        collection = cls._require_collection(collection_id)
+        deleted = (
+            ClipCollectionItem.delete()
+            .where(
+                ClipCollectionItem.collection == collection,
+                ClipCollectionItem.clip == clip_id,
+            )
+            .execute()
+        )
+        if deleted:
+            collection.updated_at = utc_now_for_db()
+            collection.save(only=[ClipCollection.updated_at])
+
+    @classmethod
+    def set_clips(cls, collection_id: int, clip_ids: list[int]) -> None:
+        """幂等地把合集成员设置为给定有序列表，既覆盖重排也覆盖批量设置成员。"""
+        collection = cls._require_collection(collection_id)
+        # 去重保序：同一片段在合集内只出现一次，以首次出现的位置为准。
+        ordered_ids: list[int] = []
+        seen: set[int] = set()
+        for clip_id in clip_ids:
+            if clip_id not in seen:
+                seen.add(clip_id)
+                ordered_ids.append(clip_id)
+        for clip_id in ordered_ids:
+            cls._require_clip(clip_id)
+
+        touched_at = utc_now_for_db()
+        with get_database().atomic():
+            ClipCollectionItem.delete().where(
+                ClipCollectionItem.collection == collection
+            ).execute()
+            for position, clip_id in enumerate(ordered_ids):
+                ClipCollectionItem.create(
+                    collection=collection,
+                    clip=clip_id,
+                    position=position,
+                    created_at=touched_at,
+                    updated_at=touched_at,
+                )
+            collection.updated_at = touched_at
+            collection.save(only=[ClipCollection.updated_at])

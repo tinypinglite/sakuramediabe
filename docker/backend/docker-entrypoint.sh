@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_USER="app"
+APP_GROUP="app"
+DATA_ROOT="${SAKURAMEDIA_DATA_ROOT:-/data}"
+APP_ROOT="${SAKURAMEDIA_APP_ROOT:-/app}"
+SUPERVISORD_BIN="${SAKURAMEDIA_SUPERVISORD_BIN:-$(command -v supervisord || echo /usr/local/bin/supervisord)}"
+SUPERVISORD_CONFIG="${SAKURAMEDIA_SUPERVISORD_CONFIG:-/etc/supervisor/supervisord.conf}"
+PYTHON_BIN="${SAKURAMEDIA_PYTHON_BIN:-python}"
+
+ensure_app_identity() {
+    local target_uid="${PUID:-1000}"
+    local target_gid="${PGID:-1000}"
+    local existing_group_name=""
+
+    if ! id "${APP_USER}" >/dev/null 2>&1; then
+        useradd --create-home --shell /bin/bash "${APP_USER}"
+    fi
+
+    existing_group_name="$(getent group "${target_gid}" | cut -d: -f1 || true)"
+    if [ -n "${existing_group_name}" ]; then
+        usermod -g "${existing_group_name}" "${APP_USER}"
+    else
+        groupmod -o -g "${target_gid}" "${APP_GROUP}"
+        usermod -g "${target_gid}" "${APP_USER}"
+    fi
+
+    usermod -o -u "${target_uid}" "${APP_USER}"
+}
+
+chown_if_mismatch() {
+    # 目录属主已经是目标 UID/GID 时直接返回，正常重启零开销；只在不匹配时 chown，且仅改 inode 本身。
+    local target_uid="$1"
+    local target_gid="$2"
+    local path="$3"
+    [ -e "${path}" ] || return 0
+    local cur_uid cur_gid
+    cur_uid="$(stat -c '%u' "${path}")"
+    cur_gid="$(stat -c '%g' "${path}")"
+    if [ "${cur_uid}" != "${target_uid}" ] || [ "${cur_gid}" != "${target_gid}" ]; then
+        chown "${target_uid}:${target_gid}" "${path}" || true
+    fi
+}
+
+bootstrap_data_dirs() {
+    mkdir -p \
+        "${DATA_ROOT}/config" \
+        "${DATA_ROOT}/cache/assets" \
+        "${DATA_ROOT}/cache/gfriends" \
+        "${DATA_ROOT}/media-clips" \
+        "${DATA_ROOT}/plugins" \
+        "${DATA_ROOT}/logs"
+
+    # bind mount 上来的 /data 可能属主是 root 或宿主机用户，导致切到 app 用户后写不进 config.toml/日志。
+    # 只把我们自己 mkdir 的目录节点归给 app，非递归——volume 里的历史缓存/媒体文件保持原样，避免海量文件被扫。
+    # 顶层 ${DATA_ROOT} 是用户挂载点，此处不动；app 用户只需要在下列子目录内新建文件即可。
+    local target_uid="${PUID:-1000}"
+    local target_gid="${PGID:-1000}"
+    local dir
+    for dir in \
+        "${DATA_ROOT}/config" \
+        "${DATA_ROOT}/cache" \
+        "${DATA_ROOT}/cache/assets" \
+        "${DATA_ROOT}/cache/gfriends" \
+        "${DATA_ROOT}/media-clips" \
+        "${DATA_ROOT}/plugins" \
+        "${DATA_ROOT}/logs"; do
+        chown_if_mismatch "${target_uid}" "${target_gid}" "${dir}"
+    done
+}
+
+wait_for_database() {
+    echo "Waiting for database to become ready..."
+    # 显式等待 PostgreSQL 可连接：宿主机重启时容器间无启动顺序保证，避免应用先于数据库就绪导致迁移失败。
+    su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" \"${APP_ROOT}/cli.py\" wait-db --timeout 120" "${APP_USER}"
+}
+
+run_database_migrations() {
+    echo "Running database migrations..."
+    # 迁移必须以应用用户执行，保持运行期文件与日志权限一致。
+    su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" \"${APP_ROOT}/cli.py\" migrate" "${APP_USER}"
+}
+
+bootstrap_default_data() {
+    echo "Bootstrapping default account and system playlists..."
+    # 默认数据初始化保持幂等，首装补齐账号/系统播放列表，老库重复执行会自动跳过。
+    su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" \"${APP_ROOT}/cli.py\" initdb" "${APP_USER}"
+}
+
+install_bundled_plugins() {
+    echo "Installing bundled official plugins..."
+    # 镜像内置插件按版本同步：缺失时安装，镜像版本更高时升级；保留 data/ 与启停状态，不降级。
+    # 单个插件失败只落盘记录，命令本身保持成功，不让内置插件阻断容器启动。
+    su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" \"${APP_ROOT}/cli.py\" plugins install-bundled" "${APP_USER}"
+}
+
+sync_plugin_dependencies() {
+    echo "Syncing plugin dependencies..."
+    # 必须在 supervisor 启动 api/aps 前串行执行：两者都会在 import 期加载插件。
+    # 单个插件失败由命令落盘并由加载器隔离，命令本身保持成功以便服务继续启动。
+    su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" \"${APP_ROOT}/cli.py\" plugins sync-dependencies" "${APP_USER}"
+}
+
+validate_plugin_installation() {
+    echo "Validating plugin installation..."
+    su -s /bin/bash -c "cd \"${APP_ROOT}\" && PYTHONPATH=\"${APP_ROOT}\" \"${PYTHON_BIN}\" \"${APP_ROOT}/cli.py\" plugins validate-installation" "${APP_USER}"
+}
+
+if [ "${1:-}" = "start" ]; then
+    ensure_app_identity
+    bootstrap_data_dirs
+    wait_for_database
+    run_database_migrations
+    bootstrap_default_data
+    # 内置插件是便捷预装：整步失败也只告警继续启动，不能把服务卡在启动阶段。
+    if ! install_bundled_plugins; then
+        echo "WARNING: bundled plugin installation failed, continuing startup" >&2
+    fi
+    sync_plugin_dependencies
+    validate_plugin_installation
+
+    # 主服务只负责 API 和任务编排，不处理嵌入推理设备映射。
+    id "${APP_USER}" || true
+
+    echo "Starting supervisor..."
+    exec "${SUPERVISORD_BIN}" -c "${SUPERVISORD_CONFIG}"
+fi
+
+exec "$@"

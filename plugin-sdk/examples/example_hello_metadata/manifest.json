@@ -1,0 +1,20 @@
+{
+  "plugin_id": "example_hello_metadata",
+  "display_name": "示例元数据源",
+  "display_name_i18n": {
+    "zh-CN": "示例元数据源",
+    "en": "Example Metadata Source"
+  },
+  "description": "SakuraMedia 插件开发示例：按番号返回静态影片元数据。",
+  "description_i18n": {
+    "zh-CN": "SakuraMedia 插件开发示例：按番号返回静态影片元数据。",
+    "en": "SakuraMedia plugin SDK example: returns static movie metadata by movie number."
+  },
+  "version": "1.0.0",
+  "host_api_version": 18,
+  "settings_model": "Settings",
+  "requires_python": ">=3.10,<3.11",
+  "dependencies": [],
+  "author": "SakuraMedia",
+  "homepage": "https://github.com/tinypinglite/sakuramediabe/tree/main/plugin-sdk/examples/example_hello_metadata"
+}

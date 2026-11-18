@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from importlib import import_module
+from pathlib import Path
+from types import ModuleType
+
+from peewee import Database
+
+from src.model import SchemaMigration
+
+VERSIONS_DIR = Path(__file__).resolve().parent / "versions"
+# Nuitka 编译后没有 versions/*.py 文件；构建期生成模块名清单，运行时按清单导入。
+VERSIONS_MANIFEST = Path(__file__).resolve().parent / "versions.json"
+
+CONSOLIDATED_MIGRATION_NAME = "20260821_01_consolidate_task_runtime"
+MOVIE_COLLECTION_OWNER_MIGRATION_NAME = "20260823_01_unify_movie_collection_owner"
+ACTOR_GENDER_BACKFILL_MIGRATION_NAME = "20260823_02_backfill_actor_gender_from_movie_extra"
+MOVIE_BLACKLIST_MIGRATION_NAME = "20260823_03_add_movie_blacklist"
+MEDIA_SPECIAL_TAGS_REMOVAL_MIGRATION_NAME = "20260826_01_remove_media_special_tags"
+IMAGE_SEARCH_QUEUE_INDEXES_MIGRATION_NAME = "20260830_01_add_image_search_queue_indexes"
+IMAGE_SEARCH_INDEX_SPACE_STATE_MIGRATION_NAME = "20260831_01_add_image_search_index_space_state"
+HOT_REVIEW_ITEM_REMOVAL_MIGRATION_NAME = "20260831_02_remove_hot_review_item"
+MEDIA_IMPORT_SOURCE_IDENTITY_MIGRATION_NAME = "20260903_01_add_media_import_source_identity"
+ACTOR_METADATA_MIGRATION_NAME = "20260905_01_add_actor_metadata"
+PLUGIN_MOVIE_METADATA_MIGRATION_NAME = "20260905_02_add_plugin_movie_metadata"
+DOWNLOAD_RESOURCE_HISTORY_MIGRATION_NAME = "20260908_01_add_download_resource_history"
+MOMENT_COLLECTIONS_MIGRATION_NAME = "20260910_01_add_moment_collections"
+ACTOR_LOCAL_PROFILE_MIGRATION_NAME = "20260910_02_add_actor_local_profile"
+PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME = "20260912_01_add_plugin_collection_ownership"
+MEDIA_POINT_PRESERVATION_MIGRATION_NAME = "20260918_01_preserve_media_points"
+DROP_MOVIE_EXTRA_MIGRATION_NAME = "20260925_01_drop_movie_extra"
+REMOVE_ORPHAN_VIDEO_ITEMS_MIGRATION_NAME = "20260927_01_remove_orphan_video_items"
+ACTOR_MERGED_INTO_MIGRATION_NAME = "20260929_01_add_actor_merged_into"
+DROP_IMAGE_DERIVED_SIZES_MIGRATION_NAME = "20260930_01_drop_image_derived_sizes"
+IMAGE_ORIGIN_PATTERN_INDEX_MIGRATION_NAME = "20261001_01_add_image_origin_pattern_index"
+REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME = (
+    "20261006_01_remove_generated_thin_cover_for_skipped_movies"
+)
+WIDEN_DOWNLOAD_TITLE_COLUMNS_MIGRATION_NAME = (
+    "20261007_01_widen_download_title_columns"
+)
+DOWNLOAD_TASK_REMOTE_SEEN_MIGRATION_NAME = (
+    "20261007_02_add_download_task_remote_seen_at"
+)
+DOWNLOAD_SUBMISSION_INDEXES_MIGRATION_NAME = (
+    "20261007_03_add_download_submission_record_indexes"
+)
+API_KEYS_MIGRATION_NAME = "20261007_05_add_api_keys"
+DETACH_USER_ASSET_IMAGES_MIGRATION_NAME = (
+    "20261008_01_detach_media_point_and_video_cover_images"
+)
+VIEW_HISTORY_MIGRATION_NAME = "20261010_01_add_view_history"
+MEDIA_THUMBNAIL_ARCHIVE_MIGRATION_NAME = "20261014_01_add_media_thumbnail_archive"
+MOVIE_MEDIA_REPLACEMENT_MIGRATION_NAME = "20261014_02_add_movie_media_replacement"
+MOVIE_INTERACTION_SORT_INDEXES_MIGRATION_NAME = (
+    "20261019_01_add_movie_interaction_sort_indexes"
+)
+MOVIE_RATINGS_MIGRATION_NAME = "20261020_01_add_movie_ratings"
+ACTOR_GENDER_CHECKED_AT_MIGRATION_NAME = "20261023_01_add_actor_gender_checked_at"
+TASK_RUN_SCOPE_KEY_MIGRATION_NAME = "20261023_02_add_task_run_scope_key"
+DOWNLOAD_TASK_MANUAL_FIELDS_MIGRATION_NAME = (
+    "20261024_01_add_download_task_manual_fields"
+)
+ALLOW_LOCAL_ACTOR_MIGRATION_NAME = "20261025_01_allow_local_actor_without_javdb_id"
+USER_LANGUAGE_MIGRATION_NAME = "20261027_01_add_user_language"
+DOWNLOAD_SELECTION_POLICY_MIGRATION_NAME = (
+    "20261030_01_add_download_selection_policy"
+)
+MEDIA_TAGS_MIGRATION_NAME = "20261031_01_add_media_tags"
+MEDIA_SOURCE_SNAPSHOT_MIGRATION_NAME = "20261031_02_add_media_source_snapshot"
+MEDIA_TAG_REVERSE_INDEX_MIGRATION_NAME = "20261031_03_add_media_tag_reverse_index"
+MEDIA_TAG_MANUAL_LOCK_MIGRATION_NAME = "20261031_04_add_media_tag_manual_lock"
+MEDIA_CONTENT_HASHES_MIGRATION_NAME = "20261031_05_add_media_content_hashes"
+MEDIA_CONTENT_GCID_MIGRATION_NAME = "20261101_01_add_media_content_gcid"
+MULTI_VERSION_PROCESSED_MIGRATION_NAME = (
+    "20261102_01_add_movie_multi_version_processed_snapshot"
+)
+DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME = (
+    "20261103_01_add_download_source_identity"
+)
+REMOVE_JAVDB_IDENTITY_MIGRATION_NAME = (
+    "20261112_01_remove_javdb_identity"
+)
+REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME = (
+    "20261112_02_replace_movie_interactions_with_stats"
+)
+
+
+@dataclass(frozen=True)
+class MigrationExecution:
+    name: str
+    applied: bool
+
+
+@dataclass(frozen=True)
+class MigrationRunSummary:
+    executed: list[MigrationExecution]
+
+    @property
+    def applied_count(self) -> int:
+        return sum(1 for item in self.executed if item.applied)
+
+    @property
+    def skipped_count(self) -> int:
+        return sum(1 for item in self.executed if not item.applied)
+
+
+def _load_migration_module(path: Path) -> ModuleType:
+    return import_module(f"src.start.migrations.versions.{path.stem}")
+
+
+def _migration_names() -> list[str]:
+    """返回迁移模块名；源码开发扫描目录，编译产物读取构建期清单。"""
+    if VERSIONS_MANIFEST.is_file():
+        names = json.loads(VERSIONS_MANIFEST.read_text(encoding="utf-8"))
+        if not isinstance(names, list) or not all(
+            isinstance(name, str) and name for name in names
+        ):
+            raise ValueError("migration_manifest_invalid")
+        return sorted(names)
+    return sorted(
+        path.stem
+        for path in VERSIONS_DIR.glob("*.py")
+        if path.name != "__init__.py"
+    )
+
+
+def _list_migration_modules() -> list[ModuleType]:
+    return [
+        import_module(f"src.start.migrations.versions.{name}")
+        for name in _migration_names()
+    ]
+
+
+def _is_empty_schema(database: Database) -> bool:
+    # run_pending_migrations 会先创建审计表；除此之外没有业务表才算全新数据库。
+    return set(database.get_tables()) <= {"schema_migration"}
+
+
+def _validate_migration_source(database: Database, applied_names: set[str]) -> None:
+    if CONSOLIDATED_MIGRATION_NAME in applied_names:
+        return
+    if not applied_names and _is_empty_schema(database):
+        return
+    raise ValueError(
+        "unsupported_migration_source: this release only supports upgrading from "
+        "v0.6.x; fresh databases are also supported"
+    )
+
+
+def run_pending_migrations(database: Database) -> MigrationRunSummary:
+    # 迁移记录表的查询和写入必须绑定到目标数据库，避免被全局 proxy 残留状态污染。
+    with database.bind_ctx([SchemaMigration], bind_refs=False, bind_backrefs=False):
+        # 迁移记录表由迁移命令显式托管，不依赖 initdb/aps 启动期补库。
+        database.create_tables([SchemaMigration], safe=True)
+        applied_names = {item.name for item in SchemaMigration.select(SchemaMigration.name)}
+        _validate_migration_source(database, applied_names)
+        executed: list[MigrationExecution] = []
+
+        if _is_empty_schema(database):
+            if CONSOLIDATED_MIGRATION_NAME not in applied_names:
+                migration_name = CONSOLIDATED_MIGRATION_NAME
+                with database.atomic():
+                    SchemaMigration.create(name=migration_name)
+                return MigrationRunSummary(
+                    executed=[MigrationExecution(name=migration_name, applied=True)]
+                )
+            # 新库只记录 consolidated marker，业务迁移由当前模型建表，不应尝试执行。
+            return MigrationRunSummary(executed=[])
+
+        for module in _list_migration_modules():
+            migration_name = str(getattr(module, "name", "")).strip()
+            migrate_callable = getattr(module, "migrate", None)
+            if not migration_name:
+                raise ValueError(f"migration_name_missing: {module.__name__}")
+            if not callable(migrate_callable):
+                raise TypeError(f"migration_callable_missing: {migration_name}")
+            if migration_name in applied_names:
+                executed.append(MigrationExecution(name=migration_name, applied=False))
+                continue
+
+            with database.atomic():
+                migrate_callable(database)
+                SchemaMigration.create(name=migration_name)
+            applied_names.add(migration_name)
+            executed.append(MigrationExecution(name=migration_name, applied=True))
+
+        return MigrationRunSummary(executed=executed)

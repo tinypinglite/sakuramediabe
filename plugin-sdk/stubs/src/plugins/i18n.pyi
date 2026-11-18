@@ -1,0 +1,9 @@
+from pathlib import Path
+from typing import Any
+
+class PluginI18n:
+    plugin_id: str
+    def __init__(self, plugin_id: str, root_dir: Path | None = None) -> None: ...
+    @property
+    def locale(self) -> str: ...
+    def t(self, key: str, default: str | None = None, **params: Any) -> str: ...

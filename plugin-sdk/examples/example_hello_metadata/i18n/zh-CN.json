@@ -1,0 +1,7 @@
+{
+  "manifest.display_name": "示例元数据源",
+  "settings.title_prefix.title": "标题前缀",
+  "settings.title_prefix.description": "拼在示例影片标题前面的文字。",
+  "metadata.title": "示例影片",
+  "metadata.summary": "这是 SakuraMedia 插件开发示例返回的静态简介。"
+}

@@ -1,0 +1,1033 @@
+from collections.abc import Sequence
+from contextlib import nullcontext
+from typing import Literal
+from uuid import uuid4
+
+import peewee
+from loguru import logger
+
+from src.api.exception.errors import ApiError
+from src.common.image_store import delete_image_file, read_image_bytes, write_image_file
+from src.common.media_paths import media_point_image_relative_path
+from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import (
+    paginate,
+    require_by_id,
+    require_record,
+    resolve_sort,
+    resolve_sort_expression,
+    validate_page,
+    with_movie_card_relations,
+)
+from src.common.text_search import split_search_terms
+from src.model import (
+    Actor,
+    Image,
+    Media,
+    MediaLibrary,
+    MediaPoint,
+    MediaProgress,
+    MediaThumbnail,
+    MomentCollectionItem,
+    Movie,
+    MovieActor,
+    MovieTag,
+    Tag,
+    VideoCollection,
+    VideoCollectionItem,
+    VideoItem,
+)
+from src.model.base import get_database
+from src.plugins.provider_protocol import (
+    MEDIA_PROVIDER_REGISTRY,
+    ProviderOperationError,
+    ProviderUnavailableError,
+)
+from src.schema.catalog.actors import ImageResource
+from src.schema.common.pagination import PageResponse
+from src.schema.playback.media import (
+    DuplicateMediaGroupResource,
+    DuplicateMediaListItemResource,
+    InvalidMediaResource,
+    MediaListItemResource,
+    MediaPointCreateRequest,
+    MediaPointKind,
+    MediaPointListItemResource,
+    MediaPointResource,
+    MediaProgressResource,
+    MediaProgressUpdateRequest,
+    MediaThumbnailGenerationState,
+    MediaThumbnailResource,
+    MultiVersionMovieResource,
+)
+from src.schema.videos.items import VideoCollectionRef
+from src.service.catalog.image_cleanup_service import ImageCleanupService
+
+# 直接从子模块导入：collections/__init__ 会引入 clip_collection_service -> playback 形成循环，
+# 绕开包级 __init__ 的初始化顺序依赖。
+from src.service.collections.playlist_service import PlaylistService
+from src.service.discovery import get_qdrant_thumbnail_store
+from src.service.playback.media_state_migration_service import (
+    MediaStateMigrationResult,
+    MediaStateMigrationService,
+)
+from src.service.playback.media_tag_service import MediaTagService
+from src.service.playback.media_thumbnail_service import MediaThumbnailService
+from src.service.playback.operation_locks import (
+    MEDIA_LOCK,
+    MOVIE_MEDIA_LOCK,
+    media_operation_lock,
+)
+from src.service.playback.provider_helpers import media_handle_for
+from src.service.playback.search_filters import keyword_conditions
+from src.service.playback.thumbnails.adoption import ThumbnailAdoptionService
+from src.service.system.optional_services import image_search_enabled
+
+
+def _video_title_conditions(term: str) -> list:
+    """视频时刻按视频标题匹配：MediaPoint 只存 video_item_id 快照，走子查询。
+
+    title 的 `.contains()` 在 PostgreSQL 上是 ILIKE，无需再做大小写归一。
+    """
+    return [
+        MediaPoint.video_item_id.in_(
+            VideoItem.select(VideoItem.id).where(VideoItem.title.contains(term))
+        )
+    ]
+
+
+class MediaService:
+    MEDIA_POINT_SORT_FIELDS = {
+        "created_at:desc": [MediaPoint.created_at.desc(), MediaPoint.id.desc()],
+        "created_at:asc": [MediaPoint.created_at.asc(), MediaPoint.id.asc()],
+    }
+
+    MEDIA_LIST_SORT_FIELD_MAP = {
+        "file_size_bytes": Media.file_size_bytes,
+        "heat": Movie.heat,
+    }
+    # 非 JAV 视频没有关联 Movie，heat 恒为空，需要排在末尾（不受排序方向影响）。
+    MEDIA_LIST_NULLABLE_SORT_FIELDS = {"heat"}
+
+    @staticmethod
+    def _require_media(media_id: int) -> Media:
+        return require_by_id(Media, media_id, "media", error_message="Media not found")
+
+    @staticmethod
+    def _to_media_point_resource(point: MediaPoint) -> MediaPointResource:
+        return MediaPointResource(
+            point_id=point.id,
+            media_id=point.media_id,
+            thumbnail_id=point.thumbnail_id,
+            offset_seconds=point.offset_seconds,
+            image=ImageResource.from_attributes_model(point.image),
+            created_at=point.created_at,
+        )
+
+    @staticmethod
+    def _point_query_with_image():
+        return (
+            MediaPoint.select(MediaPoint, Image).join(Image)
+        )
+
+    @staticmethod
+    def _require_thumbnail_for_media(media: Media, thumbnail_id: int) -> MediaThumbnail:
+        return require_record(
+            MediaThumbnail,
+            MediaThumbnail.id == thumbnail_id,
+            MediaThumbnail.media == media,
+            error_code="media_thumbnail_not_found",
+            error_message="Media thumbnail not found",
+            error_details={"media_id": media.id, "thumbnail_id": thumbnail_id},
+            query=MediaThumbnail.select(MediaThumbnail),
+        )
+
+    @classmethod
+    def _resolve_media_point_sort(cls, value: str | None) -> Sequence:
+        return resolve_sort(
+            value, cls.MEDIA_POINT_SORT_FIELDS,
+            default_key="created_at:desc", error_code="invalid_media_point_filter",
+        )
+
+    @staticmethod
+    def _validate_media_point_page(page: int, page_size: int) -> None:
+        validate_page(page, page_size, error_code="invalid_media_point_filter")
+
+    @staticmethod
+    def _media_point_kind_filter(kind: MediaPointKind):
+        # 按归属过滤：JAV 取有番号媒体，VIDEO 取非 JAV 视频媒体，ALL 不限制。
+        if kind == MediaPointKind.JAV:
+            return Media.movie.is_null(False)
+        if kind == MediaPointKind.VIDEO:
+            return Media.video_item.is_null(False)
+        return None
+
+    @classmethod
+    def _build_media_list_sort(cls, sort: str | None) -> Sequence:
+        """解析 ``field:direction`` 排序表达式，默认按入库时间倒序。"""
+        return resolve_sort_expression(
+            sort,
+            cls.MEDIA_LIST_SORT_FIELD_MAP,
+            error_code="invalid_media_filter",
+            nullable_fields=cls.MEDIA_LIST_NULLABLE_SORT_FIELDS,
+            tie_breaker=Media.id,
+            default=[Media.created_at.desc(), Media.id.desc()],
+        )
+
+    @staticmethod
+    def _to_media_list_item_resource(
+        media: Media,
+        tags=None,
+        collections=None,
+    ) -> MediaListItemResource:
+        # 按归属拆分：JAV 媒体展示番号、影片封面与热度，非 JAV 媒体回退到 VideoItem 标题。
+        if media.movie_number:
+            movie = media.movie
+            return MediaListItemResource(
+                id=media.id,
+                kind="jav",
+                movie_number=movie.movie_number,
+                title=movie.title,
+                cover_image=ImageResource.from_attributes_model(movie.cover_image)
+                if movie.cover_image_id is not None
+                else None,
+                thin_cover_image=ImageResource.from_attributes_model(movie.thin_cover_image)
+                if movie.thin_cover_image_id is not None
+                else None,
+                library_id=media.library_id,
+                library_name=media.library.name if media.library_id is not None else None,
+                file_name=media.file_name,
+                file_size_bytes=media.file_size_bytes,
+                duration_seconds=media.duration_seconds,
+                resolution=media.resolution,
+                video_info=media.video_info,
+                valid=media.valid,
+                thumbnail_generation_state=media.thumbnail_generation_state,
+                thumbnail_last_error_code=media.thumbnail_last_error_code,
+                heat=movie.heat,
+                collections=collections or [],
+                tags=tags or [],
+                is_media_tags_manually_managed=(
+                    media.is_media_tags_manually_managed
+                ),
+                created_at=media.created_at,
+                updated_at=media.updated_at,
+            )
+        video_item = media.video_item if media.video_item_id else None
+        return MediaListItemResource(
+            id=media.id,
+            kind="video",
+            video_item_id=media.video_item_id,
+            title=video_item.title if video_item is not None else None,
+            cover_image=ImageResource.from_attributes_model(video_item.cover_image)
+            if video_item is not None and video_item.cover_image_id is not None
+            else None,
+            library_id=media.library_id,
+            library_name=media.library.name if media.library_id is not None else None,
+            file_name=media.file_name,
+            file_size_bytes=media.file_size_bytes,
+            duration_seconds=media.duration_seconds,
+            resolution=media.resolution,
+            video_info=media.video_info,
+            valid=media.valid,
+            thumbnail_generation_state=media.thumbnail_generation_state,
+            thumbnail_last_error_code=media.thumbnail_last_error_code,
+            heat=None,
+            collections=collections or [],
+            tags=tags or [],
+            is_media_tags_manually_managed=media.is_media_tags_manually_managed,
+            created_at=media.created_at,
+            updated_at=media.updated_at,
+        )
+
+    @classmethod
+    def _to_media_list_item_resources(
+        cls,
+        media_rows: Sequence[Media],
+    ) -> list[MediaListItemResource]:
+        tags_by_media_id = MediaTagService.list_briefs_by_media_ids(
+            [media.id for media in media_rows]
+        )
+        collections_by_video_id = cls._collections_by_video_id(
+            [
+                media.video_item_id
+                for media in media_rows
+                if media.video_item_id is not None
+            ]
+        )
+        return [
+            cls._to_media_list_item_resource(
+                media,
+                tags_by_media_id.get(media.id, []),
+                collections_by_video_id.get(media.video_item_id, []),
+            )
+            for media in media_rows
+        ]
+
+    @staticmethod
+    def _collections_by_video_id(
+        video_ids: Sequence[int],
+    ) -> dict[int, list[VideoCollectionRef]]:
+        if not video_ids:
+            return {}
+        collections_by_video_id: dict[int, list[VideoCollectionRef]] = {}
+        collection_rows = (
+            VideoCollectionItem.select(
+                VideoCollectionItem.video_item,
+                VideoCollection.id,
+                VideoCollection.name,
+            )
+            .join(
+                VideoCollection,
+                on=(VideoCollectionItem.collection == VideoCollection.id),
+            )
+            .where(VideoCollectionItem.video_item.in_(video_ids))
+            .order_by(VideoCollection.name.asc(), VideoCollection.id.asc())
+        )
+        for collection_row in collection_rows:
+            collections_by_video_id.setdefault(
+                collection_row.video_item_id, []
+            ).append(
+                VideoCollectionRef(
+                    id=collection_row.collection.id,
+                    name=collection_row.collection.name,
+                )
+            )
+        return collections_by_video_id
+
+    @staticmethod
+    def _media_list_query():
+        # 非 JAV 媒体没有 movie，Movie 改为 LEFT OUTER，并补 VideoItem 兜底标题/封面。
+        base_query = Media.select(Media, Movie, VideoItem).join(
+            Movie,
+            peewee.JOIN.LEFT_OUTER,
+            on=(Media.movie == Movie.movie_number),
+        )
+        base_query, _thin_cover_alias = with_movie_card_relations(base_query)
+        video_cover_alias = Image.alias()
+        return (
+            base_query.select_extend(MediaLibrary, video_cover_alias)
+            .switch(Media)
+            .join(VideoItem, peewee.JOIN.LEFT_OUTER)
+            .join(
+                video_cover_alias,
+                peewee.JOIN.LEFT_OUTER,
+                on=(VideoItem.cover_image == video_cover_alias.id),
+                attr="cover_image",
+            )
+            .switch(Media)
+            .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
+        )
+
+    @classmethod
+    def list_media(
+        cls,
+        *,
+        kind: MediaPointKind = MediaPointKind.ALL,
+        library_id: int | None = None,
+        actor_ids: list[int] | None = None,
+        search: str | None = None,
+        thumbnail_generation_state: MediaThumbnailGenerationState | None = None,
+        sort: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> PageResponse[MediaListItemResource]:
+        """跨 JAV 与 videos 域分页列出媒体，支持归属/库/女优/文件名筛选与排序。"""
+        validate_page(page, page_size, error_code="invalid_media_filter")
+
+        base_query = cls._media_list_query()
+
+        kind_filter = cls._media_point_kind_filter(kind)
+        if kind_filter is not None:
+            base_query = base_query.where(kind_filter)
+        if library_id is not None:
+            base_query = base_query.where(Media.library == library_id)
+        if actor_ids is not None:
+            # MovieActor.movie 指向 Movie.id，而 Media.movie 指向 Movie.movie_number，
+            # 两者不是同一标识符空间，须先转换成 movie_number 再筛 Media；
+            # 用 IN 子查询而非 JOIN，避免多女优命中同一影片时主查询出现重复行，
+            # 非 JAV 视频因 Media.movie 恒为 NULL 天然被排除，无需额外联动 kind。
+            # 子查询内联墓碑解析，避免每个 actor_id 一次额外查询。
+            canonical_actor_ids = Actor.select(
+                peewee.fn.COALESCE(Actor.merged_into, Actor.id)
+            ).where(Actor.id.in_(actor_ids))
+            actor_movie_ids = MovieActor.select(MovieActor.movie).where(
+                MovieActor.actor.in_(canonical_actor_ids)
+            )
+            movie_numbers = Movie.select(Movie.movie_number).where(
+                Movie.id.in_(actor_movie_ids)
+            )
+            base_query = base_query.where(Media.movie.in_(movie_numbers))
+        normalized_search = (search or "").strip()
+        if normalized_search:
+            base_query = base_query.where(Media.file_name.contains(normalized_search))
+        if thumbnail_generation_state is not None:
+            base_query = base_query.where(
+                Media.thumbnail_generation_state == thumbnail_generation_state.value
+            )
+
+        total = base_query.count()
+        order_by = cls._build_media_list_sort(sort)
+        rows = list(
+            base_query.order_by(*order_by)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = cls._to_media_list_item_resources(rows)
+        return PageResponse[MediaListItemResource](
+            items=items,
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    @classmethod
+    def list_multi_version_movies(
+        cls,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        include_vr: bool = False,
+        include_fc2: bool = False,
+        include_processed: bool = False,
+    ) -> PageResponse[MultiVersionMovieResource]:
+        validate_page(page, page_size, error_code="invalid_media_filter")
+        current_snapshot = peewee.fn.STRING_AGG(
+            Media.id.cast("text"), ","
+        ).order_by(Media.id.asc())
+        stored_snapshot = peewee.fn.COALESCE(
+            Movie.multi_version_processed_snapshot, ""
+        )
+        having = [peewee.fn.COUNT(Media.id) > 1]
+        if not include_processed:
+            having.append(stored_snapshot != current_snapshot)
+        groups = (
+            Media.select(
+                Media.movie,
+                Movie.multi_version_processed_snapshot,
+                current_snapshot.alias("current_snapshot"),
+            )
+            .join(Movie, on=(Media.movie == Movie.movie_number))
+            .where(Media.movie.is_null(False))
+            .group_by(Media.movie, Movie.multi_version_processed_snapshot)
+            .having(*having)
+        )
+        if not include_vr:
+            vr_tagged_movies = (
+                Movie.select(Movie.movie_number)
+                .join(MovieTag)
+                .join(Tag)
+                .where(peewee.fn.LOWER(Tag.name) == "vr")
+            )
+            groups = groups.where(
+                ~(Media.movie.contains("VR") | Media.movie.in_(vr_tagged_movies))
+            )
+        if not include_fc2:
+            groups = groups.where(~Media.movie.startswith("FC2"))
+        total = groups.count()
+        page_groups = list(
+            groups.order_by(
+                peewee.fn.MAX(Media.updated_at).desc(), Media.movie.asc()
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .tuples()
+        )
+        movie_numbers = [number for number, _, _ in page_groups]
+        processed_by_movie = {
+            number: stored is not None and stored == current
+            for number, stored, current in page_groups
+        }
+        media_by_movie: dict[str, list[MediaListItemResource]] = {
+            number: [] for number in movie_numbers
+        }
+        if movie_numbers:
+            rows = (
+                cls._media_list_query()
+                .where(Media.movie.in_(movie_numbers))
+                .order_by(Media.created_at.asc(), Media.id.asc())
+            )
+            media_items = cls._to_media_list_item_resources(rows)
+            for media, item in zip(rows, media_items, strict=True):
+                media_by_movie[media.movie_number].append(item)
+        return PageResponse[MultiVersionMovieResource](
+            items=[
+                MultiVersionMovieResource(
+                    movie_number=number,
+                    media_count=len(items),
+                    media_items=items,
+                    is_processed=processed_by_movie[number],
+                )
+                for number, items in media_by_movie.items()
+                if len(items) > 1
+            ],
+            page=page, page_size=page_size, total=total,
+        )
+
+    @staticmethod
+    def _multi_version_snapshot(media_ids: Sequence[int]) -> str:
+        return ",".join(str(media_id) for media_id in sorted(media_ids))
+
+    @classmethod
+    def mark_multi_version_processed(
+        cls, movie_number: str, media_ids: Sequence[int]
+    ) -> None:
+        movie = Movie.get_or_none(Movie.movie_number == movie_number)
+        if movie is None:
+            raise ApiError(404, "movie_not_found", "影片不存在")
+        current_ids = [
+            media_id
+            for (media_id,) in Media.select(Media.id)
+            .where(Media.movie == movie_number)
+            .order_by(Media.id.asc())
+            .tuples()
+        ]
+        if len(current_ids) < 2 or sorted(media_ids) != current_ids:
+            raise ApiError(
+                409,
+                "multi_version_changed",
+                "影片版本已变化，请刷新后重试",
+            )
+        Movie.update(
+            multi_version_processed_snapshot=cls._multi_version_snapshot(
+                current_ids
+            )
+        ).where(Movie.id == movie.id).execute()
+
+    @staticmethod
+    def clear_multi_version_processed(movie_number: str) -> None:
+        movie = Movie.get_or_none(Movie.movie_number == movie_number)
+        if movie is None:
+            raise ApiError(404, "movie_not_found", "影片不存在")
+        Movie.update(multi_version_processed_snapshot=None).where(
+            Movie.id == movie.id
+        ).execute()
+
+    @classmethod
+    def list_duplicate_media_groups(
+        cls,
+        *,
+        kind: Literal["jav", "video"],
+        page: int = 1,
+        page_size: int = 20,
+    ) -> PageResponse[DuplicateMediaGroupResource]:
+        """跨媒体库按文件指纹列出同一类型的重复媒体。"""
+        validate_page(page, page_size, error_code="invalid_media_filter")
+        kind_filter = (
+            Media.movie.is_null(False)
+            if kind == "jav"
+            else Media.video_item.is_null(False)
+        )
+        duplicate_hashes_query = (
+            Media.select(Media.file_hash)
+            .where(
+                kind_filter,
+                Media.file_hash.is_null(False),
+                Media.file_hash != "",
+            )
+            .group_by(Media.file_hash)
+            .having(peewee.fn.COUNT(Media.id) > 1)
+        )
+        total = duplicate_hashes_query.count()
+        page_hashes = [
+            file_hash
+            for (file_hash,) in (
+                duplicate_hashes_query.order_by(
+                    peewee.fn.MAX(Media.updated_at).desc(),
+                    Media.file_hash.asc(),
+                )
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+                .tuples()
+            )
+        ]
+        if not page_hashes:
+            return PageResponse[DuplicateMediaGroupResource](
+                items=[], page=page, page_size=page_size, total=total
+            )
+
+        media_by_hash: dict[str, list[DuplicateMediaListItemResource]] = {
+            file_hash: [] for file_hash in page_hashes
+        }
+        media_rows = list(
+            cls._media_list_query()
+            .where(kind_filter, Media.file_hash.in_(page_hashes))
+            .order_by(Media.file_hash.asc(), Media.created_at.asc(), Media.id.asc())
+        )
+        media_items = cls._to_media_list_item_resources(media_rows)
+        for media, item in zip(media_rows, media_items, strict=True):
+            media_by_hash[media.file_hash].append(
+                DuplicateMediaListItemResource(**item.model_dump())
+            )
+
+        return PageResponse[DuplicateMediaGroupResource](
+            items=[
+                DuplicateMediaGroupResource(
+                    kind=kind,
+                    media_count=len(media_by_hash[file_hash]),
+                    media_items=media_by_hash[file_hash],
+                )
+                for file_hash in page_hashes
+            ],
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    @classmethod
+    def list_media_points(
+        cls,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        sort: str | None = None,
+        kind: MediaPointKind = MediaPointKind.JAV,
+        keyword: str | None = None,
+        exclude_collection_id: int | None = None,
+    ) -> PageResponse[MediaPointListItemResource]:
+        cls._validate_media_point_page(page, page_size)
+        start = (page - 1) * page_size
+        order_by = cls._resolve_media_point_sort(sort)
+        kind_filter = None
+        number_column = None
+        text_condition_builder = None
+        if kind == MediaPointKind.JAV:
+            kind_filter = MediaPoint.movie_number.is_null(False)
+            number_column = MediaPoint.movie_number
+        elif kind == MediaPointKind.VIDEO:
+            kind_filter = MediaPoint.video_item_id.is_null(False)
+            text_condition_builder = _video_title_conditions
+        else:
+            number_column = MediaPoint.movie_number
+            text_condition_builder = _video_title_conditions
+        points_query = cls._point_query_with_image()
+        if kind_filter is not None:
+            points_query = points_query.where(kind_filter)
+        for condition in keyword_conditions(
+            split_search_terms(
+                keyword, error_code="invalid_media_point_filter"
+            ),
+            number_column=number_column,
+            text_condition_builder=text_condition_builder,
+        ):
+            points_query = points_query.where(condition)
+        if exclude_collection_id is not None:
+            points_query = points_query.where(
+                MediaPoint.id.not_in(
+                    MomentCollectionItem.select(MomentCollectionItem.point).where(
+                        MomentCollectionItem.collection == exclude_collection_id
+                    )
+                )
+            )
+        total = points_query.count()
+        points = list(
+            points_query
+            .order_by(*order_by)
+            .offset(start)
+            .limit(page_size)
+        )
+        items = [
+            MediaPointListItemResource(
+                point_id=point.id,
+                media_id=point.media_id,
+                movie_number=point.movie_number,
+                video_item_id=point.video_item_id,
+                thumbnail_id=point.thumbnail_id,
+                offset_seconds=point.offset_seconds,
+                image=ImageResource.from_attributes_model(point.image),
+                created_at=point.created_at,
+            )
+            for point in points
+        ]
+        return PageResponse[MediaPointListItemResource](
+            items=items,
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    @classmethod
+    def list_points(cls, media_id: int) -> list[MediaPointResource]:
+        cls._require_media(media_id)
+        points = (
+            cls._point_query_with_image()
+            .where(MediaPoint.media == media_id)
+            .order_by(MediaPoint.id)
+        )
+        return [cls._to_media_point_resource(point) for point in points]
+
+    @classmethod
+    def create_point(
+        cls,
+        media_id: int,
+        payload: MediaPointCreateRequest,
+    ) -> tuple[MediaPointResource, bool]:
+        media = cls._require_media(media_id)
+        thumbnail = cls._require_thumbnail_for_media(media, payload.thumbnail_id)
+        with get_database().atomic():
+            point = (
+                MediaPoint.select()
+                .where(
+                    MediaPoint.media == media,
+                    MediaPoint.thumbnail == thumbnail,
+                )
+                .order_by(MediaPoint.id)
+                .first()
+            )
+            if point is not None:
+                point = cls._point_query_with_image().where(MediaPoint.id == point.id).get()
+                return cls._to_media_point_resource(point), False
+
+            # 时刻钉图是用户资产：拷贝来源缩略图字节为自有副本，之后与缩略图生命周期解绑，
+            # 来源媒体重置/重生成缩略图都不会影响已钉下的时刻。
+            try:
+                image_bytes = read_image_bytes(thumbnail.image.origin)
+            except FileNotFoundError as exc:
+                raise ApiError(
+                    500, "thumbnail_image_missing", "缩略图文件缺失，无法创建时刻"
+                ) from exc
+            relative_path = media_point_image_relative_path(
+                f"{uuid4().hex}.webp"
+            ).as_posix()
+            write_image_file(relative_path, image_bytes)
+            try:
+                image = Image.create(origin=relative_path)
+                point = MediaPoint.create(
+                    media=media,
+                    thumbnail=thumbnail,
+                    image=image,
+                    movie_number=media.movie_number,
+                    video_item_id=media.video_item_id,
+                    offset_seconds=thumbnail.offset,
+                )
+                point = cls._point_query_with_image().where(MediaPoint.id == point.id).get()
+            except Exception:
+                delete_image_file(relative_path)
+                raise
+        return cls._to_media_point_resource(point), True
+
+    @classmethod
+    @classmethod
+    def delete_point_by_id(cls, point_id: int) -> None:
+        with get_database().atomic():
+            point = require_by_id(MediaPoint, point_id, "media_point")
+            image = point.image
+            point.delete_instance()
+            obsolete_paths = ImageCleanupService.delete_image_record_if_unused(image)
+        ImageCleanupService.delete_obsolete_image_files(obsolete_paths)
+
+    @classmethod
+    def update_progress(
+        cls,
+        media_id: int,
+        payload: MediaProgressUpdateRequest,
+    ) -> MediaProgressResource:
+        media = cls._require_media(media_id)
+        watched_at = utc_now_for_db()
+        progress = MediaProgress.get_or_none(MediaProgress.media == media)
+        if progress is None:
+            progress = MediaProgress.create(
+                media=media,
+                position_seconds=payload.position_seconds,
+                last_watched_at=watched_at,
+                created_at=watched_at,
+                updated_at=watched_at,
+            )
+        else:
+            progress.position_seconds = payload.position_seconds
+            progress.last_watched_at = watched_at
+            progress.updated_at = watched_at
+            progress.save()
+
+        # 最近播放列表是 JAV 影片维度的能力，非 JAV 媒体跳过维护。
+        if media.movie_number:
+            PlaylistService.touch_recently_played(media.movie)
+        return MediaProgressResource(
+            media_id=media.id,
+            last_position_seconds=progress.position_seconds,
+            last_watched_at=progress.last_watched_at,
+        )
+
+    @classmethod
+    def delete_media(
+        cls,
+        media_id: int,
+        *,
+        sync_video_member: bool = True,
+        migration_excluded_media_ids: frozenset[int] = frozenset(),
+    ) -> None:
+        with media_operation_lock(MEDIA_LOCK, media_id):
+            media = cls._require_media(media_id)
+            # 非 JAV 视频条目与媒体一一对应：删除媒体即删除条目，合集成员随外键级联清理。
+            # [sync_video_member] 仅供条目自身的删除链路关闭，避免递归回到这里。
+            if sync_video_member and media.video_item_id is not None:
+                from src.service.videos.video_item_service import VideoItemService
+
+                VideoItemService.delete_video(media.video_item_id)
+                return
+
+            movie_id = media.movie.id if media.movie_number else None
+            movie_lock = (
+                media_operation_lock(MOVIE_MEDIA_LOCK, movie_id)
+                if movie_id is not None
+                else nullcontext()
+            )
+            with movie_lock:
+                cls._delete_media_record(
+                    media,
+                    movie_id=movie_id,
+                    migration_excluded_media_ids=migration_excluded_media_ids,
+                )
+
+    @classmethod
+    def _delete_media_record(
+        cls,
+        media: Media,
+        *,
+        movie_id: int | None,
+        migration_excluded_media_ids: frozenset[int],
+    ) -> None:
+        # 已巡检确认远端无对象的媒体不再要求 provider 可达：插件缺失或鉴权失败时
+        # 也允许清理本地记录，否则死库记录永远删不掉。
+        if media.valid:
+            media_handle = media_handle_for(media)
+            try:
+                storage = MEDIA_PROVIDER_REGISTRY.storage_for(media_handle.library)
+                storage.delete_media(media=media_handle)
+            except ProviderUnavailableError as exc:
+                raise ApiError(
+                    503,
+                    "provider_not_installed",
+                    "媒体提供方未安装",
+                ) from exc
+            except ProviderOperationError as exc:
+                if exc.code == "source_not_found":
+                    # Provider 已确认来源不存在，宿主记录已无对应远端对象，继续清理本地元数据。
+                    pass
+                else:
+                    status_code = {
+                        "authentication_failed": 401,
+                        "unavailable": 503,
+                        "invalid_config": 422,
+                        "unsupported": 422,
+                    }[exc.code]
+                    raise ApiError(
+                        status_code,
+                        f"provider_{exc.code}",
+                        exc.safe_message,
+                    ) from exc
+        thumbnails = list(
+            MediaThumbnail.select(MediaThumbnail, Image)
+            .join(Image)
+            .where(MediaThumbnail.media == media)
+        )
+        thumbnail_image_ids = [thumbnail.image_id for thumbnail in thumbnails]
+        obsolete_image_paths: set[str] = set()
+        migration_result: MediaStateMigrationResult | None = None
+
+        with get_database().atomic():
+            # 缩略图先按文件指纹归档：归档行持有 Image 引用，随后的清理不会删除
+            # 记录与物理文件，同 hash 文件再次入库即可直接收养。
+            ThumbnailAdoptionService.archive_media_thumbnails(media)
+            if movie_id is not None:
+                # 同一影片并发删除多个版本时，串行判定“是否已经删到最后一份”。
+                Movie.select(Movie.id).where(Movie.id == movie_id).for_update().get()
+                target = MediaStateMigrationService.resolve_target_media(
+                    media,
+                    excluded_media_ids=migration_excluded_media_ids,
+                )
+                if target is not None:
+                    migration_result = MediaStateMigrationService.migrate(
+                        media,
+                        target,
+                    )
+                    obsolete_image_paths |= migration_result.obsolete_image_paths
+
+            # 清理播放进度和缩略图；时刻与切片仅置空来源引用。
+            Media.delete().where(Media.id == media.id).execute()
+            if movie_id is not None and not Media.select(Media.id).where(
+                Media.movie == media.movie_number
+            ).exists():
+                # JAV 的 Media 是订阅补库结果。最后一份删除后由 catalog 状态域开启新一轮搜索；
+                # 未订阅影片会被更新条件过滤，非 JAV 媒体没有 movie_number，不会走到这里。
+                from src.service.catalog.movie_subscription_search_state_service import (
+                    MovieSubscriptionSearchStateService,
+                )
+
+                MovieSubscriptionSearchStateService.reset(
+                    [movie_id], media_replacement=True
+                )
+
+            for image_id in thumbnail_image_ids:
+                image = Image.get_or_none(Image.id == image_id)
+                obsolete_image_paths |= ImageCleanupService.delete_image_record_if_unused(image)
+
+        ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
+
+        if migration_result is not None:
+            logger.info(
+                "Media state migrated source_media_id={} target_media_id={} "
+                "progress={} points={} merged={} skipped={}",
+                media.id,
+                migration_result.target_media_id,
+                migration_result.progress_migrated,
+                migration_result.points_migrated,
+                migration_result.points_merged,
+                migration_result.points_skipped_out_of_range,
+            )
+
+        # 仅 JAV 媒体缩略图会进向量库；非 JAV 缩略图落 SKIPPED 从不入库，跳过空删省一次远端往返。
+        if media.movie_number and image_search_enabled():
+            try:
+                get_qdrant_thumbnail_store().delete_by_media_id(media.id)
+            except Exception as exc:
+                logger.warning("Delete media vectors failed media_id={} detail={}", media.id, exc)
+
+    @classmethod
+    def force_reset_media_thumbnails(cls, media_ids: list[int]) -> int:
+        """删除已有缩略图产物并把生成状态重置为 pending，重生成交给定时任务。
+
+        时刻钉图与视频自选封面已拷贝为各自领域的用户资产，不在此处引用缩略图，
+        删除后即可整体重建；媒体正在处理时抛 409（与删除媒体一致），重试幂等。
+        """
+        media_rows = list(
+            Media.select(Media.id, Media.movie_number)
+            .where(Media.id.in_(media_ids), Media.valid == True)
+            .order_by(Media.id)
+        )
+        reset_count = 0
+        for media in media_rows:
+            with media_operation_lock(MEDIA_LOCK, media.id):
+                thumbnail_image_ids = [
+                    image_id
+                    for (image_id,) in MediaThumbnail.select(MediaThumbnail.image_id)
+                    .where(MediaThumbnail.media == media.id)
+                    .tuples()
+                ]
+                with get_database().atomic():
+                    MediaThumbnail.delete().where(
+                        MediaThumbnail.media == media.id
+                    ).execute()
+                    Media.update(
+                        thumbnail_generation_state=Media.THUMBNAIL_STATE_PENDING,
+                        thumbnail_attempt_count=0,
+                        thumbnail_deferred_count=0,
+                        thumbnail_next_retry_at=None,
+                        thumbnail_last_error_code=None,
+                        thumbnail_last_error=None,
+                        thumbnail_terminal_at=None,
+                        # 显式重置要求真实重生成，本次不被同 hash 收养劫持。
+                        thumbnail_adoption_blocked=True,
+                        updated_at=utc_now_for_db(),
+                    ).where(Media.id == media.id).execute()
+
+                    obsolete_image_paths: set[str] = set()
+                    for image_id in thumbnail_image_ids:
+                        image = Image.get_or_none(Image.id == image_id)
+                        obsolete_image_paths |= ImageCleanupService.delete_image_record_if_unused(image)
+
+                ImageCleanupService.delete_obsolete_image_files(obsolete_image_paths)
+
+                if media.movie_number and image_search_enabled():
+                    try:
+                        get_qdrant_thumbnail_store().delete_by_media_id(media.id)
+                    except Exception as exc:
+                        logger.warning(
+                            "Delete media vectors failed media_id={} detail={}",
+                            media.id,
+                            exc,
+                        )
+                reset_count += 1
+        return reset_count
+
+    @classmethod
+    def list_thumbnails(cls, media_id: int) -> list[MediaThumbnailResource]:
+        cls._require_media(media_id)
+        return MediaThumbnailService.list_media_thumbnails(media_id)
+
+    @staticmethod
+    def _to_invalid_media_resource(media: Media) -> InvalidMediaResource:
+        # 按归属拆分：JAV 媒体展示番号与影片封面，非 JAV 媒体回退到 VideoItem 标题。
+        if media.movie_number:
+            movie = media.movie
+            return InvalidMediaResource(
+                id=media.id,
+                movie_number=movie.movie_number,
+                movie_title=movie.title,
+                cover_image=ImageResource.from_attributes_model(movie.cover_image)
+                if movie.cover_image_id is not None
+                else None,
+                thin_cover_image=ImageResource.from_attributes_model(movie.thin_cover_image)
+                if movie.thin_cover_image_id is not None
+                else None,
+                file_name=media.file_name,
+                library_id=media.library_id,
+                library_name=media.library.name if media.library_id is not None else None,
+                file_size_bytes=media.file_size_bytes,
+                updated_at=media.updated_at,
+            )
+        video_item = media.video_item if media.video_item_id else None
+        return InvalidMediaResource(
+            id=media.id,
+            video_item_id=media.video_item_id,
+            movie_title=video_item.title if video_item is not None else None,
+            cover_image=ImageResource.from_attributes_model(video_item.cover_image)
+            if video_item is not None and video_item.cover_image_id is not None
+            else None,
+            file_name=media.file_name,
+            library_id=media.library_id,
+            library_name=media.library.name if media.library_id is not None else None,
+            file_size_bytes=media.file_size_bytes,
+            updated_at=media.updated_at,
+        )
+
+    @classmethod
+    def list_invalid_media(
+        cls,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+        search: str | None = None,
+    ) -> PageResponse[InvalidMediaResource]:
+        validate_page(page, page_size, error_code="invalid_media_filter")
+        # 非 JAV 媒体没有 movie，Movie 改为 LEFT OUTER，并补 VideoItem 兜底标题。
+        base_query = Media.select(Media, Movie, VideoItem).join(
+            Movie,
+            peewee.JOIN.LEFT_OUTER,
+            on=(Media.movie == Movie.movie_number),
+        )
+        # 失效媒体卡片需要展示影片横版与竖版封面，沿用影片卡片的关联加载逻辑。
+        base_query, _thin_cover_alias = with_movie_card_relations(base_query)
+        # 非 JAV 失效媒体封面来自 VideoItem.cover_image，用别名再 LEFT JOIN 一张 Image 预加载，
+        # 避免 _to_invalid_media_resource 逐行懒加载 video_item.cover_image（N+1）。
+        video_cover_alias = Image.alias()
+        base_query = (
+            base_query.select_extend(MediaLibrary, video_cover_alias)
+            .switch(Media)
+            .join(VideoItem, peewee.JOIN.LEFT_OUTER)
+            .join(
+                video_cover_alias,
+                peewee.JOIN.LEFT_OUTER,
+                on=(VideoItem.cover_image == video_cover_alias.id),
+                attr="cover_image",
+            )
+            .switch(Media)
+            .join(MediaLibrary, peewee.JOIN.LEFT_OUTER)
+            .where(Media.valid == False)
+        )
+        normalized = (search or "").strip()
+        if normalized:
+            base_query = base_query.where(
+                (Movie.movie_number.contains(normalized))
+                | (Movie.title.contains(normalized))
+                | (VideoItem.title.contains(normalized))
+                | (Media.file_name.contains(normalized))
+            )
+        return paginate(
+            base_query.order_by(Media.updated_at.desc(), Media.id.desc()),
+            page,
+            page_size,
+            error_code="invalid_media_filter",
+            item_mapper=cls._to_invalid_media_resource,
+            response_model=PageResponse[InvalidMediaResource],
+        )

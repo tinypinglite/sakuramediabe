@@ -1,0 +1,537 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from src.config.config import Plugins
+from src.plugins import HOST_API_VERSION
+from src.plugins.contracts import PluginExtension
+from src.plugins.extensions.media_provider import (
+    MEDIA_PROVIDER_EXTENSION_KEY,
+    validate_media_provider_extension,
+)
+from src.plugins.loader import PLUGIN_LOAD_ERRORS, load_enabled_plugins
+from src.plugins.provider_protocol import (
+    STORAGE_PROVIDER_METHODS,
+    BrowsePage,
+    ClipArtifact,
+    ConfigField,
+    DownloadClientHandle,
+    LibraryHandle,
+    LibraryLoginSpec,
+    MediaProviderRegistry,
+    PreparedLibrary,
+    PreparedLibraryLogin,
+    ProviderOperationError,
+    RemoteDownloadTask,
+    StorageSpaceUsage,
+    ThumbnailGeneration,
+    WebLoginCookieCapture,
+    WebLoginLocalStorageCapture,
+    supports_import_source_validation,
+    supports_space_usage,
+)
+
+
+def test_plugin_protocol_uses_host_api_v18():
+    assert HOST_API_VERSION == 18
+
+
+def test_import_source_validation_is_optional_provider_capability():
+    assert "validate_import_source" not in STORAGE_PROVIDER_METHODS
+    assert supports_import_source_validation(object()) is False
+    assert supports_import_source_validation(_Storage()) is False
+
+    class ValidatingStorage:
+        def validate_import_source(self, *, source_ref, source_disposition):
+            return None
+
+    assert supports_import_source_validation(ValidatingStorage()) is True
+
+
+def test_provider_operation_error_rejects_unknown_code():
+    with pytest.raises(ValueError, match="unsupported provider operation error code"):
+        ProviderOperationError(
+            provider_key="demo",
+            operation="test",
+            code="unknown",  # type: ignore[arg-type]
+            safe_message="provider failure",
+            retryable=False,
+        )
+
+
+class _Storage:
+    def browse(self, *, parent_ref, cursor, limit):
+        return BrowsePage(entries=(), next_cursor=None)
+
+    def scan_import_source(self, *, source_ref):
+        return ()
+
+    def read_import_file(self, *, source):
+        raise NotImplementedError
+
+    def delete_import_file(self, *, receipt):
+        return None
+
+    def stage_import_file(
+        self, *, source, placement, source_disposition, operation_key
+    ):
+        raise NotImplementedError
+
+    def finalize_import(self, *, receipt):
+        return None
+
+    def abort_import(self, *, receipt):
+        return None
+
+    def delete_media(self, *, media):
+        return None
+
+    def compute_file_hash(self, *, media):
+        return "test-file-hash"
+
+    async def handle_playback(self, *, media, context):
+        raise NotImplementedError
+
+    def generate_thumbnails(self, *, media, workspace):
+        return ThumbnailGeneration(expected_count=0, artifacts=())
+
+    def create_clip(self, *, media, start_offset_seconds, end_offset_seconds, workspace):
+        return ClipArtifact(relative_path="clip.mp4")
+
+    def get_space_usage(self):
+        return StorageSpaceUsage(total_bytes=100, used_bytes=40, free_bytes=60)
+
+
+class _Bundle:
+    provider_key = "demo"
+    display_name = "Demo"
+    library_config_fields = (
+        ConfigField(key="cookie", label="Cookie", input="secret", required=True),
+    )
+    playback_deliveries = ("proxy",)
+    downloads = None
+    library_login = None
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def prepare_library(self, *, submitted_config, previous):
+        self.calls.append("prepare_library")
+        return PreparedLibrary(provider_config=submitted_config, account_key=None)
+
+    def build_storage(self, *, library):
+        self.calls.append("build_storage")
+        return _Storage()
+
+    def resolve_library_login(self, *, captured):
+        return PreparedLibraryLogin(
+            provider_config={"cookie": captured["cookie"]},
+            account_key="account",
+        )
+
+
+class _DownloadProvider:
+    def submit(self, *, submission):
+        return RemoteDownloadTask(
+            remote_id="1",
+            name=submission.display_name,
+            state="queued",
+            progress=0,
+            completed_source_ref=None,
+        )
+
+    def list_tasks(self):
+        return ()
+
+    def delete_task(self, *, remote_id, delete_files):
+        return None
+
+
+class _Downloads:
+    config_fields = ()
+
+    def prepare_client(self, *, submitted_config, library, previous):
+        return submitted_config
+
+    def test_client(self, *, submitted_config, library):
+        return None
+
+    def build(self, *, client):
+        return _DownloadProvider()
+
+
+def test_media_provider_validator_does_not_construct_provider():
+    bundle = _Bundle()
+    validated = validate_media_provider_extension(
+        plugin_id="demo_plugin",
+        extension=PluginExtension(
+            key=MEDIA_PROVIDER_EXTENSION_KEY,
+            data=bundle,
+        ),
+    )
+    assert validated is bundle
+    assert bundle.calls == []
+
+
+@pytest.mark.parametrize(
+    ("deliveries", "message"),
+    (
+        ((), "不能为空"),
+        (("redirect",), "必须包含 proxy"),
+        (("proxy", "proxy"), "不可重复"),
+        (("proxy", "unknown"), "包含不支持的方式"),
+    ),
+)
+def test_media_provider_validator_requires_supported_playback_deliveries(
+    deliveries, message
+):
+    bundle = _Bundle()
+    bundle.playback_deliveries = deliveries
+
+    with pytest.raises(ValueError, match=message):
+        validate_media_provider_extension(
+            plugin_id="demo_plugin",
+            extension=PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+        )
+
+
+@pytest.mark.parametrize(
+    ("value", "error", "message"),
+    (
+        ("Local", TypeError, "display_name_i18n"),
+        ({"en": 1}, TypeError, "display_name_i18n"),
+        ({"": "Local"}, ValueError, "display_name_i18n"),
+    ),
+)
+def test_media_provider_validator_rejects_invalid_display_name_i18n(
+    value, error, message
+):
+    bundle = _Bundle()
+    bundle.display_name_i18n = value
+
+    with pytest.raises(error, match=message):
+        validate_media_provider_extension(
+            plugin_id="demo_plugin",
+            extension=PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "error", "message"),
+    (
+        ("label_i18n", "Token", TypeError, "label_i18n"),
+        ("description_i18n", ["Description"], TypeError, "description_i18n"),
+        ("hint_i18n", {"en": 1}, TypeError, "hint_i18n"),
+        ("label_i18n", {"": "Token"}, ValueError, "label_i18n"),
+    ),
+)
+def test_media_provider_validator_rejects_invalid_config_field_i18n(
+    field_name, value, error, message
+):
+    bundle = _Bundle()
+    bundle.library_config_fields = (
+        ConfigField(
+            key="cookie",
+            label="Cookie",
+            input="secret",
+            required=True,
+            **{field_name: value},
+        ),
+    )
+
+    with pytest.raises(error, match=message):
+        validate_media_provider_extension(
+            plugin_id="demo_plugin",
+            extension=PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+        )
+
+
+def test_media_provider_validator_accepts_config_field_i18n():
+    bundle = _Bundle()
+    bundle.library_config_fields = (
+        ConfigField(
+            key="cookie",
+            label="Cookie",
+            input="secret",
+            required=True,
+            label_i18n={"en": "Cookie"},
+            description_i18n={"en": "Session cookie"},
+            hint_i18n={"en": "Paste it"},
+        ),
+    )
+
+    assert (
+        validate_media_provider_extension(
+            plugin_id="demo_plugin",
+            extension=PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+        )
+        is bundle
+    )
+
+
+def test_media_provider_validator_accepts_library_login():
+    bundle = _Bundle()
+    bundle.library_login = LibraryLoginSpec(
+        start_url="https://example.com/login",
+        allowed_hosts=("example.com",),
+        cookie_captures=(
+            WebLoginCookieCapture(
+                url="https://example.com/",
+                capture_names=("SESSION",),
+                required_names=("SESSION",),
+            ),
+        ),
+        local_storage_captures=(
+            WebLoginLocalStorageCapture(
+                origin="https://example.com",
+                required_json_keys=("refresh_token",),
+            ),
+        ),
+        managed_config_keys=("cookie",),
+    )
+
+    validated = validate_media_provider_extension(
+        plugin_id="demo_plugin",
+        extension=PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+    )
+
+    assert validated is bundle
+
+
+def test_media_provider_validator_requires_login_resolver():
+    bundle = _Bundle()
+    bundle.library_login = LibraryLoginSpec(
+        start_url="https://example.com/login",
+        allowed_hosts=("example.com",),
+        managed_config_keys=("cookie",),
+    )
+    bundle.resolve_library_login = None
+
+    with pytest.raises(TypeError, match="resolve_library_login"):
+        validate_media_provider_extension(
+            plugin_id="demo_plugin",
+            extension=PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+        )
+
+
+@pytest.mark.parametrize(
+    ("spec", "message"),
+    (
+        (
+            LibraryLoginSpec(
+                start_url="http://example.com/login",
+                allowed_hosts=("example.com",),
+                managed_config_keys=("cookie",),
+            ),
+            "HTTPS",
+        ),
+        (
+            LibraryLoginSpec(
+                start_url="https://example.com/login",
+                allowed_hosts=("https://example.com",),
+                managed_config_keys=("cookie",),
+            ),
+            "主机名",
+        ),
+        (
+            LibraryLoginSpec(
+                start_url="https://example.com/login",
+                allowed_hosts=("example.com",),
+                cookie_captures=(
+                    WebLoginCookieCapture(
+                        url="https://example.com/",
+                        capture_names=("SESSION",),
+                        required_names=("MISSING",),
+                    ),
+                ),
+                managed_config_keys=("cookie",),
+            ),
+            "required_names",
+        ),
+        (
+            LibraryLoginSpec(
+                start_url="https://example.com/login",
+                allowed_hosts=("example.com",),
+                managed_config_keys=("unknown",),
+            ),
+            "未知字段",
+        ),
+    ),
+)
+def test_media_provider_validator_rejects_invalid_library_login(spec, message):
+    bundle = _Bundle()
+    bundle.library_login = spec
+
+    with pytest.raises(ValueError, match=message):
+        validate_media_provider_extension(
+            plugin_id="demo_plugin",
+            extension=PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+        )
+
+
+def test_media_provider_registry_builds_and_unloads_storage():
+    bundle = _Bundle()
+    bundle.downloads = _Downloads()
+    registration = type(
+        "Registration",
+        (),
+        {
+            "plugin_id": "demo_plugin",
+            "host_api_version": 6,
+            "extensions": (
+                PluginExtension(key=MEDIA_PROVIDER_EXTENSION_KEY, data=bundle),
+            ),
+        },
+    )()
+    registry = MediaProviderRegistry()
+    assert registry.replace((registration,)) == set()
+    library = LibraryHandle(
+        library_id=1,
+        provider_key="demo",
+        provider_config={"cookie": "opaque"},
+        account_key=None,
+    )
+    storage = registry.storage_for(library=library)
+    assert isinstance(storage, _Storage)
+    assert supports_space_usage(storage)
+    assert bundle.calls == ["build_storage"]
+    client = DownloadClientHandle(
+        client_id=1,
+        library=library,
+        provider_config={},
+    )
+    assert isinstance(registry.download_for(client), _DownloadProvider)
+    bundle.downloads = None
+    with pytest.raises(ProviderOperationError) as error:
+        registry.download_for(client)
+    assert error.value.code == "unsupported"
+    assert error.value.provider_key == "demo"
+
+
+def test_remote_download_task_requires_ref_only_when_completed():
+    with pytest.raises(ValueError):
+        RemoteDownloadTask(
+            remote_id="1",
+            name="x",
+            state="completed",
+            progress=1,
+            completed_source_ref=None,
+        )
+    with pytest.raises(ValueError):
+        RemoteDownloadTask(
+            remote_id="1",
+            name="x",
+            state="completed",
+            progress=1,
+            completed_source_ref={},
+        )
+    with pytest.raises(ValueError):
+        RemoteDownloadTask(
+            remote_id="1",
+            name="x",
+            state="queued",
+            progress=0,
+            completed_source_ref={"opaque": True},
+        )
+
+
+@pytest.mark.parametrize("remote_id", (None, "", " ", 123))
+def test_remote_download_task_requires_non_empty_remote_id(remote_id):
+    with pytest.raises(ValueError):
+        RemoteDownloadTask(
+            remote_id=remote_id,
+            name="x",
+            state="queued",
+            progress=0,
+            completed_source_ref=None,
+        )
+
+
+def _write_bundle_plugin(root: Path, plugin_id: str, provider_key: str) -> None:
+    package = root / plugin_id
+    package.mkdir(parents=True)
+    (package / "manifest.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": plugin_id,
+                "display_name": plugin_id,
+                "version": "1.0.0",
+                "host_api_version": HOST_API_VERSION,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (package / "__init__.py").write_text(
+        f"""from src.plugins import HOST_API_VERSION, PluginContext, PluginExtension, PluginRegistration
+from src.plugins.provider_protocol import ConfigField, PreparedLibrary, BrowsePage, ThumbnailGeneration, ClipArtifact
+
+class Storage:
+    def browse(self, *, parent_ref, cursor, limit): return BrowsePage(entries=(), next_cursor=None)
+    def scan_import_source(self, *, source_ref): return ()
+    def read_import_file(self, *, source): raise NotImplementedError
+    def delete_import_file(self, *, receipt): pass
+    def stage_import_file(self, *, source, placement, source_disposition, operation_key): raise NotImplementedError
+    def finalize_import(self, *, receipt): pass
+    def abort_import(self, *, receipt): pass
+    def delete_media(self, *, media): pass
+    def compute_file_hash(self, *, media): return 'test-file-hash'
+    async def handle_playback(self, *, media, context): raise NotImplementedError
+    def generate_thumbnails(self, *, media, workspace): return ThumbnailGeneration(expected_count=0, artifacts=())
+    def create_clip(self, *, media, start_offset_seconds, end_offset_seconds, workspace): return ClipArtifact(relative_path='clip.mp4')
+
+class Bundle:
+    provider_key = {provider_key!r}
+    display_name = 'Demo'
+    library_config_fields = ()
+    playback_deliveries = ('proxy',)
+    downloads = None
+    def prepare_library(self, *, submitted_config, previous): return PreparedLibrary(provider_config=submitted_config, account_key=None)
+    def build_storage(self, *, library): return Storage()
+
+def register(context):
+    return PluginRegistration(
+        plugin_id={plugin_id!r}, display_name='Demo', version='1.0.0',
+        host_api_version=HOST_API_VERSION,
+        extensions=(PluginExtension(key='media.provider', data=Bundle()),),
+    )
+""",
+        encoding="utf-8",
+    )
+
+
+def test_loader_isolates_duplicate_media_provider_key(tmp_path):
+    _write_bundle_plugin(tmp_path, "first", "same")
+    _write_bundle_plugin(tmp_path, "second", "same")
+    PLUGIN_LOAD_ERRORS.clear()
+    loaded = load_enabled_plugins(
+        Plugins(enabled=["first", "second"]),
+        root_dir=tmp_path,
+    )
+    assert [registration.plugin_id for registration in loaded] == ["first"]
+    assert PLUGIN_LOAD_ERRORS["second"]["stage"] == "provider_registry"
+
+
+def test_scan_progress_is_enabled_for_host_api_18(tmp_path):
+    _write_bundle_plugin(tmp_path, "scan_plugin", "scan")
+    loaded = load_enabled_plugins(Plugins(enabled=["scan_plugin"]), root_dir=tmp_path)
+    assert len(loaded) == 1
+    assert loaded[0].host_api_version == 18
+    registry = MediaProviderRegistry()
+    registry.replace(loaded)
+    assert registry.supports_scan_progress("scan") is True
+    registry.replace(())
+    assert not registry.supports_scan_progress("scan")
+
+
+@pytest.mark.parametrize("api_version", (6, 7, 17))
+def test_old_host_api_versions_are_rejected(tmp_path, api_version):
+    _write_bundle_plugin(tmp_path, "scan_plugin", "scan")
+    manifest_path = tmp_path / "scan_plugin" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["host_api_version"] = api_version
+    manifest_path.write_text(json.dumps(manifest))
+
+    assert load_enabled_plugins(Plugins(enabled=["scan_plugin"]), root_dir=tmp_path) == ()

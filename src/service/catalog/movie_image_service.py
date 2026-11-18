@@ -1,0 +1,994 @@
+"""影片图片子系统 service。
+
+从 ``CatalogImportService`` 抽出，专门负责影片/演员图片的下载、封面切割、薄封面解析
+与 Image 记录持久化。本 service 只处理图片，不写 Movie 元数据：薄封面记录由本服务
+持久化并返回，``Movie.thin_cover_image`` 的回写留在编排层（CatalogImportService）。
+
+阅读入口建议从图片任务的构建（``_build_movie_image_tasks``）开始，再看下载、
+薄封面解析（``resolve_thin_cover_*``）和入库 helper（``persist_*``）。
+"""
+
+import os
+import re
+import shutil
+import tempfile
+import time
+from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
+from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path
+from urllib.parse import urlparse, urlunparse
+from uuid import uuid4
+
+import httpx
+from loguru import logger
+from peewee import EXCLUDED
+from PIL import Image as PillowImage
+from PIL import UnidentifiedImageError
+
+from src.common.image_payload import deobfuscate_image_bytes
+from src.common.image_store import read_image_bytes
+from src.common.media_paths import (
+    media_image_root_path,
+    movie_asset_relative_dir,
+    normalize_asset_dir_name,
+)
+from src.common.runtime_time import utc_now_for_db
+from src.common.service_helpers import backoff_delay
+from src.model import Image, Movie, MoviePlotImage
+from src.service.catalog.image_cleanup_service import ImageCleanupService
+
+GFRIENDS_JSDELIVR_OWNER = "xinxin8816"
+GFRIENDS_JSDELIVR_REPO = "gfriends"
+GFRIENDS_RAW_HOST = "raw.githubusercontent.com"
+
+# 这些番号的封面都是单张横图（FC2 / HEYZO / 欧美流媒体日期命名 / 素人纯数字编号），
+# 不存在实体盘双页合订结构；按"合订封面书脊"裁出的右半只是普通切片，禁止生成薄封面。
+THIN_COVER_SKIP_NUMBER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^FC2-", re.IGNORECASE),
+    re.compile(r"^HEYZO-", re.IGNORECASE),
+    re.compile(r"^[a-z][a-z0-9]*\.\d{2,4}\.\d{2}\.\d{2}", re.IGNORECASE),
+    re.compile(r"^\d+[-_]\d+"),
+)
+
+
+def should_skip_thin_cover_crop(movie_number: str) -> bool:
+    number = (movie_number or "").strip()
+    return any(pattern.match(number) for pattern in THIN_COVER_SKIP_NUMBER_PATTERNS)
+
+
+class ImageDownloadError(Exception):
+    pass
+
+
+@dataclass
+class ImagePersistTask:
+    image_type: str
+    image_url: str
+    relative_path: str
+    absolute_path: Path
+    plot_index: int | None = None
+
+
+@dataclass
+class PreparedImageFile:
+    image_task: ImagePersistTask
+    temp_path: Path
+    temp_root: Path
+
+
+@dataclass
+class ThinCoverResolution:
+    generated_task: ImagePersistTask | None = None
+    generated_prepared_file: PreparedImageFile | None = None
+    selected_plot_index: int | None = None
+
+
+class MovieImageService:
+    """影片图片下载、封面切割与 Image 记录持久化。"""
+
+    # 图片下载重试次数
+    IMAGE_DOWNLOAD_MAX_RETRIES = 6
+    # 图片下载超时秒数
+    IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 30
+
+    def __init__(self, image_downloader: Callable[[str, Path], None] | None = None):
+        # http_client 急切构造：下载单测会在实例上 monkeypatch http_client.request，
+        # 懒建会让 patch 定位不到真正发请求的 client。
+        # 不显式关闭 trust_env：未配置代理时直连；容器层配置 HTTP_PROXY/NO_PROXY
+        # 环境变量时跟随部署方分流，与 metadata 链路保持一致。
+        self.http_client = httpx.Client(
+            timeout=self.IMAGE_DOWNLOAD_TIMEOUT_SECONDS,
+        )
+        self.image_downloader = image_downloader or self._download_image
+
+    @staticmethod
+    def _normalize_image_extension(raw_extension: str | None) -> str:
+        normalized_extension = (raw_extension or "").strip().lower()
+        if not normalized_extension:
+            return ".jpg"
+        if not normalized_extension.startswith("."):
+            normalized_extension = f".{normalized_extension}"
+        if len(normalized_extension) > 8:
+            return ".jpg"
+        return normalized_extension
+
+    @staticmethod
+    def _sobel_column_gradient(gray):
+        """按列汇总横向 Sobel 梯度；等价于 cv2.Sobel(..., 1, 0, ksize=3)。"""
+        import numpy as np
+
+        # 用 reflect 边界对应 OpenCV 默认的 BORDER_REFLECT_101，边缘列不重复。
+        padded = np.pad(gray, 1, mode="reflect")
+        sobel = (
+            padded[:-2, 2:]
+            + 2 * padded[1:-1, 2:]
+            + padded[2:, 2:]
+            - padded[:-2, :-2]
+            - 2 * padded[1:-1, :-2]
+            - padded[2:, :-2]
+        )
+        return np.sum(np.abs(sobel), axis=0)
+
+    @classmethod
+    def _detect_split_points(cls, image, center_range: int = 100) -> tuple[int, int]:
+        import numpy as np
+
+        width, height = image.size
+        center_x = width // 2
+        column_gradient = cls._sobel_column_gradient(
+            np.asarray(image.convert("L"), dtype=np.float64)
+        )
+        max_gradient = float(column_gradient.max()) if column_gradient.size else 0.0
+        if max_gradient <= 0:
+            return -1, -1
+        column_gradient /= max_gradient
+        left_range = range(max(0, center_x - center_range), center_x)
+        right_range = range(center_x, min(width, center_x + center_range))
+        try:
+            left_point = max(left_range, key=lambda index: column_gradient[index])
+            right_point = max(right_range, key=lambda index: column_gradient[index])
+        except ValueError:
+            return -1, -1
+        left_distance = abs(center_x - left_point)
+        right_distance = abs(right_point - center_x)
+        # 仅接受左右分割点近似对称，或右侧分割点接近既有经验值的位置。
+        if abs(left_distance - right_distance) < 10 or abs(right_distance - 20) < 10:
+            return left_point, right_point
+        crop_aspect_ratio = (width - right_point) / height if height > 0 else 0
+        right_edge_strength = float(column_gradient[right_point])
+        # 旧规则失败后，仅对裁出区域仍像竖封面的强边缘切点做保守增强，避免普通横图被固定比例误切。
+        wide_spine_matched = (
+            12 <= right_distance <= center_range
+            and 0.45 <= crop_aspect_ratio <= 0.85
+            and right_edge_strength >= 0.35
+        )
+        narrow_spine_matched = (
+            4 <= right_distance <= 11
+            and 0.55 <= crop_aspect_ratio <= 0.80
+            and right_edge_strength >= 0.50
+        )
+        center_split_matched = (
+            right_distance == 0
+            and 0.55 <= crop_aspect_ratio <= 0.80
+            and right_edge_strength >= 0.50
+        )
+        if not (wide_spine_matched or narrow_spine_matched or center_split_matched):
+            return -1, -1
+        return left_point, right_point
+
+    @classmethod
+    def _split_image(cls, image_bytes: bytes, output_image_path: Path, center_range: int = 100) -> bool:
+        try:
+            import numpy  # noqa: F401
+        except ImportError:
+            logger.warning(
+                "Thin cover split skipped because numpy is unavailable output={}",
+                str(output_image_path),
+            )
+            return False
+
+        try:
+            with PillowImage.open(BytesIO(image_bytes)) as source:
+                # 与 cv2.IMREAD_COLOR 对齐：统一三通道 RGB，丢弃 alpha。
+                image = source.convert("RGB")
+        except (UnidentifiedImageError, OSError):
+            logger.warning(
+                "Thin cover split skipped because cover image cannot be decoded output={}",
+                str(output_image_path),
+            )
+            return False
+        try:
+            left_point, right_point = cls._detect_split_points(image, center_range=center_range)
+        except Exception as exc:
+            logger.warning(
+                "Thin cover split point detection failed output={} detail={}",
+                str(output_image_path),
+                exc,
+            )
+            return False
+        if left_point == -1 and right_point == -1:
+            logger.info("Thin cover split points not found output={}", str(output_image_path))
+            return False
+        output_image_path.parent.mkdir(parents=True, exist_ok=True)
+        width, height = image.size
+        cropped = image.crop((right_point, 0, width, height))
+        save_kwargs = {}
+        if output_image_path.suffix.lower() in {".jpg", ".jpeg", ".webp"}:
+            # cv2.imwrite 的 JPEG 默认质量是 95，这里保持一致，避免生成图质量突然变差。
+            save_kwargs["quality"] = 95
+        try:
+            cropped.save(output_image_path, **save_kwargs)
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "Thin cover split failed to write output={} detail={}",
+                str(output_image_path),
+                exc,
+            )
+            return False
+        return True
+
+    @staticmethod
+    def _is_portrait_image(image_bytes: bytes) -> bool:
+        try:
+            with PillowImage.open(BytesIO(image_bytes)) as image:
+                width, height = image.size
+                return width > 0 and height > width
+        except (UnidentifiedImageError, OSError) as exc:
+            logger.warning("Thin cover portrait check failed detail={}", exc)
+            return False
+
+    def _build_generated_thin_cover_task(
+        self, movie_number: str, extension: str, *, token: str | None = None
+    ) -> ImagePersistTask:
+        safe_owner_key = normalize_asset_dir_name(movie_number)
+        normalized_extension = self._normalize_image_extension(extension)
+        # 图片路径必须不可变：显式替换场景带 token 生成新文件名，避免客户端长缓存吃旧图。
+        suffix = f"-{token}" if token else ""
+        relative_path = (
+            movie_asset_relative_dir(safe_owner_key)
+            / f"thin-cover{suffix}{normalized_extension}"
+        ).as_posix()
+        absolute_path = media_image_root_path() / relative_path
+        return ImagePersistTask(
+            image_type="thin_cover",
+            image_url="",
+            relative_path=relative_path,
+            absolute_path=absolute_path,
+        )
+
+    def _generate_thin_cover_task_from_cover(
+        self,
+        movie_number: str,
+        cover_bytes: bytes,
+        extension: str,
+        *,
+        token: str | None = None,
+    ) -> ImagePersistTask | None:
+        thin_cover_task = self._build_generated_thin_cover_task(
+            movie_number, extension, token=token
+        )
+        if self._split_image(cover_bytes, thin_cover_task.absolute_path):
+            return thin_cover_task
+        try:
+            thin_cover_task.absolute_path.unlink()
+        except FileNotFoundError:
+            pass
+        return None
+
+    def _generate_prepared_thin_cover_from_cover(
+        self,
+        movie_number: str,
+        cover_bytes: bytes,
+        extension: str,
+        temp_root: Path,
+    ) -> tuple[ImagePersistTask, PreparedImageFile] | None:
+        thin_cover_task = self._build_generated_thin_cover_task(movie_number, extension)
+        prepared_file = PreparedImageFile(
+            image_task=thin_cover_task,
+            temp_path=temp_root / thin_cover_task.relative_path,
+            temp_root=temp_root,
+        )
+        if self._split_image(cover_bytes, prepared_file.temp_path):
+            return thin_cover_task, prepared_file
+        try:
+            prepared_file.temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        return None
+
+    def _select_portrait_plot_index(self, plot_items: list[tuple[int, bytes]]) -> int | None:
+        # 业务约定只允许前两张剧情图参与竖封面回退，后续剧情图不再参与判定。
+        for plot_index, plot_bytes in plot_items[:2]:
+            if self._is_portrait_image(plot_bytes):
+                return plot_index
+        return None
+
+    def resolve_thin_cover_from_downloaded_images(
+        self,
+        movie_number: str,
+        cover_task: ImagePersistTask | None,
+        plot_tasks: list[ImagePersistTask],
+    ) -> ThinCoverResolution:
+        if (
+            cover_task is not None
+            and cover_task.absolute_path.exists()
+            and not should_skip_thin_cover_crop(movie_number)
+        ):
+            thin_cover_task = self._generate_thin_cover_task_from_cover(
+                movie_number,
+                cover_task.absolute_path.read_bytes(),
+                Path(cover_task.relative_path).suffix,
+            )
+            if thin_cover_task is not None:
+                return ThinCoverResolution(generated_task=thin_cover_task)
+        selected_plot_index = self._select_portrait_plot_index(
+            [
+                (int(plot_task.plot_index), plot_task.absolute_path.read_bytes())
+                for plot_task in plot_tasks
+                if plot_task.plot_index is not None and plot_task.absolute_path.exists()
+            ]
+        )
+        return ThinCoverResolution(selected_plot_index=selected_plot_index)
+
+    def resolve_thin_cover_from_prepared_images(
+        self,
+        movie_number: str,
+        cover_task: ImagePersistTask | None,
+        plot_tasks: list[ImagePersistTask],
+        prepared_files: list[PreparedImageFile],
+    ) -> ThinCoverResolution:
+        prepared_by_relative_path = {prepared_file.image_task.relative_path: prepared_file for prepared_file in prepared_files}
+        if cover_task is not None and not should_skip_thin_cover_crop(movie_number):
+            prepared_cover = prepared_by_relative_path.get(cover_task.relative_path)
+            if prepared_cover is not None:
+                generated = self._generate_prepared_thin_cover_from_cover(
+                    movie_number,
+                    prepared_cover.temp_path.read_bytes(),
+                    Path(cover_task.relative_path).suffix,
+                    prepared_cover.temp_root,
+                )
+                if generated is not None:
+                    thin_cover_task, thin_cover_prepared_file = generated
+                    return ThinCoverResolution(
+                        generated_task=thin_cover_task,
+                        generated_prepared_file=thin_cover_prepared_file,
+                    )
+        selected_plot_index = self._select_portrait_plot_index(
+            [
+                (int(plot_task.plot_index), prepared_by_relative_path[plot_task.relative_path].temp_path.read_bytes())
+                for plot_task in plot_tasks
+                if plot_task.plot_index is not None and plot_task.relative_path in prepared_by_relative_path
+            ]
+        )
+        return ThinCoverResolution(selected_plot_index=selected_plot_index)
+
+    def resolve_thin_cover_from_existing_movie(
+        self,
+        movie: Movie,
+        plot_links: list[MoviePlotImage],
+        *,
+        token: str | None = None,
+    ) -> ThinCoverResolution:
+        cover_image = movie.cover_image
+        if cover_image is not None and not should_skip_thin_cover_crop(movie.movie_number):
+            try:
+                cover_bytes = read_image_bytes(cover_image.origin)
+            except FileNotFoundError:
+                cover_bytes = None
+            if cover_bytes is not None:
+                thin_cover_task = self._generate_thin_cover_task_from_cover(
+                    movie.movie_number,
+                    cover_bytes,
+                    Path(cover_image.origin).suffix,
+                    token=token,
+                )
+                if thin_cover_task is not None:
+                    return ThinCoverResolution(generated_task=thin_cover_task)
+        return self.resolve_thin_cover_from_plot_images(plot_links)
+
+    def resolve_thin_cover_from_plot_images(
+        self, plot_links: list[MoviePlotImage]
+    ) -> ThinCoverResolution:
+        """只按现有剧情图回退薄封面，不读封面文件。
+
+        供“封面换图后切不出书脊”的调用方使用：此时不能再读旧封面（可能正是被替换
+        掉的那张），只能按剧情图回退，否则会把已有薄封面清空。
+        """
+        plot_items: list[tuple[int, bytes]] = []
+        for plot_index, plot_link in enumerate(plot_links):
+            try:
+                plot_items.append((plot_index, read_image_bytes(plot_link.image.origin)))
+            except FileNotFoundError:
+                continue
+        return ThinCoverResolution(
+            selected_plot_index=self._select_portrait_plot_index(plot_items)
+        )
+
+    def resolve_persisted_thin_cover_image(
+        self,
+        resolution: ThinCoverResolution,
+        plot_images_by_index: dict[int, Image],
+        *,
+        refreshed: bool,
+    ) -> Image | None:
+        """把薄封面解析结果持久化成 Image 记录并返回；不写 Movie，由编排层回写。"""
+        if resolution.generated_task is not None:
+            return (
+                self.persist_refreshed_image_record(resolution.generated_task)
+                if refreshed
+                else self.persist_prepared_image(resolution.generated_task)
+            )
+        if resolution.selected_plot_index is not None:
+            return plot_images_by_index.get(resolution.selected_plot_index)
+        return None
+
+    def _build_movie_image_tasks(
+        self, movie_number: str, cover_image_url: str | None, plot_urls: list[str]
+    ) -> tuple[ImagePersistTask | None, list[ImagePersistTask]]:
+        """统一生成影片封面和剧照的本地落盘任务。"""
+        cover_task = self._build_image_task(
+            owner_type="movie_cover",
+            owner_key=movie_number,
+            image_url=cover_image_url,
+        )
+        plot_tasks: list[ImagePersistTask] = []
+        for image_index, plot_url in enumerate(plot_urls):
+            image_task = self._build_image_task(
+                owner_type="movie_plot",
+                owner_key=movie_number,
+                image_url=plot_url,
+                plot_index=image_index,
+            )
+            if image_task is not None:
+                plot_tasks.append(image_task)
+        return cover_task, plot_tasks
+
+    def _build_image_task(
+        self,
+        owner_type: str,
+        owner_key: str,
+        image_url: str | None,
+        plot_index: int | None = None,
+    ) -> ImagePersistTask | None:
+        """把远端图片 URL 解析成稳定的本地相对路径和绝对路径。"""
+        if not image_url:
+            logger.debug(
+                "Persist image skipped because url is empty owner_type={} owner_key={}",
+                owner_type,
+                owner_key,
+            )
+            return None
+
+        safe_owner_key = normalize_asset_dir_name(owner_key)
+        extension = self._normalize_image_extension(
+            self._source_image_extension(image_url)
+        )
+
+        if owner_type == "actor":
+            relative_path = (Path("actors") / f"{safe_owner_key}{extension}").as_posix()
+            image_type = "actor"
+        elif owner_type == "movie_cover":
+            relative_path = (
+                movie_asset_relative_dir(safe_owner_key) / f"cover{extension}"
+            ).as_posix()
+            image_type = "cover"
+        elif owner_type == "movie_plot":
+            if plot_index is None:
+                raise ValueError("plot_index is required for movie plot images")
+            # 剧照与 cover/thin-cover 同层平铺，避免 30w 规模下多出 30w 个空 plots/ 中间目录。
+            relative_path = (
+                movie_asset_relative_dir(safe_owner_key) / f"plot-{plot_index}{extension}"
+            ).as_posix()
+            image_type = "plot"
+        else:
+            raise ValueError(f"unsupported owner_type: {owner_type}")
+
+        absolute_path = media_image_root_path() / relative_path
+        return ImagePersistTask(
+            image_type=image_type,
+            image_url=image_url,
+            relative_path=relative_path,
+            absolute_path=absolute_path,
+            plot_index=plot_index,
+        )
+
+    @staticmethod
+    def _source_image_extension(image_url: str) -> str:
+        """本地交付路径按真实文件名取后缀；远端 URL 走 urlparse，避免 query 干扰。"""
+        if "://" not in image_url:
+            return Path(image_url).suffix
+        return Path(urlparse(image_url).path).suffix
+
+    def collect_image_tasks(
+        self,
+        cover_task: ImagePersistTask | None,
+        plot_tasks: list[ImagePersistTask],
+    ) -> list[ImagePersistTask]:
+        tasks: list[ImagePersistTask] = []
+        seen_relative_paths: set[str] = set()
+        for image_task in [cover_task, *plot_tasks]:
+            if image_task is None or image_task.relative_path in seen_relative_paths:
+                continue
+            seen_relative_paths.add(image_task.relative_path)
+            tasks.append(image_task)
+        return tasks
+
+    def download_image_tasks(self, image_tasks: list[ImagePersistTask]) -> None:
+        """并发下载一批图片；封面失败会中断导入，剧情图/头像失败仅告警跳过。"""
+        tasks_to_download: list[ImagePersistTask] = []
+        for image_task in image_tasks:
+            image_task.absolute_path.parent.mkdir(parents=True, exist_ok=True)
+            if image_task.absolute_path.exists():
+                logger.debug(
+                    "Catalog image download reused local file type={} path={}",
+                    image_task.image_type,
+                    str(image_task.absolute_path),
+                )
+                continue
+            tasks_to_download.append(image_task)
+
+        if not tasks_to_download:
+            return
+
+        cover_download_errors: list[ImageDownloadError] = []
+        with ThreadPoolExecutor(max_workers=len(tasks_to_download), thread_name_prefix="catalog-image") as executor:
+            future_map = {executor.submit(self._download_movie_image_task, task): task for task in tasks_to_download}
+            for future in as_completed(future_map):
+                image_task = future_map[future]
+                try:
+                    future.result()
+                except Exception as exc:
+                    # 仅封面下载失败会中断影片导入；剧情图和演员头像失败只记录告警并继续。
+                    if image_task.image_type != "cover":
+                        logger.warning(
+                            "Catalog image download skipped after failure image_type={} url={} target={} detail={}",
+                            image_task.image_type,
+                            image_task.image_url,
+                            str(image_task.absolute_path),
+                            exc,
+                        )
+                        continue
+                    logger.warning(
+                        "Catalog cover image download failed image_type={} url={} target={} detail={}",
+                        image_task.image_type,
+                        image_task.image_url,
+                        str(image_task.absolute_path),
+                        exc,
+                    )
+                    if isinstance(exc, ImageDownloadError):
+                        cover_download_errors.append(exc)
+                    else:
+                        cover_download_errors.append(ImageDownloadError(f"download_failed:{image_task.image_url}:{exc}"))
+
+        if cover_download_errors:
+            raise cover_download_errors[0]
+
+    def _download_movie_image_task(self, image_task: ImagePersistTask) -> None:
+        logger.debug(
+            "Catalog image download scheduled type={} url={} target={}",
+            image_task.image_type,
+            image_task.image_url,
+            str(image_task.absolute_path),
+        )
+        self.image_downloader(image_task.image_url, image_task.absolute_path)
+
+    def download_image_tasks_to_temporary_files(
+        self,
+        image_tasks: list[ImagePersistTask],
+    ) -> list[PreparedImageFile]:
+        if not image_tasks:
+            return []
+
+        image_root = media_image_root_path()
+        image_root.mkdir(parents=True, exist_ok=True)
+        temp_root = Path(tempfile.mkdtemp(prefix="catalog-refresh-", dir=str(image_root)))
+        prepared_files = [
+            PreparedImageFile(
+                image_task=image_task,
+                temp_path=temp_root / image_task.relative_path,
+                temp_root=temp_root,
+            )
+            for image_task in image_tasks
+        ]
+
+        try:
+            with ThreadPoolExecutor(max_workers=len(prepared_files), thread_name_prefix="catalog-refresh-image") as executor:
+                future_map = {
+                    executor.submit(self._download_prepared_image_file, prepared_file): prepared_file
+                    for prepared_file in prepared_files
+                }
+                for future in as_completed(future_map):
+                    future.result()
+        except Exception:
+            self.cleanup_prepared_image_files(prepared_files)
+            raise
+        return prepared_files
+
+    def _download_prepared_image_file(self, prepared_file: PreparedImageFile) -> None:
+        prepared_file.temp_path.parent.mkdir(parents=True, exist_ok=True)
+        self.image_downloader(prepared_file.image_task.image_url, prepared_file.temp_path)
+
+    @staticmethod
+    def cleanup_prepared_image_files(prepared_files: list[PreparedImageFile]) -> None:
+        for temp_root in {prepared_file.temp_root for prepared_file in prepared_files}:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    def finalize_prepared_image_files(self, prepared_files: list[PreparedImageFile]) -> None:
+        for prepared_file in prepared_files:
+            final_path = prepared_file.image_task.absolute_path
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(prepared_file.temp_path, final_path)
+
+        for temp_root in {prepared_file.temp_root for prepared_file in prepared_files}:
+            shutil.rmtree(temp_root, ignore_errors=True)
+
+    @contextmanager
+    def prepare_metadata_images(
+        self,
+        movie_number,
+        cover,
+        plots,
+        *,
+        local=False,
+        generate_thin_cover=True,
+    ):
+        """补缺与补录的新图独立落盘，调用方事务只切换已经存在的文件。
+
+        ``generate_thin_cover=False`` 供"显式替换后重算薄封面"的调用方使用：
+        薄封面需要在新引用落库之后再计算，这里跳过可省一次无效切割。
+        """
+        cover_task, plot_tasks = self._build_movie_image_tasks(
+            movie_number, cover, list(dict.fromkeys(plots))
+        )
+        tasks = self.collect_image_tasks(cover_task, plot_tasks)
+        root = media_image_root_path()
+        root.mkdir(parents=True, exist_ok=True)
+        temp_root = Path(tempfile.mkdtemp(prefix="metadata-", dir=root))
+        prepared = []
+        final_paths = []
+        try:
+            for task in tasks:
+                path = temp_root / task.relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if local:
+                    shutil.copyfile(task.image_url, path)
+                else:
+                    self.image_downloader(task.image_url, path)
+                with PillowImage.open(path) as image:
+                    image.load()
+                prepared.append(PreparedImageFile(task, path, temp_root))
+            if generate_thin_cover:
+                thin = self.resolve_thin_cover_from_prepared_images(
+                    movie_number, cover_task, plot_tasks, prepared
+                )
+                if thin.generated_prepared_file is not None:
+                    prepared.append(thin.generated_prepared_file)
+            else:
+                thin = ThinCoverResolution()
+            token = uuid4().hex
+            for item in prepared:
+                path = Path(item.image_task.relative_path)
+                relative = path.with_name(f"{path.stem}-{token}{path.suffix}")
+                item.image_task.relative_path = relative.as_posix()
+                item.image_task.absolute_path = root / relative
+                final_paths.append(relative.as_posix())
+            self.finalize_prepared_image_files(prepared)
+            yield cover_task, plot_tasks, {}, thin
+        finally:
+            shutil.rmtree(temp_root, ignore_errors=True)
+            # 事务回滚或并发查重跳过时，不留下本次未使用的目标图片。
+            # 查询失败时保留文件，避免把提交状态不明的图片删掉。
+            try:
+                used = {
+                    item.origin
+                    for item in Image.select(Image.origin).where(
+                        Image.origin.in_(final_paths)
+                    )
+                }
+                self.delete_obsolete_image_files(set(final_paths) - used)
+            except Exception as exc:
+                logger.warning("元数据未引用图片清理失败 detail={}", exc)
+
+    def persist_image(
+        self,
+        owner_type: str,
+        owner_key: str,
+        image_url: str | None,
+        plot_index: int | None = None,
+    ) -> Image | None:
+        """为单张图片执行“准备路径 -> 下载文件 -> upsert 图片记录”三步。"""
+        image_task = self._build_image_task(
+            owner_type=owner_type,
+            owner_key=owner_key,
+            image_url=image_url,
+            plot_index=plot_index,
+        )
+        if image_task is None:
+            return None
+
+        image_task.absolute_path.parent.mkdir(parents=True, exist_ok=True)
+        if not image_task.absolute_path.exists():
+            logger.debug("Persist image downloading url={} target={}", image_task.image_url, str(image_task.absolute_path))
+            self.image_downloader(image_task.image_url, image_task.absolute_path)
+        else:
+            logger.debug("Persist image reused local file path={}", str(image_task.absolute_path))
+
+        return self.persist_prepared_image(image_task)
+
+    def persist_prepared_image(self, image_task: ImagePersistTask | None) -> Image | None:
+        if image_task is None:
+            return None
+        # 非致命图片下载失败时不会落地文件，这里直接跳过数据库记录，避免脏路径。
+        if not image_task.absolute_path.exists():
+            logger.warning(
+                "Persist image skipped because local file is missing image_type={} url={} target={}",
+                image_task.image_type,
+                image_task.image_url,
+                str(image_task.absolute_path),
+            )
+            return None
+        return self._upsert_image_record(image_task.relative_path)
+
+    def persist_prepared_images(
+        self,
+        image_tasks: Iterable[ImagePersistTask | None],
+    ) -> dict[str, Image]:
+        """``persist_prepared_image`` 的批量版：一次 upsert 落库整批已下载图片。
+
+        返回 ``relative_path -> Image``；本地文件缺失的任务与单张版一样跳过并告警，
+        因此调用方需按 ``relative_path`` 取值并处理 None。
+        """
+        persistable_paths: list[str] = []
+        for image_task in image_tasks:
+            if image_task is None:
+                continue
+            if not image_task.absolute_path.exists():
+                logger.warning(
+                    "Persist image skipped because local file is missing image_type={} url={} target={}",
+                    image_task.image_type,
+                    image_task.image_url,
+                    str(image_task.absolute_path),
+                )
+                continue
+            persistable_paths.append(image_task.relative_path)
+        return self._upsert_image_records(persistable_paths)
+
+    def persist_refreshed_image_record(self, image_task: ImagePersistTask | None) -> Image | None:
+        if image_task is None:
+            return None
+        # 严格刷新场景的新图片还在临时目录中，事务内只需要先切换到目标相对路径。
+        return self._upsert_image_record(image_task.relative_path)
+
+    def persist_refreshed_image_records(
+        self,
+        image_tasks: Iterable[ImagePersistTask | None],
+    ) -> dict[str, Image]:
+        """``persist_refreshed_image_record`` 的批量版，返回 ``relative_path -> Image``。
+
+        严格刷新场景文件还在临时目录，不做落地校验，直接整批切换到目标相对路径。
+        """
+        return self._upsert_image_records(
+            [image_task.relative_path for image_task in image_tasks if image_task is not None]
+        )
+
+    def _upsert_image_record(self, relative_path: str) -> Image:
+        """确保同一路径只存在一条 Image 记录。"""
+        return self._upsert_image_records([relative_path])[relative_path]
+
+    @staticmethod
+    def _upsert_image_records(relative_paths: Sequence[str]) -> dict[str, Image]:
+        """批量 upsert 图片记录，返回 ``relative_path -> Image`` 映射。
+
+        单条 ``INSERT ... ON CONFLICT (origin) DO UPDATE ... RETURNING`` 覆盖全部路径：
+        - 相比逐行 ``get_or_none`` + ``create``，往返次数从 2N 降到 1；
+        - ``DO UPDATE`` 而非 ``DO NOTHING``，既保证冲突行也出现在 RETURNING 结果里，
+          又顺带刷新 ``updated_at``；
+        - 单语句天然规避原实现 get_or_none 与 create 之间的并发窗口（唯一约束冲突）。
+        """
+        unique_paths = list(dict.fromkeys(path for path in relative_paths if path))
+        if not unique_paths:
+            return {}
+
+        now = utc_now_for_db()
+        rows = [
+            {
+                Image.origin: path,
+                Image.created_at: now,
+                Image.updated_at: now,
+            }
+            for path in unique_paths
+        ]
+        query = (
+            Image.insert_many(rows)
+            .on_conflict(
+                conflict_target=[Image.origin],
+                update={Image.updated_at: EXCLUDED.updated_at},
+            )
+            .returning(Image)
+        )
+        images_by_path = {image.origin: image for image in query.execute()}
+        logger.debug(
+            "Persist image upserted batch requested={} returned={}",
+            len(unique_paths),
+            len(images_by_path),
+        )
+        return images_by_path
+
+    def delete_image_record_if_unused(self, image: Image) -> set[str]:
+        return ImageCleanupService.delete_image_record_if_unused(image)
+
+    @classmethod
+    def delete_obsolete_image_files(cls, relative_paths: set[str]) -> None:
+        ImageCleanupService.delete_obsolete_image_files(relative_paths)
+
+    def _download_image(self, image_url: str, target_path: Path) -> None:
+        """下载单张图片并带有限次重试；失败时抛 ImageDownloadError。"""
+        if target_path.exists():
+            try:
+                self._validate_image_file(target_path)
+            except Exception as exc:
+                logger.warning(
+                    "Existing image is invalid; downloading again path={} detail={}",
+                    str(target_path),
+                    exc,
+                )
+                target_path.unlink(missing_ok=True)
+            else:
+                logger.debug(
+                    "Import image download skipped because local file exists path={}",
+                    str(target_path),
+                )
+                return
+
+        fallback_url = self._gfriends_raw_fallback_url(image_url)
+        fallback_attempted = False
+        last_error: Exception | None = None
+        for attempt in range(1, self.IMAGE_DOWNLOAD_MAX_RETRIES + 1):
+            request_url = (
+                self._cache_busted_image_url(image_url) if attempt > 1 else image_url
+            )
+            logger.debug(
+                "Import image download start url={} target={} attempt={}/{}",
+                request_url,
+                str(target_path),
+                attempt,
+                self.IMAGE_DOWNLOAD_MAX_RETRIES,
+            )
+            try:
+                response = self.http_client.request("GET", request_url)
+                if (
+                    response.status_code == 403
+                    and fallback_url
+                    and not fallback_attempted
+                ):
+                    fallback_attempted = True
+                    logger.warning(
+                        "Import image download got 403; retrying once via GitHub raw "
+                        "url={} fallback={} target={}",
+                        request_url,
+                        fallback_url,
+                        str(target_path),
+                    )
+                    try:
+                        fallback_response = self.http_client.request(
+                            "GET", fallback_url
+                        )
+                        if fallback_response.status_code != 200:
+                            raise ImageDownloadError(
+                                "fallback_unexpected_status_code:"
+                                f"{fallback_response.status_code}"
+                            )
+                        content = deobfuscate_image_bytes(fallback_response.content)
+                        self._validate_image_bytes(content)
+                        target_path.write_bytes(content)
+                        logger.debug(
+                            "Import image download success via fallback url={} "
+                            "target={} size_bytes={}",
+                            fallback_url,
+                            str(target_path),
+                            len(content),
+                        )
+                        return
+                    except (httpx.HTTPError, ImageDownloadError) as fallback_exc:
+                        last_error = fallback_exc
+                        logger.warning(
+                            "Import image fallback failed url={} target={} detail={}",
+                            fallback_url,
+                            str(target_path),
+                            fallback_exc,
+                        )
+                        break
+                if response.status_code != 200:
+                    raise ImageDownloadError(f"unexpected_status_code:{response.status_code}")
+
+                # JavDB app CDN 返回单字节 XOR 混淆字节，这里统一还原；
+                # 其余来源的明文图片原样返回。
+                content = deobfuscate_image_bytes(response.content)
+                self._validate_image_bytes(content)
+                target_path.write_bytes(content)
+                logger.debug(
+                    "Import image download success url={} target={} size_bytes={} attempt={}",
+                    request_url,
+                    str(target_path),
+                    len(content),
+                    attempt,
+                )
+                return
+            except (httpx.HTTPError, ImageDownloadError) as exc:
+                last_error = exc
+                logger.warning(
+                    "Import image download failed url={} target={} attempt={}/{} detail={}",
+                    request_url,
+                    str(target_path),
+                    attempt,
+                    self.IMAGE_DOWNLOAD_MAX_RETRIES,
+                    exc,
+                )
+                if attempt < self.IMAGE_DOWNLOAD_MAX_RETRIES:
+                    time.sleep(backoff_delay(attempt, step=0.3, cap=1.0))
+
+        raise ImageDownloadError(f"download_failed:{image_url}:{last_error}")
+
+    @staticmethod
+    def _gfriends_raw_fallback_url(image_url: str) -> str | None:
+        """把 GFriends 的 jsDelivr 图片地址映射到同路径的 GitHub raw 地址。"""
+        parsed = urlparse(image_url)
+        if parsed.scheme != "https" or parsed.hostname != "cdn.jsdelivr.net":
+            return None
+        path_parts = parsed.path.split("/")
+        if (
+            len(path_parts) < 5
+            or path_parts[1] != "gh"
+            or path_parts[2] != GFRIENDS_JSDELIVR_OWNER
+            or (
+                path_parts[3] != GFRIENDS_JSDELIVR_REPO
+                and not path_parts[3].startswith(f"{GFRIENDS_JSDELIVR_REPO}@")
+            )
+        ):
+            return None
+
+        ref = "HEAD"
+        repo_segment = path_parts[3]
+        if "@" in repo_segment:
+            ref = repo_segment.split("@", 1)[1]
+        if not ref:
+            return None
+        relative_path = "/".join(path_parts[4:])
+        return urlunparse(
+            (
+                "https",
+                GFRIENDS_RAW_HOST,
+                (
+                    f"/{GFRIENDS_JSDELIVR_OWNER}/{GFRIENDS_JSDELIVR_REPO}/"
+                    f"{ref}/{relative_path}"
+                ),
+                parsed.params,
+                parsed.query,
+                parsed.fragment,
+            )
+        )
+
+    @staticmethod
+    def _validate_image_bytes(content: bytes) -> None:
+        try:
+            with PillowImage.open(BytesIO(content)) as image:
+                image.load()
+        except Exception as exc:
+            raise ImageDownloadError(f"invalid_image:{exc}") from exc
+
+    @staticmethod
+    def _validate_image_file(path: Path) -> None:
+        with PillowImage.open(path) as image:
+            image.load()
+
+    @staticmethod
+    def _cache_busted_image_url(image_url: str) -> str:
+        """重试 app CDN 时绕开已损坏的缓存副本；其他来源保持 URL 不变。"""
+        parsed = urlparse(image_url)
+        if parsed.hostname != "tp.spfcas.com":
+            return image_url
+        query = f"{parsed.query}&v={uuid4().hex}" if parsed.query else f"v={uuid4().hex}"
+        return parsed._replace(query=query).geturl()

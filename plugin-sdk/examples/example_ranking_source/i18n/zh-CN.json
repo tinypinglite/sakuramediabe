@@ -1,0 +1,7 @@
+{
+  "manifest.display_name": "示例排行榜",
+  "ranking.name": "示例排行榜",
+  "ranking.board.daily": "每日榜",
+  "jobs.sync.cli_help": "同步示例排行榜",
+  "jobs.sync.start": "开始同步示例排行榜"
+}

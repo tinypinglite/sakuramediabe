@@ -1,0 +1,217 @@
+from pydantic import BaseModel, ConfigDict
+
+from src.model import BackgroundTaskRun
+from src.scheduler.contracts import JobDefinition
+from src.scheduler.registry import JOB_REGISTRY_BY_KEY
+from src.service.system import ActivityService
+
+
+def _login(client, username: str) -> str:
+    response = client.post(
+        "/auth/tokens",
+        json={"username": username, "password": "password123"},
+    )
+    return response.json()["access_token"]
+
+
+def _auth_headers(client, username: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {_login(client, username)}"}
+
+
+def _release_task_run(task_run: BackgroundTaskRun) -> None:
+    ActivityService.fail_task_run(
+        task_run.id,
+        error_message="test cleanup",
+        notify_result=False,
+    )
+
+
+def test_parameterized_job_trigger_preserves_missing_null_empty_and_nonempty_body(
+    client, account_user, monkeypatch
+):
+    class Params(BaseModel):
+        model_config = ConfigDict(extra="allow")
+
+    job_def = JobDefinition(
+        task_key="demo_http_params",
+        log_name="demo-http-params",
+        cli_name="demo-http-params",
+        cli_help="HTTP params",
+        default_cron="0 5 * * *",
+        handler=lambda reporter, params: {},
+        params_schema=Params,
+    ).model_copy(update={"plugin_id": "demo_plugin"})
+    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, job_def.task_key, job_def)
+
+    auth_headers = _auth_headers(client, account_user.username)
+    endpoint = f"/system/jobs/{job_def.task_key}/runs"
+
+    missing = client.post(endpoint, headers=auth_headers)
+    assert missing.status_code == 202
+    missing_run = BackgroundTaskRun.get_by_id(missing.json()["task_run_id"])
+    _release_task_run(missing_run)
+    explicit_null = client.post(
+        endpoint,
+        content="null",
+        headers={**auth_headers, "Content-Type": "application/json"},
+    )
+    assert explicit_null.status_code == 202
+    null_run = BackgroundTaskRun.get_by_id(explicit_null.json()["task_run_id"])
+    _release_task_run(null_run)
+    explicit_empty = client.post(endpoint, json={}, headers=auth_headers)
+    assert explicit_empty.status_code == 202
+    empty_run = BackgroundTaskRun.get_by_id(explicit_empty.json()["task_run_id"])
+    _release_task_run(empty_run)
+    explicit_nonempty = client.post(
+        endpoint,
+        json={"value": 7},
+        headers=auth_headers,
+    )
+    assert explicit_nonempty.status_code == 202
+    nonempty_run = BackgroundTaskRun.get_by_id(explicit_nonempty.json()["task_run_id"])
+
+    assert missing_run.params is None
+    assert null_run.params is None
+    assert empty_run.params == {}
+    assert nonempty_run.params == {"value": 7}
+
+
+def test_handler_only_job_rejects_missing_and_null_body(
+    client, account_user, monkeypatch
+):
+    class EmptyParams(BaseModel):
+        pass
+
+    job_def = JobDefinition(
+        task_key="demo_http_handler_only",
+        log_name="demo-http-handler-only",
+        cli_name="demo-http-handler-only",
+        cli_help="HTTP handler only",
+        manual_only=True,
+        params_schema=EmptyParams,
+        handler=lambda reporter, params: {},
+    ).model_copy(update={"plugin_id": "demo_plugin"})
+    monkeypatch.setitem(JOB_REGISTRY_BY_KEY, job_def.task_key, job_def)
+    auth_headers = _auth_headers(client, account_user.username)
+    endpoint = f"/system/jobs/{job_def.task_key}/runs"
+
+    missing = client.post(endpoint, headers=auth_headers)
+    explicit_null = client.post(
+        endpoint,
+        content="null",
+        headers={**auth_headers, "Content-Type": "application/json"},
+    )
+
+    assert missing.status_code == 422
+    assert explicit_null.status_code == 422
+    assert missing.json()["error"]["code"] == "invalid_job_params"
+    assert explicit_null.json()["error"]["code"] == "invalid_job_params"
+    assert BackgroundTaskRun.select().count() == 0
+
+
+def test_actor_subscription_sync_accepts_mode_param(client, account_user):
+    auth_headers = _auth_headers(client, account_user.username)
+    endpoint = "/system/jobs/actor_subscription_sync/runs"
+
+    response = client.post(endpoint, json={"mode": "full"}, headers=auth_headers)
+
+    assert response.status_code == 202, response.text
+    task_run = BackgroundTaskRun.get_by_id(response.json()["task_run_id"])
+    assert task_run.params == {"mode": "full"}
+    _release_task_run(task_run)
+
+    invalid = client.post(endpoint, json={"mode": "unknown"}, headers=auth_headers)
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "invalid_job_params"
+
+
+def test_builtin_jobs_accept_parameterless_async_trigger(client, account_user):
+    task_keys = (
+        "subscribed_movie_auto_download",
+        "movie_stats_sync",
+        "media_file_hash_backfill",
+        "media_file_scan",
+        "media_video_info_backfill",
+        "media_thumbnail_generation",
+        "media_thumbnail_pack_backfill",
+        "movie_asset_pack_backfill",
+    )
+    auth_headers = _auth_headers(client, account_user.username)
+
+    for task_key in task_keys:
+        job_def = JOB_REGISTRY_BY_KEY[task_key]
+        assert job_def.params_schema is None
+        response = client.post(f"/system/jobs/{task_key}/runs", headers=auth_headers)
+        assert response.status_code == 202, response.text
+        _release_task_run(BackgroundTaskRun.get_by_id(response.json()["task_run_id"]))
+
+
+def test_job_metadata_uses_latest_run_and_exposes_warning(client, account_user):
+    from datetime import timedelta
+
+    from src.common.runtime_time import utc_now_for_db
+
+    now = utc_now_for_db()
+    job_key = "movie_stats_sync"
+    BackgroundTaskRun.create(
+        task_key=job_key,
+        task_name=job_key,
+        trigger_type="scheduled",
+        state="failed",
+        created_at=now - timedelta(hours=30),
+        started_at=now - timedelta(hours=30),
+        finished_at=now - timedelta(hours=30),
+        result_summary={},
+    )
+    BackgroundTaskRun.create(
+        task_key=job_key,
+        task_name=job_key,
+        trigger_type="scheduled",
+        state="completed",
+        created_at=now - timedelta(hours=5),
+        started_at=now - timedelta(hours=5),
+        finished_at=now - timedelta(hours=5),
+        result_summary={"updated_count": 3},
+    )
+    latest = BackgroundTaskRun.create(
+        task_key=job_key,
+        task_name=job_key,
+        trigger_type="scheduled",
+        state="failed",
+        created_at=now - timedelta(hours=2),
+        started_at=now - timedelta(hours=2),
+        finished_at=now - timedelta(hours=2),
+        result_summary={"failed_count": 1},
+    )
+    response = client.get(
+        "/system/jobs", headers=_auth_headers(client, account_user.username)
+    )
+
+    assert response.status_code == 200
+    jobs = {job["task_key"]: job for job in response.json()}
+    assert set(jobs) == set(JOB_REGISTRY_BY_KEY)
+    job = jobs[job_key]
+    assert "recent_run_count" not in job
+    assert "recent_failure_count" not in job
+    assert job["last_task_run"]["id"] == latest.id
+    assert job["last_task_run"]["has_warning"] is True
+
+
+def test_jobs_returns_task_display_name_in_request_language(client, account_user):
+    auth_headers = _auth_headers(client, account_user.username)
+
+    english = client.get(
+        "/system/jobs",
+        headers={**auth_headers, "Accept-Language": "en"},
+    )
+    chinese = client.get(
+        "/system/jobs",
+        headers={**auth_headers, "Accept-Language": "zh-CN"},
+    )
+
+    assert english.status_code == 200
+    assert chinese.status_code == 200
+    english_jobs = {job["task_key"]: job for job in english.json()}
+    chinese_jobs = {job["task_key"]: job for job in chinese.json()}
+    assert english_jobs["movie_stats_sync"]["cli_help"] == "Movie stats and heat sync"
+    assert chinese_jobs["movie_stats_sync"]["cli_help"] == "影片互动数与热度同步"

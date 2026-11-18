@@ -1,0 +1,175 @@
+from datetime import date
+
+import peewee
+
+from src.common.runtime_time import utc_now_for_db
+from src.model.base import BaseModel, JsonbField
+from src.model.catalog.images import Image
+from src.model.mixins import TimestampedMixin
+
+
+def split_actor_alias_name(alias_name: str) -> list[str]:
+    return [name.strip() for name in (alias_name or "").split("/") if name.strip()]
+
+
+def merge_actor_alias_name(
+    primary_name: str,
+    alias_names: list[str],
+    existing_alias_name: str,
+) -> str:
+    """按“主名 / 别名...”格式去重合并，主名始终排第一位。"""
+    merged_aliases: list[str] = []
+    seen_aliases: set[str] = set()
+    for candidate_name in [
+        primary_name,
+        *alias_names,
+        *split_actor_alias_name(existing_alias_name),
+    ]:
+        normalized_name = (candidate_name or "").strip()
+        if not normalized_name:
+            continue
+        dedupe_key = normalized_name.casefold()
+        if dedupe_key in seen_aliases:
+            continue
+        seen_aliases.add(dedupe_key)
+        merged_aliases.append(normalized_name)
+    return " / ".join(merged_aliases)
+
+ACTOR_FIELD_CODECS = {
+    "gender": int,
+    "birthday": date,
+    "height_cm": int,
+    "bust_cm": int,
+    "waist_cm": int,
+    "hips_cm": int,
+    "cup": str,
+    "birthplace": str,
+    "blood_type": str,
+}
+ACTOR_FIELD_ALLOWED_VALUES: dict[str, frozenset[int]] = {
+    "gender": frozenset({1, 2}),
+}
+PROTECTED_ACTOR_FIELDS = frozenset(ACTOR_FIELD_CODECS)
+# 头像覆盖列同样支持接管：field_owners 用这个保留 key 记录 owner，值形如
+# plugin:<id> 或 host:manual；没有 owner 的旧覆盖行按人工处理。
+ACTOR_IMAGE_FIELDS: frozenset[str] = frozenset({"profile_image_override"})
+ACTOR_OWNER_TRACKED_FIELDS: frozenset[str] = PROTECTED_ACTOR_FIELDS | ACTOR_IMAGE_FIELDS
+_GUARDED_FIELDS = PROTECTED_ACTOR_FIELDS | {
+    "field_owners",
+    "mutation_revision",
+    "display_name_override",
+    "profile_image_override",
+    "merged_into",
+}
+
+
+class Actor(TimestampedMixin, BaseModel):
+    name = peewee.CharField(index=True, verbose_name="演员名字")
+    alias_name = peewee.TextField(default="", verbose_name="别名")
+    merged_into = peewee.ForeignKeyField(
+        "self",
+        null=True,
+        backref="merged_sources",
+        on_delete="SET NULL",
+        index=True,
+        verbose_name="合并至",
+    )
+    profile_image = peewee.ForeignKeyField(
+        Image,
+        null=True,
+        backref="actors",
+        on_delete="SET NULL",
+        verbose_name="头像图片",
+    )
+    profile_image_override = peewee.ForeignKeyField(
+        Image,
+        null=True,
+        backref="actor_profile_image_overrides",
+        on_delete="SET NULL",
+        verbose_name="本地头像覆盖图片",
+    )
+    display_name_override = peewee.CharField(
+        max_length=255,
+        null=True,
+        verbose_name="本地显示名称",
+    )
+    gender = peewee.IntegerField(default=0, verbose_name="性别")
+    is_subscribed = peewee.BooleanField(default=False, index=True)
+    subscribed_at = peewee.DateTimeField(null=True, index=True)
+    birthday = peewee.DateField(null=True)
+    height_cm = peewee.IntegerField(null=True)
+    bust_cm = peewee.IntegerField(null=True)
+    waist_cm = peewee.IntegerField(null=True)
+    hips_cm = peewee.IntegerField(null=True)
+    cup = peewee.CharField(max_length=255, null=True)
+    birthplace = peewee.CharField(max_length=255, null=True)
+    blood_type = peewee.CharField(max_length=255, null=True)
+    field_owners = JsonbField(default=dict, constraints=[peewee.SQL("DEFAULT '{}'::jsonb")])
+    mutation_revision = peewee.BigIntegerField(default=0, constraints=[peewee.SQL("DEFAULT 0")])
+
+    def save(self, *args, **kwargs):
+        if self._pk is not None and not kwargs.get("force_insert", False):
+            only = kwargs.get("only")
+            if not only:
+                raise RuntimeError("已持久化 Actor 的 save() 必须传 only")
+            self._guard_fields(only)
+        self.name = (self.name or "").strip()
+        self.alias_name = (self.alias_name or "").strip()
+        if self.display_name_override is not None:
+            self.display_name_override = self.display_name_override.strip() or None
+        return super().save(*args, **kwargs)
+
+    @staticmethod
+    def _guard_fields(fields):
+        names = {field.name if isinstance(field, peewee.Field) else field for field in fields}
+        protected = _GUARDED_FIELDS & names
+        if protected:
+            raise RuntimeError(f"受保护字段禁止直接写入: {sorted(protected)}")
+
+    @classmethod
+    def update(cls, *args, **kwargs):
+        if args and isinstance(args[0], dict):
+            cls._guard_fields(args[0])
+        cls._guard_fields(kwargs)
+        return super().update(*args, **kwargs)
+
+    @classmethod
+    def resolve_canonical(cls, actor_id: int) -> "Actor | None":
+        """沿墓碑指针解析到最终保留记录；未找到返回 None。"""
+        actor = cls.get_or_none(cls.id == actor_id)
+        seen_ids: set[int] = set()
+        while actor is not None and actor.merged_into_id is not None:
+            if actor.id in seen_ids:
+                break
+            seen_ids.add(actor.id)
+            actor = cls.get_or_none(cls.id == actor.merged_into_id)
+        return actor
+
+    @property
+    def age(self) -> int | None:
+        if self.birthday is None:
+            return None
+        today = utc_now_for_db().date()
+        return today.year - self.birthday.year - (
+            (today.month, today.day) < (self.birthday.month, self.birthday.day)
+        )
+
+    @property
+    def display_name(self) -> str:
+        local_name = (self.display_name_override or "").strip()
+        if local_name:
+            return local_name
+        return self.name
+
+    @property
+    def effective_profile_image(self):
+        if self.profile_image_override_id and self.profile_image_override:
+            return self.profile_image_override
+        return self.profile_image
+
+    @property
+    def has_profile_image_override(self) -> bool:
+        return bool(self.profile_image_override_id)
+
+    class Meta:
+        table_name = "actor"

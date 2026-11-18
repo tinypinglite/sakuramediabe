@@ -1,0 +1,19 @@
+{
+  "plugin_id": "example_ranking_source",
+  "display_name": "示例排行榜",
+  "display_name_i18n": {
+    "zh-CN": "示例排行榜",
+    "en": "Example Ranking Source"
+  },
+  "description": "SakuraMedia 插件开发示例：注册静态排行榜来源和同步任务。",
+  "description_i18n": {
+    "zh-CN": "SakuraMedia 插件开发示例：注册静态排行榜来源和同步任务。",
+    "en": "SakuraMedia plugin SDK example: registers a static ranking source and a sync job."
+  },
+  "version": "1.0.0",
+  "host_api_version": 18,
+  "requires_python": ">=3.10,<3.11",
+  "dependencies": [],
+  "author": "SakuraMedia",
+  "homepage": "https://github.com/tinypinglite/sakuramediabe/tree/main/plugin-sdk/examples/example_ranking_source"
+}

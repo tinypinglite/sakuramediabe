@@ -1,0 +1,6 @@
+{
+  "manifest.display_name": "Example Reviews and Stats",
+  "stats.likes": "Likes",
+  "stats.views": "Views",
+  "reviews.content": "Example review: this is a static review."
+}

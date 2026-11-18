@@ -1,0 +1,634 @@
+"""下载任务列表筛选与手动触发导入接口的回归测试。"""
+
+from datetime import datetime, timezone
+
+from src.model import (
+    BackgroundTaskRun,
+    DownloadClient,
+    DownloadSubmissionRecord,
+    DownloadTask,
+    Image,
+    MediaLibrary,
+    Movie,
+)
+from src.plugins.provider_protocol import ImportFile, ProviderUnavailableError
+from src.schema.transfers.downloads import (
+    DownloadRequestCreateResponse,
+    DownloadTaskResource,
+)
+from src.service.system.task_queue_service import TaskQueueService
+from src.service.transfers.downloads import task_service
+from src.service.transfers.downloads.request_service import DownloadRequestService
+from src.service.transfers.shared.import_task_service import ImportTaskService
+
+
+def _login(client, username: str) -> str:
+    response = client.post(
+        "/auth/tokens",
+        json={"username": username, "password": "password123"},
+    )
+    return response.json()["access_token"]
+
+
+def _auth(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _seed_tasks():
+    library = MediaLibrary.create(name="lib", provider_key="test", provider_config={})
+    download_client = DownloadClient.create(
+        name="client",
+        library=library,
+        provider_config={},
+    )
+    for index, (state, movie) in enumerate(
+        [("downloading", "ABP-001"), ("failed", "ABP-002"), ("completed", "ABP-003")]
+    ):
+        DownloadTask.create(
+            client=download_client,
+            movie=movie,
+            name=f"{movie}.mkv",
+            remote_id=f"remote-{index}",
+            progress=1.0 if state == "completed" else 0.5,
+            state=state,
+            completed_source_ref={"source": movie} if state == "completed" else None,
+            import_status="pending",
+        )
+    return download_client
+
+
+def test_download_tasks_filters_by_multi_state_query(client, account_user):
+    token = _login(client, account_user.username)
+    _seed_tasks()
+
+    response = client.get(
+        "/download-tasks",
+        params=[
+            ("page", "1"),
+            ("page_size", "20"),
+            ("state", "downloading"),
+            ("state", "failed"),
+        ],
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total"] == 2
+    assert {item["state"] for item in body["items"]} == {
+        "downloading",
+        "failed",
+    }
+
+
+def test_download_tasks_filters_by_single_state_query(client, account_user):
+    token = _login(client, account_user.username)
+    _seed_tasks()
+
+    response = client.get(
+        "/download-tasks",
+        params={"page": 1, "page_size": 20, "state": "completed"},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["state"] == "completed"
+
+
+def test_download_tasks_ignores_body_as_filter(client, account_user):
+    """状态筛选只接受 query，不从 GET body 读取。"""
+    token = _login(client, account_user.username)
+    _seed_tasks()
+
+    response = client.request(
+        "GET",
+        "/download-tasks?page=1&page_size=20",
+        headers={**_auth(token), "Content-Type": "application/json"},
+        content='["completed"]',
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["total"] == 3
+
+
+def test_download_tasks_returns_movie_cover_image(client, account_user):
+    token = _login(client, account_user.username)
+    _seed_tasks()
+    cover = Image.create(origin="/files/images/cover.jpg")
+    thin_cover = Image.create(origin="/files/images/thin-cover.jpg")
+    Movie.create(
+        movie_number="ABP-001",
+        title="下载任务影片",
+        cover_image=cover,
+        thin_cover_image=thin_cover,
+    )
+
+    response = client.get(
+        "/download-tasks",
+        params={"movie_number": "ABP-001"},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200, response.text
+    item = response.json()["items"][0]
+    assert item["movie_title"] == "下载任务影片"
+    assert item["movie_cover"]["origin"] == "/files/images/cover.jpg"
+    assert item["movie_thin_cover"]["origin"] == "/files/images/thin-cover.jpg"
+
+
+def test_download_tasks_exposes_blacklistable_for_failed_bt_tasks(
+    client, account_user
+):
+    token = _login(client, account_user.username)
+    library = MediaLibrary.create(name="lib", provider_key="test", provider_config={})
+    download_client = DownloadClient.create(
+        name="client",
+        library=library,
+        provider_config={},
+    )
+    rows = (
+        ("bt-failed", "failed", "magnet", "a" * 40),
+        ("http-failed", "failed", "http", ""),
+        ("bt-skipped", "skipped", "magnet", "b" * 40),
+        ("bt-pending", "pending", "magnet", "c" * 40),
+    )
+    for remote_id, import_status, source_kind, info_hash in rows:
+        task = DownloadTask.create(
+            client=download_client,
+            movie="TEST-001",
+            name=remote_id,
+            remote_id=remote_id,
+            state="failed",
+            import_status=import_status,
+        )
+        DownloadSubmissionRecord.create(
+            client_id=download_client.id,
+            task_id=task.id,
+            movie_number="TEST-001",
+            indexer_name="manual",
+            title=remote_id,
+            source_uri=(
+                f"magnet:?xt=urn:btih:{info_hash}"
+                if info_hash
+                else "https://cdn.example/movie.mp4"
+            ),
+            info_hash=info_hash,
+            source_kind=source_kind,
+            resource_key=(
+                f"bt:{info_hash}"
+                if source_kind in {"magnet", "torrent"}
+                else "http:abc123"
+            ),
+        )
+
+    response = client.get(
+        "/download-tasks",
+        params={"page": 1, "page_size": 20},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 200, response.text
+    blacklistable = {
+        item["remote_id"]: item["blacklistable"]
+        for item in response.json()["items"]
+    }
+    assert blacklistable == {
+        "bt-failed": True,
+        "http-failed": False,
+        "bt-skipped": True,
+        "bt-pending": False,
+    }
+
+
+def _seed_importable_task(
+    *,
+    import_status: str = "failed",
+    state: str = "completed",
+    library_name: str = "lib",
+    with_source_ref: bool = True,
+) -> DownloadTask:
+    library = MediaLibrary.create(
+        name=library_name, provider_key="test", provider_config={}
+    )
+    download_client = DownloadClient.create(
+        name=f"client-{library_name}",
+        library=library,
+        provider_config={},
+    )
+    return DownloadTask.create(
+        client=download_client,
+        movie="SSIS-801",
+        name="SSIS-801.mkv",
+        remote_id="remote-import",
+        progress=1.0,
+        state=state,
+        completed_source_ref=(
+            {"version": 1, "kind": "cloud115_dir", "cid": "1"}
+            if with_source_ref
+            else None
+        ),
+        import_status=import_status,
+    )
+
+
+def test_trigger_import_accepts_failed_task_and_marks_running(client, account_user):
+    token = _login(client, account_user.username)
+    task = _seed_importable_task(import_status="failed")
+
+    response = client.post(f"/download-tasks/{task.id}/import", headers=_auth(token))
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["task_id"] == task.id
+    assert body["task_run_id"] > 0
+    assert body["status"] == "accepted"
+
+    listing = client.get(
+        "/download-tasks",
+        params={"page": 1, "page_size": 20},
+        headers=_auth(token),
+    ).json()
+    assert listing["items"][0]["import_status"] == "running"
+
+
+def test_trigger_import_conflicts_when_import_finished(client, account_user):
+    token = _login(client, account_user.username)
+    task = _seed_importable_task(import_status="completed")
+
+    response = client.post(f"/download-tasks/{task.id}/import", headers=_auth(token))
+
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["code"] == "download_task_import_conflict"
+
+
+def test_trigger_import_rejects_incomplete_or_sourceless_task(client, account_user):
+    token = _login(client, account_user.username)
+    incomplete = _seed_importable_task(
+        state="downloading", library_name="lib-a", with_source_ref=False
+    )
+    sourceless = _seed_importable_task(library_name="lib-b", with_source_ref=False)
+
+    for task in (incomplete, sourceless):
+        response = client.post(
+            f"/download-tasks/{task.id}/import", headers=_auth(token)
+        )
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "invalid_download_task_import"
+
+
+def test_trigger_import_missing_task_returns_not_found(client, account_user):
+    token = _login(client, account_user.username)
+
+    response = client.post("/download-tasks/99999/import", headers=_auth(token))
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "download_task_not_found"
+
+
+def test_list_task_files_returns_scanned_files(client, account_user, monkeypatch):
+    token = _login(client, account_user.username)
+    task = _seed_importable_task()
+    captured: dict = {}
+
+    class FakeStorage:
+        def scan_import_source(self, *, source_ref):
+            captured["source_ref"] = source_ref
+            return (
+                ImportFile({}, "SSIS-801.nfo", "SSIS-801/SSIS-801.nfo", 1024, False),
+                ImportFile({}, "SSIS-801.mkv", "SSIS-801/SSIS-801.mkv", 5, True),
+            )
+
+    monkeypatch.setattr(
+        task_service.MEDIA_PROVIDER_REGISTRY,
+        "storage_for",
+        lambda _library: FakeStorage(),
+    )
+
+    response = client.get(f"/download-tasks/{task.id}/files", headers=_auth(token))
+
+    assert response.status_code == 200, response.text
+    files = response.json()
+    assert [item["relative_path"] for item in files] == [
+        "SSIS-801/SSIS-801.mkv",
+        "SSIS-801/SSIS-801.nfo",
+    ]
+    assert files[0]["is_video"] is True
+    assert files[1]["is_video"] is False
+    assert captured["source_ref"] == {"version": 1, "kind": "cloud115_dir", "cid": "1"}
+
+
+def test_list_task_files_rejects_sourceless_task(client, account_user):
+    token = _login(client, account_user.username)
+    task = _seed_importable_task(with_source_ref=False)
+
+    response = client.get(f"/download-tasks/{task.id}/files", headers=_auth(token))
+
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "download_task_files_unavailable"
+
+
+def test_list_task_files_missing_task_returns_not_found(client, account_user):
+    token = _login(client, account_user.username)
+
+    response = client.get("/download-tasks/99999/files", headers=_auth(token))
+
+    assert response.status_code == 404, response.text
+    assert response.json()["error"]["code"] == "download_task_not_found"
+
+
+def test_list_task_files_reports_provider_not_installed(
+    client, account_user, monkeypatch
+):
+    token = _login(client, account_user.username)
+    task = _seed_importable_task()
+
+    def _raise(_library):
+        raise ProviderUnavailableError("test")
+
+    monkeypatch.setattr(
+        task_service.MEDIA_PROVIDER_REGISTRY, "storage_for", _raise
+    )
+
+    response = client.get(f"/download-tasks/{task.id}/files", headers=_auth(token))
+
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["code"] == "provider_not_installed"
+
+
+def _seed_batch_client(name: str) -> DownloadClient:
+    library = MediaLibrary.create(name=name, provider_key="test", provider_config={})
+    return DownloadClient.create(
+        name=f"client-{name}", library=library, provider_config={}
+    )
+
+
+def _seed_batch_task(
+    download_client: DownloadClient,
+    *,
+    index: int,
+    import_status: str = "failed",
+    state: str = "completed",
+    with_source_ref: bool = True,
+) -> DownloadTask:
+    return DownloadTask.create(
+        client=download_client,
+        movie=f"SSIS-9{index:02d}",
+        name=f"SSIS-9{index:02d}.mkv",
+        remote_id=f"remote-batch-{index}",
+        progress=1.0,
+        state=state,
+        completed_source_ref=(
+            {"version": 1, "kind": "cloud115_dir", "cid": str(index)}
+            if with_source_ref
+            else None
+        ),
+        import_status=import_status,
+    )
+
+
+def test_batch_import_accepts_failed_tasks_and_marks_running(client, account_user):
+    token = _login(client, account_user.username)
+    download_client = _seed_batch_client("batch-lib")
+    tasks = [_seed_batch_task(download_client, index=i) for i in (1, 2)]
+
+    response = client.post(
+        "/download-tasks/imports",
+        json={"task_ids": [task.id for task in tasks]},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["accepted_count"] == 2
+    assert body["skipped_task_ids"] == []
+    listing = client.get(
+        "/download-tasks",
+        params={"page": 1, "page_size": 20, "state": "completed"},
+        headers=_auth(token),
+    ).json()
+    assert {item["import_status"] for item in listing["items"]} == {"running"}
+
+
+def test_batch_import_groups_tasks_by_library(client, account_user):
+    token = _login(client, account_user.username)
+    first_client = _seed_batch_client("batch-lib-a")
+    second_client = _seed_batch_client("batch-lib-b")
+    first = _seed_batch_task(first_client, index=1)
+    second = _seed_batch_task(second_client, index=2)
+
+    response = client.post(
+        "/download-tasks/imports",
+        json={"task_ids": [first.id, second.id]},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["accepted_count"] == 2
+    # 每个媒体库各自一个批量任务运行；跨库分组失败会在入队时报错而不是静默合并。
+    runs = list(
+        BackgroundTaskRun.select().where(BackgroundTaskRun.scope_key.is_null(False))
+    )
+    assert {run.scope_key for run in runs} == {
+        f"library_import:{first_client.library_id}",
+        f"library_import:{second_client.library_id}",
+    }
+
+
+def test_batch_import_skips_invalid_tasks(client, account_user):
+    token = _login(client, account_user.username)
+    download_client = _seed_batch_client("batch-skip-lib")
+    valid = _seed_batch_task(download_client, index=1, import_status="skipped")
+    no_source = _seed_batch_task(download_client, index=2, with_source_ref=False)
+    already_done = _seed_batch_task(
+        download_client, index=3, import_status="completed"
+    )
+
+    response = client.post(
+        "/download-tasks/imports",
+        json={"task_ids": [valid.id, no_source.id, already_done.id, 99999]},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["accepted_count"] == 1
+    assert body["skipped_task_ids"] == [no_source.id, already_done.id, 99999]
+
+
+def test_batch_import_returns_zero_when_nothing_retryable(client, account_user):
+    token = _login(client, account_user.username)
+    download_client = _seed_batch_client("batch-empty-lib")
+    done = _seed_batch_task(download_client, index=1, import_status="completed")
+
+    response = client.post(
+        "/download-tasks/imports",
+        json={"task_ids": [done.id]},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["accepted_count"] == 0
+    assert body["skipped_task_ids"] == [done.id]
+
+
+def test_batch_import_queues_when_library_busy(client, account_user):
+    token = _login(client, account_user.username)
+    download_client = _seed_batch_client("batch-busy-lib")
+    first = _seed_batch_task(download_client, index=1)
+    second = _seed_batch_task(download_client, index=2)
+
+    accepted = client.post(f"/download-tasks/{first.id}/import", headers=_auth(token))
+    assert accepted.status_code == 202, accepted.text
+    # 把第一个任务置为 running，后续同库任务必须排队而不是冲突。
+    claimed = TaskQueueService.claim_next(
+        include_task_keys={ImportTaskService.TASK_KEY}
+    )
+    assert claimed is not None
+
+    response = client.post(
+        "/download-tasks/imports",
+        json={"task_ids": [second.id]},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["accepted_count"] == 1
+    runs = list(
+        BackgroundTaskRun.select()
+        .where(
+            BackgroundTaskRun.scope_key
+            == f"library_import:{download_client.library_id}"
+        )
+        .order_by(BackgroundTaskRun.id.asc())
+    )
+    assert [run.state for run in runs] == ["running", "pending"]
+
+
+def test_batch_import_rejects_empty_task_ids(client, account_user):
+    token = _login(client, account_user.username)
+
+    response = client.post(
+        "/download-tasks/imports",
+        json={"task_ids": []},
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 422, response.text
+
+
+def test_manual_download_requires_movie_number_for_jav(client, account_user):
+    token = _login(client, account_user.username)
+
+    response = client.post(
+        "/download-requests/manual",
+        json={
+            "client_id": 1,
+            "media_kind": "jav",
+            "source_uri": "magnet:?xt=urn:btih:" + "a" * 40,
+        },
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 422, response.text
+
+
+def test_manual_link_route_passes_source_kind(client, account_user, monkeypatch):
+    token = _login(client, account_user.username)
+    captured = {}
+
+    def fake_create_manual_request(self, **kwargs):
+        captured.update(kwargs)
+        now = datetime.now(timezone.utc)
+        return DownloadRequestCreateResponse(
+            task=DownloadTaskResource(
+                id=1,
+                client_id=kwargs["client_id"],
+                name="ed2k",
+                remote_id="remote-id",
+                state="queued",
+                progress=0.0,
+                import_status="pending",
+                created_at=now,
+                updated_at=now,
+            ),
+            created=True,
+        )
+
+    monkeypatch.setattr(
+        DownloadRequestService, "create_manual_request", fake_create_manual_request
+    )
+
+    response = client.post(
+        "/download-requests/manual",
+        json={
+            "client_id": 1,
+            "media_kind": "video",
+            "source_uri": (
+                "ed2k://|file|movie.mp4|12345|"
+                "0123456789abcdef0123456789abcdef|/"
+            ),
+            "source_kind": "ed2k",
+        },
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 201, response.text
+    assert captured["source_kind"] == "ed2k"
+    assert captured["source_uri"].startswith("ed2k://|file|movie.mp4|")
+
+
+def test_manual_torrent_route_passes_uploaded_bytes(
+    client, account_user, monkeypatch
+):
+    token = _login(client, account_user.username)
+    captured = {}
+
+    def fake_create_manual_request(self, **kwargs):
+        captured.update(kwargs)
+        now = datetime.now(timezone.utc)
+        return DownloadRequestCreateResponse(
+            task=DownloadTaskResource(
+                id=1,
+                client_id=kwargs["client_id"],
+                name="uploaded",
+                remote_id="hash",
+                state="queued",
+                progress=0.0,
+                import_status="pending",
+                created_at=now,
+                updated_at=now,
+            ),
+            created=True,
+        )
+
+    monkeypatch.setattr(
+        DownloadRequestService, "create_manual_request", fake_create_manual_request
+    )
+
+    response = client.post(
+        "/download-requests/manual/torrent",
+        data={
+            "client_id": "1",
+            "media_kind": "video",
+            "display_name": "uploaded",
+            "delete_source_after_import": "true",
+        },
+        files={
+            "file": (
+                "sample.torrent",
+                b"torrent-bytes",
+                "application/x-bittorrent",
+            )
+        },
+        headers=_auth(token),
+    )
+
+    assert response.status_code == 201, response.text
+    assert captured["torrent_bytes"] == b"torrent-bytes"
+    assert captured["client_id"] == 1
+    assert captured["media_kind"] == "video"
+    assert captured["display_name"] == "uploaded"
+    assert captured["delete_source_after_import"] is True

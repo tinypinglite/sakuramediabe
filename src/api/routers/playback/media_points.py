@@ -1,0 +1,64 @@
+from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi.responses import JSONResponse
+
+from src.api.routers.deps import db_deps, get_current_user
+from src.schema.collections.moments import MomentCollectionSummary
+from src.schema.common.pagination import PageResponse
+from src.schema.playback.media import (
+    MediaPointCreateRequest,
+    MediaPointKind,
+    MediaPointListItemResource,
+    MediaPointResource,
+)
+from src.service.collections import MomentCollectionService
+from src.service.playback import MediaService
+
+router = APIRouter(
+    tags=["media"],
+    dependencies=[Depends(db_deps)],
+)
+
+
+@router.delete("/media-points/{point_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_media_point(point_id: int, current_user=Depends(get_current_user)):
+    MediaService.delete_point_by_id(point_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/media-points", response_model=PageResponse[MediaPointListItemResource])
+def list_media_points(
+    page: int = Query(default=1),
+    page_size: int = Query(default=20),
+    sort: str | None = Query(default=None),
+    # 默认只返回 JAV 时刻，前端可按 video/all 切换查看非 JAV 或全部。
+    kind: MediaPointKind = Query(default=MediaPointKind.JAV),
+    # 空格分词、词间 AND，命中番号（按 kind 决定是否参与）或视频标题。
+    keyword: str | None = Query(default=None),
+    # 排除该时刻合集已有成员，用于「仅未加入」选择器。
+    exclude_collection_id: int | None = Query(default=None, ge=1),
+    current_user=Depends(get_current_user),
+):
+    return MediaService.list_media_points(
+        page=page,
+        page_size=page_size,
+        sort=sort,
+        kind=kind,
+        keyword=keyword,
+        exclude_collection_id=exclude_collection_id,
+    )
+
+
+@router.post("/media-points", response_model=MediaPointResource)
+def create_media_point(payload: MediaPointCreateRequest, current_user=Depends(get_current_user)):
+    resource, created = MediaService.create_point(payload.media_id, payload)
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        content=resource.model_dump(mode="json"),
+    )
+
+
+@router.get(
+    "/media-points/{point_id}/collections", response_model=list[MomentCollectionSummary]
+)
+def list_media_point_collections(point_id: int, current_user=Depends(get_current_user)):
+    return MomentCollectionService.list_point_collections(point_id)

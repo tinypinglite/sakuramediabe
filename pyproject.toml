@@ -1,0 +1,113 @@
+[project]
+name = "sakuramediabe"
+version = "0.1.0"
+description = ""
+authors = [{ name = "tinypinglite", email = "tinyping@proton.com" }]
+readme = "README.md"
+license = "PolyForm-Noncommercial-1.0.0"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "fastapi==0.110.1",
+    "uvicorn>=0.22.0,<0.23.0",
+    "loguru>=0.7.0,<0.8.0",
+    "python-jose>=3.3.0,<4.0.0",
+    # 上限放开到 4.x：慢 SQL 钩子依赖 4.5+ 的 Database.query_hooks（见 src/common/perf.py）。
+    "peewee>=4.5.1,<5.0.0",
+    "tqdm>=4.65.0,<5.0.0",
+    "xmltodict>=0.13.0,<0.14.0",
+    "python-multipart>=0.0.6,<0.0.7",
+    # 插件 zip 安装时校验 manifest.requires_python，统一走 PEP 440 解析。
+    "packaging>=23.0,<27",
+    "bcrypt>=4.0.1,<5.0.0",
+    "pydantic-settings>=2.2.1,<3.0.0",
+    "apscheduler>=3.10.4,<4.0.0",
+    # 下限压到 14.2 是为了给 Intel macOS 开发机留出可解版本（见 [tool.uv] 的按平台约束）；
+    # linux / arm64 仍会解析到 15.x。代码只用到 av.open / av.time_base，两个大版本行为一致。
+    "av>=14.2.0,<16.0.0",
+    "pydantic>=2.7.4,<3.0.0",
+    "pillow==12.3.0",
+    # 以图搜图需要解码 iOS 相册的 HEIC/HEIF；pillow-heif 1.x 要求 Pillow>=11.1。
+    "pillow-heif==1.8.0",
+    "toml>=0.10.2,<0.11.0",
+    # Python 3.10 下 pydantic-settings 读取 TOML 需要 tomli，避免 Docker 运行时缺依赖。
+    "tomli>=2.0.1,<3.0.0; python_version < '3.11'",
+    "psycopg2-binary>=2.9.10,<3.0.0",
+    "httpx>=0.28.1,<0.29.0",
+    "opencc>=1.4.2,<2.0.0",
+    "psutil>=5.9,<8",
+    "qbittorrent-api>=2026.8.1",
+    # libtorrent 2.1.x has no wheel for the macOS 12 Intel development image;
+    # 2.0.9 exposes the same torrent_info/info_hash API used by the plugin.
+    "libtorrent==2.0.9; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "libtorrent>=2.1.1,<3.0.0; sys_platform != 'darwin' or platform_machine == 'arm64'",
+    "qdrant-client>=1.12,<1.13",
+    # 插件管理与迁移使用进程间文件锁；显式声明现有 qdrant 传递依赖。
+    "portalocker>=2.10.1,<3",
+    "numpy>=1.26,<3",
+    "certifi>=2026.4.22",
+    # Python 3.10 无 typing.Self，代码里直接 import typing_extensions，显式声明而非依赖 pydantic 传递引入。
+    "typing-extensions>=4.6.0",
+    "beautifulsoup4>=4.12,<5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.4.0,<8.0.0",
+    "pytest-xdist>=3.5.0,<4.0.0",
+    "pytest-testmon>=2.1.0,<3.0.0",
+    "pytest-asyncio>=0.23.0,<0.24.0",
+    "pylint>=3.3.7,<4.0.0",
+    "ruff>=0.16.1,<0.17.0",
+]
+
+[tool.pytest.ini_options]
+# 默认开 6 个 xdist worker + testmon 增量：
+#   -n 6      与本机物理核心数匹配，避免每个 worker 独立建库时过度并发 PostgreSQL
+#   --testmon pytest-testmon 只跑受改动影响的用例（.testmondata 本地缓存，已 gitignore）
+# 日常开发改一个文件通常只跑几秒；首次运行会跑全集建 baseline（~90s）。
+# 想跑全量做验收/对比：uv run pytest --no-testmon
+# 调试单个用例（-s / pdb / 断点）：uv run pytest -n0 --no-testmon path::case
+addopts = "-n 6 --testmon"
+testpaths = ["tests"]
+# pytest-asyncio auto 模式：所有 async def test_* 自动按协程执行，免逐个 @pytest.mark.asyncio。
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+# 在 ruff 默认规则集基础上豁免与本项目技术栈/既有约定冲突的规则：
+ignore = [
+    "B008",    # FastAPI 在参数默认值里调用 Depends()/Query() 是框架标准写法
+    "BLE001",  # 后台任务/同步链路大量有意的宽泛 except Exception，逐处收窄属行为改动
+    "S110",    # 同上，try-except-pass 属有意静默的既有模式
+    "RUF012",  # Peewee Meta / provider 类属性使用可变容器是既有模式，不逐个标 ClassVar
+    "DTZ",     # 全项目统一使用 naive datetime 与数据库交互
+    "PLE1205", # 项目日志用 loguru（{} 占位符），该规则按 stdlib logging 的 % 风格误判
+    "ASYNC230", # provider CLI 调试工具在 async 中同步 open，属有意为之
+    "ASYNC240", # async 接口中的 pathlib 轻量元数据操作可接受，不引入 anyio.Path
+]
+
+[tool.uv]
+# 轮子可用性约束，全部按平台加 marker，避免为了照顾某台开发机把生产解析一起降下去。
+#
+# av：15.x 的 macOS 轮子要求 macOS >= 13，14.2.0 是最后一个发 macosx_12_0 轮子的版本；
+#   14.3 / 14.4 干脆没发 cp310 轮子（会退化成源码编译 ffmpeg），所以上界取 <14.3 而不是 <15。
+#   同样只降 macOS 12 Intel 这一个环境，linux / arm64 保持 15.x。
+constraint-dependencies = [
+    "av<14.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

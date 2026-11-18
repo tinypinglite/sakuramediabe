@@ -1,0 +1,147 @@
+"""插件管理接口的响应模型。"""
+
+from datetime import date
+from typing import Any, Literal
+
+from pydantic import Field
+
+from src.schema.common.base import SchemaModel
+
+PluginTestCapability = Literal["metadata", "stats", "reviews"]
+PluginTestStatus = Literal["ok", "empty", "failed"]
+
+
+class PluginSummaryResource(SchemaModel):
+    plugin_id: str
+    display_name: str
+    version: str
+    host_api_version: int
+    enabled: bool
+    load_status: str = "ok"
+    load_error: str | None = None
+    release_api_url: str | None = None
+    test_capabilities: list[PluginTestCapability] = Field(default_factory=list)
+    test_movie_number: str | None = None
+
+
+class PluginDetailResource(PluginSummaryResource):
+    requires_python: str | None = None
+    author: str | None = None
+    homepage: str | None = None
+    manifest: dict
+    data_dir: str
+
+
+class PluginInstallResponse(SchemaModel):
+    plugin_id: str
+    version: str
+    pending_restart: list[str]
+
+
+class PluginSettingsResource(SchemaModel):
+    """插件私有配置（`plugins.settings.<plugin_id>`）的明文快照。"""
+
+    settings: dict[str, Any]
+    settings_schema: dict[str, Any] | None = Field(default=None, alias="schema")
+    defaults: dict[str, Any] | None = None
+
+
+class PluginSettingsUpdateResource(PluginSettingsResource):
+    """插件配置写入结果；配置在 api/aps import 期读取，必须重启两个进程。"""
+
+    pending_restart: list[str]
+
+
+class MetadataSourceResource(SchemaModel):
+    plugin_id: str
+    display_name: str
+    # 插件声明了 fetch_actor_movies，会参与订阅演员影片同步。
+    supports_actor_movies: bool = False
+
+
+class MetadataSourceOrderRequest(SchemaModel):
+    plugin_ids: list[str]
+
+
+class MetadataSourceOrderResource(SchemaModel):
+    items: list[MetadataSourceResource]
+    pending_restart: list[str]
+
+
+class StatsFieldResource(SchemaModel):
+    key: str
+    label: str
+    value_type: str
+    min: float = 0
+    max: float | None = None
+    unit: str | None = None
+
+
+class PluginBindingSourceResource(SchemaModel):
+    plugin_id: str
+    display_name: str
+
+
+class PluginBindingResource(SchemaModel):
+    stats_source: str | None = None
+    review_source: str | None = None
+    stats_source_available: bool = False
+    review_source_available: bool = False
+    stats_source_display_name: str | None = None
+    review_source_display_name: str | None = None
+    stats_fields: list[StatsFieldResource] = Field(default_factory=list)
+    heat_version: str | None = None
+    available_stats_sources: list[PluginBindingSourceResource] = Field(
+        default_factory=list
+    )
+    available_review_sources: list[PluginBindingSourceResource] = Field(
+        default_factory=list
+    )
+
+
+class PluginBindingUpdateRequest(SchemaModel):
+    stats_source: str | None = None
+    review_source: str | None = None
+
+
+class PluginBindingUpdateResource(PluginBindingResource):
+    pending_restart: list[str]
+
+
+class PluginTestRequest(SchemaModel):
+    capability: PluginTestCapability
+
+
+class PluginTestMetadataSummary(SchemaModel):
+    movie_number: str
+    title: str
+    release_date: date
+    duration_minutes: int
+    actor_count: int
+    tag_count: int
+    image_count: int
+    source_url: str | None = None
+
+
+class PluginTestStatsSummary(SchemaModel):
+    heat: int
+    field_count: int
+    values: dict[str, int | float] = Field(default_factory=dict)
+
+
+class PluginTestReviewsSummary(SchemaModel):
+    item_count: int
+    first_username: str | None = None
+    first_excerpt: str | None = None
+
+
+class PluginTestResultResource(SchemaModel):
+    capability: PluginTestCapability
+    status: PluginTestStatus
+    movie_number: str
+    duration_ms: int
+    metadata: PluginTestMetadataSummary | None = None
+    stats: PluginTestStatsSummary | None = None
+    reviews: PluginTestReviewsSummary | None = None
+    error_type: str | None = None
+    error_message: str | None = None

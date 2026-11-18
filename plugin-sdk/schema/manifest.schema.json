@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "插件 manifest.json 的严格模型，未知字段直接拒绝。",
+  "properties": {
+    "plugin_id": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Plugin Id",
+      "type": "string"
+    },
+    "display_name": {
+      "minLength": 1,
+      "title": "Display Name",
+      "type": "string"
+    },
+    "display_name_i18n": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Display Name I18N",
+      "type": "object"
+    },
+    "description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Description"
+    },
+    "description_i18n": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Description I18N",
+      "type": "object"
+    },
+    "version": {
+      "minLength": 1,
+      "title": "Version",
+      "type": "string"
+    },
+    "host_api_version": {
+      "minimum": 1,
+      "title": "Host Api Version",
+      "type": "integer"
+    },
+    "settings_model": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Settings Model"
+    },
+    "requires_python": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Requires Python"
+    },
+    "dependencies": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Dependencies",
+      "type": "array"
+    },
+    "author": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Author"
+    },
+    "homepage": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Homepage"
+    },
+    "release_api_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Release Api Url"
+    }
+  },
+  "required": [
+    "plugin_id",
+    "display_name",
+    "version",
+    "host_api_version"
+  ],
+  "title": "SakuraMedia plugin manifest",
+  "type": "object"
+}

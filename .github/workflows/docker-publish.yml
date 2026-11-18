@@ -1,0 +1,178 @@
+name: Docker Publish
+run-name: Release ${{ github.event.release.tag_name }}
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docker-publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: sakuramediabe
+  DEFAULT_BRANCH: main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release request
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+
+          # 版本号保持 v 开头约定，避免 Docker 镜像标签和 Release 命名混乱。
+          if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9].*'; then
+            echo "::error::Version must match ^v[0-9].*"
+            exit 1
+          fi
+
+          # 预发布版只推自己的 tag、不更新 latest，但仍按 beta 版本号约定命名。
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$'; then
+              echo "::error::Pre-release version must match ^v<major>.<minor>.<patch>-beta.<N>$"
+              exit 1
+            fi
+          fi
+
+      - name: Checkout main branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag points to main
+        env:
+          VERSION: ${{ github.event.release.tag_name }}
+          DEFAULT_BRANCH: ${{ env.DEFAULT_BRANCH }}
+        run: |
+          set -euo pipefail
+
+          # 拉取默认分支和标签信息，确保后续校验基于远端最新状态。
+          git fetch --force origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git fetch --force --tags origin
+
+          # Release 事件里必须已经存在同名 tag，否则说明发布对象异常。
+          if ! git rev-parse --verify "refs/tags/$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag $VERSION does not exist locally after fetch"
+            exit 1
+          fi
+
+          TAG_COMMIT="$(git rev-list -n 1 "$VERSION")"
+
+          # 发版要求 tag 指向 main 上的提交，避免从临时分支直接发版。
+          if ! git merge-base --is-ancestor "$TAG_COMMIT" "origin/$DEFAULT_BRANCH"; then
+            echo "::error::Release tag $VERSION is not on origin/$DEFAULT_BRANCH"
+            exit 1
+          fi
+
+  # Nuitka 需要目标架构的本地编译器，arm64 用原生 runner，不走 QEMU。
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/backend/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.version=${{ github.event.release.tag_name }}
+          # 只有 CI 发布构建内置官方插件：本地手动 docker build 不带该参数即不下载任何插件。
+          # REFRESH 随发版 tag 变化，让内置插件每次发版都重新读取插件市场 index.json，
+          # 否则 BuildKit 会复用旧层、把上一版插件固化进镜像。
+          build-args: |
+            SAKURAMEDIA_BACKEND_VERSION=${{ github.event.release.tag_name }}
+            SAKURAMEDIA_BUNDLED_PLUGINS=1
+            SAKURAMEDIA_BUNDLED_PLUGINS_REFRESH=${{ github.event.release.tag_name }}
+          # 构建期读市场 index.json 不需要 token；pin 到历史版本时会走 GitHub Release API，
+          # 用 token 避免 Actions 共享出口 IP 触发 API 限流。通过 BuildKit secret 传入，
+          # 不会落进镜像层或 history。
+          secrets: |
+            github_token=${{ github.token }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.arch }},mode=max
+
+      - name: Export digest
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        env:
+          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
+          VERSION: ${{ github.event.release.tag_name }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          refs=()
+          for file in /tmp/digests/*; do
+            refs+=("$IMAGE@sha256:$(basename "$file")")
+          done
+          tags=(-t "$IMAGE:$VERSION")
+          if [ "$IS_PRERELEASE" != "true" ]; then
+            tags+=(-t "$IMAGE:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"

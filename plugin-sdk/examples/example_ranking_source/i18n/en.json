@@ -1,0 +1,7 @@
+{
+  "manifest.display_name": "Example Ranking Source",
+  "ranking.name": "Example Ranking",
+  "ranking.board.daily": "Daily",
+  "jobs.sync.cli_help": "Sync the example ranking",
+  "jobs.sync.start": "Syncing the example ranking"
+}

@@ -1,0 +1,7 @@
+{
+  "manifest.display_name": "Example Metadata Source",
+  "settings.title_prefix.title": "Title prefix",
+  "settings.title_prefix.description": "Text prepended to the example movie title.",
+  "metadata.title": "Example Movie",
+  "metadata.summary": "Static summary returned by the SakuraMedia plugin SDK example."
+}
