@@ -1,32 +1,32 @@
 # SakuraMediaBE
 
-[简体中文](./README.zh-CN.md) | English
+简体中文 | [English](./README.en.md)
 
-SakuraMediaBE is the server-side project of SakuraMedia. It provides the backend capabilities of SakuraMedia: media library management, movie metadata, download tasks, video thumbnail generation, moment marking, image-based search, and playback access. The client-side project lives in [sakuramedia](https://github.com/tinypinglite/sakuramedia).
+SakuraMediaBE 是 SakuraMedia 的服务端项目，负责提供媒体库管理、影片元数据、下载任务、视频缩略图生成、精彩时刻标记、以图搜图、播放访问等后端能力。 前端项目仓库在 [sakuramedia](https://github.com/tinypinglite/sakuramedia)
 
-The project is currently built on Python 3.10, FastAPI, Peewee, Pydantic 2 and APScheduler. The code is layered as `api -> service -> model` and targets single-account deployments.
+项目当前基于 Python 3.10、FastAPI、Peewee、Pydantic 2 和 APScheduler 构建，代码结构按 `api -> service -> model` 分层组织，面向单账号场景运行。
 
-## Plugin development
+## 插件开发
 
-Plugin developers can find runnable examples, the manifest JSON Schema and type stubs in [`plugin-sdk/`](./plugin-sdk/README.md). The full plugin contract is documented in the [plugin development guide](https://tinypinglite.github.io/sakuramedia/guide/plugin-development).
+插件开发者可以在 [`plugin-sdk/`](./plugin-sdk/README.md) 找到可运行示例、manifest JSON Schema 和类型存根；完整契约见[插件开发文档](https://tinypinglite.github.io/sakuramedia/zh-CN/guide/plugin-development)。
 
-## Acknowledgements
+## 致谢
 
-The movie number parsing implementation and its regression tests were inspired by the following open-source projects, and we would like to thank their authors: [JavSP](https://github.com/Yuukiy/JavSP), [JavBoss](https://github.com/Solr159/JavBoss), [Emby.Plugins.JavScraper](https://github.com/JavScraper/Emby.Plugins.JavScraper), [JAVOneStop](https://github.com/ddd354/JAVOneStop), [metatube-sdk-go](https://github.com/metatube-community/metatube-sdk-go), [Movie_Data_Capture](https://github.com/mvdctop/Movie_Data_Capture), [mdcz](https://github.com/ShotHeadman/mdcz), [javinizer-go](https://github.com/javinizer/javinizer-go).
+番号解析的实现与回归测试参考了以下开源项目，在此表示感谢：[JavSP](https://github.com/Yuukiy/JavSP)、[JavBoss](https://github.com/Solr159/JavBoss)、[Emby.Plugins.JavScraper](https://github.com/JavScraper/Emby.Plugins.JavScraper)、[JAVOneStop](https://github.com/ddd354/JAVOneStop)、[metatube-sdk-go](https://github.com/metatube-community/metatube-sdk-go)、[Movie_Data_Capture](https://github.com/mvdctop/Movie_Data_Capture)、[mdcz](https://github.com/ShotHeadman/mdcz)、[javinizer-go](https://github.com/javinizer/javinizer-go)。
 
-## Risk notice
+## 风险声明
 
-* This project is for technical exchange only.
-* It does not provide any movie resources, download links, or similar content.
-* Users bear all consequences of using this tool; the author is not liable.
-* Please read and comply with the laws and regulations of your jurisdiction before using this software. If using this software violates applicable laws or regulations, do not use it.
-* Commercial use of this software is prohibited.
-* If you do not agree with any of the terms above, do not use this software.
+* 本项目仅用于技术交流
+* 不提供任何影片资源以及资源下载链接等.
+* 用户使用本工具产生的一切后果由使用者自行承担，和作者无关.
+* 用户在使用本软件前，请用户了解并遵守当地法律法规，如果本软件使用过程中存在违反当地法律法规的行为，请勿使用该软件.
+* 禁止将本软件用于商业用途
+* 若用户不同意上述条款任意一条，请勿使用本软件
 
-For any infringement concerns, please contact tinyping@protonmail.com by email.
+如有侵权，请邮箱联系 tinyping@protonmail.com
 
 ## License
 
-This project is licensed under the [PolyForm Noncommercial License 1.0.0](./LICENSE); non-commercial use only.
+本项目采用 [PolyForm Noncommercial License 1.0.0](./LICENSE)，仅允许非商业用途。
 
 Copyright (C) 2026 tinypinglite
