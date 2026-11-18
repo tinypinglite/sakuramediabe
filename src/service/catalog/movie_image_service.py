@@ -14,7 +14,6 @@ import shutil
 import tempfile
 import time
 from collections.abc import Callable, Iterable, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO
@@ -306,33 +305,6 @@ class MovieImageService:
                 return plot_index
         return None
 
-    def resolve_thin_cover_from_downloaded_images(
-        self,
-        movie_number: str,
-        cover_task: ImagePersistTask | None,
-        plot_tasks: list[ImagePersistTask],
-    ) -> ThinCoverResolution:
-        if (
-            cover_task is not None
-            and cover_task.absolute_path.exists()
-            and not should_skip_thin_cover_crop(movie_number)
-        ):
-            thin_cover_task = self._generate_thin_cover_task_from_cover(
-                movie_number,
-                cover_task.absolute_path.read_bytes(),
-                Path(cover_task.relative_path).suffix,
-            )
-            if thin_cover_task is not None:
-                return ThinCoverResolution(generated_task=thin_cover_task)
-        selected_plot_index = self._select_portrait_plot_index(
-            [
-                (int(plot_task.plot_index), plot_task.absolute_path.read_bytes())
-                for plot_task in plot_tasks
-                if plot_task.plot_index is not None and plot_task.absolute_path.exists()
-            ]
-        )
-        return ThinCoverResolution(selected_plot_index=selected_plot_index)
-
     def resolve_thin_cover_from_prepared_images(
         self,
         movie_number: str,
@@ -515,106 +487,6 @@ class MovieImageService:
             seen_relative_paths.add(image_task.relative_path)
             tasks.append(image_task)
         return tasks
-
-    def download_image_tasks(self, image_tasks: list[ImagePersistTask]) -> None:
-        """并发下载一批图片；封面失败会中断导入，剧情图/头像失败仅告警跳过。"""
-        tasks_to_download: list[ImagePersistTask] = []
-        for image_task in image_tasks:
-            image_task.absolute_path.parent.mkdir(parents=True, exist_ok=True)
-            if image_task.absolute_path.exists():
-                logger.debug(
-                    "Catalog image download reused local file type={} path={}",
-                    image_task.image_type,
-                    str(image_task.absolute_path),
-                )
-                continue
-            tasks_to_download.append(image_task)
-
-        if not tasks_to_download:
-            return
-
-        cover_download_errors: list[ImageDownloadError] = []
-        with ThreadPoolExecutor(max_workers=len(tasks_to_download), thread_name_prefix="catalog-image") as executor:
-            future_map = {executor.submit(self._download_movie_image_task, task): task for task in tasks_to_download}
-            for future in as_completed(future_map):
-                image_task = future_map[future]
-                try:
-                    future.result()
-                except Exception as exc:
-                    # 仅封面下载失败会中断影片导入；剧情图和演员头像失败只记录告警并继续。
-                    if image_task.image_type != "cover":
-                        logger.warning(
-                            "Catalog image download skipped after failure image_type={} url={} target={} detail={}",
-                            image_task.image_type,
-                            image_task.image_url,
-                            str(image_task.absolute_path),
-                            exc,
-                        )
-                        continue
-                    logger.warning(
-                        "Catalog cover image download failed image_type={} url={} target={} detail={}",
-                        image_task.image_type,
-                        image_task.image_url,
-                        str(image_task.absolute_path),
-                        exc,
-                    )
-                    if isinstance(exc, ImageDownloadError):
-                        cover_download_errors.append(exc)
-                    else:
-                        cover_download_errors.append(ImageDownloadError(f"download_failed:{image_task.image_url}:{exc}"))
-
-        if cover_download_errors:
-            raise cover_download_errors[0]
-
-    def _download_movie_image_task(self, image_task: ImagePersistTask) -> None:
-        logger.debug(
-            "Catalog image download scheduled type={} url={} target={}",
-            image_task.image_type,
-            image_task.image_url,
-            str(image_task.absolute_path),
-        )
-        self.image_downloader(image_task.image_url, image_task.absolute_path)
-
-    def download_image_tasks_to_temporary_files(
-        self,
-        image_tasks: list[ImagePersistTask],
-    ) -> list[PreparedImageFile]:
-        if not image_tasks:
-            return []
-
-        image_root = media_image_root_path()
-        image_root.mkdir(parents=True, exist_ok=True)
-        temp_root = Path(tempfile.mkdtemp(prefix="catalog-refresh-", dir=str(image_root)))
-        prepared_files = [
-            PreparedImageFile(
-                image_task=image_task,
-                temp_path=temp_root / image_task.relative_path,
-                temp_root=temp_root,
-            )
-            for image_task in image_tasks
-        ]
-
-        try:
-            with ThreadPoolExecutor(max_workers=len(prepared_files), thread_name_prefix="catalog-refresh-image") as executor:
-                future_map = {
-                    executor.submit(self._download_prepared_image_file, prepared_file): prepared_file
-                    for prepared_file in prepared_files
-                }
-                for future in as_completed(future_map):
-                    future.result()
-        except Exception:
-            self.cleanup_prepared_image_files(prepared_files)
-            raise
-        return prepared_files
-
-    def _download_prepared_image_file(self, prepared_file: PreparedImageFile) -> None:
-        prepared_file.temp_path.parent.mkdir(parents=True, exist_ok=True)
-        self.image_downloader(prepared_file.image_task.image_url, prepared_file.temp_path)
-
-    @staticmethod
-    def cleanup_prepared_image_files(prepared_files: list[PreparedImageFile]) -> None:
-        for temp_root in {prepared_file.temp_root for prepared_file in prepared_files}:
-            shutil.rmtree(temp_root, ignore_errors=True)
 
     def finalize_prepared_image_files(self, prepared_files: list[PreparedImageFile]) -> None:
         for prepared_file in prepared_files:

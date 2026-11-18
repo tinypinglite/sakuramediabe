@@ -93,6 +93,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PUID=1000 \
     PGID=1000
 
+# api/aps 是长驻进程，用 jemalloc 覆盖 glibc malloc，抑制长期运行后的堆碎片。
+# 只装运行时库（依赖仅 libc6）；用 soname 而不是绝对路径，amd64/arm64 都能解析。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libjemalloc2 \
+    && rm -rf /var/lib/apt/lists/*
+ENV LD_PRELOAD=libjemalloc.so.2
+# preload 失败时 ld.so 只打印警告并继续，这里让构建直接失败，避免静默退回 glibc。
+RUN python -c "import pathlib; assert 'libjemalloc' in pathlib.Path('/proc/self/maps').read_text(), 'jemalloc not preloaded'"
+
 COPY --from=builder /install/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
 COPY --from=builder /install/bin /usr/local/bin
 

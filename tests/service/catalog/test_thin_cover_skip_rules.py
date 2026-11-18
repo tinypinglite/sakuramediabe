@@ -1,10 +1,9 @@
-from pathlib import Path
-
 import pytest
 
 from src.service.catalog.movie_image_service import (
     ImagePersistTask,
     MovieImageService,
+    PreparedImageFile,
     should_skip_thin_cover_crop,
 )
 
@@ -49,28 +48,34 @@ def test_should_skip_thin_cover_crop_misses(movie_number):
     assert should_skip_thin_cover_crop(movie_number) is False
 
 
-def _cover_task(tmp_path) -> ImagePersistTask:
+def _prepared_cover(tmp_path) -> tuple[ImagePersistTask, PreparedImageFile]:
     cover_path = tmp_path / "cover.jpg"
     cover_path.write_bytes(b"cover")
-    return ImagePersistTask(
+    cover_task = ImagePersistTask(
         image_type="cover",
         image_url="",
         relative_path="movies/65/FC2-4811064/cover.jpg",
-        absolute_path=cover_path,
+        absolute_path=tmp_path / "final" / "cover.jpg",
+    )
+    return cover_task, PreparedImageFile(
+        image_task=cover_task,
+        temp_path=cover_path,
+        temp_root=tmp_path,
     )
 
 
-def test_downloaded_resolution_skips_split_for_hit_number(tmp_path, monkeypatch):
+def test_prepared_resolution_skips_split_for_hit_number(tmp_path, monkeypatch):
     service = MovieImageService()
     split_calls = []
     monkeypatch.setattr(
         service,
-        "_generate_thin_cover_task_from_cover",
+        "_generate_prepared_thin_cover_from_cover",
         lambda *args, **kwargs: split_calls.append(args),
     )
+    cover_task, prepared_cover = _prepared_cover(tmp_path)
 
-    resolution = service.resolve_thin_cover_from_downloaded_images(
-        "FC2-4811064", _cover_task(tmp_path), []
+    resolution = service.resolve_thin_cover_from_prepared_images(
+        "FC2-4811064", cover_task, [], [prepared_cover]
     )
 
     assert split_calls == []
@@ -78,17 +83,18 @@ def test_downloaded_resolution_skips_split_for_hit_number(tmp_path, monkeypatch)
     assert resolution.selected_plot_index is None
 
 
-def test_downloaded_resolution_still_runs_split_for_other_numbers(tmp_path, monkeypatch):
+def test_prepared_resolution_still_runs_split_for_other_numbers(tmp_path, monkeypatch):
     service = MovieImageService()
     split_calls = []
     monkeypatch.setattr(
         service,
-        "_generate_thin_cover_task_from_cover",
+        "_generate_prepared_thin_cover_from_cover",
         lambda *args, **kwargs: split_calls.append(args),
     )
+    cover_task, prepared_cover = _prepared_cover(tmp_path)
 
-    service.resolve_thin_cover_from_downloaded_images(
-        "SSIS-001", _cover_task(tmp_path), []
+    service.resolve_thin_cover_from_prepared_images(
+        "SSIS-001", cover_task, [], [prepared_cover]
     )
 
     assert len(split_calls) == 1
@@ -98,38 +104,15 @@ def test_hit_number_keeps_portrait_plot_fallback(tmp_path, monkeypatch):
     service = MovieImageService()
     monkeypatch.setattr(
         service,
-        "_generate_thin_cover_task_from_cover",
+        "_generate_prepared_thin_cover_from_cover",
         lambda *args, **kwargs: pytest.fail("命中规则的番号不应尝试裁切"),
     )
     monkeypatch.setattr(service, "_select_portrait_plot_index", lambda items: 0)
+    cover_task, prepared_cover = _prepared_cover(tmp_path)
 
-    resolution = service.resolve_thin_cover_from_downloaded_images(
-        "FC2-4811064", _cover_task(tmp_path), []
+    resolution = service.resolve_thin_cover_from_prepared_images(
+        "FC2-4811064", cover_task, [], [prepared_cover]
     )
 
     assert resolution.generated_task is None
     assert resolution.selected_plot_index == 0
-
-
-def test_prepared_resolution_skips_split_for_hit_number(monkeypatch):
-    service = MovieImageService()
-    split_calls = []
-    monkeypatch.setattr(
-        service,
-        "_generate_prepared_thin_cover_from_cover",
-        lambda *args, **kwargs: split_calls.append(args),
-    )
-    cover_task = ImagePersistTask(
-        image_type="cover",
-        image_url="",
-        relative_path="movies/65/FC2-4811064/cover.jpg",
-        absolute_path=Path("unused"),
-    )
-
-    resolution = service.resolve_thin_cover_from_prepared_images(
-        "FC2-4811064", cover_task, [], []
-    )
-
-    assert split_calls == []
-    assert resolution.generated_task is None
-    assert resolution.selected_plot_index is None
