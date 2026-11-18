@@ -7,9 +7,12 @@
 
 from __future__ import annotations
 
+import http.client
+import os
 import shutil
 import time
 import uuid
+import xmlrpc.client
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +20,10 @@ from fastapi import APIRouter, Body, Depends, File, Form, Request, UploadFile
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
+from src.config.config import load_persisted_settings
 from src.i18n import translate
 from src.i18n.text import resolve_text
+from src.plugins.dependencies import sync_plugin_dependencies
 from src.plugins.installer import MAX_ARCHIVE_BYTES
 from src.plugins.manager import PluginManager, PluginSettingsValidationError
 from src.schema.system.plugins import (
@@ -106,6 +111,53 @@ def _plugin_detail(data: dict[str, Any]) -> PluginDetailResource:
 @router.get("", response_model=list[PluginSummaryResource])
 def list_plugins():
     return [_plugin_summary(item) for item in PluginManager().list_plugins()]
+
+
+@router.post("/apply", status_code=202)
+def apply_changes():
+    """同步插件依赖并重启 api/aps，使配置与插件变更生效。
+
+    首次安装带 dependencies 的插件时，依赖的 pip 安装会在本次请求内完成，
+    因此请求可能较慢；依赖同步失败则不触发重启。
+    """
+    persisted = load_persisted_settings()
+    failures = sync_plugin_dependencies(
+        persisted.plugins,
+        root_dir=Path(persisted.plugins.root_dir),
+    )
+    if failures:
+        raise ApiError(
+            422,
+            "plugin_dependency_sync_failed",
+            "插件依赖同步失败，未触发重启",
+            {"failures": failures},
+        )
+
+    proxy = xmlrpc.client.ServerProxy(
+        os.environ.get(
+            "SAKURAMEDIA_SUPERVISOR_RPC_URL", "http://127.0.0.1:9001/RPC2"
+        ),
+        allow_none=True,
+    )
+    try:
+        # 只启动一次性程序；API 的 202 响应返回后由它延迟停启 api/aps。
+        proxy.supervisor.startProcess("apply-restart", False)
+    except xmlrpc.client.Fault as exc:
+        # supervisor Faults.ALREADY_STARTED：上一次应用的重启程序仍在运行。
+        if exc.faultCode != 60:
+            raise ApiError(
+                503,
+                "restart_unavailable",
+                f"无法触发服务重启: {exc.faultString}",
+            ) from exc
+    except (OSError, xmlrpc.client.ProtocolError, http.client.HTTPException) as exc:
+        raise ApiError(
+            503,
+            "restart_unavailable",
+            f"无法连接服务管理器: {exc}",
+        ) from exc
+
+    return {"status": "restarting", "processes": ["api", "aps"]}
 
 
 def _binding_resource() -> PluginBindingResource:
