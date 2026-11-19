@@ -121,8 +121,11 @@ RUN chmod +x /docker-entrypoint.sh \
     && groupadd --system app \
     && useradd --create-home --shell /bin/bash --gid app app
 
-# 固定 644：apply-restart 以 app 用户运行 supervisorctl，需要读该配置，不能依赖构建上下文的文件权限。
-COPY --chmod=644 docker/backend/supervisord.conf /etc/supervisor/supervisord.conf
+# 显式固定目录与文件权限：apply-restart 以 app 用户运行 supervisorctl，
+# 需要能进入 /etc/supervisor 并读取配置，不依赖 COPY 的隐式权限行为。
+COPY docker/backend/supervisord.conf /etc/supervisor/supervisord.conf
+RUN chmod 755 /etc/supervisor \
+    && chmod 644 /etc/supervisor/supervisord.conf
 # GFriends 构建期 seed：位于 /app 下，不会被 /data 运行时卷遮蔽。
 COPY --from=gfriends /out /app/metadata-data
 # 内置插件包：本地构建为空目录（安装步骤跳过），CI 发布构建为已校验的 ZIP + 索引。
