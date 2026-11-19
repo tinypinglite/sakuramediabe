@@ -2,6 +2,7 @@
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from src.api.routers.deps import db_deps, get_current_user
+from src.schema.catalog.movies import MovieWatchStatus
 from src.schema.collections.playlists import (
     PlaylistCreateRequest,
     PlaylistMovieBatchAddRequest,
@@ -58,6 +59,7 @@ def list_playlist_movies(
     page_size: int = 20,
     sort: str | None = Query(default=None),
     resolution: str | None = Query(default=None),
+    watch_status: MovieWatchStatus = Query(default=MovieWatchStatus.ALL),
     current_user=Depends(get_current_user),
 ):
     return PlaylistService.list_playlist_movies(
@@ -66,6 +68,7 @@ def list_playlist_movies(
         page_size=page_size,
         sort=sort,
         resolution=resolution,
+        watch_status=watch_status,
     )
 
 

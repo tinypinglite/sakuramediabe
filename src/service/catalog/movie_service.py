@@ -81,6 +81,7 @@ from src.schema.catalog.movies import (
     MovieReviewSort,
     MovieSubscriptionBatchResponse,
     MovieSubscriptionSkippedItem,
+    MovieWatchStatus,
     TagMatchMode,
     TagResource,
 )
@@ -96,6 +97,10 @@ from src.service.catalog.movie_review_source_service import (
     MovieReviewsUnavailable,
 )
 from src.service.catalog.movie_stats_source_service import MovieStatsSourceService
+from src.service.catalog.movie_watch_service import (
+    is_watch_finished,
+    watch_status_expression,
+)
 from src.service.catalog.rating_service import RatingService
 from src.service.collections import PlaylistService
 from src.service.discovery.ranking_service import RankingCatalogService
@@ -124,9 +129,22 @@ class MovieService:
     _playable_exists_expression = staticmethod(playable_exists_expression)
 
     @classmethod
+    def _movie_status_condition(cls, status: MovieListStatus):
+        """单个「状态」筛选条件；ALL 返回 None。"""
+        if status == MovieListStatus.SUBSCRIBED:
+            return Movie.is_subscribed == True
+        if status == MovieListStatus.UNSUBSCRIBED:
+            return Movie.is_subscribed == False
+        if status == MovieListStatus.PLAYABLE:
+            return cls._playable_exists_expression()
+        return None
+
+    @classmethod
     def _filtered_movies(
         cls,
         actor_id: int | None = None,
+        actor_ids: list[int] | None = None,
+        actor_match: TagMatchMode = TagMatchMode.OR,
         actor_age_min: int | None = None,
         actor_age_max: int | None = None,
         tag_ids: list[int] | None = None,
@@ -135,6 +153,11 @@ class MovieService:
         media_tag_match: TagMatchMode = TagMatchMode.OR,
         years: list[int] | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
+        statuses: list[MovieListStatus] | None = None,
+        status_match: TagMatchMode = TagMatchMode.OR,
+        watch_status: MovieWatchStatus = MovieWatchStatus.ALL,
+        watch_statuses: list[MovieWatchStatus] | None = None,
+        watch_match: TagMatchMode = TagMatchMode.OR,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         series_id: int | None = None,
         director_name: str | None = None,
@@ -143,6 +166,7 @@ class MovieService:
         heat_min: int | None = None,
         heat_max: int | None = None,
         resolution: str | None = None,
+        resolutions: list[str] | None = None,
         blacklisted: bool = False,
         rated: bool = False,
         search_terms: Sequence[str] = (),
@@ -192,6 +216,25 @@ class MovieService:
                 MovieActor.actor.in_(canonical_actor_ids)
             )
             filtered_query = query.where(Movie.id.in_(movie_ids))
+
+        if actor_ids is not None:
+            # 多选女优：先把被合并的女优映射到规范 id，再按 OR/AND 组装子查询。
+            canonical_actor_ids = {
+                actor.merged_into_id or actor.id
+                for actor in Actor.select().where(Actor.id.in_(actor_ids))
+            }
+            actor_movie_ids = MovieActor.select(MovieActor.movie).where(
+                MovieActor.actor.in_(canonical_actor_ids)
+            )
+            if actor_match == TagMatchMode.AND:
+                # AND：影片须同时关联全部所选女优，分组后命中去重女优数等于请求数。
+                actor_movie_ids = actor_movie_ids.group_by(
+                    MovieActor.movie
+                ).having(
+                    fn.COUNT(fn.DISTINCT(MovieActor.actor))
+                    == len(canonical_actor_ids)
+                )
+            filtered_query = filtered_query.where(Movie.id.in_(actor_movie_ids))
 
         if actor_age_min is not None or actor_age_max is not None:
             # 出演年龄口径：最老女优在影片发行日（近似拍摄时间）的周岁。
@@ -278,12 +321,49 @@ class MovieService:
                 )
             )
 
-        if status == MovieListStatus.SUBSCRIBED:
-            filtered_query = filtered_query.where(Movie.is_subscribed == True)
-        elif status == MovieListStatus.UNSUBSCRIBED:
-            filtered_query = filtered_query.where(Movie.is_subscribed == False)
-        elif status == MovieListStatus.PLAYABLE:
-            filtered_query = filtered_query.where(cls._playable_exists_expression())
+        status_values = (
+            statuses
+            if statuses is not None
+            else ([status] if status != MovieListStatus.ALL else [])
+        )
+        status_conditions = [
+            condition
+            for condition in (
+                cls._movie_status_condition(value) for value in status_values
+            )
+            if condition is not None
+        ]
+        if status_conditions:
+            status_combine = (
+                operator.and_
+                if status_match == TagMatchMode.AND
+                else operator.or_
+            )
+            filtered_query = filtered_query.where(
+                reduce(status_combine, status_conditions)
+            )
+
+        watch_status_values = (
+            watch_statuses
+            if watch_statuses is not None
+            else ([watch_status] if watch_status != MovieWatchStatus.ALL else [])
+        )
+        watch_conditions = [
+            condition
+            for condition in (
+                watch_status_expression(value) for value in watch_status_values
+            )
+            if condition is not None
+        ]
+        if watch_conditions:
+            watch_combine = (
+                operator.and_
+                if watch_match == TagMatchMode.AND
+                else operator.or_
+            )
+            filtered_query = filtered_query.where(
+                reduce(watch_combine, watch_conditions)
+            )
 
         if collection_type == MovieCollectionType.SINGLE:
             filtered_query = filtered_query.where(Movie.is_collection == False)
@@ -304,7 +384,20 @@ class MovieService:
             (("heat", Movie.heat, heat_min, heat_max),),
             error_code="invalid_movie_filter",
         )
-        if resolution is not None:
+        if resolutions:
+            # 多选分辨率按「任一档位」匹配；一部影片只归入最高分辨率档。
+            filtered_query = filtered_query.where(
+                reduce(
+                    operator.or_,
+                    (
+                        resolution_exists_expression(
+                            value, error_code="invalid_movie_filter"
+                        )
+                        for value in resolutions
+                    ),
+                )
+            )
+        elif resolution is not None:
             filtered_query = filtered_query.where(
                 resolution_exists_expression(resolution, error_code="invalid_movie_filter")
             )
@@ -504,6 +597,8 @@ class MovieService:
     def movie_list_query(
         cls,
         actor_id: int | None = None,
+        actor_ids: list[int] | None = None,
+        actor_match: TagMatchMode = TagMatchMode.OR,
         actor_age_min: int | None = None,
         actor_age_max: int | None = None,
         tag_ids: list[int] | None = None,
@@ -512,6 +607,11 @@ class MovieService:
         media_tag_match: TagMatchMode = TagMatchMode.OR,
         years: list[int] | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
+        statuses: list[MovieListStatus] | None = None,
+        status_match: TagMatchMode = TagMatchMode.OR,
+        watch_status: MovieWatchStatus = MovieWatchStatus.ALL,
+        watch_statuses: list[MovieWatchStatus] | None = None,
+        watch_match: TagMatchMode = TagMatchMode.OR,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         sort: str | None = None,
         series_id: int | None = None,
@@ -521,6 +621,7 @@ class MovieService:
         heat_min: int | None = None,
         heat_max: int | None = None,
         resolution: str | None = None,
+        resolutions: list[str] | None = None,
         blacklisted: bool = False,
         rated: bool = False,
         search_terms: Sequence[str] = (),
@@ -530,6 +631,8 @@ class MovieService:
         query, _thin_cover_alias = with_movie_card_relations(
             cls._filtered_movies(
                 actor_id=actor_id,
+                actor_ids=actor_ids,
+                actor_match=actor_match,
                 actor_age_min=actor_age_min,
                 actor_age_max=actor_age_max,
                 tag_ids=tag_ids,
@@ -538,6 +641,11 @@ class MovieService:
                 media_tag_match=media_tag_match,
                 years=years,
                 status=status,
+                statuses=statuses,
+                status_match=status_match,
+                watch_status=watch_status,
+                watch_statuses=watch_statuses,
+                watch_match=watch_match,
                 collection_type=collection_type,
                 series_id=series_id,
                 director_name=director_name,
@@ -546,6 +654,7 @@ class MovieService:
                 heat_min=heat_min,
                 heat_max=heat_max,
                 resolution=resolution,
+                resolutions=resolutions,
                 blacklisted=blacklisted,
                 rated=rated,
                 search_terms=search_terms,
@@ -560,7 +669,19 @@ class MovieService:
         if search_terms and (sort is None or not sort.strip()):
             order_by = cls._build_movie_search_sort(search_terms)
         else:
-            order_by = cls._build_movie_list_sort(sort, status)
+            # 多选状态里含「可播放」时，added_at 排序仍按最近入库媒体时间。
+            sort_status = status
+            if statuses:
+                sort_status = (
+                    MovieListStatus.PLAYABLE
+                    if MovieListStatus.PLAYABLE in statuses
+                    else (
+                        statuses[0]
+                        if len(statuses) == 1
+                        else MovieListStatus.ALL
+                    )
+                )
+            order_by = cls._build_movie_list_sort(sort, sort_status)
         return query.order_by(*order_by)
 
     @classmethod
@@ -733,6 +854,10 @@ class MovieService:
                 media.progress = MovieMediaProgressResource(
                     last_position_seconds=progress.position_seconds,
                     last_watched_at=progress.last_watched_at,
+                    finished=is_watch_finished(
+                        progress.position_seconds,
+                        media.duration_seconds,
+                    ),
                 )
             media.points = points_by_media_id.get(media.id, [])
             media.tags = tags_by_media_id.get(media.id, [])
@@ -870,6 +995,14 @@ class MovieService:
         return MovieDetailResource.from_attributes_model(movie)
 
     @staticmethod
+    def count_movies(**filters) -> int:
+        """按影片列表的筛选条件统计总数，供智能列表等无分页场景复用。
+
+        直接转发给 ``_filtered_movies``，避免再维护一份参数镜像。
+        """
+        return MovieService._filtered_movies(**filters).count()
+
+    @staticmethod
     def list_movies(
         actor_id: int | None = None,
         actor_age_min: int | None = None,
@@ -880,6 +1013,7 @@ class MovieService:
         media_tag_match: TagMatchMode = TagMatchMode.OR,
         years: list[int] | None = None,
         status: MovieListStatus = MovieListStatus.ALL,
+        watch_status: MovieWatchStatus = MovieWatchStatus.ALL,
         collection_type: MovieCollectionType = MovieCollectionType.ALL,
         number_source: MovieNumberSource = MovieNumberSource.ALL,
         sort: str | None = None,
@@ -896,7 +1030,7 @@ class MovieService:
     ) -> PageResponse[MovieListItemWithRatingResource]:
         start = max(page - 1, 0) * page_size
         search_terms = split_search_terms(query, error_code="invalid_movie_filter")
-        total = MovieService._filtered_movies(
+        total = MovieService.count_movies(
             actor_id=actor_id,
             actor_age_min=actor_age_min,
             actor_age_max=actor_age_max,
@@ -906,6 +1040,7 @@ class MovieService:
             media_tag_match=media_tag_match,
             years=years,
             status=status,
+            watch_status=watch_status,
             collection_type=collection_type,
             director_name=director_name,
             maker_name=maker_name,
@@ -916,7 +1051,7 @@ class MovieService:
             blacklisted=blacklisted,
             rated=rated,
             search_terms=search_terms,
-        ).count()
+        )
         movies = list(
             MovieService.movie_list_query(
                 actor_id=actor_id,
@@ -928,6 +1063,7 @@ class MovieService:
                 media_tag_match=media_tag_match,
                 years=years,
                 status=status,
+                watch_status=watch_status,
                 collection_type=collection_type,
                 sort=sort,
                 director_name=director_name,

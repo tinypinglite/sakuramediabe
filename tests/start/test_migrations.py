@@ -61,6 +61,7 @@ from src.start.migrations.runner import (
     MOVIE_MEDIA_REPLACEMENT_MIGRATION_NAME,
     MOVIE_RATINGS_MIGRATION_NAME,
     MULTI_VERSION_PROCESSED_MIGRATION_NAME,
+    PLAYLIST_SMART_FILTER_MIGRATION_NAME,
     PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
     PLUGIN_MOVIE_METADATA_MIGRATION_NAME,
     REMOVE_GENERATED_THIN_COVER_MIGRATION_NAME,
@@ -183,6 +184,7 @@ def test_current_migrations_are_discoverable_in_order():
             DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
         REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
         REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
+        PLAYLIST_SMART_FILTER_MIGRATION_NAME,
     ]
 
 
@@ -451,6 +453,10 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
             name=REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
             applied=True,
         ),
+        MigrationExecution(
+            name=PLAYLIST_SMART_FILTER_MIGRATION_NAME,
+            applied=True,
+        ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -501,6 +507,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         DOWNLOAD_SOURCE_IDENTITY_MIGRATION_NAME,
         REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
         REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
+        PLAYLIST_SMART_FILTER_MIGRATION_NAME,
     ]
 
 
@@ -889,7 +896,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 47
+    assert summary.applied_count == 48
     assert "interaction_synced_at" not in _column_names(clean_db, "movie")
     media_state = clean_db.execute_sql(
         """

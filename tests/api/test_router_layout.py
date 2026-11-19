@@ -417,7 +417,10 @@ def test_healthz_is_reachable_without_authentication(client):
     response = client.get("/healthz")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert isinstance(body["boot_id"], str)
+    assert body["boot_id"]
 
 
 def test_create_app_sets_peewee_logger_level_from_settings(monkeypatch):

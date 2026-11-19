@@ -12,6 +12,7 @@ from .movie_stats_sync_service import MovieStatsSyncService
 from .movie_subscription_service import MovieSubscriptionService
 from .movie_subtitle_service import MovieSubtitleService
 from .movie_thin_cover_backfill_service import MovieThinCoverBackfillService
+from .movie_watch_service import MovieWatchService
 from .rating_service import RatingService
 from .subscribed_actor_movie_sync_service import (
     ActorSubscriptionSyncParams,
@@ -37,6 +38,7 @@ __all__ = [
     "MovieSubscriptionService",
     "MovieSubtitleService",
     "MovieThinCoverBackfillService",
+    "MovieWatchService",
     "RatingService",
     "SubscribedActorMovieSyncService",
     "TagService",

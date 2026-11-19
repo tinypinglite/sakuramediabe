@@ -86,6 +86,9 @@ REMOVE_JAVDB_IDENTITY_MIGRATION_NAME = (
 REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME = (
     "20261112_02_replace_movie_interactions_with_stats"
 )
+PLAYLIST_SMART_FILTER_MIGRATION_NAME = (
+    "20261120_01_add_playlist_smart_filter"
+)
 
 
 @dataclass(frozen=True)

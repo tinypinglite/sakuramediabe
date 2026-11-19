@@ -18,6 +18,14 @@ class MovieListStatus(str, Enum):
     PLAYABLE = "playable"
 
 
+class MovieWatchStatus(str, Enum):
+    # 按影片聚合的观看状态：已看与在看的判定口径见 movie_watch_service。
+    ALL = "all"
+    UNWATCHED = "unwatched"
+    WATCHING = "watching"
+    WATCHED = "watched"
+
+
 class MovieCollectionType(str, Enum):
     ALL = "all"
     SINGLE = "single"
@@ -58,6 +66,25 @@ class MovieInteractionFilterOptionsResource(SchemaModel):
     heat_version: str | None = None
 
 
+class MovieWatchProgressResource(SchemaModel):
+    # 列表卡片用的影片级进度摘要：位置/时长取最近观看的媒体；
+    # finished 为影片级口径（任一媒体看完即已看），与 watch_status 筛选一致。
+    media_id: int
+    position_seconds: int
+    duration_seconds: int
+    last_watched_at: datetime | None = None
+    finished: bool = False
+
+
+class MovieWatchStateRequest(SchemaModel):
+    state: Literal["watched", "unwatched"]
+
+
+class MovieWatchStateResource(SchemaModel):
+    movie_number: str
+    state: Literal["watched", "unwatched"]
+
+
 class MovieListItemResource(SchemaModel):
     # 影片主键：番号是对外主标识，但统一 action 协议的 resource_ids 收的是整数 id，
     # 所以影片卡片一律带上它，详情页与各列表页都能直接发起资源任务操作。
@@ -81,6 +108,8 @@ class MovieListItemResource(SchemaModel):
     can_play: bool = False
     media_count: int = 0
     media_items: list[MediaSummaryResource] = Field(default_factory=list)
+    # 影片级观看进度摘要；列表服务挂载，未挂载时为 None。
+    watch_progress: MovieWatchProgressResource | None = None
 
     @field_validator("release_date", mode="before")
     @classmethod
@@ -129,6 +158,8 @@ class TagListItemResource(SchemaModel):
 class MovieMediaProgressResource(SchemaModel):
     last_position_seconds: int
     last_watched_at: datetime | None = None
+    # 单条媒体是否看完；影片级已看 = 任一媒体 finished。
+    finished: bool = False
 
 
 class MovieMediaPointResource(SchemaModel):

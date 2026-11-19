@@ -24,6 +24,7 @@ from src.model import (
     PLAYLIST_KIND_CUSTOM,
     PLAYLIST_KIND_FAVORITES,
     PLAYLIST_KIND_RECENTLY_PLAYED,
+    PLAYLIST_KIND_SMART,
     RECENTLY_PLAYED_PLAYLIST_DESCRIPTION,
     RECENTLY_PLAYED_PLAYLIST_NAME,
     SYSTEM_PLAYLIST_KINDS,
@@ -33,6 +34,7 @@ from src.model import (
     PlaylistMovie,
     get_database,
 )
+from src.schema.catalog.movies import MovieWatchStatus, TagMatchMode
 from src.schema.collections.playlists import (
     PlaylistCreateRequest,
     PlaylistMovieBatchAddResponse,
@@ -41,6 +43,7 @@ from src.schema.collections.playlists import (
     PlaylistResolutionOption,
     PlaylistResource,
     PlaylistUpdateRequest,
+    SmartPlaylistFilterResource,
 )
 from src.schema.common.pagination import PageResponse
 from src.schema.common.playlists import PlaylistSummaryResource
@@ -51,6 +54,7 @@ from src.service.catalog.movie_resolution_service import (
     resolution_interval,
     resolution_level_expression,
 )
+from src.service.catalog.movie_watch_service import apply_watch_status_filter
 
 # 系统列表内部展示次序：收藏在前，最近播放在后，自定义列表最后。
 _SYSTEM_KIND_ORDER = (
@@ -200,8 +204,15 @@ class PlaylistService:
 
     @classmethod
     def _require_member_mutable_playlist(cls, playlist_id: int) -> Playlist:
-        """允许自定义列表和收藏增删影片；最近播放仍由系统维护。"""
+        """允许自定义列表和收藏增删影片；最近播放和智能列表不接受手工增删。"""
         playlist = cls._require_playlist(playlist_id)
+        if playlist.kind == PLAYLIST_KIND_SMART:
+            raise ApiError(
+                409,
+                "smart_playlist_membership_read_only",
+                "智能列表的影片由筛选条件自动维护",
+                {"playlist_id": playlist.id},
+            )
         if playlist.kind not in cls.MEMBER_MUTABLE_KINDS:
             raise ApiError(
                 409,
@@ -228,6 +239,46 @@ class PlaylistService:
     @classmethod
     def _playlist_counts(cls, playlist_ids: list[int]) -> dict[int, int]:
         return count_by_owner(PlaylistMovie, PlaylistMovie.playlist, playlist_ids)
+
+    @staticmethod
+    def _smart_filter(playlist: Playlist) -> SmartPlaylistFilterResource:
+        return SmartPlaylistFilterResource.model_validate(playlist.filter_json or {})
+
+    @classmethod
+    def _smart_movie_filters(cls, playlist: Playlist) -> dict:
+        """把保存的筛选快照翻译成影片列表查询参数。
+
+        空标签列表在影片列表语义里表示「不筛标签」，必须传 None；
+        传空列表会被当成「命中 0 个标签」而清空整个列表。
+        """
+        saved = cls._smart_filter(playlist)
+        return {
+            "statuses": saved.statuses or None,
+            "status_match": saved.status_match,
+            "watch_statuses": saved.watch_statuses or None,
+            "watch_match": saved.watch_match,
+            "collection_type": saved.collection_type,
+            "number_source": saved.number_source,
+            "years": saved.years,
+            "resolutions": saved.resolutions or None,
+            "tag_ids": saved.tag_ids or None,
+            "tag_match": saved.tag_match,
+            "media_tag_ids": saved.media_tag_ids or None,
+            "media_tag_match": saved.media_tag_match,
+            "actor_age_min": saved.actor_age_min,
+            "actor_age_max": saved.actor_age_max,
+            "heat_min": saved.heat_min,
+            "heat_max": saved.heat_max,
+            "actor_ids": saved.actor_ids or None,
+            "actor_match": saved.actor_match,
+        }
+
+    @classmethod
+    def _smart_playlist_count(cls, playlist: Playlist) -> int:
+        # 局部导入避免 movie_service → collections → 本模块的循环导入。
+        from src.service.catalog.movie_service import MovieService
+
+        return MovieService.count_movies(**cls._smart_movie_filters(playlist))
 
     @classmethod
     def _get_or_create_recently_played_playlist(cls) -> Playlist:
@@ -260,13 +311,35 @@ class PlaylistService:
         counts = cls._playlist_counts([playlist.id for playlist in playlists])
         resources: list[PlaylistResource] = []
         for playlist in playlists:
+            movie_count = (
+                cls._smart_playlist_count(playlist)
+                if playlist.kind == PLAYLIST_KIND_SMART
+                else counts.get(playlist.id, 0)
+            )
             resources.append(
-                PlaylistResource.from_playlist(playlist, movie_count=counts.get(playlist.id, 0))
+                PlaylistResource.from_playlist(playlist, movie_count=movie_count)
             )
         return resources
 
     @classmethod
     def create_playlist(cls, payload: PlaylistCreateRequest) -> PlaylistResource:
+        is_smart = payload.kind == PLAYLIST_KIND_SMART
+        if is_smart and payload.filter is None:
+            raise ApiError(
+                422,
+                "smart_playlist_filter_required",
+                "智能列表必须提供筛选条件",
+            )
+        if not is_smart and payload.filter is not None:
+            raise ApiError(
+                422,
+                "smart_playlist_filter_not_supported",
+                "普通播放列表不支持筛选条件",
+            )
+        if payload.filter is not None:
+            # 分辨率档位是静态枚举，写入时就校验，避免坏值让列表读取整体 422。
+            for resolution in payload.filter.resolutions:
+                resolution_interval(resolution)
         name = cls._normalize_name(payload.name)
         description = cls._normalize_description(payload.description)
         cls._ensure_name_not_reserved(name)
@@ -274,14 +347,24 @@ class PlaylistService:
         playlist = Playlist.create(
             name=name,
             description=description,
+            kind=payload.kind,
+            filter_json=payload.filter.model_dump() if payload.filter else None,
         )
-        return PlaylistResource.from_playlist(playlist, movie_count=0)
+        movie_count = cls._smart_playlist_count(playlist) if is_smart else 0
+        return PlaylistResource.from_playlist(playlist, movie_count=movie_count)
 
     @classmethod
     def get_playlist(cls, playlist_id: int) -> PlaylistResource:
         playlist = cls._require_playlist(playlist_id)
-        counts = cls._playlist_counts([playlist.id])
-        return PlaylistResource.from_playlist(playlist, movie_count=counts.get(playlist.id, 0))
+        movie_count = (
+            cls._smart_playlist_count(playlist)
+            if playlist.kind == PLAYLIST_KIND_SMART
+            else cls._playlist_counts([playlist.id]).get(playlist.id, 0)
+        )
+        return PlaylistResource.from_playlist(
+            playlist,
+            movie_count=movie_count,
+        )
 
     @classmethod
     def update_playlist(cls, playlist_id: int, payload: PlaylistUpdateRequest) -> PlaylistResource:
@@ -305,10 +388,34 @@ class PlaylistService:
         if "description" in update_data:
             playlist.description = cls._normalize_description(update_data["description"])
 
+        if "filter" in update_data:
+            if playlist.kind != PLAYLIST_KIND_SMART:
+                raise ApiError(
+                    422,
+                    "smart_playlist_filter_not_supported",
+                    "普通播放列表不支持筛选条件",
+                )
+            if payload.filter is None:
+                raise ApiError(
+                    422,
+                    "smart_playlist_filter_required",
+                    "智能列表必须提供筛选条件",
+                )
+            for resolution in payload.filter.resolutions:
+                resolution_interval(resolution)
+            playlist.filter_json = payload.filter.model_dump()
+
         playlist.updated_at = utc_now_for_db()
         playlist.save()
-        counts = cls._playlist_counts([playlist.id])
-        return PlaylistResource.from_playlist(playlist, movie_count=counts.get(playlist.id, 0))
+        movie_count = (
+            cls._smart_playlist_count(playlist)
+            if playlist.kind == PLAYLIST_KIND_SMART
+            else cls._playlist_counts([playlist.id]).get(playlist.id, 0)
+        )
+        return PlaylistResource.from_playlist(
+            playlist,
+            movie_count=movie_count,
+        )
 
     @classmethod
     def delete_playlist(cls, playlist_id: int) -> None:
@@ -324,14 +431,24 @@ class PlaylistService:
         *,
         sort: str | None = None,
         resolution: str | None = None,
+        watch_status: MovieWatchStatus = MovieWatchStatus.ALL,
     ) -> PageResponse[PlaylistMovieListItemResource]:
-        """列出列表内影片，支持排序(热度/码率/入库/发布时间)与分辨率筛选。
+        """列出列表内影片，支持排序(热度/码率/入库/发布时间)、分辨率与观看状态筛选。
 
         不传 ``sort`` 时真实列表按最近触达时间倒序（与旧行为一致）。
         """
         playlist = cls._require_playlist(playlist_id)
         # 先校验分辨率档位，避免非法值到查询层才炸出未预期错误。
         resolution_interval(resolution)
+        if playlist.kind == PLAYLIST_KIND_SMART:
+            return cls._list_smart_playlist_movies(
+                playlist,
+                page,
+                page_size,
+                sort=sort,
+                resolution=resolution,
+                watch_status=watch_status,
+            )
         start = max(page - 1, 0) * page_size
         total_query = (
             PlaylistMovie.select()
@@ -340,6 +457,7 @@ class PlaylistService:
         )
         if resolution is not None:
             total_query = total_query.where(resolution_exists_expression(resolution))
+        total_query = apply_watch_status_filter(total_query, watch_status)
         total = total_query.count()
         can_play_expression = cls._playable_exists_expression().alias("can_play")
         query, _thin_cover_alias = with_movie_card_relations(
@@ -350,6 +468,7 @@ class PlaylistService:
         query = query.switch(PlaylistMovie).where(PlaylistMovie.playlist == playlist)
         if resolution is not None:
             query = query.where(resolution_exists_expression(resolution))
+        query = apply_watch_status_filter(query, watch_status)
         order_by = cls._build_playlist_sort(sort)
         if order_by is None:
             order_by = [PlaylistMovie.updated_at.desc(), PlaylistMovie.id.desc()]
@@ -360,6 +479,57 @@ class PlaylistService:
             # schema 读取的是 Movie 对象，所以把列表关系上的附加信息临时挂回 movie 实例。
             link.movie.playlist_item_updated_at = link.updated_at
             items.append(PlaylistMovieListItemResource.from_attributes_model(link.movie))
+        return PageResponse[PlaylistMovieListItemResource](
+            items=items,
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
+
+    @classmethod
+    def _list_smart_playlist_movies(
+        cls,
+        playlist: Playlist,
+        page: int,
+        page_size: int,
+        *,
+        sort: str | None,
+        resolution: str | None,
+        watch_status: MovieWatchStatus,
+    ) -> PageResponse[PlaylistMovieListItemResource]:
+        """智能列表没有成员表，列表内容由保存的筛选条件实时查询。
+
+        请求里显式传入的排序/分辨率/观看状态优先于保存值，供 API 客户端
+        临时切档；未传时回落到保存值。宿主详情页不暴露这组临时筛选，
+        保存条件由智能列表编辑器维护。
+        """
+        # 局部导入避免 movie_service → collections → 本模块的循环导入。
+        from src.service.catalog.movie_service import MovieService
+
+        saved = cls._smart_filter(playlist)
+        filters = cls._smart_movie_filters(playlist)
+        if resolution is not None:
+            filters["resolutions"] = [resolution]
+        if watch_status != MovieWatchStatus.ALL:
+            filters["watch_statuses"] = [watch_status]
+            filters["watch_match"] = TagMatchMode.OR
+        total = MovieService.count_movies(**filters)
+        start = max(page - 1, 0) * page_size
+        if sort:
+            movie_query = MovieService.movie_list_query(**filters, sort=sort)
+        else:
+            try:
+                movie_query = MovieService.movie_list_query(**filters, sort=saved.sort)
+            except ApiError:
+                # 保存的排序可能因评分维度被删等原因失效，退回默认排序保持列表可用。
+                movie_query = MovieService.movie_list_query(**filters)
+        movies = list(movie_query.offset(start).limit(page_size))
+        attach_movie_list_media(movies)
+        items: list[PlaylistMovieListItemResource] = []
+        for movie in movies:
+            # 智能列表没有关系行，用影片自身更新时间保持接口字段稳定。
+            movie.playlist_item_updated_at = movie.updated_at
+            items.append(PlaylistMovieListItemResource.from_attributes_model(movie))
         return PageResponse[PlaylistMovieListItemResource](
             items=items,
             page=page,

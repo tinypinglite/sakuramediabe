@@ -74,6 +74,7 @@ from src.api.routers.videos.items import router as videos_router
 from src.common.database import ensure_database_ready
 from src.common.logging import configure_logging
 from src.common.perf import slow_log_enabled
+from src.common.runtime_identity import BOOT_ID
 from src.config.config import ensure_runtime_config, settings
 
 
@@ -111,9 +112,10 @@ def create_app() -> FastAPI:
         app.add_middleware(SlowRequestLoggingMiddleware)
 
     # 容器探活：免鉴权、不查库，供部署侧 healthcheck 使用。
+    # boot_id 每次进程启动变化，前端可据此确认重启真正完成。
     @app.get("/healthz", include_in_schema=False)
     def healthz():
-        return {"status": "ok"}
+        return {"status": "ok", "boot_id": BOOT_ID}
 
     app.include_router(actors_router)
     app.include_router(movies_router)

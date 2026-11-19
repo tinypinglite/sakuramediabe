@@ -20,6 +20,7 @@ from fastapi import APIRouter, Body, Depends, File, Form, Request, UploadFile
 
 from src.api.exception.errors import ApiError
 from src.api.routers.deps import db_deps, get_current_user
+from src.common.runtime_identity import BOOT_ID
 from src.config.config import load_persisted_settings
 from src.i18n import translate
 from src.i18n.text import resolve_text
@@ -157,7 +158,7 @@ def apply_changes():
             f"无法连接服务管理器: {exc}",
         ) from exc
 
-    return {"status": "restarting", "processes": ["api", "aps"]}
+    return {"status": "restarting", "processes": ["api", "aps"], "boot_id": BOOT_ID}
 
 
 def _binding_resource() -> PluginBindingResource:

@@ -29,6 +29,9 @@ from src.schema.catalog.movies import (
     MovieSeriesListRequest,
     MovieSubscriptionBatchRequest,
     MovieSubscriptionBatchResponse,
+    MovieWatchStateRequest,
+    MovieWatchStateResource,
+    MovieWatchStatus,
     SimilarMovieListItemResource,
     TagMatchMode,
 )
@@ -40,6 +43,7 @@ from src.service.catalog import (
     MovieMetadataRefreshService,
     MovieService,
     MovieSubtitleService,
+    MovieWatchService,
 )
 from src.service.discovery import MovieRecommendationService
 
@@ -61,6 +65,7 @@ def list_movies(
     media_tag_match: TagMatchMode = Query(default=TagMatchMode.OR),
     year: str | None = Query(default=None),
     status: MovieListStatus = MovieListStatus.ALL,
+    watch_status: MovieWatchStatus = MovieWatchStatus.ALL,
     collection_type: MovieCollectionType = MovieCollectionType.ALL,
     number_source: MovieNumberSource = MovieNumberSource.ALL,
     sort: str | None = Query(default=None),
@@ -87,6 +92,7 @@ def list_movies(
         media_tag_match=media_tag_match,
         years=parse_csv_positive_ints(year, "year", error_code="invalid_movie_filter"),
         status=status,
+        watch_status=watch_status,
         collection_type=collection_type,
         number_source=number_source,
         sort=sort,
@@ -143,6 +149,11 @@ def parse_movie_number(payload: MovieNumberParseRequest):
 @router.get("/{movie_number}/collection-status", response_model=MovieCollectionStatusResource)
 def get_movie_collection_status(movie_number: str):
     return MovieService.get_movie_collection_status(movie_number)
+
+
+@router.put("/{movie_number}/watch-state", response_model=MovieWatchStateResource)
+def set_movie_watch_state(movie_number: str, payload: MovieWatchStateRequest):
+    return MovieWatchService.set_watch_state(movie_number, payload.state)
 
 
 @router.patch("/collection-type", response_model=MovieCollectionMarkResponse)

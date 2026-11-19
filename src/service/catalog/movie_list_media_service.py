@@ -4,6 +4,7 @@ from src.model.catalog.movies import Movie
 
 
 def attach_movie_list_media(movies: Sequence[Movie]) -> None:
+    from src.service.catalog.movie_watch_service import attach_watch_progress
     from src.service.playback.media_summary_service import list_movie_media_summaries
 
     summaries = list_movie_media_summaries([movie.movie_number for movie in movies])
@@ -12,3 +13,4 @@ def attach_movie_list_media(movies: Sequence[Movie]) -> None:
         movie.media_items = summaries.get(movie.movie_number, [])
         movie.media_count = len(movie.media_items)
         movie.can_play = any(media.valid for media in movie.media_items)
+    attach_watch_progress(movies)
