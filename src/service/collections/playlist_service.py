@@ -155,7 +155,6 @@ class PlaylistService:
         )
 
     @staticmethod
-    @staticmethod
     def _normalize_name(name: str) -> str:
         normalized = name.strip()
         if not normalized:

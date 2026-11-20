@@ -78,11 +78,6 @@ def watch_status_expression(status: MovieWatchStatus):
     return None
 
 
-def apply_watch_status_filter(query, status: MovieWatchStatus):
-    expression = watch_status_expression(status)
-    return query if expression is None else query.where(expression)
-
-
 def _latest_progress_rows(movie_numbers: set[str]) -> list[dict]:
     return list(
         Media.select(

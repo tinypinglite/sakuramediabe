@@ -69,8 +69,10 @@ class TagNameNormalizeService:
                 return "merged"
 
             try:
-                tag.name = target_name
-                tag.save(only=[Tag.name])
+                # 嵌套 atomic 会建 savepoint；唯一冲突只回滚改名，外层事务仍可继续合并。
+                with get_database().atomic():
+                    tag.name = target_name
+                    tag.save(only=[Tag.name])
                 return "renamed"
             except IntegrityError:
                 target_tag = Tag.get(Tag.name == target_name)
