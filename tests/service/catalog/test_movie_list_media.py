@@ -154,6 +154,46 @@ def test_latest_movies_total_and_items_exclude_blacklisted_movies(test_db):
     assert [item.movie_number for item in response.items] == ["LATEST-VISIBLE"]
 
 
+def test_subscribed_actor_latest_filters_and_orders_movies(test_db):
+    library = MediaLibrary.create(name="Subscribed latest", provider_key="not-installed")
+    subscribed = Actor.create(name="Subscribed", is_subscribed=True)
+    unsubscribed = Actor.create(name="Unsubscribed", is_subscribed=False)
+    older = Movie.create(
+        movie_number="SUBSCRIBED-OLD",
+        title="Older",
+        release_date=datetime(2024, 1, 1),
+    )
+    newer = Movie.create(
+        movie_number="SUBSCRIBED-NEW",
+        title="Newer",
+        release_date=datetime(2025, 1, 1),
+    )
+    collection = Movie.create(
+        movie_number="SUBSCRIBED-COLLECTION",
+        title="Collection",
+        release_date=datetime(2026, 1, 1),
+        is_collection=True,
+    )
+    hidden = Movie.create(
+        movie_number="UNSUBSCRIBED-ACTOR",
+        title="Hidden",
+        release_date=datetime(2026, 2, 1),
+    )
+    for movie in (older, newer, collection):
+        MovieActor.create(movie=movie, actor=subscribed)
+    MovieActor.create(movie=hidden, actor=unsubscribed)
+    for movie in (older, newer, collection, hidden):
+        Media.create(movie=movie, library=library, file_name=f"{movie.movie_number}.mp4")
+
+    response = MovieService.list_subscribed_actor_latest_movies()
+
+    assert response.total == 2
+    assert [item.movie_number for item in response.items] == [
+        "SUBSCRIBED-NEW",
+        "SUBSCRIBED-OLD",
+    ]
+
+
 def test_rankings_reuse_media_query(media_movies, monkeypatch):
     data = media_movies
     monkeypatch.setitem(

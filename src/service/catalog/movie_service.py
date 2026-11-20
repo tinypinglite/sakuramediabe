@@ -44,7 +44,6 @@ from src.model import (
     MovieActor,
     MoviePlotImage,
     MovieRating,
-    MovieSeries,
     MovieTag,
     RatingDimension,
     Tag,
@@ -714,21 +713,43 @@ class MovieService:
         )
 
     @classmethod
-    def _subscribed_actor_latest_movies_query(cls):
-        """列出至少关联一位已订阅演员的影片，按上映日期倒序。"""
+    def _subscribed_actor_latest_movies_query(cls, *, start: int, page_size: int):
+        """先取按上映日期分页的影片 ID，再补齐卡片关系。"""
         can_play_expression = cls._playable_exists_expression().alias("can_play")
-        query, thin_cover_alias = with_movie_card_relations(
-            Movie.select(Movie, can_play_expression)
-            .join(MovieActor, JOIN.INNER, on=(MovieActor.movie == Movie.id))
-            .join(Actor, JOIN.INNER, on=(MovieActor.actor == Actor.id))
-            .switch(Movie)
+        subscribed_actor_exists = fn.EXISTS(
+            MovieActor.select(MovieActor.id)
+            .join(Actor, on=(MovieActor.actor == Actor.id))
+            .where(MovieActor.movie == Movie.id, Actor.is_subscribed == True)
         )
-        return (
-            query
-            # 订阅演员最新影片接口默认排除合集番号。
-            .where(Actor.is_subscribed == True, Movie.is_collection == False)
-            .group_by(Movie.id, Image.id, thin_cover_alias.id, MovieSeries.id)
-            .order_by(Movie.release_date.is_null(), Movie.release_date.desc(), Movie.id.desc())
+        latest_movies = (
+            Movie.select(
+                Movie.id.alias("movie_id"),
+                Movie.release_date.alias("release_date"),
+            )
+            .where(Movie.is_collection == False, subscribed_actor_exists)
+            .order_by(
+                Movie.release_date.is_null(),
+                Movie.release_date.desc(),
+                Movie.id.desc(),
+            )
+            .offset(start)
+            .limit(page_size)
+            .alias("latest_subscribed_actor_movies")
+        )
+        query, _thin_cover_alias = with_movie_card_relations(
+            Movie.select(
+                Movie,
+                can_play_expression,
+                latest_movies.c.release_date,
+            ).join(
+                latest_movies,
+                on=(Movie.id == latest_movies.c.movie_id),
+            )
+        )
+        return query.order_by(
+            latest_movies.c.release_date.is_null(),
+            latest_movies.c.release_date.desc(),
+            Movie.id.desc(),
         )
 
     @staticmethod
@@ -1189,7 +1210,10 @@ class MovieService:
         start = max(page - 1, 0) * page_size
         total = MovieService._subscribed_actor_movies_query().count()
         movies = list(
-            MovieService._subscribed_actor_latest_movies_query().offset(start).limit(page_size)
+            MovieService._subscribed_actor_latest_movies_query(
+                start=start,
+                page_size=page_size,
+            )
         )
         attach_movie_list_media(movies)
         return PageResponse[MovieListItemResource](
