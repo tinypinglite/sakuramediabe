@@ -23,6 +23,15 @@ def _patch_command_database_prepare(monkeypatch):
     monkeypatch.setattr("src.start.commands._ensure_database_ready", lambda: None)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_task_log_dir(monkeypatch, tmp_path):
+    # 本地开发机没有容器里的 /data/logs，统一把任务日志写到 pytest 临时目录。
+    monkeypatch.setattr(
+        "src.scheduler.logging.settings.scheduler.log_dir",
+        str(tmp_path / "logs"),
+    )
+
+
 def test_aps_command_invokes_scheduler_entrypoint(monkeypatch):
     called = {"aps": 0}
 
