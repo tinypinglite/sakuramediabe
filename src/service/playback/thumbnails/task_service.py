@@ -41,6 +41,13 @@ class ThumbnailGenerationOutcome:
     error_code: str | None = None
 
 
+@dataclass(frozen=True)
+class ThumbnailMediaStateCounts:
+    pending_media: int
+    retry_wait_media: int
+    terminal_failed_media: int
+
+
 class MediaThumbnailTaskService:
     """Generate one complete thumbnail set per Media through its provider."""
 
@@ -104,27 +111,57 @@ class MediaThumbnailTaskService:
         ]
 
     @classmethod
-    def _count_state(cls, state: str) -> int:
-        return (
-            Media.select(Media.id)
-            .where(
-                cls._missing_thumbnail_condition(),
-                Media.thumbnail_generation_state == state,
+    def count_media_states(cls) -> ThumbnailMediaStateCounts:
+        """一次 anti-join 统计三种缩略图待处理状态。"""
+        now = utc_now_for_db()
+        pending_condition = (Media.valid == True) & (
+            Media.thumbnail_generation_state.in_(
+                (Media.THUMBNAIL_STATE_PENDING, Media.THUMBNAIL_STATE_SUCCEEDED)
             )
-            .count()
+            | (
+                (Media.thumbnail_generation_state == Media.THUMBNAIL_STATE_RETRY_WAIT)
+                & (
+                    Media.thumbnail_next_retry_at.is_null(True)
+                    | (Media.thumbnail_next_retry_at <= now)
+                )
+            )
+        )
+        row = (
+            Media.select(
+                fn.COUNT(Media.id)
+                .filter(pending_condition)
+                .alias("pending_media"),
+                fn.COUNT(Media.id)
+                .filter(
+                    Media.thumbnail_generation_state
+                    == Media.THUMBNAIL_STATE_RETRY_WAIT
+                )
+                .alias("retry_wait_media"),
+                fn.COUNT(Media.id)
+                .filter(Media.thumbnail_generation_state == Media.THUMBNAIL_STATE_TERMINAL)
+                .alias("terminal_failed_media"),
+            )
+            .where(cls._missing_thumbnail_condition())
+            .dicts()
+            .get()
+        )
+        return ThumbnailMediaStateCounts(
+            pending_media=int(row["pending_media"] or 0),
+            retry_wait_media=int(row["retry_wait_media"] or 0),
+            terminal_failed_media=int(row["terminal_failed_media"] or 0),
         )
 
     @classmethod
     def count_pending_media(cls) -> int:
-        return cls._candidate_query().count()
+        return cls.count_media_states().pending_media
 
     @classmethod
     def count_retry_wait_media(cls) -> int:
-        return cls._count_state(Media.THUMBNAIL_STATE_RETRY_WAIT)
+        return cls.count_media_states().retry_wait_media
 
     @classmethod
     def count_terminal_failed_media(cls) -> int:
-        return cls._count_state(Media.THUMBNAIL_STATE_TERMINAL)
+        return cls.count_media_states().terminal_failed_media
 
     @classmethod
     def reset_terminal_media(cls, media_ids: list[int]) -> int:

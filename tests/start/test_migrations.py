@@ -60,6 +60,7 @@ from src.start.migrations.runner import (
     MOVIE_INTERACTION_SORT_INDEXES_MIGRATION_NAME,
     MOVIE_MEDIA_REPLACEMENT_MIGRATION_NAME,
     MOVIE_RATINGS_MIGRATION_NAME,
+    MOVIE_SUBSCRIBED_ACTIVE_INDEX_MIGRATION_NAME,
     MULTI_VERSION_PROCESSED_MIGRATION_NAME,
     PLAYLIST_SMART_FILTER_MIGRATION_NAME,
     PLUGIN_COLLECTION_OWNERSHIP_MIGRATION_NAME,
@@ -185,6 +186,7 @@ def test_current_migrations_are_discoverable_in_order():
         REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
         REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
         PLAYLIST_SMART_FILTER_MIGRATION_NAME,
+        MOVIE_SUBSCRIBED_ACTIVE_INDEX_MIGRATION_NAME,
     ]
 
 
@@ -457,6 +459,10 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
             name=PLAYLIST_SMART_FILTER_MIGRATION_NAME,
             applied=True,
         ),
+        MigrationExecution(
+            name=MOVIE_SUBSCRIBED_ACTIVE_INDEX_MIGRATION_NAME,
+            applied=True,
+        ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -508,6 +514,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         REMOVE_JAVDB_IDENTITY_MIGRATION_NAME,
         REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
         PLAYLIST_SMART_FILTER_MIGRATION_NAME,
+        MOVIE_SUBSCRIBED_ACTIVE_INDEX_MIGRATION_NAME,
     ]
 
 
@@ -896,7 +903,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 48
+    assert summary.applied_count == 49
     assert "interaction_synced_at" not in _column_names(clean_db, "movie")
     media_state = clean_db.execute_sql(
         """
@@ -1063,6 +1070,26 @@ def test_image_origin_pattern_index_migration_creates_index(clean_db):
     assert "image_origin_pattern" in {
         index.name for index in clean_db.get_indexes("image")
     }
+
+
+def test_movie_subscribed_active_index_migration_creates_partial_index(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    clean_db.execute_sql("DROP INDEX IF EXISTS movie_subscribed_active")
+
+    _load_migration_module(
+        Path(f"{MOVIE_SUBSCRIBED_ACTIVE_INDEX_MIGRATION_NAME}.py")
+    ).migrate(clean_db)
+
+    assert "movie_subscribed_active" in {
+        index.name for index in clean_db.get_indexes("movie")
+    }
+    index_definition = clean_db.execute_sql(
+        "SELECT indexdef FROM pg_indexes WHERE indexname = 'movie_subscribed_active'"
+    ).fetchone()[0]
+    assert "WHERE" in index_definition
+    assert "is_subscribed" in index_definition
+    assert "NOT is_blacklisted" in index_definition
 
 
 def test_movie_interaction_sort_indexes_migration_creates_indexes(clean_db):

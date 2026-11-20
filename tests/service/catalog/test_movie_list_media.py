@@ -137,6 +137,23 @@ def test_all_catalog_lists_return_consistent_media(media_movies):
     assert playable.items[0].media_count == 2
 
 
+def test_latest_movies_total_and_items_exclude_blacklisted_movies(test_db):
+    library = MediaLibrary.create(name="Latest", provider_key="not-installed")
+    visible = Movie.create(movie_number="LATEST-VISIBLE", title="Visible")
+    hidden = Movie.create(
+        movie_number="LATEST-HIDDEN",
+        title="Hidden",
+        is_blacklisted=True,
+    )
+    Media.create(movie=visible, library=library, file_name="visible.mp4")
+    Media.create(movie=hidden, library=library, file_name="hidden.mp4")
+
+    response = MovieService.list_latest_movies()
+
+    assert response.total == 1
+    assert [item.movie_number for item in response.items] == ["LATEST-VISIBLE"]
+
+
 def test_rankings_reuse_media_query(media_movies, monkeypatch):
     data = media_movies
     monkeypatch.setitem(

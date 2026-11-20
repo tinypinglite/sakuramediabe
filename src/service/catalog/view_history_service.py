@@ -125,10 +125,15 @@ class ViewHistoryService:
             for actor in Actor.select().where(Actor.id.in_(actor_ids))
         }
         canonical_ids = set(canonical_by_source.values())
-        # 演员基础查询自带头像 join 与影片数，直接复用，避免逐行统计。
+        canonical_actors = list(
+            ActorService.actor_query(include_movie_count=False).where(
+                Actor.id.in_(canonical_ids)
+            )
+        )
+        ActorService.attach_movie_counts(canonical_actors)
         resources = {
             actor.id: ActorResource.from_actor(actor)
-            for actor in ActorService.actor_query().where(Actor.id.in_(canonical_ids))
+            for actor in canonical_actors
         }
         return {
             source_id: resources[canonical_id]

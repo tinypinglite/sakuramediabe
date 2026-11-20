@@ -32,7 +32,6 @@ class StatusThumbnailSummary(SchemaModel):
     pending_media: int
     retry_wait_media: int
     terminal_failed_media: int
-    total: int
 
 
 class StatusResource(SchemaModel):

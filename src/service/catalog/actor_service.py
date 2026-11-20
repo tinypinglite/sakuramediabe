@@ -222,14 +222,16 @@ class ActorService:
         )
 
     @staticmethod
-    def actor_query():
+    def actor_query(*, include_movie_count: bool = True):
         """演员基础查询统一补齐头像，避免调用方重复 join。"""
-        movie_count_expression = ActorService._movie_count_expression().alias(
-            "movie_count"
-        )
         profile_image_override = Image.alias()
+        fields = [Actor, Image, profile_image_override]
+        if include_movie_count:
+            fields.append(
+                ActorService._movie_count_expression().alias("movie_count")
+            )
         return (
-            Actor.select(Actor, Image, profile_image_override, movie_count_expression)
+            Actor.select(*fields)
             .join(Image, JOIN.LEFT_OUTER, on=(Actor.profile_image == Image.id))
             .switch(Actor)
             .join(
@@ -239,6 +241,24 @@ class ActorService:
                 attr="profile_image_override",
             )
         )
+
+    @staticmethod
+    def attach_movie_counts(actors: Sequence[Actor]) -> None:
+        """为一批演员批量补齐影片数量，避免逐行相关子查询。"""
+        actor_ids = [actor.id for actor in actors if actor.id is not None]
+        if not actor_ids:
+            return
+        counts = {
+            actor_id: int(total)
+            for actor_id, total in (
+                MovieActor.select(MovieActor.actor, fn.COUNT(MovieActor.id))
+                .where(MovieActor.actor.in_(actor_ids))
+                .group_by(MovieActor.actor)
+                .tuples()
+            )
+        }
+        for actor in actors:
+            actor.movie_count = counts.get(actor.id, 0)
 
     @classmethod
     def _actor_scope_conditions(

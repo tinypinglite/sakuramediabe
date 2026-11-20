@@ -264,6 +264,15 @@ Movie.add_index(
         name="movie_heat_sort",
     )
 )
+# 订阅影片总数是高频状态摘要；部分索引只覆盖有效订阅，避免计数回表。
+Movie.add_index(
+    peewee.ModelIndex(
+        Movie,
+        (Movie.id,),
+        name="movie_subscribed_active",
+        where=(Movie.is_subscribed == True) & (Movie.is_blacklisted == False),
+    )
+)
 
 
 class MovieActor(BaseModel):

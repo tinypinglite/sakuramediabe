@@ -89,6 +89,9 @@ REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME = (
 PLAYLIST_SMART_FILTER_MIGRATION_NAME = (
     "20261120_01_add_playlist_smart_filter"
 )
+MOVIE_SUBSCRIBED_ACTIVE_INDEX_MIGRATION_NAME = (
+    "20261121_01_add_movie_subscribed_active_index"
+)
 
 
 @dataclass(frozen=True)

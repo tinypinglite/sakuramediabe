@@ -685,20 +685,32 @@ class MovieService:
         return query.order_by(*order_by)
 
     @classmethod
-    def _latest_movies_query(cls):
-        """按最近导入媒体时间倒序列出影片，而不是按影片自身创建时间。"""
+    def _latest_movies_query(cls, *, start: int, page_size: int):
+        """先按最近媒体入库时间取分页 ID，再补齐卡片关系。"""
         can_play_expression = cls._playable_exists_expression().alias("can_play")
         latest_media_created_at = fn.MAX(Media.created_at)
-        query, thin_cover_alias = with_movie_card_relations(
-            Movie.select(Movie, can_play_expression)
+        latest_movies = (
+            Movie.select(
+                Movie.id.alias("movie_id"),
+                latest_media_created_at.alias("latest_at"),
+            )
             .join(Media)
-            .switch(Movie)
             .where(Movie.is_blacklisted == False)
-        )
-        return (
-            query
-            .group_by(Movie.id, Image.id, thin_cover_alias.id, MovieSeries.id)
+            .group_by(Movie.id)
             .order_by(latest_media_created_at.desc(), Movie.id.desc())
+            .offset(start)
+            .limit(page_size)
+            .alias("latest_movies")
+        )
+        query, _thin_cover_alias = with_movie_card_relations(
+            Movie.select(Movie, can_play_expression, latest_movies.c.latest_at).join(
+                latest_movies,
+                on=(Movie.id == latest_movies.c.movie_id),
+            )
+        )
+        return query.order_by(
+            latest_movies.c.latest_at.desc(),
+            Movie.id.desc(),
         )
 
     @classmethod
@@ -1151,8 +1163,16 @@ class MovieService:
         page_size: int = 20,
     ) -> PageResponse[MovieListItemResource]:
         start = max(page - 1, 0) * page_size
-        total = Movie.select(Movie.id).join(Media).group_by(Movie.id).count()
-        movies = list(MovieService._latest_movies_query().offset(start).limit(page_size))
+        total = (
+            Movie.select(Movie.id)
+            .join(Media)
+            .where(Movie.is_blacklisted == False)
+            .group_by(Movie.id)
+            .count()
+        )
+        movies = list(
+            MovieService._latest_movies_query(start=start, page_size=page_size)
+        )
         attach_movie_list_media(movies)
         return PageResponse[MovieListItemResource](
             items=MovieListItemResource.from_items(movies),

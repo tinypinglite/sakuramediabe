@@ -3,16 +3,18 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.common.runtime_time import runtime_now
+from src.common.runtime_time import runtime_now, utc_now_for_db
 from src.model import (
     PLAYLIST_KIND_RECENTLY_PLAYED,
     Actor,
     BackgroundTaskRun,
     DownloadClient,
     DownloadTask,
+    Image,
     Media,
     MediaLibrary,
     MediaProgress,
+    MediaThumbnail,
     Movie,
     Playlist,
     PlaylistMovie,
@@ -95,7 +97,6 @@ def test_status_endpoint_returns_zero_summary_when_library_is_empty(client, acco
             "pending_media": 0,
             "retry_wait_media": 0,
             "terminal_failed_media": 0,
-            "total": 0,
         },
     }
 
@@ -203,8 +204,66 @@ def test_status_endpoint_returns_aggregated_summary(client, account_user, monkey
             "pending_media": 3,
             "retry_wait_media": 0,
             "terminal_failed_media": 0,
-            "total": 0,
         },
+    }
+
+
+def test_status_thumbnail_counts_cover_pending_retry_and_terminal(
+    client, account_user
+):
+    token = _login(client, username=account_user.username)
+    movie = _create_movie("THUMB-001")
+    library = MediaLibrary.create(
+        name="Thumbnail status",
+        provider_key="test",
+        provider_config={},
+    )
+    now = utc_now_for_db()
+    Media.create(
+        movie=movie,
+        file_name="pending.mp4",
+        library=library,
+        thumbnail_generation_state=Media.THUMBNAIL_STATE_PENDING,
+    )
+    Media.create(
+        movie=movie,
+        file_name="retry-future.mp4",
+        library=library,
+        thumbnail_generation_state=Media.THUMBNAIL_STATE_RETRY_WAIT,
+        thumbnail_next_retry_at=now + timedelta(days=1),
+    )
+    Media.create(
+        movie=movie,
+        file_name="retry-due.mp4",
+        library=library,
+        thumbnail_generation_state=Media.THUMBNAIL_STATE_RETRY_WAIT,
+        thumbnail_next_retry_at=now - timedelta(days=1),
+    )
+    Media.create(
+        movie=movie,
+        file_name="terminal.mp4",
+        library=library,
+        thumbnail_generation_state=Media.THUMBNAIL_STATE_TERMINAL,
+    )
+    succeeded = Media.create(
+        movie=movie,
+        file_name="succeeded.mp4",
+        library=library,
+        thumbnail_generation_state=Media.THUMBNAIL_STATE_SUCCEEDED,
+    )
+    MediaThumbnail.create(
+        media=succeeded,
+        image=Image.create(origin="thumbnails/succeeded.webp"),
+        offset=0,
+    )
+
+    response = client.get("/status", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    assert response.json()["thumbnails"] == {
+        "pending_media": 2,
+        "retry_wait_media": 2,
+        "terminal_failed_media": 1,
     }
 
 

@@ -127,11 +127,7 @@ class StatusService:
 
         media_library_total = MediaLibrary.select().count()
 
-        # 待生成缩略图的媒体文件数复用缩略图服务的判定口径；缩略图文件数即 MediaThumbnail 行数（与 Media 一对多）。
-        pending_thumbnail_media = MediaThumbnailService.count_pending_media()
-        retry_wait_thumbnail_media = MediaThumbnailService.count_retry_wait_media()
-        terminal_thumbnail_media = MediaThumbnailService.count_terminal_failed_media()
-        thumbnail_total = MediaThumbnail.select().count()
+        thumbnail_counts = MediaThumbnailService.count_media_states()
 
         return StatusResource(
             backend_version=cls._resolve_backend_version(),
@@ -150,10 +146,9 @@ class StatusService:
             ),
             media_libraries=StatusMediaLibrarySummary(total=int(media_library_total)),
             thumbnails=StatusThumbnailSummary(
-                pending_media=int(pending_thumbnail_media),
-                retry_wait_media=int(retry_wait_thumbnail_media),
-                terminal_failed_media=int(terminal_thumbnail_media),
-                total=int(thumbnail_total),
+                pending_media=thumbnail_counts.pending_media,
+                retry_wait_media=thumbnail_counts.retry_wait_media,
+                terminal_failed_media=thumbnail_counts.terminal_failed_media,
             ),
         )
 

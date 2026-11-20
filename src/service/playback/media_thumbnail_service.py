@@ -7,6 +7,7 @@ from src.service.playback.thumbnails.task_service import MediaThumbnailTaskServi
 class MediaThumbnailService:
     TASK_KEY = MediaThumbnailTaskService.TASK_KEY
 
+    count_media_states = MediaThumbnailTaskService.count_media_states
     count_pending_media = MediaThumbnailTaskService.count_pending_media
     count_retry_wait_media = MediaThumbnailTaskService.count_retry_wait_media
     count_terminal_failed_media = MediaThumbnailTaskService.count_terminal_failed_media
