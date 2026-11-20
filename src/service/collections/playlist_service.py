@@ -30,11 +30,12 @@ from src.model import (
     SYSTEM_PLAYLIST_KINDS,
     Media,
     Movie,
+    MovieRating,
     Playlist,
     PlaylistMovie,
     get_database,
 )
-from src.schema.catalog.movies import MovieWatchStatus, TagMatchMode
+from src.schema.catalog.movies import MovieListStatus, MovieWatchStatus, TagMatchMode
 from src.schema.collections.playlists import (
     PlaylistCreateRequest,
     PlaylistMovieBatchAddResponse,
@@ -50,11 +51,9 @@ from src.schema.common.playlists import PlaylistSummaryResource
 from src.service.catalog.movie_list_media_service import attach_movie_list_media
 from src.service.catalog.movie_resolution_service import (
     RESOLUTION_LEVELS,
-    resolution_exists_expression,
     resolution_interval,
     resolution_level_expression,
 )
-from src.service.catalog.movie_watch_service import apply_watch_status_filter
 
 # 系统列表内部展示次序：收藏在前，最近播放在后，自定义列表最后。
 _SYSTEM_KIND_ORDER = (
@@ -63,7 +62,7 @@ _SYSTEM_KIND_ORDER = (
 )
 
 # 允许空值、排序时统一垫后的字段（added_at/bitrate 走子查询无媒体场景由 COALESCE 兜底，不参与垫后）。
-PLAYLIST_NULLABLE_SORT_FIELDS = {"release_date"}
+PLAYLIST_NULLABLE_SORT_FIELDS = {"release_date", "subscribed_at", "my_score"}
 
 
 class PlaylistService:
@@ -108,19 +107,26 @@ class PlaylistService:
             Media.valid == True,
         )
 
+    @staticmethod
+    def _rating_score_subquery():
+        """查询影片个人评分总分，供播放列表统一排序使用。"""
+        return MovieRating.select(MovieRating.total_score).where(
+            MovieRating.movie == Movie.id
+        )
+
     @classmethod
     def _build_playlist_sort(cls, sort: str | None):
         """解析 ``field:direction`` 播放列表排序，并补上稳定的次级排序；无效值抛 422。
 
-        bitrate / added_at 用相关子查询（影片粒度），heat / release_date 取 Movie 列。
+        bitrate / added_at / my_score 用相关子查询（影片粒度），其余取 Movie 列。
         """
         def _subquery_order(field_name: str, direction: str) -> list:
-            # added_at / bitrate 均以影片粒度相关子查询为排序列。
-            sort_field = (
-                cls._latest_media_created_at_subquery()
-                if field_name == "added_at"
-                else cls._max_bitrate_subquery()
-            )
+            if field_name == "added_at":
+                sort_field = cls._latest_media_created_at_subquery()
+            elif field_name == "bitrate":
+                sort_field = cls._max_bitrate_subquery()
+            else:
+                sort_field = cls._rating_score_subquery()
             return build_ordered_expressions(
                 sort_field, direction,
                 nullable=field_name in PLAYLIST_NULLABLE_SORT_FIELDS,
@@ -134,12 +140,18 @@ class PlaylistService:
                 "release_date": Movie.release_date,
                 "added_at": Movie.id,
                 "bitrate": Movie.id,
+                "subscribed_at": Movie.subscribed_at,
+                "my_score": Movie.id,
             },
             error_code="invalid_playlist_filter",
             nullable_fields=PLAYLIST_NULLABLE_SORT_FIELDS,
             tie_breaker=Movie.id,
             default=None,
-            extra_sort_builders={"added_at": _subquery_order, "bitrate": _subquery_order},
+            extra_sort_builders={
+                "added_at": _subquery_order,
+                "bitrate": _subquery_order,
+                "my_score": _subquery_order,
+            },
         )
 
     @staticmethod
@@ -422,6 +434,62 @@ class PlaylistService:
         playlist = cls._require_custom_playlist(playlist_id)
         playlist.delete_instance(recursive=True)
 
+    @staticmethod
+    def _temporary_movie_filters(
+        *,
+        statuses: list[MovieListStatus] | None,
+        status_match: TagMatchMode | None,
+        watch_statuses: list[MovieWatchStatus] | None,
+        watch_match: TagMatchMode | None,
+        years: list[int] | None,
+        resolutions: list[str] | None,
+        tag_ids: list[int] | None,
+        tag_match: TagMatchMode | None,
+        media_tag_ids: list[int] | None,
+        media_tag_match: TagMatchMode | None,
+    ) -> dict:
+        """把详情页临时筛选转成影片查询参数。
+
+        None 表示沿用智能列表保存值；空列表/空标签表示临时清空该维度。
+        标签与媒体标签的空列表要转成 None，避免被影片查询解释成「命中 0 个标签」。
+        """
+        filters: dict = {}
+        if statuses is not None:
+            filters["statuses"] = statuses
+        if status_match is not None:
+            filters["status_match"] = status_match
+        if watch_statuses is not None:
+            filters["watch_statuses"] = watch_statuses
+        if watch_match is not None:
+            filters["watch_match"] = watch_match
+        if years is not None:
+            filters["years"] = years
+        if resolutions is not None:
+            filters["resolutions"] = resolutions
+        if tag_ids is not None:
+            filters["tag_ids"] = tag_ids or None
+        if tag_match is not None:
+            filters["tag_match"] = tag_match
+        if media_tag_ids is not None:
+            filters["media_tag_ids"] = media_tag_ids or None
+        if media_tag_match is not None:
+            filters["media_tag_match"] = media_tag_match
+        return filters
+
+    @staticmethod
+    def _has_active_movie_filters(filters: dict) -> bool:
+        return any(
+            bool(filters.get(key))
+            for key in (
+                "statuses",
+                "watch_statuses",
+                "years",
+                "resolutions",
+                "tag_ids",
+                "media_tag_ids",
+            )
+        )
+
     @classmethod
     def list_playlist_movies(
         cls,
@@ -432,32 +500,78 @@ class PlaylistService:
         sort: str | None = None,
         resolution: str | None = None,
         watch_status: MovieWatchStatus = MovieWatchStatus.ALL,
+        statuses: list[MovieListStatus] | None = None,
+        status_match: TagMatchMode | None = None,
+        watch_statuses: list[MovieWatchStatus] | None = None,
+        watch_match: TagMatchMode | None = None,
+        years: list[int] | None = None,
+        resolutions: list[str] | None = None,
+        tag_ids: list[int] | None = None,
+        tag_match: TagMatchMode | None = None,
+        media_tag_ids: list[int] | None = None,
+        media_tag_match: TagMatchMode | None = None,
     ) -> PageResponse[PlaylistMovieListItemResource]:
-        """列出列表内影片，支持排序(热度/码率/入库/发布时间)、分辨率与观看状态筛选。
+        """列出列表内影片，支持完整的详情页临时筛选与统一排序。
 
-        不传 ``sort`` 时真实列表按最近触达时间倒序（与旧行为一致）。
+        智能列表以保存条件为基座，临时参数按维度覆盖；普通播放列表直接应用
+        临时参数。不传 ``sort`` 时智能列表使用保存排序，普通列表按最近触达倒序。
         """
         playlist = cls._require_playlist(playlist_id)
-        # 先校验分辨率档位，避免非法值到查询层才炸出未预期错误。
-        resolution_interval(resolution)
+
+        effective_resolutions = (
+            resolutions
+            if resolutions is not None
+            else ([resolution] if resolution is not None else None)
+        )
+        effective_watch_statuses = (
+            watch_statuses
+            if watch_statuses is not None
+            else (
+                [watch_status]
+                if watch_status is not None and watch_status != MovieWatchStatus.ALL
+                else None
+            )
+        )
+        for value in effective_resolutions or []:
+            resolution_interval(value)
+
+        temporary_filters = cls._temporary_movie_filters(
+            statuses=statuses,
+            status_match=status_match,
+            watch_statuses=effective_watch_statuses,
+            watch_match=watch_match,
+            years=years,
+            resolutions=effective_resolutions,
+            tag_ids=tag_ids,
+            tag_match=tag_match,
+            media_tag_ids=media_tag_ids,
+            media_tag_match=media_tag_match,
+        )
+
         if playlist.kind == PLAYLIST_KIND_SMART:
             return cls._list_smart_playlist_movies(
                 playlist,
                 page,
                 page_size,
                 sort=sort,
-                resolution=resolution,
-                watch_status=watch_status,
+                temporary_filters=temporary_filters,
             )
         start = max(page - 1, 0) * page_size
+        temp_movie_ids = None
+        if cls._has_active_movie_filters(temporary_filters):
+            # 局部导入避免 movie_service → collections → 本模块的循环导入。
+            from src.service.catalog.movie_service import MovieService
+
+            temp_movie_ids = MovieService.filtered_movies_query(
+                **temporary_filters
+            ).select(Movie.id)
         total_query = (
             PlaylistMovie.select()
             .join(Movie, on=(PlaylistMovie.movie == Movie.id))
             .where(PlaylistMovie.playlist == playlist)
         )
-        if resolution is not None:
-            total_query = total_query.where(resolution_exists_expression(resolution))
-        total_query = apply_watch_status_filter(total_query, watch_status)
+        if temp_movie_ids is not None:
+            total_query = total_query.where(Movie.id.in_(temp_movie_ids))
         total = total_query.count()
         can_play_expression = cls._playable_exists_expression().alias("can_play")
         query, _thin_cover_alias = with_movie_card_relations(
@@ -466,9 +580,8 @@ class PlaylistService:
             .switch(Movie)
         )
         query = query.switch(PlaylistMovie).where(PlaylistMovie.playlist == playlist)
-        if resolution is not None:
-            query = query.where(resolution_exists_expression(resolution))
-        query = apply_watch_status_filter(query, watch_status)
+        if temp_movie_ids is not None:
+            query = query.where(Movie.id.in_(temp_movie_ids))
         order_by = cls._build_playlist_sort(sort)
         if order_by is None:
             order_by = [PlaylistMovie.updated_at.desc(), PlaylistMovie.id.desc()]
@@ -494,36 +607,39 @@ class PlaylistService:
         page_size: int,
         *,
         sort: str | None,
-        resolution: str | None,
-        watch_status: MovieWatchStatus,
+        temporary_filters: dict,
     ) -> PageResponse[PlaylistMovieListItemResource]:
         """智能列表没有成员表，列表内容由保存的筛选条件实时查询。
 
-        请求里显式传入的排序/分辨率/观看状态优先于保存值，供 API 客户端
-        临时切档；未传时回落到保存值。宿主详情页不暴露这组临时筛选，
-        保存条件由智能列表编辑器维护。
+        请求里显式传入的临时筛选按维度覆盖保存值；未传时回落到保存值。
+        排序同样是临时覆盖：未传时使用保存排序。
         """
         # 局部导入避免 movie_service → collections → 本模块的循环导入。
         from src.service.catalog.movie_service import MovieService
 
         saved = cls._smart_filter(playlist)
-        filters = cls._smart_movie_filters(playlist)
-        if resolution is not None:
-            filters["resolutions"] = [resolution]
-        if watch_status != MovieWatchStatus.ALL:
-            filters["watch_statuses"] = [watch_status]
-            filters["watch_match"] = TagMatchMode.OR
+        filters = {**cls._smart_movie_filters(playlist), **temporary_filters}
         total = MovieService.count_movies(**filters)
         start = max(page - 1, 0) * page_size
         if sort:
-            movie_query = MovieService.movie_list_query(**filters, sort=sort)
+            order_by = cls._build_playlist_sort(sort)
         else:
             try:
-                movie_query = MovieService.movie_list_query(**filters, sort=saved.sort)
+                order_by = cls._build_playlist_sort(saved.sort)
             except ApiError:
                 # 保存的排序可能因评分维度被删等原因失效，退回默认排序保持列表可用。
-                movie_query = MovieService.movie_list_query(**filters)
-        movies = list(movie_query.offset(start).limit(page_size))
+                order_by = None
+            if order_by is None:
+                order_by = [Movie.movie_number.asc()]
+        can_play_expression = cls._playable_exists_expression().alias("can_play")
+        movie_query, _thin_cover_alias = with_movie_card_relations(
+            MovieService.filtered_movies_query(**filters).select_extend(
+                can_play_expression
+            )
+        )
+        movies = list(
+            movie_query.order_by(*order_by).offset(start).limit(page_size)
+        )
         attach_movie_list_media(movies)
         items: list[PlaylistMovieListItemResource] = []
         for movie in movies:

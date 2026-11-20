@@ -1003,6 +1003,11 @@ class MovieService:
         return MovieService._filtered_movies(**filters).count()
 
     @staticmethod
+    def filtered_movies_query(**filters):
+        """返回带影片列表筛选条件的查询，供集合服务自行拼接成员与排序。"""
+        return MovieService._filtered_movies(**filters)
+
+    @staticmethod
     def list_movies(
         actor_id: int | None = None,
         actor_age_min: int | None = None,

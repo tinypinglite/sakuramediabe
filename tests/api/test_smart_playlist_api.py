@@ -6,10 +6,16 @@ from src.model import (
     Actor,
     Media,
     MediaLibrary,
+    MediaMediaTag,
     MediaProgress,
+    MediaTag,
     Movie,
     MovieActor,
+    MovieRating,
+    MovieTag,
     Playlist,
+    PlaylistMovie,
+    Tag,
 )
 
 
@@ -456,3 +462,255 @@ def test_smart_playlist_lifts_legacy_single_filters(client, account_user):
     assert smart_filter["statuses"] == ["playable"]
     assert smart_filter["watch_statuses"] == ["unwatched"]
     assert smart_filter["resolutions"] == ["4K"]
+
+
+def test_smart_playlist_temporary_filters_override_and_clear(
+    client, account_user
+):
+    headers = _login(client, account_user)
+    library = MediaLibrary.create(
+        name="smart-temporary-filter-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    movie_tag_a = Tag.create(name="临时筛选A")
+    movie_tag_b = Tag.create(name="临时筛选B")
+    media_tag = MediaTag.create(name="临时媒体标签", include_terms=[], exclude_terms=[])
+
+    first = Movie.create(
+        movie_number="SMART-TEMP-001",
+        title="SMART-TEMP-001",
+        release_date=datetime(2024, 5, 1),
+    )
+    second = Movie.create(
+        movie_number="SMART-TEMP-002",
+        title="SMART-TEMP-002",
+        release_date=datetime(2023, 5, 1),
+    )
+    third = Movie.create(
+        movie_number="SMART-TEMP-003",
+        title="SMART-TEMP-003",
+        release_date=datetime(2024, 6, 1),
+        is_subscribed=True,
+    )
+    MovieTag.create(movie=first, tag=movie_tag_a)
+    MovieTag.create(movie=second, tag=movie_tag_b)
+    MovieTag.create(movie=third, tag=movie_tag_a)
+
+    first_media = Media.create(
+        movie=first,
+        library=library,
+        file_name="smart-temp-001.mp4",
+        duration_seconds=7200,
+        resolution="3840x2160",
+    )
+    second_media = Media.create(
+        movie=second,
+        library=library,
+        file_name="smart-temp-002.mp4",
+        duration_seconds=7200,
+        resolution="1920x1080",
+    )
+    MediaMediaTag.create(media=first_media, tag=media_tag)
+    MediaProgress.create(media=second_media, position_seconds=7000)
+
+    body = _create_smart_playlist(
+        client,
+        headers,
+        {
+            "statuses": ["playable"],
+            "watch_statuses": ["unwatched"],
+            "years": [2024],
+            "resolutions": ["4K"],
+            "tag_ids": [movie_tag_a.id],
+            "media_tag_ids": [media_tag.id],
+        },
+        name="临时筛选测试",
+    )
+    endpoint = f"/playlists/{body['id']}/movies"
+
+    saved = client.get(endpoint, headers=headers)
+    assert saved.status_code == 200
+    assert _numbers(saved.json()) == {"SMART-TEMP-001"}
+
+    overridden = client.get(
+        endpoint,
+        headers=headers,
+        params={
+            "statuses": "playable",
+            "watch_statuses": "watched",
+            "year": "2023",
+            "resolutions": "1080P",
+            "tag_ids": str(movie_tag_b.id),
+            "media_tag_ids": "",
+        },
+    )
+    assert overridden.status_code == 200, overridden.text
+    assert overridden.json()["total"] == 1
+    assert _numbers(overridden.json()) == {"SMART-TEMP-002"}
+
+    cleared = client.get(
+        endpoint,
+        headers=headers,
+        params={
+            "statuses": "",
+            "watch_statuses": "",
+            "year": "",
+            "resolutions": "",
+            "tag_ids": "",
+            "media_tag_ids": "",
+        },
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["total"] == 3
+    assert _numbers(cleared.json()) == {
+        "SMART-TEMP-001",
+        "SMART-TEMP-002",
+        "SMART-TEMP-003",
+    }
+
+
+def test_custom_playlist_supports_temporary_filters(client, account_user):
+    headers = _login(client, account_user)
+    library = MediaLibrary.create(
+        name="custom-temporary-filter-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    movie_tag = Tag.create(name="自建临时标签")
+
+    first = Movie.create(
+        movie_number="CUSTOM-TEMP-001",
+        title="CUSTOM-TEMP-001",
+        release_date=datetime(2024, 5, 1),
+    )
+    second = Movie.create(
+        movie_number="CUSTOM-TEMP-002",
+        title="CUSTOM-TEMP-002",
+        release_date=datetime(2023, 5, 1),
+    )
+    MovieTag.create(movie=second, tag=movie_tag)
+    Media.create(
+        movie=first,
+        library=library,
+        file_name="custom-temp-001.mp4",
+        duration_seconds=7200,
+        resolution="3840x2160",
+    )
+    second_media = Media.create(
+        movie=second,
+        library=library,
+        file_name="custom-temp-002.mp4",
+        duration_seconds=7200,
+        resolution="1920x1080",
+    )
+    MediaProgress.create(media=second_media, position_seconds=7000)
+    playlist = Playlist.create(name="普通临时筛选", kind="custom")
+    PlaylistMovie.create(playlist=playlist, movie=first)
+    PlaylistMovie.create(playlist=playlist, movie=second)
+
+    response = client.get(
+        f"/playlists/{playlist.id}/movies",
+        headers=headers,
+        params={
+            "statuses": "playable",
+            "watch_statuses": "watched",
+            "year": "2023",
+            "resolutions": "1080P",
+            "tag_ids": str(movie_tag.id),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["total"] == 1
+    assert _numbers(response.json()) == {"CUSTOM-TEMP-002"}
+
+
+def test_playlist_sort_supports_unified_fields_for_custom_and_smart(
+    client, account_user
+):
+    headers = _login(client, account_user)
+    library = MediaLibrary.create(
+        name="playlist-unified-sort-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    older = Movie.create(
+        movie_number="SORT-001",
+        title="SORT-001",
+        release_date=datetime(2022, 1, 1),
+        subscribed_at=datetime(2025, 1, 1),
+    )
+    newer = Movie.create(
+        movie_number="SORT-002",
+        title="SORT-002",
+        release_date=datetime(2023, 1, 1),
+        subscribed_at=datetime(2026, 1, 1),
+    )
+    unrated = Movie.create(
+        movie_number="SORT-003",
+        title="SORT-003",
+        release_date=datetime(2021, 1, 1),
+    )
+    Media.create(
+        movie=older,
+        library=library,
+        file_name="sort-001.mp4",
+        duration_seconds=7200,
+        video_info={"video": {"bit_rate": 1000}},
+    )
+    Media.create(
+        movie=newer,
+        library=library,
+        file_name="sort-002.mp4",
+        duration_seconds=7200,
+        video_info={"video": {"bit_rate": 3000}},
+    )
+    MovieRating.create(movie=older, values={}, total_score=3.0)
+    MovieRating.create(movie=newer, values={}, total_score=5.0)
+
+    custom = Playlist.create(name="统一排序普通列表", kind="custom")
+    for movie in (older, newer, unrated):
+        PlaylistMovie.create(playlist=custom, movie=movie)
+    smart = _create_smart_playlist(
+        client,
+        headers,
+        {"collection_type": "all"},
+        name="统一排序智能列表",
+    )
+
+    expected = {
+        "bitrate:desc": ["SORT-002", "SORT-001", "SORT-003"],
+        "my_score:desc": ["SORT-002", "SORT-001", "SORT-003"],
+        "subscribed_at:desc": ["SORT-002", "SORT-001", "SORT-003"],
+    }
+    for path in (
+        f"/playlists/{custom.id}/movies",
+        f"/playlists/{smart['id']}/movies",
+    ):
+        for sort, numbers in expected.items():
+            response = client.get(path, headers=headers, params={"sort": sort})
+            assert response.status_code == 200, response.text
+            assert [item["movie_number"] for item in response.json()["items"]] == numbers
+
+
+def test_playlist_temporary_filter_rejects_invalid_values(client, account_user):
+    headers = _login(client, account_user)
+    body = _create_smart_playlist(
+        client,
+        headers,
+        {"collection_type": "all"},
+        name="非法临时筛选",
+    )
+    endpoint = f"/playlists/{body['id']}/movies"
+
+    for params in (
+        {"statuses": "invalid"},
+        {"watch_statuses": "invalid"},
+        {"tag_ids": "0"},
+        {"year": "2024,invalid"},
+        {"resolutions": "5K"},
+    ):
+        response = client.get(endpoint, headers=headers, params=params)
+        assert response.status_code == 422, response.text
+        assert response.json()["error"]["code"] == "invalid_playlist_filter"

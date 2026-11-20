@@ -39,6 +39,52 @@ def parse_csv_positive_ints(
     return values
 
 
+def parse_csv_positive_ints_allow_empty(
+    raw: str | None, field_name: str, *, error_code: str
+) -> list[int] | None:
+    """解析可显式清空的整数 CSV：未传为 None，空串为 []。"""
+    if raw is None:
+        return None
+    if not raw.strip():
+        return []
+    return parse_csv_positive_ints(raw, field_name, error_code=error_code)
+
+
+def parse_csv_texts_allow_empty(
+    raw: str | None, field_name: str, *, error_code: str
+) -> list[str] | None:
+    """解析可显式清空的字符串 CSV：未传为 None，空串为 []。"""
+    if raw is None:
+        return None
+    if not raw.strip():
+        return []
+    parts = [part.strip() for part in raw.split(",")]
+    if any(not part for part in parts):
+        raise ApiError(422, error_code, "Invalid filter value", {field_name: raw})
+    return parts
+
+
+def parse_csv_enums_allow_empty(
+    raw: str | None,
+    enum_type,
+    field_name: str,
+    *,
+    error_code: str,
+) -> list | None:
+    """解析可显式清空的枚举 CSV：未传为 None，空串为 []。"""
+    values = parse_csv_texts_allow_empty(
+        raw,
+        field_name,
+        error_code=error_code,
+    )
+    if values is None:
+        return None
+    try:
+        return [enum_type(value) for value in values]
+    except ValueError as exc:
+        raise ApiError(422, error_code, "Invalid filter value", {field_name: raw}) from exc
+
+
 def parse_optional_exact_text(
     raw: str | None, field_name: str, *, error_code: str
 ) -> str | None:

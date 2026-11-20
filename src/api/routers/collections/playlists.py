@@ -1,8 +1,13 @@
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
+from src.api.routers._utils import (
+    parse_csv_enums_allow_empty,
+    parse_csv_positive_ints_allow_empty,
+    parse_csv_texts_allow_empty,
+)
 from src.api.routers.deps import db_deps, get_current_user
-from src.schema.catalog.movies import MovieWatchStatus
+from src.schema.catalog.movies import MovieListStatus, MovieWatchStatus, TagMatchMode
 from src.schema.collections.playlists import (
     PlaylistCreateRequest,
     PlaylistMovieBatchAddRequest,
@@ -59,16 +64,68 @@ def list_playlist_movies(
     page_size: int = 20,
     sort: str | None = Query(default=None),
     resolution: str | None = Query(default=None),
-    watch_status: MovieWatchStatus = Query(default=MovieWatchStatus.ALL),
+    resolutions: str | None = Query(default=None),
+    watch_status: MovieWatchStatus | None = Query(default=None),
+    watch_statuses: str | None = Query(default=None),
+    watch_match: TagMatchMode | None = Query(default=None),
+    statuses: str | None = Query(default=None),
+    status_match: TagMatchMode | None = Query(default=None),
+    year: str | None = Query(default=None),
+    tag_ids: str | None = Query(default=None),
+    tag_match: TagMatchMode | None = Query(default=None),
+    media_tag_ids: str | None = Query(default=None),
+    media_tag_match: TagMatchMode | None = Query(default=None),
     current_user=Depends(get_current_user),
 ):
+    parsed_watch_statuses = parse_csv_enums_allow_empty(
+        watch_statuses,
+        MovieWatchStatus,
+        "watch_statuses",
+        error_code="invalid_playlist_filter",
+    )
+    if parsed_watch_statuses is None and watch_status is not None:
+        parsed_watch_statuses = (
+            []
+            if watch_status == MovieWatchStatus.ALL
+            else [watch_status]
+        )
     return PlaylistService.list_playlist_movies(
         playlist_id=playlist_id,
         page=page,
         page_size=page_size,
         sort=sort,
         resolution=resolution,
-        watch_status=watch_status,
+        resolutions=parse_csv_texts_allow_empty(
+            resolutions,
+            "resolutions",
+            error_code="invalid_playlist_filter",
+        ),
+        watch_statuses=parsed_watch_statuses,
+        watch_match=watch_match,
+        statuses=parse_csv_enums_allow_empty(
+            statuses,
+            MovieListStatus,
+            "statuses",
+            error_code="invalid_playlist_filter",
+        ),
+        status_match=status_match,
+        years=parse_csv_positive_ints_allow_empty(
+            year,
+            "year",
+            error_code="invalid_playlist_filter",
+        ),
+        tag_ids=parse_csv_positive_ints_allow_empty(
+            tag_ids,
+            "tag_ids",
+            error_code="invalid_playlist_filter",
+        ),
+        tag_match=tag_match,
+        media_tag_ids=parse_csv_positive_ints_allow_empty(
+            media_tag_ids,
+            "media_tag_ids",
+            error_code="invalid_playlist_filter",
+        ),
+        media_tag_match=media_tag_match,
     )
 
 
