@@ -307,6 +307,49 @@ def test_resolve_plugins_reads_market_index(monkeypatch):
     assert resolved[0].checksum_url is None
 
 
+def test_resolve_plugins_reads_external_plugin_from_index(monkeypatch):
+    module = _load_fetch_bundled_plugins_module()
+    repo = "tinypinglite/sakuramedia_local_provider"
+    monkeypatch.setattr(
+        module,
+        "BUNDLED_PLUGINS",
+        (module.BundledPluginSpec("demo_plugin", release_repo=repo),),
+    )
+    entry = _market_entry(
+        "demo_plugin",
+        version="1.2.3",
+        sha256="b" * 64,
+        download_url=(
+            "https://github.com/tinypinglite/sakuramedia_local_provider/"
+            "releases/download/v1.2.3/demo_plugin-1.2.3.zip"
+        ),
+    )
+    entry["repo"] = repo
+    http_get = _http_get({module.MARKET_INDEX_URL: _market_index([entry])})
+
+    resolved = module.resolve_plugins(http_get=http_get)
+
+    assert resolved[0].repo == repo
+    assert resolved[0].tag == "v1.2.3"
+    assert resolved[0].asset_name == "demo_plugin-1.2.3.zip"
+
+
+def test_resolve_plugins_rejects_external_repo_mismatch(monkeypatch):
+    module = _load_fetch_bundled_plugins_module()
+    repo = "tinypinglite/sakuramedia_local_provider"
+    monkeypatch.setattr(
+        module,
+        "BUNDLED_PLUGINS",
+        (module.BundledPluginSpec("demo_plugin", release_repo=repo),),
+    )
+    entry = _market_entry("demo_plugin", version="1.2.3")
+    entry["repo"] = "someone/else"
+    http_get = _http_get({module.MARKET_INDEX_URL: _market_index([entry])})
+
+    with pytest.raises(module.BundledPluginError, match="market_index_repo_mismatch"):
+        module.resolve_plugins(http_get=http_get)
+
+
 def test_resolve_plugins_fetches_market_index_once(monkeypatch):
     module = _load_fetch_bundled_plugins_module()
     monkeypatch.setattr(
@@ -412,6 +455,79 @@ def test_pinned_plugin_uses_market_release(monkeypatch):
         "https://example.test/demo_plugin-0.9.0.zip.sha256"
     )
     assert resolved[0].checksum_sha256 is None
+
+
+def test_pinned_external_plugin_uses_source_release(monkeypatch):
+    module = _load_fetch_bundled_plugins_module()
+    repo = "tinypinglite/sakuramedia_local_provider"
+    monkeypatch.setattr(
+        module,
+        "BUNDLED_PLUGINS",
+        (module.BundledPluginSpec("demo_plugin", release_repo=repo),),
+    )
+    tag = "v0.9.0"
+    release = {
+        "tag_name": tag,
+        "draft": False,
+        "prerelease": False,
+        "assets": [
+            {
+                "name": "demo_plugin-0.9.0.zip",
+                "browser_download_url": "https://example.test/demo_plugin-0.9.0.zip",
+            }
+        ],
+    }
+    release_url = f"{module.GITHUB_API_ROOT}/repos/{repo}/releases/tags/{tag}"
+    http_get = _http_get({release_url: release})
+    pins = module.parse_pins(["demo_plugin=v0.9.0"])
+
+    resolved = module.resolve_plugins(http_get=http_get, pins=pins)
+
+    assert resolved[0].repo == repo
+    assert resolved[0].tag == tag
+    assert resolved[0].version == "0.9.0"
+
+
+def test_pinned_external_plugin_falls_back_to_market_release(monkeypatch):
+    module = _load_fetch_bundled_plugins_module()
+    repo = "tinypinglite/sakuramedia_local_provider"
+    monkeypatch.setattr(
+        module,
+        "BUNDLED_PLUGINS",
+        (module.BundledPluginSpec("demo_plugin", release_repo=repo),),
+    )
+    source_url = f"{module.GITHUB_API_ROOT}/repos/{repo}/releases/tags/v0.2.17"
+    market_tag = "demo_plugin-v0.2.17"
+    market_url = (
+        f"{module.GITHUB_API_ROOT}/repos/{module.MARKET_REPO}/releases/tags/"
+        f"{market_tag}"
+    )
+    release = {
+        "tag_name": market_tag,
+        "draft": False,
+        "prerelease": False,
+        "assets": [
+            {
+                "name": "demo_plugin-0.2.17.zip",
+                "browser_download_url": "https://example.test/demo_plugin-0.2.17.zip",
+            }
+        ],
+    }
+
+    def http_get(url: str) -> bytes:
+        if url == source_url:
+            raise module.BundledPluginError(f"http_error: status=404 url={url}")
+        if url == market_url:
+            return json.dumps(release).encode("utf-8")
+        raise AssertionError(url)
+
+    resolved = module.resolve_plugins(
+        http_get=http_get,
+        pins=module.parse_pins(["demo_plugin=v0.2.17"]),
+    )
+
+    assert resolved[0].repo == module.MARKET_REPO
+    assert resolved[0].tag == market_tag
 
 
 def test_fetch_plugins_uses_market_sha256(tmp_path, monkeypatch):
