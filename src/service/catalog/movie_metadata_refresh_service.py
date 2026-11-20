@@ -40,6 +40,7 @@ from src.service.catalog.movie_ownership_gateway import (
     MovieOwnershipGateway,
 )
 from src.service.catalog.movie_service import MovieService
+from src.service.catalog.tag_name_map import resolve_tag_name
 
 
 class MovieMetadataRefreshService:
@@ -220,7 +221,7 @@ class MovieMetadataRefreshService:
                 for name in dict.fromkeys(
                     tag.strip() for tag in detail.tags if tag.strip()
                 ):
-                    tag, _ = Tag.get_or_create(name=name)
+                    tag, _ = Tag.get_or_create(name=resolve_tag_name(name))
                     MovieTag.get_or_create(movie=locked, tag=tag)
 
             images_changed = False

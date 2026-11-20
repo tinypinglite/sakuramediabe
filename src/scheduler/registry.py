@@ -24,6 +24,7 @@ from src.service.catalog.movie_review_source_service import MovieReviewSourceSer
 from src.service.catalog.movie_subscription_search_state_service import (
     MovieSubscriptionSearchStateService,
 )
+from src.service.catalog.tag_name_normalize_service import TagNameNormalizeService
 from src.service.discovery import (
     DailyRecommendationService,
     ImageSearchIndexService,
@@ -171,6 +172,16 @@ BUILTIN_JOB_REGISTRY: list[JobDefinition] = [
         cli_help="影片图片打包回填（封面/薄封面/剧情图 → assets.zip）",
         manual_only=True,
         handler=lambda reporter, _params: MovieAssetPackBackfillService.backfill(
+            reporter=reporter,
+        ),
+    ),
+    JobDefinition(
+        task_key=TagNameNormalizeService.TASK_KEY,
+        log_name="tag-name-normalize",
+        cli_name="normalize-tag-names",
+        cli_help="按当前账号语言统一影片标签",
+        manual_only=True,
+        handler=lambda reporter, _params: TagNameNormalizeService.normalize_tags(
             reporter=reporter,
         ),
     ),

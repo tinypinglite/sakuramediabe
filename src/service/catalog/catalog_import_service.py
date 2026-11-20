@@ -37,6 +37,7 @@ from src.service.catalog.movie_image_write_service import (
     apply_thin_cover_resolution,
     refresh_movie_thin_cover,
 )
+from src.service.catalog.tag_name_map import resolve_tag_name
 
 __all__ = [
     "CatalogImportService",
@@ -132,7 +133,7 @@ class CatalogImportService:
                     for actor in actors:
                         MovieActor.get_or_create(movie=movie, actor=actor)
                     for name in detail.tags:
-                        tag, _ = Tag.get_or_create(name=name)
+                        tag, _ = Tag.get_or_create(name=resolve_tag_name(name))
                         MovieTag.get_or_create(movie=movie, tag=tag)
                     images = self.image_service.persist_prepared_images(plots)
                     by_index = {}

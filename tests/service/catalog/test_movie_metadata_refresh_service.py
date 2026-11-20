@@ -181,6 +181,21 @@ def test_refresh_preserves_empty_optional_values_and_relations(refresh_env):
     assert refreshed.cover_image_id != old_cover.id
 
 
+def test_refresh_normalizes_tag_names_to_current_language(refresh_env):
+    movie, _image_root, tmp_path = refresh_env
+
+    refreshed = MovieMetadataRefreshService._refresh_records(
+        movie,
+        _detail(tmp_path, tags=["Big tits"]),
+        {"plugin_id": "new-source"},
+    )
+
+    assert {
+        item.name
+        for item in Tag.select().join(MovieTag).where(MovieTag.movie == refreshed)
+    } == {"巨乳"}
+
+
 def test_refresh_respects_manual_and_plugin_owned_fields_and_images(refresh_env):
     movie, image_root, tmp_path = refresh_env
     old_cover = _old_image(image_root, "movies/00/ABC-001/cover-old.png")

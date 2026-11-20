@@ -133,6 +133,7 @@ COPY --from=bundled /bundled /app/bundled-plugins
 # 编译后的宿主包与运行时数据文件；镜像内不再包含 src 的 .py 源码。
 COPY --from=nuitka /build/nuitka-out/src.cpython-310-*.so /app/
 COPY --from=nuitka /build/src/i18n/catalogs/*.json /app/src/i18n/catalogs/
+COPY --from=nuitka /build/src/service/catalog/data/tag_names.csv /app/src/service/catalog/data/tag_names.csv
 COPY --from=nuitka /build/src/api/uvicorn_config.json /app/src/api/uvicorn_config.json
 COPY --from=nuitka /build/src/start/migrations/versions.json /app/src/start/migrations/versions.json
 COPY docker/backend/cli.py /app/cli.py

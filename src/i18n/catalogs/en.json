@@ -45,6 +45,8 @@
   "tasks.media_thumbnail_generation.name": "Media thumbnail generation",
   "tasks.media_thumbnail_pack_backfill.name": "Media thumbnail pack backfill",
   "tasks.movie_asset_pack_backfill.name": "Movie asset pack backfill",
+  "tasks.tag_name_normalize.name": "Tag language normalization",
+  "tasks.tag_name_normalize.progress.running": "Tag language normalization · processed {current}/{total} · renamed {renamed} · merged {merged} · unchanged {unchanged}",
   "tasks.image_search_index.name": "Image search index build",
   "tasks.moment_recommendation_generate.name": "Recommended moment generation",
   "tasks.daily_recommendation_generate.name": "Daily recommendation snapshot generation",

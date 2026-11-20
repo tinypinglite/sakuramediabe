@@ -47,6 +47,8 @@
   "tasks.media_thumbnail_generation.name": "媒体缩略图生成",
   "tasks.media_thumbnail_pack_backfill.name": "媒体缩略图打包回填",
   "tasks.movie_asset_pack_backfill.name": "影片图片打包回填",
+  "tasks.tag_name_normalize.name": "标签语言归一",
+  "tasks.tag_name_normalize.progress.running": "标签语言归一 · 已处理 {current}/{total} · 已改名 {renamed} · 已合并 {merged} · 未变化 {unchanged}",
   "tasks.image_search_index.name": "图像搜索索引构建",
   "tasks.moment_recommendation_generate.name": "推荐时刻生成",
   "tasks.daily_recommendation_generate.name": "每日推荐快照生成",
