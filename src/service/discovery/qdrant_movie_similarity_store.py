@@ -77,6 +77,7 @@ class QdrantMovieSimilarityStore:
                 url=self.url,
                 api_key=(self.api_key or None),
                 timeout=self.CLIENT_TIMEOUT_SECONDS,
+                trust_env=False,
             )
         return self._client
 

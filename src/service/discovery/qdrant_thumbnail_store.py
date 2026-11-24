@@ -97,6 +97,7 @@ class QdrantThumbnailStore:
             url=self.url,
             api_key=(self.api_key or None),
             timeout=timeout_seconds,
+            trust_env=False,
         )
 
     def _get_client(self):
