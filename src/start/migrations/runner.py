@@ -92,6 +92,7 @@ PLAYLIST_SMART_FILTER_MIGRATION_NAME = (
 MOVIE_SUBSCRIBED_ACTIVE_INDEX_MIGRATION_NAME = (
     "20261121_01_add_movie_subscribed_active_index"
 )
+API_KEY_SECRET_MIGRATION_NAME = "20261126_01_add_api_key_secret"
 
 
 @dataclass(frozen=True)

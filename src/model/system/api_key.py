@@ -7,12 +7,13 @@ from src.model.mixins import TimestampedMixin
 class ApiKey(TimestampedMixin, BaseModel):
     """外部集成（如 MCP server）使用的 API 密钥。
 
-    只存 SHA-256 哈希，明文仅在生成响应中出现一次；key_hint 为展示用前缀。
+    同时保留认证哈希和可恢复的明文；key_hint 为展示用前缀。
     """
 
     name = CharField(max_length=64, default="")
     key_hint = CharField(max_length=32)
     key_hash = CharField(unique=True, index=True)
+    key_value = CharField(max_length=128, null=True)
     last_used_at = DateTimeField(null=True)
 
     class Meta:

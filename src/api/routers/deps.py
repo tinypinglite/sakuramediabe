@@ -27,3 +27,16 @@ def get_current_user(
     # 请求头优先，用户偏好作为无 header 时的回退；原地修改可变 LanguageState。
     apply_user_language(getattr(user, "language", None))
     return user
+
+
+def get_current_session_user(
+    access_token: str | None = Depends(oauth2_scheme),
+):
+    """只接受登录会话；API key 不能借道读出其它 key。"""
+    if access_token is not None and access_token.startswith(API_KEY_PREFIX):
+        raise ApiError(
+            403,
+            "session_required",
+            "This endpoint requires a signed-in session",
+        )
+    return get_current_user(access_token)

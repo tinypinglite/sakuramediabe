@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Response, status
 
-from src.api.routers.deps import db_deps, get_current_user
+from src.api.routers.deps import db_deps, get_current_session_user, get_current_user
 from src.schema.system.account import (
     AccountPasswordChangeRequest,
     AccountResource,
@@ -10,6 +10,7 @@ from src.schema.system.api_key import (
     ApiKeyCreatedResource,
     ApiKeyCreateRequest,
     ApiKeyResource,
+    ApiKeySecretResource,
 )
 from src.service.system.account_service import AccountService
 from src.service.system.api_key_service import ApiKeyService
@@ -60,3 +61,17 @@ def create_api_key(
 def delete_api_key(key_id: int, current_user=Depends(get_current_user)):
     ApiKeyService.delete_api_key(key_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/api-keys/{key_id}/secret",
+    response_model=ApiKeySecretResource,
+)
+def reveal_api_key(
+    key_id: int,
+    response: Response,
+    current_user=Depends(get_current_session_user),
+):
+    # 明文凭据不进任何缓存。
+    response.headers["Cache-Control"] = "no-store"
+    return ApiKeyService.get_api_key_secret(key_id)

@@ -7,6 +7,7 @@ from click.testing import CliRunner
 
 from src.model import (
     Actor,
+    ApiKey,
     BackgroundTaskRun,
     DownloadClient,
     DownloadSelectionPolicy,
@@ -29,6 +30,7 @@ from src.start.migrations.runner import (
     ACTOR_MERGED_INTO_MIGRATION_NAME,
     ACTOR_METADATA_MIGRATION_NAME,
     ALLOW_LOCAL_ACTOR_MIGRATION_NAME,
+    API_KEY_SECRET_MIGRATION_NAME,
     API_KEYS_MIGRATION_NAME,
     CONSOLIDATED_MIGRATION_NAME,
     DETACH_USER_ASSET_IMAGES_MIGRATION_NAME,
@@ -187,6 +189,7 @@ def test_current_migrations_are_discoverable_in_order():
         REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
         PLAYLIST_SMART_FILTER_MIGRATION_NAME,
         MOVIE_SUBSCRIBED_ACTIVE_INDEX_MIGRATION_NAME,
+        API_KEY_SECRET_MIGRATION_NAME,
     ]
 
 
@@ -463,6 +466,10 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
             name=MOVIE_SUBSCRIBED_ACTIVE_INDEX_MIGRATION_NAME,
             applied=True,
         ),
+        MigrationExecution(
+            name=API_KEY_SECRET_MIGRATION_NAME,
+            applied=True,
+        ),
     ]
     assert _schema_migration_names(clean_db) == [
         CONSOLIDATED_MIGRATION_NAME,
@@ -515,6 +522,7 @@ def test_run_pending_migrations_completes_fresh_current_schema_after_model_creat
         REPLACE_MOVIE_INTERACTIONS_MIGRATION_NAME,
         PLAYLIST_SMART_FILTER_MIGRATION_NAME,
         MOVIE_SUBSCRIBED_ACTIVE_INDEX_MIGRATION_NAME,
+        API_KEY_SECRET_MIGRATION_NAME,
     ]
 
 
@@ -903,7 +911,7 @@ def test_consolidated_migration_upgrades_v0421_schema_and_preserves_required_mem
         SchemaMigration.create(name=CONSOLIDATED_MIGRATION_NAME)
     summary = run_pending_migrations(clean_db)
 
-    assert summary.applied_count == 49
+    assert summary.applied_count == 50
     assert "interaction_synced_at" not in _column_names(clean_db, "movie")
     media_state = clean_db.execute_sql(
         """
@@ -1162,6 +1170,25 @@ def test_api_keys_migration_creates_table(clean_db):
     assert {"name", "key_hint", "key_hash", "last_used_at"} <= _column_names(
         clean_db, "api_keys"
     )
+
+
+def test_api_key_secret_migration_adds_nullable_column(clean_db):
+    clean_db.bind(TEST_MODELS, bind_refs=False, bind_backrefs=False)
+    clean_db.create_tables(TEST_MODELS)
+    legacy = ApiKey.create(
+        name="legacy",
+        key_hint="sk-legacy",
+        key_hash="b" * 64,
+        key_value=None,
+    )
+    clean_db.execute_sql("ALTER TABLE api_keys DROP COLUMN key_value")
+
+    migration = _load_migration_module(Path(f"{API_KEY_SECRET_MIGRATION_NAME}.py"))
+    migration.migrate(clean_db)
+    migration.migrate(clean_db)
+
+    assert "key_value" in _column_names(clean_db, "api_keys")
+    assert ApiKey.get_by_id(legacy.id).key_value is None
 
 
 def test_view_history_migration_creates_table(clean_db):

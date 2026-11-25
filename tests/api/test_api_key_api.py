@@ -25,6 +25,7 @@ def test_create_list_and_delete_api_key(client, account_user):
     assert body["name"] == "MCP server"
     assert body["key"].startswith("sk-")
     assert body["key_hint"] == body["key"][:11]
+    assert body["recoverable"] is True
     assert body["last_used_at"] is None
     key_id = body["id"]
 
@@ -33,11 +34,13 @@ def test_create_list_and_delete_api_key(client, account_user):
     items = listed.json()
     assert len(items) == 1
     assert items[0]["id"] == key_id
-    # 列表不回传明文 key；库里只存哈希。
+    assert items[0]["recoverable"] is True
+    # 列表不回传明文 key；库里同时保存哈希和可恢复明文。
     assert "key" not in items[0]
     stored = ApiKey.get_by_id(key_id)
     assert stored.key_hash != body["key"]
     assert len(stored.key_hash) == 64
+    assert stored.key_value == body["key"]
 
     deleted = client.delete(f"/account/api-keys/{key_id}", headers=headers)
     assert deleted.status_code == 204
@@ -46,6 +49,64 @@ def test_create_list_and_delete_api_key(client, account_user):
     missing = client.delete(f"/account/api-keys/{key_id}", headers=headers)
     assert missing.status_code == 404
     assert missing.json()["error"]["code"] == "api_key_not_found"
+
+
+def test_reveal_api_key_returns_secret_with_no_store(client, account_user):
+    headers = _headers(client, account_user)
+    created = client.post(
+        "/account/api-keys", json={"name": "agent"}, headers=headers
+    ).json()
+
+    revealed = client.get(
+        f"/account/api-keys/{created['id']}/secret",
+        headers=headers,
+    )
+    assert revealed.status_code == 200
+    assert revealed.json()["key"] == created["key"]
+    assert revealed.headers["cache-control"] == "no-store"
+
+
+def test_reveal_legacy_api_key_returns_conflict(client, account_user):
+    headers = _headers(client, account_user)
+    legacy = ApiKey.create(
+        name="legacy",
+        key_hint="sk-legacy",
+        key_hash="a" * 64,
+        key_value=None,
+    )
+
+    listed = client.get("/account/api-keys", headers=headers).json()
+    assert listed[0]["id"] == legacy.id
+    assert listed[0]["recoverable"] is False
+
+    revealed = client.get(
+        f"/account/api-keys/{legacy.id}/secret",
+        headers=headers,
+    )
+    assert revealed.status_code == 409
+    assert revealed.json()["error"]["code"] == "api_key_secret_unavailable"
+
+
+def test_reveal_missing_api_key_returns_not_found(client, account_user):
+    headers = _headers(client, account_user)
+    revealed = client.get("/account/api-keys/999/secret", headers=headers)
+    assert revealed.status_code == 404
+    assert revealed.json()["error"]["code"] == "api_key_not_found"
+
+
+def test_api_key_cannot_reveal_secrets(client, account_user):
+    headers = _headers(client, account_user)
+    created = client.post(
+        "/account/api-keys", json={"name": "agent"}, headers=headers
+    ).json()
+    api_headers = {"Authorization": f"Bearer {created['key']}"}
+
+    revealed = client.get(
+        f"/account/api-keys/{created['id']}/secret",
+        headers=api_headers,
+    )
+    assert revealed.status_code == 403
+    assert revealed.json()["error"]["code"] == "session_required"
 
 
 def test_api_key_authenticates_protected_endpoints(client, account_user):

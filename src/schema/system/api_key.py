@@ -11,6 +11,7 @@ class ApiKeyResource(SchemaModel):
     key_hint: str
     created_at: datetime
     last_used_at: datetime | None = None
+    recoverable: bool = False
 
 
 class ApiKeyCreateRequest(SchemaModel):
@@ -18,6 +19,10 @@ class ApiKeyCreateRequest(SchemaModel):
 
 
 class ApiKeyCreatedResource(ApiKeyResource):
-    """生成响应：key 明文仅此一次返回，之后不可再获取。"""
+    """生成响应：包含本次生成的明文 key。"""
 
+    key: str
+
+
+class ApiKeySecretResource(SchemaModel):
     key: str

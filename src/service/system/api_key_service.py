@@ -5,7 +5,11 @@ from datetime import timedelta
 from src.api.exception.errors import ApiError
 from src.common.runtime_time import utc_now_for_db
 from src.model import ApiKey, User
-from src.schema.system.api_key import ApiKeyCreatedResource, ApiKeyResource
+from src.schema.system.api_key import (
+    ApiKeyCreatedResource,
+    ApiKeyResource,
+    ApiKeySecretResource,
+)
 
 # Bearer 头里以该前缀开头的 token 按 API key 校验（JWT 为 eyJ... 三段式）。
 API_KEY_PREFIX = "sk-"
@@ -17,7 +21,12 @@ class ApiKeyService:
     @staticmethod
     def list_api_keys() -> list[ApiKeyResource]:
         rows = ApiKey.select().order_by(ApiKey.created_at.desc(), ApiKey.id.desc())
-        return [ApiKeyResource.from_attributes_model(row) for row in rows]
+        return [
+            ApiKeyResource.from_peewee_model(
+                row, extra={"recoverable": bool(row.key_value)}
+            )
+            for row in rows
+        ]
 
     @staticmethod
     def create_api_key(name: str) -> ApiKeyCreatedResource:
@@ -26,9 +35,24 @@ class ApiKeyService:
             name=name.strip(),
             key_hint=raw_key[:_KEY_HINT_LENGTH],
             key_hash=_hash_key(raw_key),
+            key_value=raw_key,
         )
-        resource = ApiKeyResource.from_attributes_model(row)
+        resource = ApiKeyResource.from_peewee_model(row, extra={"recoverable": True})
         return ApiKeyCreatedResource(**resource.model_dump(), key=raw_key)
+
+    @staticmethod
+    def get_api_key_secret(key_id: int) -> ApiKeySecretResource:
+        row = ApiKey.get_or_none(ApiKey.id == key_id)
+        if row is None:
+            raise ApiError(404, "api_key_not_found", "API key not found")
+        if not row.key_value:
+            raise ApiError(
+                409,
+                "api_key_secret_unavailable",
+                "This API key was created before secret storage was enabled; "
+                "create a new key instead",
+            )
+        return ApiKeySecretResource(key=row.key_value)
 
     @staticmethod
     def delete_api_key(key_id: int) -> None:
