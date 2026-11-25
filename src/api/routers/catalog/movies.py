@@ -269,8 +269,20 @@ def reset_movie_actor_ownership(movie_number: str):
 
 
 @router.get("/{movie_number}/merged-playback", response_model=MovieMergedPlaybackResource)
-def get_merged_playback(movie_number: str, library_id: int = Query(..., ge=1)):
-    return MovieService.get_merged_playback(movie_number, library_id)
+def get_merged_playback(
+    movie_number: str,
+    library_id: int = Query(..., ge=1),
+    media_ids: str | None = Query(default=None),
+):
+    return MovieService.get_merged_playback(
+        movie_number,
+        library_id,
+        media_ids=parse_csv_positive_ints(
+            media_ids,
+            "media_ids",
+            error_code="invalid_merged_playback",
+        ),
+    )
 
 
 @router.get("/{movie_number}", response_model=MovieDetailResource)

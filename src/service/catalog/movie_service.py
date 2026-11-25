@@ -957,30 +957,27 @@ class MovieService:
 
     @classmethod
     def get_merged_playback(
-        cls, movie_number: str, library_id: int
+        cls,
+        movie_number: str,
+        library_id: int,
+        *,
+        media_ids: list[int] | None = None,
     ) -> MovieMergedPlaybackResource:
         movie = cls._require_movie(movie_number)
+        if media_ids is not None:
+            return cls._get_selected_merged_playback(
+                movie=movie,
+                library_id=library_id,
+                media_ids=media_ids,
+            )
         for library, medias, playback_format in cls._merge_playback_groups(movie):
             if library.id != library_id:
                 continue
-            try:
-                storage = MEDIA_PROVIDER_REGISTRY.storage_for(library_handle_for(library))
-                preflight_merged_playback = getattr(storage, "preflight_merged_playback", None)
-                if callable(preflight_merged_playback):
-                    preflight_merged_playback(
-                        medias=tuple(media_handle_for(media) for media in medias)
-                    )
-            except ProviderUnavailableError as exc:
-                raise ApiError(503, "provider_not_installed", "媒体提供方未安装") from exc
-            except ProviderOperationError as exc:
-                status_code = {
-                    "source_not_found": 404,
-                    "authentication_failed": 401,
-                    "unavailable": 503,
-                    "invalid_config": 422,
-                    "unsupported": 422,
-                }[exc.code]
-                raise ApiError(status_code, f"provider_{exc.code}", exc.safe_message) from exc
+            playback_format = cls._preflight_merged_playback(
+                library=library,
+                medias=medias,
+                playback_format=playback_format,
+            )
             resource_path = "stream.mp4" if playback_format == "mp4" else "index.m3u8"
             return MovieMergedPlaybackResource(
                 play_url=build_signed_merged_media_url(
@@ -988,6 +985,89 @@ class MovieService:
                 ),
             )
         raise ApiError(422, "merged_playback_unavailable", "该媒体库不支持合并播放")
+
+    @classmethod
+    def _get_selected_merged_playback(
+        cls,
+        *,
+        movie: Movie,
+        library_id: int,
+        media_ids: list[int],
+    ) -> MovieMergedPlaybackResource:
+        if len(media_ids) < 2:
+            raise ApiError(
+                422,
+                "merged_playback_need_at_least_two",
+                "合并播放至少需要 2 个分段",
+            )
+        if len(set(media_ids)) != len(media_ids):
+            raise ApiError(422, "invalid_merged_playback", "合并播放分段不可重复")
+
+        media_by_id = {
+            media.id: media
+            for media in Media.select(Media, MediaLibrary)
+            .join(MediaLibrary)
+            .where(Media.movie == movie, Media.id.in_(media_ids))
+        }
+        if len(media_by_id) != len(media_ids):
+            raise ApiError(404, "media_not_found", "部分媒体不存在")
+        medias = [media_by_id[media_id] for media_id in media_ids]
+        if any(not media.valid for media in medias):
+            raise ApiError(422, "merged_playback_unavailable", "合并分段存在无效媒体")
+        if any(media.library_id != library_id for media in medias):
+            raise ApiError(
+                422,
+                "merged_playback_cross_library",
+                "合并分段必须来自同一媒体库",
+            )
+
+        library = medias[0].library
+        try:
+            bundle = MEDIA_PROVIDER_REGISTRY.require(library.provider_key)
+        except ProviderUnavailableError as exc:
+            raise ApiError(503, "provider_not_installed", "媒体提供方未安装") from exc
+        playback_format = getattr(bundle, "merged_playback_format", None)
+        if playback_format not in {"mp4", "hls"}:
+            raise ApiError(422, "merged_playback_unavailable", "媒体提供方不支持合并播放")
+        playback_format = cls._preflight_merged_playback(
+            library=library,
+            medias=medias,
+            playback_format=playback_format,
+        )
+        resource_path = "stream.mp4" if playback_format == "mp4" else "index.m3u8"
+        return MovieMergedPlaybackResource(
+            play_url=build_signed_merged_media_url(
+                (media.id for media in medias),
+                resource_path,
+            ),
+        )
+
+    @staticmethod
+    def _preflight_merged_playback(
+        *,
+        library: MediaLibrary,
+        medias: Sequence[Media],
+        playback_format: str,
+    ) -> str:
+        try:
+            storage = MEDIA_PROVIDER_REGISTRY.storage_for(library_handle_for(library))
+            preflight_merged_playback = getattr(storage, "preflight_merged_playback", None)
+            if callable(preflight_merged_playback):
+                preflight_merged_playback(
+                    medias=tuple(media_handle_for(media) for media in medias)
+                )
+        except ProviderUnavailableError as exc:
+            raise ApiError(503, "provider_not_installed", "媒体提供方未安装") from exc
+        except ProviderOperationError as exc:
+            status_code = {
+                "source_not_found": 404,
+                "authentication_failed": 401,
+                "unavailable": 503,
+                "invalid_config": 422,
+                "unsupported": 422,
+            }[exc.code]
+            raise ApiError(status_code, f"provider_{exc.code}", exc.safe_message) from exc
+        return playback_format
 
     @staticmethod
     def get_movie_detail(movie_number: str) -> MovieDetailResource:

@@ -222,6 +222,213 @@ def test_merged_playback_url_uses_ordered_same_library_media(
     )
 
 
+def test_merged_playback_url_uses_selected_ordered_media_ids(
+    client,
+    account_user,
+    monkeypatch,
+):
+    library = MediaLibrary.create(
+        name="merge-selected-library", provider_key="demo", provider_config={}
+    )
+    movie = Movie.create(movie_number="MERGE-SELECTED-001", title="merge")
+    first = Media.create(movie=movie, library=library, file_name="merge-cd1.mp4")
+    second = Media.create(movie=movie, library=library, file_name="merge-cd2.mp4")
+    third = Media.create(movie=movie, library=library, file_name="merge-cd3.mp4")
+    seen: list[list[int]] = []
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(
+            playback_deliveries=("proxy",), merged_playback_format="mp4"
+        ),
+    )
+
+    class Storage:
+        @staticmethod
+        def preflight_merged_playback(*, medias):
+            seen.append([media.media_id for media in medias])
+
+    monkeypatch.setattr(MEDIA_PROVIDER_REGISTRY, "storage_for", lambda _handle: Storage())
+
+    response = client.get(
+        (
+            f"/movies/{movie.movie_number}/merged-playback"
+            f"?library_id={library.id}&media_ids={third.id},{first.id}"
+        ),
+        headers=_auth_headers(client, account_user),
+    )
+
+    assert response.status_code == 200
+    assert seen == [[third.id, first.id]]
+    assert (
+        f"/media/merged-play/stream.mp4?media_ids={third.id},{first.id}"
+        in response.json()["play_url"]
+    )
+    assert f"media_ids={first.id},{second.id}" not in response.json()["play_url"]
+
+
+def test_merged_playback_selected_media_must_share_library(
+    client,
+    account_user,
+    monkeypatch,
+):
+    first_library = MediaLibrary.create(
+        name="merge-selected-lib-a", provider_key="demo", provider_config={}
+    )
+    second_library = MediaLibrary.create(
+        name="merge-selected-lib-b", provider_key="demo", provider_config={}
+    )
+    movie = Movie.create(movie_number="MERGE-SELECTED-CROSS-001", title="merge")
+    first = Media.create(movie=movie, library=first_library, file_name="merge-cd1.mp4")
+    second = Media.create(movie=movie, library=second_library, file_name="merge-cd2.mp4")
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(
+            playback_deliveries=("proxy",), merged_playback_format="mp4"
+        ),
+    )
+
+    response = client.get(
+        (
+            f"/movies/{movie.movie_number}/merged-playback"
+            f"?library_id={first_library.id}&media_ids={first.id},{second.id}"
+        ),
+        headers=_auth_headers(client, account_user),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "merged_playback_cross_library"
+
+
+def test_merged_playback_selected_media_requires_two_unique_ids(
+    client,
+    account_user,
+):
+    library = MediaLibrary.create(
+        name="merge-selected-validation-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    movie = Movie.create(movie_number="MERGE-SELECTED-VALIDATION-001", title="merge")
+    media = Media.create(movie=movie, library=library, file_name="merge-cd1.mp4")
+    headers = _auth_headers(client, account_user)
+
+    too_few = client.get(
+        (
+            f"/movies/{movie.movie_number}/merged-playback"
+            f"?library_id={library.id}&media_ids={media.id}"
+        ),
+        headers=headers,
+    )
+    duplicated = client.get(
+        (
+            f"/movies/{movie.movie_number}/merged-playback"
+            f"?library_id={library.id}&media_ids={media.id},{media.id}"
+        ),
+        headers=headers,
+    )
+
+    assert too_few.status_code == 422
+    assert too_few.json()["error"]["code"] == "merged_playback_need_at_least_two"
+    assert duplicated.status_code == 422
+    assert duplicated.json()["error"]["code"] == "invalid_merged_playback"
+
+
+def test_merged_playback_selected_media_rejects_invalid_or_foreign_ids(
+    client,
+    account_user,
+    monkeypatch,
+):
+    library = MediaLibrary.create(
+        name="merge-selected-invalid-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    movie = Movie.create(movie_number="MERGE-SELECTED-INVALID-001", title="merge")
+    valid = Media.create(movie=movie, library=library, file_name="merge-cd1.mp4")
+    invalid = Media.create(
+        movie=movie,
+        library=library,
+        file_name="merge-cd2.mp4",
+        valid=False,
+    )
+    other_movie = Movie.create(movie_number="MERGE-SELECTED-OTHER-001", title="other")
+    foreign = Media.create(
+        movie=other_movie,
+        library=library,
+        file_name="other-cd1.mp4",
+    )
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(
+            playback_deliveries=("proxy",), merged_playback_format="mp4"
+        ),
+    )
+    headers = _auth_headers(client, account_user)
+
+    invalid_response = client.get(
+        (
+            f"/movies/{movie.movie_number}/merged-playback"
+            f"?library_id={library.id}&media_ids={valid.id},{invalid.id}"
+        ),
+        headers=headers,
+    )
+    foreign_response = client.get(
+        (
+            f"/movies/{movie.movie_number}/merged-playback"
+            f"?library_id={library.id}&media_ids={valid.id},{foreign.id}"
+        ),
+        headers=headers,
+    )
+    missing_response = client.get(
+        (
+            f"/movies/{movie.movie_number}/merged-playback"
+            f"?library_id={library.id}&media_ids={valid.id},999999"
+        ),
+        headers=headers,
+    )
+
+    assert invalid_response.status_code == 422
+    assert invalid_response.json()["error"]["code"] == "merged_playback_unavailable"
+    assert foreign_response.status_code == 404
+    assert foreign_response.json()["error"]["code"] == "media_not_found"
+    assert missing_response.status_code == 404
+    assert missing_response.json()["error"]["code"] == "media_not_found"
+
+
+def test_merged_playback_selected_media_rejects_unsupported_provider(
+    client,
+    account_user,
+    monkeypatch,
+):
+    library = MediaLibrary.create(
+        name="merge-selected-unsupported-library",
+        provider_key="demo",
+        provider_config={},
+    )
+    movie = Movie.create(movie_number="MERGE-SELECTED-UNSUPPORTED-001", title="merge")
+    first = Media.create(movie=movie, library=library, file_name="merge-cd1.mp4")
+    second = Media.create(movie=movie, library=library, file_name="merge-cd2.mp4")
+    monkeypatch.setattr(
+        MEDIA_PROVIDER_REGISTRY,
+        "require",
+        lambda _provider_key: SimpleNamespace(playback_deliveries=("proxy",)),
+    )
+
+    response = client.get(
+        (
+            f"/movies/{movie.movie_number}/merged-playback"
+            f"?library_id={library.id}&media_ids={first.id},{second.id}"
+        ),
+        headers=_auth_headers(client, account_user),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "merged_playback_unavailable"
+
+
 def test_merged_playback_url_rejects_provider_preflight_failure(
     client,
     account_user,
