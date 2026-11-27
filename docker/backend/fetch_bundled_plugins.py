@@ -27,7 +27,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -312,24 +312,42 @@ def _parse_market_latest(
     )
 
 
+def _pinned_candidates(spec: BundledPluginSpec) -> list[BundledPluginSpec]:
+    """pin 的尝试顺序：声明仓的前缀 tag → 同一仓的历史 plain tag → 市场仓。"""
+    candidates = [spec, BundledPluginSpec(spec.plugin_id)]
+    if spec.uses_prefixed_tags and spec.release_repo:
+        # 仓库迁移前打的是 v<version>，迁移后这些 tag 仍留在同一个仓里。
+        candidates.insert(1, replace(spec, prefixed_tags=False))
+    seen: set[tuple[str | None, bool]] = set()
+    unique: list[BundledPluginSpec] = []
+    for candidate in candidates:
+        key = (candidate.release_repo, candidate.uses_prefixed_tags)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
 def _resolve_pinned(
     spec: BundledPluginSpec,
     pinned_tag: str,
     *,
     http_get: HttpGet,
 ) -> ResolvedPlugin:
-    url = _release_api_url(spec, pinned_tag)
-    try:
-        payload = _load_json(http_get(url), url=url)
-    except BundledPluginError as exc:
-        # 独立公开仓只覆盖迁移后的版本；更早的版本仍只存在于市场仓。
-        if spec.release_repo and "status=404" in str(exc):
-            fallback_spec = BundledPluginSpec(spec.plugin_id)
-            fallback_url = _release_api_url(fallback_spec, pinned_tag)
-            payload = _load_json(http_get(fallback_url), url=fallback_url)
-            return _parse_release(fallback_spec, payload, pinned=True)
-        raise
-    return _parse_release(spec, payload, pinned=True)
+    error: BundledPluginError | None = None
+    for candidate in _pinned_candidates(spec):
+        url = _release_api_url(candidate, pinned_tag)
+        try:
+            payload = _load_json(http_get(url), url=url)
+        except BundledPluginError as exc:
+            if "status=404" not in str(exc):
+                raise
+            error = exc
+            continue
+        return _parse_release(candidate, payload, pinned=True)
+    assert error is not None
+    raise error
 
 
 def parse_pins(values: list[str]) -> dict[str, str]:

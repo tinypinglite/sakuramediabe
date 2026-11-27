@@ -523,6 +523,50 @@ def test_pinned_monorepo_plugin_uses_prefixed_tag(monkeypatch):
     assert resolved[0].version == "0.9.0"
 
 
+def test_pinned_plugin_falls_back_to_legacy_plain_tag(monkeypatch):
+    """仓库迁到 monorepo 之前打的是 v<version>，这些 tag 还留在同一个仓里。"""
+    module = _load_fetch_bundled_plugins_module()
+    repo = "tinypinglite/sakuramedia-open-plugins"
+    monkeypatch.setattr(
+        module,
+        "BUNDLED_PLUGINS",
+        (
+            module.BundledPluginSpec(
+                "demo_plugin", release_repo=repo, prefixed_tags=True
+            ),
+        ),
+    )
+    release = {
+        "tag_name": "v0.2.18",
+        "draft": False,
+        "prerelease": False,
+        "assets": [
+            {
+                "name": "demo_plugin-0.2.18.zip",
+                "browser_download_url": "https://example.test/demo_plugin-0.2.18.zip",
+            }
+        ],
+    }
+    prefixed_url = (
+        f"{module.GITHUB_API_ROOT}/repos/{repo}/releases/tags/demo_plugin-v0.2.18"
+    )
+    legacy_url = f"{module.GITHUB_API_ROOT}/repos/{repo}/releases/tags/v0.2.18"
+
+    def http_get(url: str) -> bytes:
+        if url == prefixed_url:
+            raise module.BundledPluginError(f"http_error: status=404 url={url}")
+        assert url == legacy_url, url
+        return json.dumps(release).encode("utf-8")
+
+    pins = module.parse_pins(["demo_plugin=v0.2.18"])
+
+    resolved = module.resolve_plugins(http_get=http_get, pins=pins)
+
+    assert resolved[0].repo == repo
+    assert resolved[0].tag == "v0.2.18"
+    assert resolved[0].version == "0.2.18"
+
+
 def test_pinned_external_plugin_falls_back_to_market_release(monkeypatch):
     module = _load_fetch_bundled_plugins_module()
     repo = "tinypinglite/sakuramedia_local_provider"
