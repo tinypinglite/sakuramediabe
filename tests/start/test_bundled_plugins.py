@@ -488,6 +488,41 @@ def test_pinned_external_plugin_uses_source_release(monkeypatch):
     assert resolved[0].version == "0.9.0"
 
 
+def test_pinned_monorepo_plugin_uses_prefixed_tag(monkeypatch):
+    module = _load_fetch_bundled_plugins_module()
+    repo = "tinypinglite/sakuramedia-open-plugins"
+    monkeypatch.setattr(
+        module,
+        "BUNDLED_PLUGINS",
+        (
+            module.BundledPluginSpec(
+                "demo_plugin", release_repo=repo, prefixed_tags=True
+            ),
+        ),
+    )
+    tag = "demo_plugin-v0.9.0"
+    release = {
+        "tag_name": tag,
+        "draft": False,
+        "prerelease": False,
+        "assets": [
+            {
+                "name": "demo_plugin-0.9.0.zip",
+                "browser_download_url": "https://example.test/demo_plugin-0.9.0.zip",
+            }
+        ],
+    }
+    release_url = f"{module.GITHUB_API_ROOT}/repos/{repo}/releases/tags/{tag}"
+    http_get = _http_get({release_url: release})
+    pins = module.parse_pins(["demo_plugin=v0.9.0"])
+
+    resolved = module.resolve_plugins(http_get=http_get, pins=pins)
+
+    assert resolved[0].repo == repo
+    assert resolved[0].tag == tag
+    assert resolved[0].version == "0.9.0"
+
+
 def test_pinned_external_plugin_falls_back_to_market_release(monkeypatch):
     module = _load_fetch_bundled_plugins_module()
     repo = "tinypinglite/sakuramedia_local_provider"

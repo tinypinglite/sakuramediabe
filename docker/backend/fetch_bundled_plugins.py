@@ -4,10 +4,10 @@
 读取各插件的 latest 正式版本；需要复现历史镜像或临时回滚某个插件时用
 ``--pin <plugin_id>=v<version>`` 固定。
 
-官方插件源码主要维护在私有 monorepo；``sakuramedia_local_provider`` 已迁到独立公开仓
-``tinypinglite/sakuramedia_local_provider``。无论源码在哪，公开的市场仓都同时承载元数据
-与编译后的 ZIP，因此未 pin 时构建期只访问市场 ``index.json``；只有显式 ``--pin`` 时才会
-访问对应发布仓的 Release。
+官方插件源码主要维护在私有 monorepo；开源插件维护在公开 monorepo
+``tinypinglite/sakuramedia-open-plugins``（tag 带 ``<plugin_id>-`` 前缀）。市场仓承载全部
+元数据；闭源插件的 ZIP 也放在市场仓，开源插件的 ZIP 在各自源码仓，由市场元数据记录地址。
+因此未 pin 时构建期只访问市场 ``index.json``；只有显式 ``--pin`` 时才访问发布仓的 Release。
 
 两种模式：
 - ``resolve``：只解析并打印本次将内置的版本与资产地址，供发版前人工核查（开发态预检）；
@@ -53,12 +53,20 @@ BUILD_INFO_NAME = "BUILD-INFO.json"
 
 @dataclass(frozen=True)
 class BundledPluginSpec:
-    """一个内置插件：版本从插件市场 index 解析；个别插件从独立公开仓解析 pin。"""
+    """一个内置插件：版本从插件市场 index 解析；个别插件从源码仓解析 pin。"""
 
     plugin_id: str
-    # 独立公开仓（owner/name）。None 表示 pin 走市场仓的 <plugin_id>-v<version>；
-    # 设置后 pin 走该仓的 v<version> Release。
+    # 源码发布仓（owner/name）。None 表示 pin 走市场仓。
     release_repo: str | None = None
+    # 该仓的 tag 是否带 <plugin_id>- 前缀：市场仓和公开 monorepo 带，
+    # 单插件仓不带。None 时按是否有 release_repo 推导。
+    prefixed_tags: bool | None = None
+
+    @property
+    def uses_prefixed_tags(self) -> bool:
+        if self.prefixed_tags is not None:
+            return self.prefixed_tags
+        return self.release_repo is None
 
 
 @dataclass(frozen=True)
@@ -84,7 +92,8 @@ BUNDLED_PLUGINS: tuple[BundledPluginSpec, ...] = (
     BundledPluginSpec("sakuramedia_avmoo_metadata"),
     BundledPluginSpec(
         "sakuramedia_local_provider",
-        release_repo="tinypinglite/sakuramedia_local_provider",
+        release_repo="tinypinglite/sakuramedia-open-plugins",
+        prefixed_tags=True,
     ),
     BundledPluginSpec("sakuramedia_javdb_ranking"),
     BundledPluginSpec("sakuramedia_more_rank_movies"),
@@ -155,14 +164,10 @@ def _asset_urls(payload: dict[str, Any], *, plugin_id: str) -> dict[str, str]:
 
 
 def _release_api_url(spec: BundledPluginSpec, pinned_tag: str) -> str:
-    """市场仓用 <plugin_id>-v<version>；独立公开仓用 v<version>。"""
-    if spec.release_repo:
-        version = pinned_tag.removeprefix("v")
-        return f"{GITHUB_API_ROOT}/repos/{spec.release_repo}/releases/tags/v{version}"
-    return (
-        f"{GITHUB_API_ROOT}/repos/{MARKET_REPO}/releases/tags/"
-        f"{spec.plugin_id}-{pinned_tag}"
-    )
+    """按发布仓决定 tag 形态：带前缀用 <plugin_id>-v<version>，否则用 v<version>。"""
+    repo = spec.release_repo or MARKET_REPO
+    tag = f"{spec.plugin_id}-{pinned_tag}" if spec.uses_prefixed_tags else pinned_tag
+    return f"{GITHUB_API_ROOT}/repos/{repo}/releases/tags/{tag}"
 
 
 def _parse_release(
@@ -180,14 +185,14 @@ def _parse_release(
         raise BundledPluginError(
             f"release_invalid: plugin_id={spec.plugin_id} tag={tag} draft=true"
         )
-    if spec.release_repo:
-        match = _PLAIN_TAG_PATTERN.match(tag)
-        expected = "v<version>"
-    else:
+    if spec.uses_prefixed_tags:
         match = _MARKET_TAG_PATTERN.match(tag)
         expected = "<plugin_id>-v<version>"
+    else:
+        match = _PLAIN_TAG_PATTERN.match(tag)
+        expected = "v<version>"
     if match is None or (
-        not spec.release_repo and match.group("plugin_id") != spec.plugin_id
+        spec.uses_prefixed_tags and match.group("plugin_id") != spec.plugin_id
     ):
         raise BundledPluginError(
             f"release_invalid: plugin_id={spec.plugin_id} tag={tag} "
@@ -294,7 +299,11 @@ def _parse_market_latest(
     return ResolvedPlugin(
         plugin_id=spec.plugin_id,
         repo=repo,
-        tag=f"v{version}" if spec.release_repo else f"{spec.plugin_id}-v{version}",
+        tag=(
+            f"{spec.plugin_id}-v{version}"
+            if spec.uses_prefixed_tags
+            else f"v{version}"
+        ),
         version=version,
         asset_name=f"{spec.plugin_id}-{version}.zip",
         asset_url=download_url,
